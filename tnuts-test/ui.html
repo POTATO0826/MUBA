@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Thetanuts scratch UI</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel2: #1c232c; --line: #2a323d;
+    --fg: #e6edf3; --dim: #8b949e; --accent: #4ea1ff; --good: #3fb950;
+    --bad: #f85149; --warn: #d29922; --call: #3fb950; --put: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .badge {
+    font: 11px/1 var(--mono); padding: 4px 8px; border-radius: 999px;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--dim);
+  }
+  .badge.ok { color: var(--good); border-color: #21402a; }
+  .badge.bad { color: var(--bad); border-color: #4a2224; }
+  nav { display: flex; gap: 2px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button {
+    background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dim);
+    padding: 10px 14px; font-size: 13px; cursor: pointer; white-space: nowrap;
+  }
+  nav button:hover { color: var(--fg); }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  main { padding: 18px; max-width: 1500px; }
+  section { display: none; }
+  section.active { display: block; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  input, select {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+    padding: 6px 9px; border-radius: 6px; font: 13px var(--mono); min-width: 90px;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button.go {
+    background: var(--accent); color: #08131f; border: 0; padding: 7px 16px;
+    border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  button.go:hover { filter: brightness(1.1); }
+  button.ghost {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px; min-width: 118px;
+  }
+  .card .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  .card .v { font: 16px/1.4 var(--mono); margin-top: 2px; }
+  .split { display: grid; grid-template-columns: 1fr 380px; gap: 14px; align-items: start; }
+  @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
+  .tablewrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 62vh; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font: 12px var(--mono); }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th {
+    position: sticky; top: 0; background: var(--panel2); color: var(--dim);
+    font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; cursor: pointer;
+  }
+  th:hover { color: var(--fg); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel2); }
+  tbody tr.sel { background: #1d2b3d; }
+  td.num { text-align: right; }
+  .c { color: var(--call); } .p { color: var(--put); }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; overflow: auto; max-height: 62vh; font: 11.5px/1.5 var(--mono);
+    color: var(--fg); margin: 0; white-space: pre-wrap; word-break: break-word;
+  }
+  .note {
+    border-left: 3px solid var(--warn); background: #21201a; color: #e3d5a8;
+    padding: 10px 12px; border-radius: 0 6px 6px 0; margin-bottom: 14px; font-size: 12.5px;
+  }
+  .err {
+    border-left: 3px solid var(--bad); background: #241a1b; color: #ffb3ae;
+    padding: 12px; border-radius: 0 6px 6px 0; margin-bottom: 14px; font-size: 12.5px;
+  }
+  .err code { font: 12px var(--mono); color: #fff; }
+  .ok-note { border-left-color: var(--good); background: #16241a; color: #9fe0ab; }
+  h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; }
+  .muted { color: var(--dim); }
+  .spinner { color: var(--dim); padding: 20px; }
+  svg .axis { stroke: var(--line); stroke-width: 1; }
+  svg .grid { stroke: #202832; stroke-width: 1; }
+  svg text { fill: var(--dim); font: 10px var(--mono); }
+  svg .curve { fill: none; stroke: var(--accent); stroke-width: 2; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Thetanuts scratch UI</h1>
+  <span class="badge" id="b-chain">chain —</span>
+  <span class="badge" id="b-block">block —</span>
+  <span class="badge" id="b-rpc">rpc —</span>
+  <span class="badge ok" id="b-mode">read-only · no signer</span>
+  <span class="badge" id="b-sdk">sdk —</span>
+</header>
+
+<nav>
+  <button data-tab="market" class="active">Market</button>
+  <button data-tab="options">Options (products)</button>
+  <button data-tab="orders">Live orders</button>
+  <button data-tab="payoff">Payoff calc</button>
+  <button data-tab="config">Chain config</button>
+</nav>
+
+<main>
+
+  <!-- ---------------- MARKET ---------------- -->
+  <section id="market" class="active">
+    <div class="row">
+      <button class="go" id="m-refresh">Refresh</button>
+      <span class="muted" id="m-latency"></span>
+    </div>
+    <div id="m-err"></div>
+    <div class="cards" id="m-cards"></div>
+    <h2>getMarketData() raw</h2>
+    <pre id="m-raw">…</pre>
+  </section>
+
+  <!-- ---------------- OPTIONS ---------------- -->
+  <section id="options">
+    <div class="row">
+      <div class="field">
+        <label>Underlying</label>
+        <select id="o-underlying">
+          <option>ETH</option><option>BTC</option>
+          <option>SOL</option><option>DOGE</option><option>PAXG</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Expiry</label>
+        <select id="o-expiry"><option value="">all</option></select>
+      </div>
+      <div class="field">
+        <label>Side</label>
+        <select id="o-side"><option value="">all</option><option value="C">calls</option><option value="P">puts</option></select>
+      </div>
+      <div class="field"><label>Strike min</label><input id="o-min" type="number" placeholder="—" /></div>
+      <div class="field"><label>Strike max</label><input id="o-max" type="number" placeholder="—" /></div>
+      <div class="field"><label>Ticker contains</label><input id="o-q" placeholder="—" /></div>
+      <button class="go" id="o-load">Load</button>
+      <button class="ghost" id="o-probe">Probe all underlyings</button>
+      <span class="muted" id="o-count"></span>
+    </div>
+    <div id="o-msg"></div>
+    <div class="split">
+      <div class="tablewrap"><table id="o-table"></table></div>
+      <div>
+        <h2>Selected row — full object</h2>
+        <pre id="o-detail">click a row</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- ORDERS ---------------- -->
+  <section id="orders">
+    <div class="row">
+      <div class="field">
+        <label>Side</label>
+        <select id="r-side"><option value="">all</option><option value="call">calls</option><option value="put">puts</option></select>
+      </div>
+      <div class="field">
+        <label>Direction</label>
+        <select id="r-dir"><option value="">all</option><option value="long">isLong</option><option value="short">isShort</option></select>
+      </div>
+      <div class="field"><label>Maker contains</label><input id="r-maker" placeholder="0x…" /></div>
+      <button class="go" id="r-load">Load orders</button>
+      <span class="muted" id="r-count"></span>
+    </div>
+    <div id="r-msg"></div>
+    <div class="split">
+      <div class="tablewrap"><table id="r-table"></table></div>
+      <div>
+        <h2>Selected order — full object</h2>
+        <pre id="r-detail">click a row</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- PAYOFF ---------------- -->
+  <section id="payoff">
+    <div class="note">
+      Pure local math — <code>client.utils.calculatePayout</code>. No RPC, no chain call.
+      Picking <b>RANGER</b> below shows the SDK's actual rejection rather than a fallback.
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Type</label>
+        <select id="y-type">
+          <option value="call">call</option>
+          <option value="put">put</option>
+          <option value="call_spread">call_spread</option>
+          <option value="put_spread">put_spread</option>
+          <option value="RANGER">RANGER (probe)</option>
+          <option value="butterfly">butterfly (probe)</option>
+        </select>
+      </div>
+      <div class="field"><label>Strike 1</label><input id="y-k1" type="number" value="3000" /></div>
+      <div class="field"><label>Strike 2</label><input id="y-k2" type="number" value="3200" disabled /></div>
+      <div class="field"><label>Contracts</label><input id="y-n" type="number" value="1" step="0.1" /></div>
+      <div class="field"><label>From</label><input id="y-from" type="number" value="2000" /></div>
+      <div class="field"><label>To</label><input id="y-to" type="number" value="4000" /></div>
+      <div class="field"><label>Steps</label><input id="y-steps" type="number" value="21" /></div>
+      <button class="go" id="y-run">Compute</button>
+    </div>
+    <div id="y-msg"></div>
+    <div class="split">
+      <div>
+        <h2>Payoff curve (USDC)</h2>
+        <div style="background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;">
+          <svg id="y-chart" viewBox="0 0 720 320" width="100%" height="320"></svg>
+        </div>
+      </div>
+      <div>
+        <h2>Rows</h2>
+        <div class="tablewrap" style="max-height:340px"><table id="y-table"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------------- CONFIG ---------------- -->
+  <section id="config">
+    <div class="row"><button class="go" id="c-load">Load config</button></div>
+    <div id="c-msg"></div>
+    <div class="split">
+      <div>
+        <h2>priceFeeds</h2>
+        <div class="tablewrap" style="max-height:38vh"><table id="c-feeds"></table></div>
+        <h2 style="margin-top:16px">implementations</h2>
+        <div class="tablewrap" style="max-height:38vh"><table id="c-impl"></table></div>
+      </div>
+      <div>
+        <h2>chainConfig top-level keys</h2>
+        <pre id="c-keys">…</pre>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ---------- tiny helpers ----------
+const $ = (s) => document.querySelector(s);
+const el = (t, a = {}, ...kids) => {
+  const n = document.createElement(t);
+  for (const [k, v] of Object.entries(a)) {
+    if (k === 'class') n.className = v; else if (k === 'html') n.innerHTML = v; else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid?.nodeType ? kid : document.createTextNode(String(kid ?? '')));
+  return n;
+};
+const fmt = (n, d = 2) =>
+  n === null || n === undefined || n === '' ? '—'
+  : typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : String(n);
+
+async function api(path) {
+  const res = await fetch(path);
+  return res.json();
+}
+
+/** Render a typed SDK error (code + message), never a stack. */
+function showError(host, r) {
+  host.innerHTML = '';
+  if (!r || r.ok !== false) return false;
+  const box = el('div', { class: 'err' });
+  box.append(el('div', {}, r.rejected ? 'REJECTED BY SDK' : 'FAILED'));
+  box.append(el('div', { class: 'muted', style: 'margin-top:6px' }, ''));
+  box.append(el('div', { html: `code: <code>${r.code ?? '(none)'}</code>` }));
+  box.append(el('div', { html: `message: <code>${(r.message ?? '').replace(/</g, '&lt;')}</code>` }));
+  if (r.typed) box.append(el('div', { html: `typed: <code>${r.typed}</code>` }));
+  if (r.note) box.append(el('div', { style: 'margin-top:8px' }, r.note));
+  if (r.accepted) box.append(el('div', { style: 'margin-top:4px' }, 'accepted types: ' + r.accepted.join(' | ')));
+  if (r.throttled) {
+    box.append(el('div', { style: 'margin-top:10px;font-weight:600' }, 'PUBLIC RPC THROTTLING'));
+    box.append(el('div', {}, r.throttleHint));
+  }
+  host.append(box);
+  return true;
+}
+
+/** Generic sortable table. cols: [{key,label,align,fmt,cls}] */
+function renderTable(tableEl, cols, rows, onPick) {
+  tableEl.innerHTML = '';
+  const thead = el('thead');
+  const tr = el('tr');
+  cols.forEach((c, i) => {
+    const th = el('th', {}, c.label);
+    th.onclick = () => {
+      const dir = tableEl.__sort?.i === i && tableEl.__sort.dir === 1 ? -1 : 1;
+      tableEl.__sort = { i, dir };
+      const sorted = [...rows].sort((a, b) => {
+        const x = a[c.key], y = b[c.key];
+        if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir;
+        return String(x).localeCompare(String(y)) * dir;
+      });
+      renderTable(tableEl, cols, sorted, onPick);
+    };
+    tr.append(th);
+  });
+  thead.append(tr); tableEl.append(thead);
+
+  const tbody = el('tbody');
+  if (!rows.length) {
+    tbody.append(el('tr', {}, el('td', { colspan: String(cols.length), class: 'muted' }, 'no rows')));
+  }
+  rows.forEach((r) => {
+    const t = el('tr');
+    cols.forEach((c) => {
+      const raw = r[c.key];
+      const td = el('td', { class: [c.align === 'r' ? 'num' : '', c.cls ? c.cls(r) : ''].filter(Boolean).join(' ') },
+        c.fmt ? c.fmt(raw, r) : fmt(raw));
+      t.append(td);
+    });
+    t.onclick = () => {
+      tbody.querySelectorAll('tr').forEach((x) => x.classList.remove('sel'));
+      t.classList.add('sel');
+      onPick?.(r);
+    };
+    tbody.append(t);
+  });
+  tableEl.append(tbody);
+}
+
+// ---------- tabs ----------
+document.querySelectorAll('nav button').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach((x) => x.classList.remove('active'));
+    document.querySelectorAll('section').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    $('#' + b.dataset.tab).classList.add('active');
+  };
+});
+
+// ---------- market ----------
+async function loadMarket() {
+  $('#m-raw').textContent = 'loading…';
+  const r = await api('/api/health');
+  if (showError($('#m-err'), r)) { $('#m-raw').textContent = '—'; $('#b-chain').className = 'badge bad'; return; }
+  $('#m-err').innerHTML = '';
+  $('#b-chain').textContent = `chain ${r.chainId}`;
+  $('#b-chain').className = 'badge ok';
+  $('#b-block').textContent = `block ${fmt(r.block, 0)}`;
+  $('#b-rpc').textContent = new URL(r.rpc).host;
+  $('#b-sdk').textContent = `sdk ${r.sdkVersion}`;
+  $('#b-mode').textContent = r.readOnly ? 'read-only · no signer' : 'SIGNER PRESENT';
+  $('#b-mode').className = r.readOnly ? 'badge ok' : 'badge bad';
+  $('#m-latency').textContent = `${r.latencyMs} ms`;
+
+  const cards = $('#m-cards'); cards.innerHTML = '';
+  for (const [k, v] of Object.entries(r.market?.prices ?? {})) {
+    const c = el('div', { class: 'card' });
+    c.append(el('div', { class: 'k' }, k));
+    c.append(el('div', { class: 'v' }, '$' + fmt(v, v < 1 ? 6 : 2)));
+    cards.append(c);
+  }
+  $('#m-raw').textContent = JSON.stringify(r.market, null, 2);
+}
+$('#m-refresh').onclick = loadMarket;
+
+// ---------- options (products) ----------
+let optRows = [];
+async function loadOptions() {
+  const u = $('#o-underlying').value;
+  $('#o-count').textContent = 'loading…';
+  $('#o-msg').innerHTML = '';
+  const r = await api('/api/pricing?underlying=' + encodeURIComponent(u));
+  if (showError($('#o-msg'), r)) { $('#o-count').textContent = ''; return; }
+  optRows = r.rows ?? [];
+  $('#o-count').textContent = `${r.count} rows${r.ageMs ? ` · cached ${Math.round(r.ageMs / 1000)}s` : ''}`;
+
+  if (r.empty) {
+    $('#o-msg').innerHTML = '';
+    $('#o-msg').append(el('div', { class: 'note' }, r.emptyNote));
+  }
+  // expiry dropdown
+  const exps = [...new Set(optRows.map((x) => x.expiry))].sort((a, b) => a - b);
+  const sel = $('#o-expiry'); const prev = sel.value;
+  sel.innerHTML = '<option value="">all</option>';
+  exps.forEach((e) => {
+    const d = new Date(e * 1000).toISOString().slice(0, 10);
+    sel.append(el('option', { value: String(e) }, `${d}  (${optRows.filter((x) => x.expiry === e).length})`));
+  });
+  if (exps.includes(Number(prev))) sel.value = prev;
+  drawOptions();
+}
+function drawOptions() {
+  const exp = $('#o-expiry').value, side = $('#o-side').value;
+  const mn = parseFloat($('#o-min').value), mx = parseFloat($('#o-max').value);
+  const q = $('#o-q').value.trim().toUpperCase();
+  const rows = optRows.filter((r) =>
+    (!exp || String(r.expiry) === exp) &&
+    (!side || (side === 'C' ? r.isCall : !r.isCall)) &&
+    (!Number.isFinite(mn) || r.strike >= mn) &&
+    (!Number.isFinite(mx) || r.strike <= mx) &&
+    (!q || r.ticker.toUpperCase().includes(q)));
+  $('#o-count').textContent = `${rows.length} / ${optRows.length} rows`;
+  renderTable($('#o-table'), [
+    { key: 'ticker', label: 'ticker' },
+    { key: 'strike', label: 'strike', align: 'r', fmt: (v) => fmt(v, 0) },
+    { key: 'isCall', label: 'side', fmt: (v) => (v ? 'CALL' : 'PUT'), cls: (r) => (r.isCall ? 'c' : 'p') },
+    { key: 'expiry', label: 'expiry', fmt: (v) => new Date(v * 1000).toISOString().slice(0, 10) },
+    { key: 'rawBidPrice', label: 'raw bid', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'rawAskPrice', label: 'raw ask', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'markPrice', label: 'mark', align: 'r', fmt: (v) => fmt(v, 6) },
+    { key: 'feeAdjustedBid', label: 'fee bid', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'feeAdjustedAsk', label: 'fee ask', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'underlyingPrice', label: 'spot', align: 'r', fmt: (v) => fmt(v, 2) },
+    { key: 'passesToleranceCheck', label: 'tol', fmt: (v) => (v ? 'yes' : 'no') },
+  ], rows, (r) => { $('#o-detail').textContent = JSON.stringify(r, null, 2); });
+}
+$('#o-load').onclick = loadOptions;
+['#o-expiry', '#o-side', '#o-min', '#o-max', '#o-q'].forEach((s) => {
+  $(s).addEventListener('input', () => optRows.length && drawOptions());
+});
+$('#o-probe').onclick = async () => {
+  $('#o-msg').innerHTML = '';
+  $('#o-detail').textContent = 'probing…';
+  const r = await api('/api/probe-underlyings');
+  if (showError($('#o-msg'), r)) return;
+  $('#o-detail').textContent = JSON.stringify(r.results, null, 2);
+  $('#o-msg').append(el('div', { class: 'note' },
+    'Unsupported underlyings return an empty array — they do NOT throw. An empty result is therefore ambiguous: no live options, or not priced by the SDK at all.'));
+};
+
+// ---------- orders ----------
+let orderRows = [];
+async function loadOrders() {
+  $('#r-count').textContent = 'loading…';
+  $('#r-msg').innerHTML = '';
+  const r = await api('/api/orders');
+  if (showError($('#r-msg'), r)) { $('#r-count').textContent = ''; return; }
+  orderRows = (r.orders ?? []).map((o, i) => ({
+    i,
+    maker: o.makerAddress,
+    isCall: o.rawApiData?.isCall,
+    isLong: o.rawApiData?.isLong,
+    strike: Number(o.order?.strikePrice ?? 0) / 1e8,
+    price: Number(o.order?.price ?? 0) / 1e8,
+    available: Number(o.availableAmount ?? 0) / 1e6,
+    expiry: Number(o.order?.expiry ?? 0),
+    delta: o.rawApiData?.greeks?.delta,
+    iv: o.rawApiData?.greeks?.iv,
+    _raw: o,
+  }));
+  $('#r-count').textContent = `${r.count} orders${r.ageMs ? ` · cached ${Math.round(r.ageMs / 1000)}s` : ''}`;
+  drawOrders();
+}
+function drawOrders() {
+  const side = $('#r-side').value, dir = $('#r-dir').value, mk = $('#r-maker').value.trim().toLowerCase();
+  const rows = orderRows.filter((r) =>
+    (!side || (side === 'call' ? r.isCall : !r.isCall)) &&
+    (!dir || (dir === 'long' ? r.isLong : !r.isLong)) &&
+    (!mk || String(r.maker).toLowerCase().includes(mk)));
+  $('#r-count').textContent = `${rows.length} / ${orderRows.length} orders`;
+  renderTable($('#r-table'), [
+    { key: 'i', label: '#', align: 'r' },
+    { key: 'maker', label: 'maker', fmt: (v) => String(v).slice(0, 10) + '…' },
+    { key: 'isCall', label: 'side', fmt: (v) => (v ? 'CALL' : 'PUT'), cls: (r) => (r.isCall ? 'c' : 'p') },
+    { key: 'isLong', label: 'dir', fmt: (v) => (v ? 'long' : 'short') },
+    { key: 'strike', label: 'strike', align: 'r', fmt: (v) => fmt(v, 0) },
+    { key: 'price', label: 'price', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'available', label: 'avail (USDC)', align: 'r', fmt: (v) => fmt(v, 2) },
+    { key: 'delta', label: 'delta', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'iv', label: 'iv', align: 'r', fmt: (v) => fmt(v, 4) },
+    { key: 'expiry', label: 'expiry', fmt: (v) => new Date(v * 1000).toISOString().slice(0, 16).replace('T', ' ') },
+  ], rows, (r) => { $('#r-detail').textContent = JSON.stringify(r._raw, null, 2); });
+}
+$('#r-load').onclick = loadOrders;
+['#r-side', '#r-dir', '#r-maker'].forEach((s) => {
+  $(s).addEventListener('input', () => orderRows.length && drawOrders());
+});
+
+// ---------- payoff ----------
+$('#y-type').onchange = () => {
+  const t = $('#y-type').value;
+  $('#y-k2').disabled = !(t === 'call_spread' || t === 'put_spread' || t === 'RANGER' || t === 'butterfly');
+};
+async function runPayoff() {
+  const t = $('#y-type').value;
+  const k2on = !$('#y-k2').disabled;
+  const strikes = k2on ? `${$('#y-k1').value},${$('#y-k2').value}` : $('#y-k1').value;
+  const qs = new URLSearchParams({
+    type: t, strikes,
+    contracts: $('#y-n').value, from: $('#y-from').value,
+    to: $('#y-to').value, steps: $('#y-steps').value,
+  });
+  $('#y-msg').innerHTML = '';
+  const r = await api('/api/payout?' + qs);
+  if (showError($('#y-msg'), r)) {
+    $('#y-chart').innerHTML = '';
+    renderTable($('#y-table'), [{ key: 'settlementPrice', label: 'settlement' }], []);
+    return;
+  }
+  $('#y-msg').append(el('div', { class: 'note ok-note' },
+    `Computed locally — no RPC. type=${r.type}, strikes=[${r.strikes.join(', ')}], contracts=${r.contracts}`));
+  renderTable($('#y-table'), [
+    { key: 'settlementPrice', label: 'settlement', align: 'r', fmt: (v) => fmt(v, 0) },
+    { key: 'payoutUsdc', label: 'payout USDC', align: 'r', fmt: (v) => fmt(v, 2) },
+    { key: 'payoutRaw', label: 'raw (6dp)', align: 'r' },
+  ], r.rows);
+  chart(r.rows);
+}
+function chart(rows) {
+  const W = 720, H = 320, PAD = 46;
+  const xs = rows.map((r) => r.settlementPrice), ys = rows.map((r) => r.payoutUsdc);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = 0, y1 = Math.max(...ys, 1);
+  const X = (v) => PAD + ((v - x0) / (x1 - x0 || 1)) * (W - PAD * 2);
+  const Y = (v) => H - PAD - ((v - y0) / (y1 - y0 || 1)) * (H - PAD * 2);
+  const parts = [];
+  for (let i = 0; i <= 4; i++) {
+    const gy = PAD + (i * (H - PAD * 2)) / 4;
+    const val = y1 - (i * (y1 - y0)) / 4;
+    parts.push(`<line class="grid" x1="${PAD}" y1="${gy}" x2="${W - PAD}" y2="${gy}"/>`);
+    parts.push(`<text x="6" y="${gy + 3}">${val.toFixed(0)}</text>`);
+  }
+  for (let i = 0; i <= 5; i++) {
+    const v = x0 + (i * (x1 - x0)) / 5;
+    parts.push(`<text x="${X(v) - 16}" y="${H - PAD + 16}">${v.toFixed(0)}</text>`);
+  }
+  parts.push(`<line class="axis" x1="${PAD}" y1="${H - PAD}" x2="${W - PAD}" y2="${H - PAD}"/>`);
+  parts.push(`<line class="axis" x1="${PAD}" y1="${PAD}" x2="${PAD}" y2="${H - PAD}"/>`);
+  parts.push(`<polyline class="curve" points="${rows.map((r) => `${X(r.settlementPrice)},${Y(r.payoutUsdc)}`).join(' ')}"/>`);
+  parts.push(`<text x="${W / 2 - 40}" y="${H - 8}">settlement price</text>`);
+  $('#y-chart').innerHTML = parts.join('');
+}
+$('#y-run').onclick = runPayoff;
+
+// ---------- config ----------
+async function loadConfig() {
+  $('#c-msg').innerHTML = '';
+  const r = await api('/api/config');
+  if (showError($('#c-msg'), r)) return;
+  const feeds = Object.entries(r.priceFeeds).map(([asset, address]) => ({ asset, address }));
+  renderTable($('#c-feeds'), [
+    { key: 'asset', label: 'asset' },
+    { key: 'address', label: 'address' },
+  ], feeds);
+  renderTable($('#c-impl'), [
+    { key: 'name', label: 'implementation' },
+    { key: 'address', label: 'address' },
+    { key: 'deployed', label: 'deployed', fmt: (v) => (v ? 'yes' : 'ZERO ADDR'), cls: (r) => (r.deployed ? 'c' : 'p') },
+  ], r.implementations);
+  $('#c-keys').textContent =
+    `chainId: ${r.chainId}\nname: ${r.name}\n\npriceFeeds: ${feeds.length} keys\nimplementations: ${r.implementations.length} keys ` +
+    `(${r.implementations.filter((i) => i.deployed).length} deployed, ${r.implementations.filter((i) => !i.deployed).length} zero-address)\n\n` +
+    `top-level keys:\n` + r.topLevelKeys.map((k) => '  · ' + k).join('\n');
+}
+$('#c-load').onclick = loadConfig;
+
+// ---------- boot ----------
+loadMarket();
+loadOptions();
+loadConfig();
+</script>
+</body>
+</html>
