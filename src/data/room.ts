@@ -5,6 +5,8 @@
  * (`src/state/room.ts`), so the wire shape is declared once.
  */
 
+import type { GameMode } from "../types.ts";
+
 export type RoomSeat = "host" | "guest";
 
 export interface RoomView {
@@ -16,7 +18,10 @@ export interface RoomView {
   host: string;
   /** Lowercased wallet address of the challenger, `null` until the slot is claimed. */
   guest: string | null;
-  prize: number;
+  /** What each player stakes, in USDC. The winner takes both. */
+  stakeUsdc: number;
+  /** How long the tape runs, in whole minutes. */
+  durationMinutes: number;
   lobbyName: string;
   /**
    * Tape seed, fixed when the room is created.
@@ -26,6 +31,18 @@ export interface RoomView {
    * would be watching its own tape and the result would be meaningless.
    */
   seed: number;
+  /** Which mode this room plays. */
+  mode: GameMode;
+  /**
+   * `[host, guest]` submitted picks, mode-specific and opaque to the store.
+   *
+   * Hidden until both seats submit — a duel where you can read the other side's
+   * answer first is not a duel. The server nulls the opponent's entry in the
+   * view it returns until both are in.
+   */
+  picks: [string | null, string | null];
+  /** True once both picks are in. Only then does the view carry both. */
+  revealed: boolean;
   /** `[host, guest]` readiness. */
   ready: [boolean, boolean];
   /**
@@ -43,6 +60,7 @@ export type RoomErrorCode =
   | "ROOM_FULL"
   | "OWN_ROOM"
   | "NOT_A_PLAYER"
+  | "ALREADY_PICKED"
   | "BAD_ADDRESS"
   | "BAD_REQUEST";
 
@@ -52,6 +70,7 @@ export const ROOM_ERROR_STATUS: Record<RoomErrorCode, number> = {
   ROOM_FULL: 409,
   OWN_ROOM: 400,
   NOT_A_PLAYER: 403,
+  ALREADY_PICKED: 409,
   BAD_ADDRESS: 400,
   BAD_REQUEST: 400,
 };
@@ -61,6 +80,7 @@ export const ROOM_ERROR_MESSAGE: Record<RoomErrorCode, string> = {
   ROOM_FULL: "Someone just took this duel. Ask for a fresh link.",
   OWN_ROOM: "You opened this room — send the link to someone else.",
   NOT_A_PLAYER: "You are not in this duel.",
+  ALREADY_PICKED: "You already locked a pick for this duel.",
   BAD_ADDRESS: "Connect a wallet first.",
   BAD_REQUEST: "Malformed request.",
 };

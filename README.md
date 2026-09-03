@@ -13,7 +13,7 @@ React on Bun. No Vite, no webpack — Bun bundles `src/index.html` directly.
 bun install
 cp .env.example .env   # optional — add a WalletConnect project id
 bun dev          # http://localhost:3000, hot reload
-bun test         # 55 tests
+bun test         # 58 tests
 bun run typecheck
 bun run build    # → dist/
 ```
@@ -47,6 +47,7 @@ src/
     market.ts         MarketSource interface + the mock implementation
     wallet.ts         WalletSource interface, Base chain id, address formatting
     room.ts           RoomView wire shape, error codes, seat helpers
+    stake.ts          USDC stakes, duel duration, the bands and the formatting
   server/
     rooms.ts          the in-memory room store; every transition a compare-and-set
   wallet/
@@ -244,8 +245,12 @@ http://localhost:3000/?as=0xAAAA000000000000000000000000000000000001   # host
 http://localhost:3000/room/<id>?as=0xBBBB000000000000000000000000000000000002   # guest
 ```
 
-Dev affordance on the mock only. The live `WalletSource` takes its address from
-the wallet and ignores the URL.
+`?as=` also *selects* the mock tier, outranking both real ones. It has to:
+on a machine with extensions installed the injected tier always wins, so without
+this a local two-player test would need two real wallets in two browser profiles.
+
+Dev affordance on the mock only. The live sources take their address from the
+wallet and ignore the URL.
 
 ### What rooms do not do yet
 
@@ -260,6 +265,50 @@ the wallet and ignores the URL.
   who is playing and on the tape; it does not yet carry picks, bans or leg
   directions between the two browsers.
 - **No stake escrow.** `prize` is a number in a room, not money anywhere.
+
+## Stakes are USDC, and duels are measured in minutes
+
+Two deliberate departures from the design source.
+
+**The host sets a stake, not a pool.** The old builder asked for a prize pool and
+showed half of it as the entry, so the host had to halve it in their head to know
+what they were risking. Now the field is `STAKE PER PLAYER` and the pot is
+derived: `poolOf(stake) === stake * 2`, shown as `WINNER TAKES`.
+
+**The unit is USDC, not ETH.** With ETH as the unit, a move in ETH *during* the
+duel changes what both players put in — a second bet nobody agreed to. USDC is
+also the collateral Thetanuts quotes against on Base (`0x8335…2913` in
+`tnuts-test/FINDINGS.md`). Bands and formatting live in `src/data/stake.ts`;
+minimum 5 USDC, and the server clamps rather than rejecting, because a value
+outside the band is a stale tab rather than something the host needs an error
+about.
+
+ETH survives only where it names the options underlying — `ETH VOL BOX`,
+`ETH 4300 C`, the asset selector on Duel attack. Those are instruments, not money.
+
+**Duration replaced tape speed.** A ×32 / ×64 / ×128 dial asked the player to
+reason in multiples of an invisible unit. `DURATION (MINUTES)` is the thing they
+actually care about, and `tapeStep` derives from it:
+
+```ts
+export const tapeStep = (s: BattleState): number =>
+  TAPE_LEN / ((s.durationMinutes * 60_000) / TICK_MS);
+```
+
+Fractional on purpose — a one-minute duel is 500 ticks for 200 prints, so 0.4
+prints each. `pos` floors the product, because a print index has to be a whole
+print.
+
+### The link is minted, not predicted
+
+`Create arena & link` is one action: it creates the room server-side and only
+then renders the invite panel. Nothing shows a link before there is a room
+behind it, because such a link 404s when a friend clicks it.
+
+Creating deliberately leaves the host on the builder rather than jumping to the
+lobby — the useful next action is copying the link, not watching an empty second
+seat. `Open lobby` goes there when they want it. Arriving on a `/room/<id>` link
+opens the lobby directly, since for a guest that *is* the page they asked for.
 
 ## Rewards hub
 

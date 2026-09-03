@@ -21,10 +21,26 @@ export const MOCK_ADDRESS = "0x71cB05fD1eA1B3d4a7C9e8F2b6D0a3C85e9d4Af2";
  * in two browser profiles, or this. Dev affordance on the mock only; the live
  * `WalletSource` takes its address from the wallet and ignores the URL.
  */
+const AS_PARAM = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * True when the URL is asking for the mock wallet by name.
+ *
+ * `?as=` only means anything to the mock, so its presence is also the signal to
+ * *choose* the mock — otherwise on a machine with extensions installed the
+ * injected tier always wins and a local two-player test is impossible without
+ * two real wallets in two browser profiles.
+ */
+export function mockRequested(): boolean {
+  if (typeof window === "undefined") return false;
+  const raw = new URLSearchParams(window.location.search).get("as");
+  return raw !== null && AS_PARAM.test(raw);
+}
+
 function mockAddress(): string {
   if (typeof window === "undefined") return MOCK_ADDRESS;
   const raw = new URLSearchParams(window.location.search).get("as");
-  return raw && /^0x[0-9a-fA-F]{40}$/.test(raw) ? raw : MOCK_ADDRESS;
+  return raw && AS_PARAM.test(raw) ? raw : MOCK_ADDRESS;
 }
 
 function connectedIdentity(): WalletIdentity {

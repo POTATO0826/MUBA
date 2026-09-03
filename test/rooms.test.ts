@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { bothReady, seatOf } from "../src/data/room.ts";
 import {
+  MAX_DURATION_MINUTES,
+  MAX_STAKE_USDC,
+  MIN_DURATION_MINUTES,
+  MIN_STAKE_USDC,
+  poolOf,
+} from "../src/data/stake.ts";
+import {
   _resetRooms,
   _roomCount,
   createRoom,
   joinRoom,
+  pickRoom,
   readRoom,
   readyRoom,
 } from "../src/server/rooms.ts";
@@ -14,8 +22,8 @@ const A = "0xAaaA000000000000000000000000000000000001";
 const B = "0xbBBb000000000000000000000000000000000002";
 
 /** Create a room and return its view, failing the test if creation was refused. */
-function open(address = HOST, prize = 2.5, lobbyName = "Test") {
-  const r = createRoom({ address, prize, lobbyName });
+function open(address = HOST, stakeUsdc = 10, lobbyName = "Test", durationMinutes = 1) {
+  const r = createRoom({ address, stakeUsdc, durationMinutes, lobbyName, mode: "parlay" });
   if (!r.ok) throw new Error(`createRoom refused: ${r.code}`);
   return r.room;
 }
@@ -31,17 +39,44 @@ describe("createRoom", () => {
 
   test("refuses anything that is not a 20-byte hex address", () => {
     for (const bad of ["", "0x", "not-an-address", "0x71cB05", HOST + "00", 42, null]) {
-      const r = createRoom({ address: bad, prize: 1, lobbyName: "x" });
+      const r = createRoom({
+        address: bad,
+        stakeUsdc: 10,
+        durationMinutes: 1,
+        lobbyName: "x",
+        mode: "parlay",
+      });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.code).toBe("BAD_ADDRESS");
     }
   });
 
-  test("falls back to a sane prize rather than storing NaN or a negative", () => {
-    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "5", null]) {
-      expect(open(HOST, bad as number).prize).toBe(5);
+  test("clamps the stake into the allowed band instead of storing junk", () => {
+    // Below the minimum, above the maximum, and every flavour of not-a-number
+    // all land somewhere legal — a stale tab must not create a 0 USDC duel.
+    expect(open(HOST, 0.25).stakeUsdc).toBe(MIN_STAKE_USDC);
+    expect(open(HOST, 0).stakeUsdc).toBe(MIN_STAKE_USDC);
+    expect(open(HOST, -50).stakeUsdc).toBe(MIN_STAKE_USDC);
+    // Inside the band it is taken as given — 1 USDC is a legal stake now.
+    expect(open(HOST, 1).stakeUsdc).toBe(1);
+    expect(open(HOST, 0.5).stakeUsdc).toBe(0.5);
+    expect(open(HOST, 999_999).stakeUsdc).toBe(MAX_STAKE_USDC);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "5", null]) {
+      expect(open(HOST, bad as number).stakeUsdc).toBe(MIN_STAKE_USDC);
     }
-    expect(open(HOST, 0.25).prize).toBe(0.25);
+    expect(open(HOST, 25).stakeUsdc).toBe(25);
+  });
+
+  test("duration is whole minutes inside the band", () => {
+    expect(open(HOST, 10, "Test", 0).durationMinutes).toBe(MIN_DURATION_MINUTES);
+    expect(open(HOST, 10, "Test", 1.4).durationMinutes).toBe(1);
+    expect(open(HOST, 10, "Test", 9_999).durationMinutes).toBe(MAX_DURATION_MINUTES);
+    expect(open(HOST, 10, "Test", 15).durationMinutes).toBe(15);
+    expect(open(HOST, 10, "Test", Number.NaN).durationMinutes).toBe(MIN_DURATION_MINUTES);
+  });
+
+  test("the winner takes both stakes", () => {
+    expect(poolOf(open(HOST, 25).stakeUsdc)).toBe(50);
   });
 
   test("clamps the lobby name and defaults an empty one", () => {
@@ -163,6 +198,84 @@ describe("readyRoom", () => {
     expect(r.room.ready).toEqual([true, false]);
     expect(bothReady(r.room)).toBe(false);
     expect(r.room.readyBothAt).toBeNull();
+  });
+});
+
+describe("pickRoom", () => {
+  test("a pick stays hidden until both seats submit", () => {
+    // The whole duel depends on this: a player who can read the other side's
+    // answer before locking their own is not playing a duel.
+    const room = open();
+    joinRoom(room.id, A);
+
+    const first = pickRoom(room.id, HOST, "ETH-2400-C");
+    if (!first.ok) throw new Error("pick refused");
+    expect(first.room.revealed).toBe(false);
+    expect(first.room.picks).toEqual([null, null]);
+
+    const second = pickRoom(room.id, A, "BTC-90000-P");
+    if (!second.ok) throw new Error("pick refused");
+    expect(second.room.revealed).toBe(true);
+    expect(second.room.picks).toEqual(["ETH-2400-C", "BTC-90000-P"]);
+  });
+
+  test("a pick is write-once", () => {
+    const room = open();
+    joinRoom(room.id, A);
+    expect(pickRoom(room.id, HOST, "first").ok).toBe(true);
+
+    const again = pickRoom(room.id, HOST, "second");
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.code).toBe("ALREADY_PICKED");
+
+    // And the original survives the attempt.
+    const done = pickRoom(room.id, A, "guest-pick");
+    if (done.ok) expect(done.room.picks[0]).toBe("first");
+  });
+
+  test("only the two players can pick", () => {
+    const room = open();
+    joinRoom(room.id, A);
+    const outsider = pickRoom(room.id, B, "x");
+    expect(outsider.ok).toBe(false);
+    if (!outsider.ok) expect(outsider.code).toBe("NOT_A_PLAYER");
+  });
+
+  test("an empty or oversized pick is refused", () => {
+    const room = open();
+    joinRoom(room.id, A);
+    for (const bad of ["", "x".repeat(401), 42, null]) {
+      const r = pickRoom(room.id, HOST, bad);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe("BAD_REQUEST");
+    }
+  });
+});
+
+describe("readiness and picks are independent", () => {
+  test("both seats read ready with no pick submitted", () => {
+    // This pinned a deadlock: the lobby gate and the poll-stop condition were
+    // one flag. Folding the pick reveal into it meant the lobby waited for
+    // picks, while the picks needed the board the lobby was holding shut.
+    const room = open();
+    joinRoom(room.id, A);
+    readyRoom(room.id, HOST);
+    const both = readyRoom(room.id, A);
+    if (!both.ok) throw new Error("ready refused");
+
+    expect(bothReady(both.room)).toBe(true);
+    expect(both.room.revealed).toBe(false);
+    expect(both.room.picks).toEqual([null, null]);
+  });
+
+  test("a pick does not require readiness, and readiness does not require a pick", () => {
+    const room = open();
+    joinRoom(room.id, A);
+
+    // Pick first, ready after — the store must not couple them.
+    expect(pickRoom(room.id, HOST, "a").ok).toBe(true);
+    const r = readyRoom(room.id, HOST);
+    if (r.ok) expect(r.room.ready).toEqual([true, false]);
   });
 });
 

@@ -1,6 +1,14 @@
 import index from "./src/index.html";
 import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
-import { createRoom, joinRoom, readRoom, readyRoom } from "./src/server/rooms.ts";
+import {
+  createRoom,
+  joinRoom,
+  listRoomsFor,
+  pickRoom,
+  readRoom,
+  readyRoom,
+} from "./src/server/rooms.ts";
+import { marketSnapshot } from "./src/server/thetanuts.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -64,16 +72,66 @@ const server = Bun.serve({
       POST: async (req) => {
         const b = await body(req);
         return roomResponse(
-          createRoom({ address: b.address, prize: b.prize, lobbyName: b.lobbyName }),
+          createRoom({
+            address: b.address,
+            stakeUsdc: b.stakeUsdc,
+            durationMinutes: b.durationMinutes,
+            lobbyName: b.lobbyName,
+            mode: b.mode,
+          }),
         );
       },
     },
+    /** Rooms this address sits in. Drives the hub's active-duels list. */
+    "/api/rooms/mine": (req) =>
+      Response.json(
+        { rooms: listRoomsFor(new URL(req.url).searchParams.get("address")) },
+        { headers: NO_STORE },
+      ),
+
     "/api/rooms/:id": (req) => roomResponse(readRoom(req.params.id)),
     "/api/rooms/:id/join": {
       POST: async (req) => roomResponse(joinRoom(req.params.id, (await body(req)).address)),
     },
+    "/api/rooms/:id/pick": {
+      POST: async (req) => {
+        const b = await body(req);
+        return roomResponse(pickRoom(req.params.id, b.address, b.pick));
+      },
+    },
     "/api/rooms/:id/ready": {
       POST: async (req) => roomResponse(readyRoom(req.params.id, (await body(req)).address)),
+    },
+
+    /**
+     * Live Thetanuts market data.
+     *
+     * Server-side because `pricing.thetanuts.finance` sends no CORS headers, so
+     * the browser cannot read it directly. A failure returns HTTP 200 with
+     * `{ok:false}` so the client can fall back to the mock and say so, rather
+     * than the pricing table rendering an exception.
+     */
+    "/api/market": async () => {
+      try {
+        const snap = await marketSnapshot();
+        return Response.json(
+          {
+            ok: true,
+            at: snap.at,
+            underlyings: snap.underlyings,
+            spot: snap.spot,
+            pricing: Object.fromEntries(snap.pricing),
+            orders: snap.orders,
+          },
+          { headers: NO_STORE },
+        );
+      } catch (error) {
+        console.error("[market]", error);
+        return Response.json(
+          { ok: false, error: error instanceof Error ? error.message : String(error) },
+          { headers: NO_STORE },
+        );
+      }
     },
 
     // `/room/<id>` is a share link, not a server route — the SPA reads the id

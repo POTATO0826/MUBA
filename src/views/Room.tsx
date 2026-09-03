@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { RoomView } from "../data/room.ts";
+import { poolOf, usdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import type { Room } from "../state/room.ts";
@@ -126,10 +127,10 @@ interface RoomLobbyProps {
   room: RoomView;
   state: Room;
   walletConnected: boolean;
-  onEnterDraft: () => void;
+  onEnterDuel: () => void;
 }
 
-export function RoomLobby({ room, state, walletConnected, onEnterDraft }: RoomLobbyProps) {
+export function RoomLobby({ room, state, walletConnected, onEnterDuel }: RoomLobbyProps) {
   const { seat, started, error, busy } = state;
   const iAmReady = seat === "host" ? room.ready[0] : seat === "guest" ? room.ready[1] : false;
   const bystander = seat === null;
@@ -154,10 +155,13 @@ export function RoomLobby({ room, state, walletConnected, onEnterDraft }: RoomLo
         >
           {started ? "BOTH READY" : full ? "LOBBY · PICK READY" : "WAITING FOR OPPONENT"}
         </span>
+        <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>
+          {usdc(room.stakeUsdc)} EACH · {room.durationMinutes} MIN
+        </span>
         <div style={sx("flex:1")} />
-        <span style={sx(LABEL)}>POOL</span>
+        <span style={sx(LABEL)}>WINNER TAKES</span>
         <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>
-          {room.prize.toFixed(2)} ETH
+          {usdc(poolOf(room.stakeUsdc))}
         </span>
       </div>
 
@@ -188,7 +192,7 @@ export function RoomLobby({ room, state, walletConnected, onEnterDraft }: RoomLo
         )}
 
         <div style={sx("display:flex;gap:10px;align-items:center")}>
-          {bystander && (
+          {bystander && !full && (
             <button
               onClick={() => void state.join()}
               disabled={joinBlocked}
@@ -214,10 +218,19 @@ export function RoomLobby({ room, state, walletConnected, onEnterDraft }: RoomLo
             </button>
           )}
 
-          {started && (
-            <button onClick={onEnterDraft} style={sx(BTN(C.green, true))}>
-              Enter draft
+          {/* Only a seated player enters. A bystander who opens the link must
+              not reach the board, and must not be offered a lock they cannot
+              submit — the server would refuse it with NOT_A_PLAYER. */}
+          {started && !bystander && (
+            <button onClick={onEnterDuel} style={sx(BTN(C.green, true))}>
+              Enter duel
             </button>
+          )}
+
+          {started && bystander && (
+            <span style={sx(`font:500 11.5px/1.4 ${SANS};color:${C.muted}`)}>
+              This duel is full. You are watching, not playing.
+            </span>
           )}
 
           <div style={sx("flex:1")} />
@@ -227,11 +240,10 @@ export function RoomLobby({ room, state, walletConnected, onEnterDraft }: RoomLo
         </div>
 
         <div style={sx(`${CARD};display:flex;flex-direction:column;gap:8px`)}>
-          <span style={sx(LABEL)}>SHARED TAPE</span>
+          <span style={sx(LABEL)}>HOW THIS SETTLES</span>
           <span style={sx(`font:500 12px/1.5 ${SANS};color:${C.muted}`)}>
-            Both players run seed{" "}
-            <span style={sx(`font:700 12px/1 ${MONO};color:${C.accent}`)}>{room.seed}</span>, so the
-            price walk is the same walk on both screens.{" "}
+            Both players read the same live Thetanuts book on Base. Picks stay hidden until both
+            sides lock, then reveal together.{" "}
             {room.readyBothAt
               ? `Agreed start ${new Date(room.readyBothAt).toLocaleTimeString()}.`
               : "The start instant is fixed when the second player reports ready."}

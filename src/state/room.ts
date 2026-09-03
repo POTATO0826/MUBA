@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { seatOf, bothReady, type RoomSeat, type RoomView } from "../data/room.ts";
+import type { GameMode } from "../types.ts";
 
 /** How often the lobby re-reads the room while it is waiting on someone. */
 const POLL_MS = 1000;
@@ -27,13 +28,30 @@ async function post(url: string, payload: unknown): Promise<RoomView | string> {
 
 export interface Room {
   room: RoomView | null;
+  /**
+   * The absolute link to hand to an opponent, or `null` with no room. Built
+   * from the browser's own origin plus the server's `joinPath`, so it is right
+   * on localhost, a LAN IP and a deploy without the server knowing any of them.
+   */
+  inviteUrl: string | null;
+  /** True when the room came off a `/room/<id>` URL rather than from `create`. */
+  arrivedFromLink: boolean;
   /** Which side of the table you are on, or `null` if you are a bystander. */
   seat: RoomSeat | null;
   /** True once both sides are ready — the duel can start. */
   started: boolean;
   error: string | null;
   busy: boolean;
-  create(prize: number, lobbyName: string): Promise<void>;
+  create(
+    stakeUsdc: number,
+    durationMinutes: number,
+    lobbyName: string,
+    mode: GameMode,
+  ): Promise<void>;
+  /** Load a room by id, for the hub's active-duel list. */
+  open(id: string): Promise<void>;
+  /** Lock this seat's pick. Write-once; the server refuses a second. */
+  pick(pick: string): Promise<void>;
   join(): Promise<void>;
   ready(): Promise<void>;
   /** Drop the room and return the URL to the app root. */
@@ -58,6 +76,9 @@ export function useRoom(address: string | null): Room {
   const [room, setRoom] = useState<RoomView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [arrivedFromLink, setArrivedFromLink] = useState(
+    () => roomIdFromPath(window.location.pathname) !== null,
+  );
 
   // The poller reads the current id without re-subscribing every tick.
   const idRef = useRef<string | null>(null);
@@ -90,11 +111,21 @@ export function useRoom(address: string | null): Room {
     };
   }, []);
 
-  // Poll while the room is still waiting on something. Once both sides are
-  // ready nothing else changes server-side, so the timer stops.
-  const settled = room !== null && bothReady(room);
+  /**
+   * Both seats have reported ready. This releases the lobby into the mode board.
+   *
+   * Kept separate from `pollDone` on purpose. They were one flag once, and
+   * folding the pick reveal into it deadlocked the duel: the lobby waited for
+   * picks, and the picks needed the board the lobby was holding shut.
+   */
+  const started = room !== null && bothReady(room);
+
+  /** Nothing left to wait on — an opponent, a readiness, or the other pick. */
+  const pollDone = started && (room?.revealed ?? false);
+
+  const roomId = room?.id ?? null;
   useEffect(() => {
-    if (!room || settled) return;
+    if (!roomId || pollDone) return;
     const timer = setInterval(() => {
       const id = idRef.current;
       if (!id) return;
@@ -108,16 +139,25 @@ export function useRoom(address: string | null): Room {
         });
     }, POLL_MS);
     return () => clearInterval(timer);
-  }, [room, settled]);
+    // Keyed on the id, not the room object. Each poll returns a fresh object,
+    // so an object dependency would tear down and rebuild the interval every
+    // single tick.
+  }, [roomId, pollDone]);
 
   const create = useCallback(
-    async (prize: number, lobbyName: string) => {
+    async (stakeUsdc: number, durationMinutes: number, lobbyName: string, mode: GameMode) => {
       if (!address) {
         setError("Connect a wallet first.");
         return;
       }
       setBusy(true);
-      const result = await post("/api/rooms", { address, prize, lobbyName });
+      const result = await post("/api/rooms", {
+        address,
+        stakeUsdc,
+        durationMinutes,
+        lobbyName,
+        mode,
+      });
       if (typeof result !== "string") {
         // Make the URL the shareable thing, so a refresh keeps the room. The
         // query survives the rewrite: the mock wallet's `?as=` override lives
@@ -151,18 +191,61 @@ export function useRoom(address: string | null): Room {
     setBusy(false);
   }, [address, apply]);
 
+  const open = useCallback(
+    async (id: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/rooms/${id}`);
+        const data = (await res.json()) as RoomView & Wire;
+        if (res.ok) {
+          setRoom(data);
+          setError(null);
+          window.history.pushState(null, "", `/room/${id}${window.location.search}`);
+        } else {
+          setError(data.error ?? "Could not open that duel.");
+        }
+      } catch {
+        setError("Could not reach the server.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const pick = useCallback(
+    async (choice: string) => {
+      const id = idRef.current;
+      if (!id || !address) return;
+      setBusy(true);
+      apply(await post(`/api/rooms/${id}/pick`, { address, pick: choice }));
+      setBusy(false);
+    },
+    [address, apply],
+  );
+
   const leave = useCallback(() => {
     window.history.pushState(null, "", `/${window.location.search}`);
     setRoom(null);
     setError(null);
+    setArrivedFromLink(false);
   }, []);
 
   const seat = useMemo(() => (room ? seatOf(room, address) : null), [room, address]);
 
+  const inviteUrl = useMemo(
+    () => (room ? `${window.location.origin}${room.joinPath}` : null),
+    [room],
+  );
+
   return {
     room,
+    inviteUrl,
+    arrivedFromLink,
+    open,
+    pick,
     seat,
-    started: settled,
+    started,
     error,
     busy,
     create,

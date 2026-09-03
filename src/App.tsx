@@ -1,125 +1,123 @@
-import { useCallback, useMemo, useState } from "react";
-import { useTilt } from "./components/useTilt.ts";
+import { useCallback, useEffect, useState } from "react";
 import type { MarketSource } from "./data/market.ts";
-import { addressInitials, shortAddress, type WalletSource } from "./data/wallet.ts";
-import { scoreOf, settle } from "./engine/match.ts";
-import { TAPE_LEN } from "./engine/tape.ts";
+import type { RoomView } from "./data/room.ts";
+import type { WalletSource } from "./data/wallet.ts";
 import { sx } from "./lib/sx.ts";
+import { useBattle } from "./state/battle.ts";
 import { useRoom } from "./state/room.ts";
-import { useBattle, type PlayerIdentity } from "./state/battle.ts";
-import { useMockWallet } from "./wallet/mock.ts";
-import { AutoBanner } from "./ui/AutoBanner.tsx";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
 import { MockWalletBanner } from "./ui/MockWalletBanner.tsx";
-import { Battles } from "./views/Battles.tsx";
-import { Cases } from "./views/Cases.tsx";
 import { Create } from "./views/Create.tsx";
-import { Draft } from "./views/Draft.tsx";
-import { Live } from "./views/Live.tsx";
-import { Lobby } from "./views/Lobby.tsx";
-import { Parlay } from "./views/Parlay.tsx";
-import { ParlayLock } from "./views/ParlayLock.tsx";
-import { Result } from "./views/Result.tsx";
+import { Hub } from "./views/Hub.tsx";
+import { ParlayRfq } from "./views/ParlayRfq.tsx";
 import { RoomLobby } from "./views/Room.tsx";
-import { Study } from "./views/Study.tsx";
+import { SpotDiff } from "./views/SpotDiff.tsx";
+import { useMockWallet } from "./wallet/mock.ts";
 
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
   "radial-gradient(900px 500px at 8% 0%, rgba(99,102,241,.08), transparent 55%),#09090b";
 
+/**
+ * The whole flow.
+ *
+ *   hub -> create -> room lobby -> parlay | spotdiff
+ *
+ * A player connects, picks one of two modes, sets a stake, and sends a link.
+ * The opponent opens the link, connects, and takes the seat. Both lock a pick,
+ * and the picks reveal together.
+ */
 export function App({
   source,
   wallet,
+  marketError = null,
 }: {
   source: MarketSource;
   /**
    * Omit to run on the mock wallet. `src/client.tsx` always supplies one via
-   * `WalletBoundary`; the default is what keeps `<App source={…} />` mountable
-   * on its own in the headless tests, where AppKit cannot initialise.
+   * `WalletBoundary`; the default keeps the app mountable on its own in the
+   * headless tests, where AppKit cannot initialise.
    */
   wallet?: WalletSource;
+  /** Set when the live Thetanuts book could not be read and `source` is the
+   *  mock. Surfaced so the screen never passes fixtures off as live data. */
+  marketError?: string | null;
 }) {
   const fallback = useMockWallet();
   const active = wallet ?? fallback;
   const { identity } = active;
 
-  /**
-   * The connected wallet, rendered as a player.
-   *
-   * `meta` drops the design's placeholder bankroll once a real address is in
-   * play — quoting a made-up 2.40 ETH under someone's actual address would be
-   * a fabricated balance, so the line says what is actually known instead. A
-   * real balance is a `useAppKitBalance()` call away when the stakes are wired.
-   */
-  const player = useMemo<PlayerIdentity | undefined>(
-    () =>
-      identity.address
-        ? {
-            name: shortAddress(identity.address),
-            init: addressInitials(identity.address),
-            meta: identity.wrongNetwork
-              ? "wrong network · switch to Base"
-              : `base · ${identity.walletName ?? "connected"}`,
-          }
-        : undefined,
-    [identity.address, identity.walletName, identity.wrongNetwork],
-  );
-
-  const { state, derived, actions } = useBattle(player);
-  useTilt();
-
+  const { state, derived, actions } = useBattle();
   const roomState = useRoom(identity.address ?? null);
 
   /**
-   * The room lobby pre-empts every screen while a room is open and the draft has
-   * not been entered — including on a cold load of a `/room/<id>` share link,
-   * where `useRoom` picks the id off the path before anything else renders.
+   * Whether the room lobby covers the tab underneath.
    *
-   * Kept as local state rather than another `Tab` so the match flow underneath
-   * is untouched: leaving a room drops straight back to whatever tab was live.
+   * Creation deliberately does not set this. The host stays on the builder and
+   * gets the invite link inline, because the useful next action is to copy the
+   * link. Arrival on a `/room/<id>` link does set it, because for a guest the
+   * lobby is the page they asked for.
    */
-  const [draftEntered, setDraftEntered] = useState(false);
-  const showRoom = roomState.room !== null && !draftEntered;
+  const [lobbyOpen, setLobbyOpen] = useState(false);
+  const [entered, setEntered] = useState(false);
+  const showRoom = roomState.room !== null && (lobbyOpen || roomState.arrivedFromLink) && !entered;
 
-  const enterDraft = useCallback(() => {
-    if (roomState.room) actions.setSeed(roomState.room.seed);
-    setDraftEntered(true);
-    actions.go("draft")();
-  }, [roomState.room, actions]);
-
-  /**
-   * Publish the lobby.
-   *
-   * With a wallet connected this opens a real room and yields a share link. With
-   * no wallet it falls through to the original local behaviour and drops straight
-   * into the draft — solo and demo play predate rooms and should not start
-   * requiring a server and an address to reach the board.
-   */
-  const publishRoom = useCallback(() => {
+  /** Duels this address already sits in. The hub lists them. */
+  const [myRooms, setMyRooms] = useState<readonly RoomView[]>([]);
+  const refreshRooms = useCallback(() => {
     if (!identity.address) {
-      actions.publishLobby();
+      setMyRooms([]);
       return;
     }
-    setDraftEntered(false);
-    void roomState.create(state.prize, state.lobbyName);
-  }, [identity.address, actions, roomState, state.prize, state.lobbyName]);
+    fetch(`/api/rooms/mine?address=${identity.address}`)
+      .then((r) => r.json())
+      .then((d: { rooms?: RoomView[] }) => setMyRooms(d.rooms ?? []))
+      .catch(() => {
+        /* the hub still renders without the list */
+      });
+  }, [identity.address]);
 
-  // Settling reads the whole tape, not the played-to position, so the verdict is
-  // stable however early the fight is abandoned.
-  const verdict = useMemo(
-    () =>
-      settle(
-        derived.myLegs,
-        derived.oppLegs,
-        derived.arena,
-        derived.fightSalt,
-        TAPE_LEN,
-        derived.p1Name,
-        derived.opponent,
-      ),
-    [derived],
-  );
+  // Keyed on the room id, not the room object: the lobby poll hands back a new
+  // object every second, and an object dependency would fire a fresh
+  // `/api/rooms/mine` request on every one of them.
+  const roomId = roomState.room?.id ?? null;
+  useEffect(refreshRooms, [refreshRooms, roomId]);
+
+  const createArena = useCallback(() => {
+    if (!identity.address) return;
+    setEntered(false);
+    setLobbyOpen(false);
+    void roomState.create(state.stakeUsdc, state.durationMinutes, state.lobbyName, state.mode);
+  }, [
+    identity.address,
+    roomState,
+    state.stakeUsdc,
+    state.durationMinutes,
+    state.lobbyName,
+    state.mode,
+  ]);
+
+  /**
+   * Leave the lobby for the mode board. The room's own mode outranks the
+   * builder's, so a guest lands in the game the host chose.
+   */
+  const enterDuel = useCallback(() => {
+    setEntered(true);
+    actions.go(roomState.room?.mode ?? state.mode)();
+  }, [actions, roomState.room, state.mode]);
+
+  const backToHub = useCallback(() => {
+    setEntered(false);
+    setLobbyOpen(false);
+    roomState.leave();
+    actions.go("hub")();
+  }, [actions, roomState]);
+
+  const lockPick = useCallback((pick: string) => void roomState.pick(pick), [roomState]);
+
+  const board = roomState.room;
+  const seat = roomState.seat;
 
   return (
     <div style={sx(PAGE)}>
@@ -132,161 +130,78 @@ export function App({
         onSwitchNetwork={() => void active.switchToBase()}
       />
 
-      {showRoom && roomState.room && (
+      {showRoom && board && (
         <RoomLobby
-          room={roomState.room}
+          room={board}
           state={roomState}
           walletConnected={identity.connected}
-          onEnterDraft={enterDraft}
+          onEnterDuel={enterDuel}
         />
       )}
 
-      {!showRoom && state.tab === "lobby" && (
-        <Lobby
-          prize={state.prize}
-          onCreateBattle={actions.go("draft")}
-          onBrowseRewards={actions.go("cases")}
-          onJoinRoom={actions.joinRoom}
-          onSpectate={actions.runSpectate}
-        />
-      )}
-
-      {!showRoom && state.tab === "battles" && (
-        <Battles
-          prize={state.prize}
-          onJoinRoom={actions.joinRoom}
-          onSpectate={actions.runSpectate}
-          onRunDemo={actions.runDemo}
-          onCreate={actions.go("create")}
+      {!showRoom && state.tab === "hub" && (
+        <Hub
+          identity={identity}
+          rooms={myRooms}
+          onEnterMode={actions.enterMode}
+          onOpenRoom={(id) => {
+            setEntered(false);
+            setLobbyOpen(true);
+            void roomState.open(id);
+          }}
+          onConnect={() => void active.connect()}
+          onDisconnect={() => void active.disconnect()}
+          onRefresh={refreshRooms}
         />
       )}
 
       {!showRoom && state.tab === "create" && (
         <Create
           state={state}
-          activeCount={derived.universe.length}
           entryLabel={derived.entryLabel}
           prizeLabel={derived.prizeLabel}
-          onBack={actions.go("battles")}
-          onPrizeInput={actions.onPrizeInput}
-          onPrizeBlur={actions.onPrizeBlur}
-          onPrizeUp={actions.prizeUp}
-          onPrizeDown={actions.prizeDown}
+          inviteUrl={roomState.inviteUrl}
+          creating={roomState.busy}
+          createError={roomState.error}
+          walletConnected={identity.connected}
+          onBack={backToHub}
+          onStakeInput={actions.onStakeInput}
+          onStakeBlur={actions.onStakeBlur}
+          onStakeUp={actions.stakeUp}
+          onStakeDown={actions.stakeDown}
           onLobbyName={actions.setLobbyName}
-          onMarket={actions.setMarket}
-          onPicksUp={actions.picksUp}
-          onPicksDown={actions.picksDown}
-          onChartsUp={actions.chartsUp}
-          onChartsDown={actions.chartsDown}
-          onTapeSpeed={actions.setTapeSpeed}
-          onToggleAsset={actions.toggleExcluded}
-          onPublish={publishRoom}
-        />
-      )}
-
-      {!showRoom && state.tab === "draft" && (
-        <Draft
-          lobbyName={state.lobbyName}
-          prizeLabel={derived.prizeLabel}
-          p1Name={derived.p1Name}
-          p1Init={derived.p1Init}
-          p1Meta={derived.p1Meta}
-          opponent={derived.opponent}
-          picks={state.picks}
-          bans={state.bans}
-          oppPicks={state.oppPicks}
-          oppBans={state.oppBans}
-          oppLegs={derived.oppLegs}
-          universe={derived.universe}
-          picksMax={state.picksMax}
-          poolFilter={state.pool}
-          auto={state.auto !== null}
-          started={state.started}
-          onBack={actions.go("battles")}
-          onStartGame={actions.startGame}
-          onPoolFilter={actions.setPool}
-          onPick={actions.pick}
-          onBan={actions.ban}
-          onConfirm={actions.goStudy}
-        />
-      )}
-
-      {!showRoom && state.tab === "study" && (
-        <Study
-          arena={derived.arena}
-          myLegs={derived.myLegs}
-          salt={derived.studySalt}
-          prizeLabel={derived.prizeLabel}
-          onDone={actions.goPick}
-        />
-      )}
-
-      {!showRoom && state.tab === "pick" && (
-        <ParlayLock
-          myLegs={derived.myLegs}
-          tick={state.tick}
-          opponent={derived.opponent}
-          onSetDir={actions.setLegDir}
-          onLock={actions.startFight}
-        />
-      )}
-
-      {!showRoom && state.tab === "live" && (
-        <Live
-          lobbyName={state.lobbyName}
-          prizeLabel={derived.prizeLabel}
-          tapeSpeed={state.tapeSpeed}
-          arena={derived.arena}
-          myLegs={derived.myLegs}
-          oppLegs={derived.oppLegs}
-          salt={derived.fightSalt}
-          pos={derived.pos}
-          raceDone={derived.raceDone}
-          p1Name={derived.p1Name}
-          p1Init={derived.p1Init}
-          opponent={derived.opponent}
-          myScore={scoreOf(derived.myLegs, derived.fightSalt, derived.pos)}
-          oppScore={scoreOf(derived.oppLegs, derived.fightSalt, derived.pos)}
-          onSettle={actions.goResult}
-        />
-      )}
-
-      {!showRoom && state.tab === "result" && (
-        <Result
-          verdict={verdict}
-          myLegs={derived.myLegs}
-          oppLegs={derived.oppLegs}
-          salt={derived.fightSalt}
-          prizeLabel={derived.prizeLabel}
-          p1Name={derived.p1Name}
-          opponent={derived.opponent}
-          onBackToBattles={actions.go("battles")}
-          onRematch={actions.go("create")}
+          onDuration={actions.setDuration}
+          onCreateArena={createArena}
+          onOpenLobby={() => setLobbyOpen(true)}
         />
       )}
 
       {!showRoom && state.tab === "parlay" && (
-        <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />
-      )}
-
-      {!showRoom && state.tab === "cases" && (
-        <Cases onOpenCase={actions.go("draft")} onClaimFreeBattle={actions.claimFreeBattle} />
-      )}
-
-      {state.auto && (
-        <AutoBanner
-          label={
-            derived.spectating
-              ? "SPECTATING · mira.base vs kazuo.eth"
-              : "RANDOM DEMO · autopilot"
-          }
-          onStop={actions.stopAuto}
+        <ParlayRfq
+          source={source}
+          room={board}
+          seat={seat}
+          busy={roomState.busy}
+          onLock={lockPick}
+          onBack={backToHub}
         />
       )}
 
-      {active.id === "mock" && !state.auto && <MockWalletBanner />}
+      {!showRoom && state.tab === "spotdiff" && (
+        <SpotDiff
+          source={source}
+          room={board}
+          seat={seat}
+          address={identity.address}
+          busy={roomState.busy}
+          onLock={lockPick}
+          onBack={backToHub}
+        />
+      )}
 
-      <Footer source={source} />
+      {active.id === "mock" && <MockWalletBanner />}
+
+      <Footer source={source} marketError={marketError} />
     </div>
   );
 }

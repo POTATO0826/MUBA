@@ -6,7 +6,7 @@ import { WalletPicker } from "../ui/WalletPicker.tsx";
 import { useAppKitWallet } from "./appkit.tsx";
 import { METADATA, NETWORKS, THEME_VARIABLES, fetchWalletConfig } from "./config.ts";
 import { useInjectedWallet, useInjectedWallets } from "./injected.ts";
-import { useMockWallet } from "./mock.ts";
+import { mockRequested, useMockWallet } from "./mock.ts";
 
 /**
  * Decides which wallet the app runs on, and is the only module that knows
@@ -52,6 +52,10 @@ export function WalletBoundary({
       live = false;
     };
   }, []);
+
+  // `?as=0x…` asks for the mock by name, and outranks both real tiers. It is
+  // how two tabs on one machine get two identities for a local duel.
+  if (mockRequested()) return <MockWallet>{children}</MockWallet>;
 
   if (projectId === null) return null;
   if (projectId !== "") return <LiveWallet projectId={projectId}>{children}</LiveWallet>;

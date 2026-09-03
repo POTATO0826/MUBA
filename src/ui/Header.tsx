@@ -5,13 +5,10 @@ import { C, MONO, SANS, tabBtn } from "../theme.ts";
 import type { Tab } from "../types.ts";
 
 /** Screens that belong to a match. Any of them lights the "Battles" tab. */
-const MATCH_FLOW: readonly Tab[] = ["battles", "create", "draft", "study", "pick", "live", "result"];
-
 const NAV: readonly { key: Tab; label: string }[] = [
-  { key: "lobby", label: "Home" },
-  { key: "battles", label: "Battles" },
-  { key: "parlay", label: "Duel attack" },
-  { key: "cases", label: "Rewards" },
+  { key: "hub", label: "Arena" },
+  { key: "parlay", label: "Parlay" },
+  { key: "spotdiff", label: "Find a difference" },
 ];
 
 interface HeaderProps {
@@ -76,7 +73,7 @@ export function Header({
           <button
             key={n.key}
             onClick={() => onNavigate(n.key)}
-            style={sx(tabBtn(n.key === "battles" ? MATCH_FLOW.includes(tab) : tab === n.key))}
+            style={sx(tabBtn(n.key === "hub" ? tab === "hub" || tab === "create" : tab === n.key))}
           >
             {n.label}
           </button>

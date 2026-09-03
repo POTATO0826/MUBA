@@ -1,4 +1,11 @@
 import {
+  clampDuration,
+  clampStake,
+  MIN_DURATION_MINUTES,
+  MIN_STAKE_USDC,
+} from "../data/stake.ts";
+import type { GameMode } from "../types.ts";
+import {
   ROOM_ERROR_MESSAGE,
   type RoomErrorCode,
   type RoomResult,
@@ -23,9 +30,12 @@ interface Room {
   id: string;
   host: string;
   guest: string | null;
-  prize: number;
+  stakeUsdc: number;
+  durationMinutes: number;
   lobbyName: string;
   seed: number;
+  mode: GameMode;
+  picks: [string | null, string | null];
   ready: [boolean, boolean];
   readyBothAt: number | null;
   createdAt: number;
@@ -44,15 +54,26 @@ function fail(code: RoomErrorCode): RoomResult {
   return { ok: false, code, error: ROOM_ERROR_MESSAGE[code] };
 }
 
+/** Both seats have submitted. */
+function revealed(room: Room): boolean {
+  return room.picks[0] !== null && room.picks[1] !== null;
+}
+
 function view(room: Room): RoomView {
   return {
     id: room.id,
     joinPath: `/room/${room.id}`,
     host: room.host,
     guest: room.guest,
-    prize: room.prize,
+    stakeUsdc: room.stakeUsdc,
+    durationMinutes: room.durationMinutes,
     lobbyName: room.lobbyName,
     seed: room.seed,
+    mode: room.mode,
+    // Picks stay hidden until both are in. Returning the opponent's answer
+    // early would let a player copy it.
+    picks: revealed(room) ? [room.picks[0], room.picks[1]] : [null, null],
+    revealed: revealed(room),
     ready: [room.ready[0], room.ready[1]],
     readyBothAt: room.readyBothAt,
     updatedAt: room.updatedAt,
@@ -75,8 +96,10 @@ function normalizeAddress(raw: unknown): string | null {
 
 export function createRoom(input: {
   address: unknown;
-  prize: unknown;
+  stakeUsdc: unknown;
+  durationMinutes: unknown;
   lobbyName: unknown;
+  mode: unknown;
 }): RoomResult {
   const now = Date.now();
   sweep(now);
@@ -88,10 +111,20 @@ export function createRoom(input: {
   // retrying — refuse rather than evicting someone else's live duel.
   if (rooms.size >= MAX_ROOMS) return fail("BAD_REQUEST");
 
-  const prize =
-    typeof input.prize === "number" && Number.isFinite(input.prize) && input.prize > 0
-      ? input.prize
-      : 5;
+  // Clamped rather than rejected: the client already enforces the band, so a
+  // value outside it is a stale tab or a hand-rolled request, not something the
+  // host needs an error message about.
+  const stakeUsdc = clampStake(
+    typeof input.stakeUsdc === "number" && Number.isFinite(input.stakeUsdc)
+      ? input.stakeUsdc
+      : MIN_STAKE_USDC,
+  );
+
+  const durationMinutes = clampDuration(
+    typeof input.durationMinutes === "number" && Number.isFinite(input.durationMinutes)
+      ? input.durationMinutes
+      : MIN_DURATION_MINUTES,
+  );
 
   const lobbyName =
     typeof input.lobbyName === "string" && input.lobbyName.trim()
@@ -102,10 +135,13 @@ export function createRoom(input: {
     id: crypto.randomUUID(),
     host,
     guest: null,
-    prize,
+    stakeUsdc,
+    durationMinutes,
     lobbyName,
     // Any integer works; the salts multiply it. Kept small enough to stay exact.
     seed: Math.floor(Math.random() * 1_000_000),
+    mode: input.mode === "spotdiff" ? "spotdiff" : "parlay",
+    picks: [null, null],
     ready: [false, false],
     readyBothAt: null,
     createdAt: now,
@@ -114,6 +150,22 @@ export function createRoom(input: {
 
   rooms.set(room.id, room);
   return { ok: true, room: view(room) };
+}
+
+/**
+ * Every room an address sits in, newest first.
+ *
+ * The hub lists these as "active duels". A room with no guest is still active —
+ * it is waiting on the invite link.
+ */
+export function listRoomsFor(addressRaw: unknown): RoomView[] {
+  sweep(Date.now());
+  const address = normalizeAddress(addressRaw);
+  if (!address) return [];
+  return [...rooms.values()]
+    .filter((r) => r.host === address || r.guest === address)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(view);
 }
 
 export function readRoom(id: string): RoomResult {
@@ -182,6 +234,34 @@ export function readyRoom(id: string, addressRaw: unknown): RoomResult {
     room.updatedAt = now;
   }
 
+  return { ok: true, room: view(room) };
+}
+
+/**
+ * Lock one seat's pick.
+ *
+ * A pick is write-once. Letting a player resubmit after the reveal would let
+ * them change their answer once they can see the other side.
+ */
+export function pickRoom(id: string, addressRaw: unknown, pick: unknown): RoomResult {
+  const now = Date.now();
+  sweep(now);
+
+  const address = normalizeAddress(addressRaw);
+  if (!address) return fail("BAD_ADDRESS");
+  if (typeof pick !== "string" || pick.length === 0 || pick.length > 400) {
+    return fail("BAD_REQUEST");
+  }
+
+  const room = rooms.get(id);
+  if (!room) return fail("NOT_FOUND");
+
+  const seat = room.host === address ? 0 : room.guest === address ? 1 : -1;
+  if (seat === -1) return fail("NOT_A_PLAYER");
+  if (room.picks[seat] !== null) return fail("ALREADY_PICKED");
+
+  room.picks[seat] = pick;
+  room.updatedAt = now;
   return { ok: true, room: view(room) };
 }
 
