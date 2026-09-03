@@ -22,15 +22,18 @@ export interface SpinPlan {
 
 /**
  * Decide where a spin ends before it starts. The target sits in the last
- * quarter of the strip so the reel travels far enough to read as a real spin,
- * and lands on a whole asset — the jitter is cosmetic.
+ * quarter of the strip so the reel travels far enough to read as a real spin.
+ *
+ * Which asset that is falls out of `target % assets.length`, since the strip
+ * repeats the list — so the plan needs no knowledge of the asset count.
  */
-export function planSpin(assetCount: number, random: () => number = Math.random): SpinPlan {
+export function planSpin(random: () => number = Math.random): SpinPlan {
   const lo = Math.floor(STRIP_LEN * 0.72);
   const hi = STRIP_LEN - 2;
-  const target = lo + Math.floor(random() * (hi - lo));
-  const jitter = (random() - 0.5) * 0.7;
-  return { target: target - (target % 1), jitter };
+  return {
+    target: lo + Math.floor(random() * (hi - lo)),
+    jitter: (random() - 0.5) * 0.7,
+  };
 }
 
 /** Quintic ease-out: fast off the line, long slow settle. */
@@ -51,7 +54,7 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
 
-  const [plan, setPlan] = useState<SpinPlan>(() => planSpin(assets.length));
+  const [plan, setPlan] = useState<SpinPlan>(() => planSpin());
   const [spinning, setSpinning] = useState(true);
   const [under, setUnder] = useState(0);
   const [flicker, setFlicker] = useState(0);
@@ -271,7 +274,7 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
           <div style={sx("flex:1")} />
           <button
             disabled={spinning}
-            onClick={() => setPlan(planSpin(assets.length))}
+            onClick={() => setPlan(planSpin())}
             style={sx(
               `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
                 `color:${spinning ? C.faint : C.text};font:500 12px/1 ${SANS};cursor:${

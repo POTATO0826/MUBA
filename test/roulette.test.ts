@@ -5,7 +5,7 @@ import { lockedBy, nextTier, tierFor } from "../src/data/rewards.ts";
 describe("planSpin", () => {
   test("always lands in the last quarter of the strip and inside it", () => {
     for (let i = 0; i < 200; i++) {
-      const p = planSpin(9);
+      const p = planSpin();
       expect(p.target).toBeGreaterThanOrEqual(Math.floor(STRIP_LEN * 0.72));
       expect(p.target).toBeLessThan(STRIP_LEN - 1);
       expect(Number.isInteger(p.target)).toBe(true);
@@ -14,8 +14,8 @@ describe("planSpin", () => {
   });
 
   test("is fully driven by the random source", () => {
-    const a = planSpin(9, () => 0);
-    const b = planSpin(9, () => 0.999);
+    const a = planSpin(() => 0);
+    const b = planSpin(() => 0.999);
     expect(a.target).toBe(Math.floor(STRIP_LEN * 0.72));
     expect(b.target).toBe(STRIP_LEN - 3);
     expect(a.jitter).toBeCloseTo(-0.35, 10);
