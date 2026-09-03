@@ -50,8 +50,6 @@ export interface MatchState {
   seed: number;
   /** Who has readied up in the room. The spin waits on both. */
   ready: { me: boolean; opp: boolean };
-  /** Free re-rolls left on this match. One per match; tracked here, not on-chain. */
-  respinsLeft: number;
   /** The parlay card you picked. Null until you do. */
   myCard: string | null;
   /** Advances every 120ms while the tape is running. */
@@ -63,7 +61,6 @@ export interface MatchState {
 
 /** Prints per tick on the tape: the whole tape plays in about eight seconds. */
 export const TAPE_STEP = 3;
-export const RESPINS_PER_MATCH = 1;
 /** How long a lobby you publish waits before someone takes the seat. */
 export const MATCHMAKING_MS = 1600;
 /** How long the other player takes to ready up once you are in the room. */
@@ -89,7 +86,6 @@ export function initialState(route: Route): MatchState {
     lobbyId: lobby ? lobby.id : null,
     seed: route.seed ?? newSeed(),
     ready: NOT_READY,
-    respinsLeft: RESPINS_PER_MATCH,
     myCard: null,
     tick: 0,
     asset: "ETH",
@@ -152,7 +148,6 @@ export function useMatch(route: Route) {
         lobbyId,
         seed: newSeed(),
         ready: NOT_READY,
-        respinsLeft: RESPINS_PER_MATCH,
         myCard: null,
         tick: 0,
       });
@@ -238,11 +233,6 @@ export function useMatch(route: Route) {
 
       /** Abandon the spin. */
       closeSpin: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY }),
-      /** The one free re-roll. A no-op once it is spent. */
-      respin: () =>
-        patch((s) =>
-          s.respinsLeft > 0 ? { seed: newSeed(), respinsLeft: s.respinsLeft - 1 } : {},
-        ),
       claim: () => patch({ tab: "study" }),
       doneStudy: () => patch({ tab: "parlay" }),
       pickCard: (myCard: string) => patch({ myCard }),

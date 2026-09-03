@@ -158,8 +158,6 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
           opponent={opp}
           assets={bookFor(lobby.market).map(meta)}
           result={derived.spin}
-          respinsLeft={state.respinsLeft}
-          onRespin={actions.respin}
           onClaim={actions.claim}
           onClose={actions.closeSpin}
         />

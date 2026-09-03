@@ -20,8 +20,6 @@ interface MatchSpinProps {
   /** The lobby's book, in the same order `spinCase` indexed it. */
   assets: readonly Asset[];
   result: SpinResult;
-  respinsLeft: number;
-  onRespin: () => void;
   onClaim: () => void;
   onClose: () => void;
 }
@@ -33,8 +31,8 @@ interface MatchSpinProps {
  * tickers, so the reel is the one thing in the match neither side chose.
  *
  * Everything about *where* it stops was decided before the first frame by
- * `spinCase`; this component only draws the plan it was handed. Remount it
- * (key it on the seed) for a new result.
+ * `spinCase`; this component only draws the plan it was handed. There is no
+ * re-roll: the system spins once, for both players, and that is the board.
  */
 export function MatchSpin(p: MatchSpinProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -127,9 +125,6 @@ export function MatchSpin(p: MatchSpinProps) {
     : spinning
       ? `spinning the book… leg ${step + 1} of ${n}`
       : `leg ${step + 1} of ${n} landed`;
-
-  const respinBlocked = !done || p.respinsLeft === 0;
-  const respinTitle = p.respinsLeft === 0 ? "One free re-roll per match — spent." : undefined;
 
   return (
     <div
@@ -322,19 +317,6 @@ export function MatchSpin(p: MatchSpinProps) {
               Skip ↦
             </button>
           )}
-          <button
-            disabled={respinBlocked}
-            title={respinTitle}
-            onClick={p.onRespin}
-            style={sx(
-              `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
-                `color:${respinBlocked ? C.faint : C.text};font:500 12px/1 ${SANS};cursor:${
-                  respinBlocked ? "not-allowed" : "pointer"
-                };white-space:nowrap`,
-            )}
-          >
-            Spin again{p.respinsLeft === 0 ? " · used" : ""}
-          </button>
           <button
             disabled={!done}
             onClick={p.onClaim}

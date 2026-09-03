@@ -327,23 +327,6 @@ describe("the spin", () => {
     expect(slipLegs()).toEqual(first);
   });
 
-  test("one free re-roll per match, then it is spent", async () => {
-    mount("/battles");
-    await acceptAndSkip();
-    const seedBefore = window.location.search;
-
-    click("Spin again");
-    expect(dialog()).not.toBeNull();
-    expect(window.location.search).not.toBe(seedBefore);
-    expect(claimButton()?.disabled).toBe(true); // a fresh reel
-
-    click("Skip ↦");
-    const spent = buttons().find((b) => (b.textContent ?? "").startsWith("Spin again"));
-    expect(spent?.textContent).toContain("used");
-    expect(spent?.disabled).toBe(true);
-    expect(spent?.title).toContain("One free re-roll");
-  });
-
   test("closing the spin lands back on the board", async () => {
     mount("/battles");
     await acceptAndSkip();
