@@ -1,0 +1,1938 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#09090b;color:#fafafa;font-family:'DM Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#c8ff00;text-decoration:none}
+a:hover{color:#e2ff7a}
+::selection{background:#c8ff00;color:#09090b}
+button{font-family:inherit}
+@keyframes vcPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes vcSweep{0%{transform:translateX(-120%)}100%{transform:translateX(220%)}}
+@keyframes vcDrift{0%{transform:translate3d(0,0,0) scale(1.04)}33%{transform:translate3d(-14px,-8px,0) scale(1.07)}66%{transform:translate3d(10px,6px,0) scale(1.05)}100%{transform:translate3d(0,0,0) scale(1.04)}}
+@keyframes vcStream{from{transform:translate3d(-50%,0,0)}to{transform:translate3d(0,0,0)}}
+[data-tilt]{transition:transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease}
+[data-tilt-layer]{transition:transform .18s cubic-bezier(.2,.8,.2,1)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#27272a;border-radius:8px}::-webkit-scrollbar-track{background:#09090b}
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%),radial-gradient(900px 500px at 8% 0%, rgba(99,102,241,.08), transparent 55%),#09090b">
+
+  <header style="position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:24px;padding:0 28px;height:60px;background:rgba(9,9,11,.86);backdrop-filter:blur(12px);border-bottom:1px solid #27272a">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:26px;height:26px;border-radius:7px;background:#c8ff00;display:grid;place-items:center;color:#09090b;font:700 15px/1 'DM Sans',sans-serif">T</div>
+      <span style="font:700 16px/1 'DM Sans',sans-serif;letter-spacing:-.02em">THETHADUEL</span>
+    </div>
+
+    <nav style="display:flex;gap:2px;margin-left:8px">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4">
+        <button onClick="{{ t.go }}" style="{{ t.style }}">{{ t.label }}</button>
+      </sc-for>
+    </nav>
+
+    <div style="flex:1"></div>
+
+    <div style="display:flex;align-items:center;gap:14px">
+      <x-import component="StarfieldButton" from="./StarfieldButton.jsx" label="{{ walletLabel }}" on-click="{{ toggleWallet }}" rounded="47" padding="9px 15px" fill="#0f0f11" text-color="#fafafa" light-color="#c8ff00" light-size="46" light-thickness="2" light-count="2" speed="58" movement="continuous" direction="ccw" glow-color="#c8ff00" glow-size="12" glow-opacity="70" pixel-color="#c8ff00" pixel-size="4" pixel-density="46" pixel-brightness="100" dc-props="{{ walletBtnProps }}" hint-size="150px,36px"></x-import>
+    </div>
+  </header>
+
+  <!-- ==================== LOBBY ==================== -->
+  <sc-if value="{{ isLobby }}" hint-placeholder-val="{{ true }}">
+  <div style="display:grid;grid-template-columns:minmax(0,1fr);gap:28px;padding:28px;max-width:1720px;margin:0 auto;align-items:start">
+    <div style="display:flex;flex-direction:column;gap:24px;min-width:0">
+
+      <section style="position:relative;overflow:hidden;border:1px solid #3f3f46;border-radius:14px;background:linear-gradient(115deg,#26262b 0%,#1b1b1f 55%,#212126 100%);padding:30px 32px">
+        <div style="position:absolute;top:0;right:0;bottom:0;width:52%;mix-blend-mode:screen;filter:brightness(1.75) contrast(1.3);animation:vcDrift 18s ease-in-out infinite">
+          <x-import component="DitherReveal" from="./DitherReveal.jsx" dither-style="bayer8" dot-size="5" reveal-radius="190" reveal-softness="40" wave="{{ true }}" wave-speed="34" wave-density="14" focus-y="46" hint-size="100%,100%"></x-import>
+        </div>
+        <div style="position:absolute;inset:0;background:radial-gradient(500px 240px at 88% 20%, rgba(200,255,0,.14), transparent 65%);pointer-events:none"></div>
+        <div style="position:relative;display:flex;flex-wrap:wrap;align-items:flex-start;gap:32px">
+        <div style="position:relative;flex:1;min-width:300px;max-width:560px">
+          <div style="display:inline-flex;align-items:center;gap:7px;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.14em;color:#c8ff00;border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 9px">SEASON 01 · LIVE</div>
+          <h1 style="margin:16px 0 10px;font:700 36px/1.08 'DM Sans',sans-serif;letter-spacing:-.03em">Battle the book, not the market.</h1>
+          <p style="margin:0 0 22px;font:400 14px/1.6 #a1a1aa;color:#a1a1aa;max-width:470px;text-wrap:pretty">Pick a case, draft your contracts against an opponent, then parlay the legs into one payoff. Options pricing streams live from Thetanuts on Base.</p>
+          <div style="display:flex;gap:10px">
+            <button onClick="{{ goDraft }}" style="height:40px;padding:0 18px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 13px/1 'DM Sans',sans-serif;cursor:pointer">Create battle</button>
+            <button onClick="{{ goCases }}" style="height:40px;padding:0 18px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:500 13px/1 'DM Sans',sans-serif;cursor:pointer">Browse rewards</button>
+          </div>
+        </div>
+
+        </div>
+      </section>
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid #1c1c20">
+          <span style="width:6px;height:6px;border-radius:99px;background:#c8ff00"></span>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.14em;color:#c8ff00">BIGGEST WINS 24H</span>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,528px) minmax(0,1fr)">
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-right:1px solid #1c1c20">
+            <sc-for list="{{ topWins }}" as="w" hint-placeholder-count="3">
+              <div style="{{ w.style }}">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <span style="{{ w.rankStyle }}">{{ w.rank }}</span>
+                  <span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#71717a">{{ w.mult }}</span>
+                </div>
+                <sc-if value="{{ w.isChamp }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;align-items:flex-end;gap:10px;margin-top:14px">
+                    <pre style="margin:0;font:700 8px/1.15 'JetBrains Mono',monospace;color:#c8ff00;white-space:pre">{{ champArt }}</pre>
+                    <div style="font:700 8px/1.5 'JetBrains Mono',monospace;letter-spacing:.16em;color:#c8ff00;animation:vcPulse 2.4s ease-in-out infinite">WINNER<br>WINNER<br>CHICKEN<br>DINNER</div>
+                  </div>
+                </sc-if>
+                <div style="margin-top:16px;font:700 22px/1 'JetBrains Mono',monospace;letter-spacing:-.02em;color:#c8ff00">{{ w.payout }}</div>
+                <div style="margin-top:9px;font:700 11.5px/1.2 'DM Sans',sans-serif">{{ w.who }}</div>
+                <div style="margin-top:5px;font:400 10px/1.3 'JetBrains Mono',monospace;color:#71717a">{{ w.structure }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="position:relative;overflow:hidden">
+            <div style="display:flex;width:max-content;animation:vcStream 46s linear infinite" style-hover="animation-play-state:paused">
+              <sc-for list="{{ liveWins }}" as="w" hint-placeholder-count="12">
+                <div style="{{ w.style }}">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <div style="{{ w.avatarStyle }}">{{ w.initial }}</div>
+                    <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ w.mode }}</span>
+                  </div>
+                  <div style="{{ w.payoutStyle }}">{{ w.payout }}</div>
+                  <div style="margin-top:8px;font:700 11px/1.2 'DM Sans',sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ w.who }}</div>
+                  <div style="margin-top:4px;font:400 9.5px/1.3 'JetBrains Mono',monospace;color:#52525b;white-space:nowrap">{{ w.structure }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="position:absolute;top:0;bottom:0;left:0;width:56px;background:linear-gradient(90deg,#0b0b0d,transparent);pointer-events:none"></div>
+            <div style="position:absolute;top:0;bottom:0;right:0;width:56px;background:linear-gradient(270deg,#0b0b0d,transparent);pointer-events:none"></div>
+          </div>
+        </div>
+      </div>
+
+      <section>
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+          <h2 style="margin:0;font:700 17px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Open battles</h2>
+          <div style="display:flex;gap:6px">
+            <sc-for list="{{ roomFilters }}" as="f" hint-placeholder-count="1">
+              <button onClick="{{ f.go }}" style="{{ f.style }}">{{ f.label }}</button>
+            </sc-for>
+          </div>
+          <div style="flex:1"></div>
+          <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">{{ roomCount }} rooms</span>
+        </div>
+
+        <div style="border:1px solid #27272a;border-radius:12px;overflow-x:auto;background:#0b0b0d">
+          <div style="display:grid;grid-template-columns:80px minmax(248px,1.4fr) minmax(0,1fr) minmax(120px,.9fr) minmax(0,1.1fr) 104px;gap:12px;padding:11px 16px;min-width:760px;background:#131316;border-bottom:1px solid #27272a;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">
+            <div>MODE</div><div>STOCK ROTATION</div><div>PHASE</div><div>PRIZE POOL</div><div>PLAYERS</div><div></div>
+          </div>
+          <sc-for list="{{ rooms }}" as="b" hint-placeholder-count="6">
+            <div style="{{ b.rowStyle }}">
+              <div style="display:flex;flex-direction:column;gap:5px">
+                <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#fafafa">{{ b.mode }}</span>
+                <span style="{{ b.statusStyle }}">{{ b.status }}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+                <sc-for list="{{ b.chips }}" as="c" hint-placeholder-count="3">
+                  <div style="{{ c.style }}">{{ c.label }}</div>
+                </sc-for>
+              </div>
+              <div style="font:500 12px/1.5 'JetBrains Mono',monospace;color:#a1a1aa">{{ b.phase }}</div>
+              <div style="display:flex;flex-direction:column;gap:4px">
+                <span style="font:700 15px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ b.pot }}</span>
+                <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ b.entry }} entry · locked</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden">
+                <sc-for list="{{ b.players }}" as="p" hint-placeholder-count="2">
+                  <div style="{{ p.style }}">{{ p.initial }}</div>
+                </sc-for>
+                <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">{{ b.slots }}</span>
+              </div>
+              <button onClick="{{ b.go }}" style="{{ b.ctaStyle }}">{{ b.cta }}</button>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px">
+          <h2 style="margin:0;font:700 17px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Featured cases</h2>
+        </div>
+        <div data-tilt-scope style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px">
+          <sc-for list="{{ cases }}" as="c" hint-placeholder-count="4">
+            <div data-tilt style="position:relative;height:246px;border:1px solid #27272a;border-radius:14px;overflow:hidden;background:#0f0f11;cursor:pointer;transform-style:preserve-3d;perspective:900px">
+              <div style="{{ c.wallStyle }}"></div>
+              <div data-tilt-layer style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:16px;transform:translateZ(40px)">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                  <div style="{{ c.tagStyle }}">{{ c.tag }}</div>
+                  <div style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ c.legs }}</div>
+                </div>
+                <div>
+                  <div style="font:700 19px/1.1 'DM Sans',sans-serif;letter-spacing:-.02em">{{ c.name }}</div>
+                  <div style="margin-top:6px;font:400 11px/1.45 'DM Sans',sans-serif;color:#a1a1aa">{{ c.blurb }}</div>
+                  <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-top:14px">
+                    <div>
+                      <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">OPEN COST</div>
+                      <div style="margin-top:5px;font:700 17px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ c.cost }}</div>
+                    </div>
+                    <div style="text-align:right">
+                      <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">MAX PAYOUT</div>
+                      <div style="margin-top:5px;font:700 17px/1 'JetBrains Mono',monospace">{{ c.max }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+    </div>
+
+  </div>
+  </sc-if>
+
+  <!-- ==================== BATTLES LIST ==================== -->
+  <sc-if value="{{ isBattles }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:28px;max-width:1720px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Open battles</h2>
+      <div style="display:flex;gap:6px">
+        <sc-for list="{{ roomFilters }}" as="f" hint-placeholder-count="3">
+          <button onClick="{{ f.go }}" style="{{ f.style }}">{{ f.label }}</button>
+        </sc-for>
+      </div>
+      <div style="flex:1"></div>
+      <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">{{ roomCount }} rooms</span>
+      <button onClick="{{ runDemo }}" style="height:36px;padding:0 14px;border:1px solid rgba(167,139,250,.45);border-radius:8px;background:rgba(167,139,250,.12);color:#a78bfa;font:700 12.5px/1 'DM Sans',sans-serif;cursor:pointer">▶ Random demo</button>
+      <button onClick="{{ goCreate }}" style="height:36px;padding:0 16px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 12.5px/1 'DM Sans',sans-serif;cursor:pointer">Create battle</button>
+    </div>
+
+    <div style="border:1px solid #27272a;border-radius:12px;overflow:hidden;background:#0b0b0d">
+      <div style="display:grid;grid-template-columns:80px minmax(248px,1.4fr) minmax(0,1fr) minmax(120px,.9fr) minmax(0,1.1fr) 104px;gap:12px;padding:11px 16px;background:#131316;border-bottom:1px solid #27272a;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">
+        <div>MODE</div><div>STOCK ROTATION</div><div>PHASE</div><div>PRIZE POOL</div><div>PLAYERS</div><div></div>
+      </div>
+      <sc-for list="{{ rooms }}" as="b" hint-placeholder-count="6">
+        <div style="{{ b.rowStyle }}">
+          <div style="display:flex;flex-direction:column;gap:5px">
+            <span style="font:700 13px/1 'JetBrains Mono',monospace;color:#fafafa">{{ b.mode }}</span>
+            <span style="{{ b.statusStyle }}">{{ b.status }}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden;flex-wrap:wrap;max-height:26px">
+            <sc-for list="{{ b.chips }}" as="c" hint-placeholder-count="3">
+              <div style="{{ c.style }}">{{ c.label }}</div>
+            </sc-for>
+          </div>
+          <div style="font:500 12px/1.5 'JetBrains Mono',monospace;color:#a1a1aa">{{ b.phase }}</div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <span style="font:700 15px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ b.pot }}</span>
+            <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ b.entry }} entry · locked</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden">
+            <sc-for list="{{ b.players }}" as="p" hint-placeholder-count="2">
+              <div style="{{ p.style }}">{{ p.initial }}</div>
+            </sc-for>
+            <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">{{ b.slots }}</span>
+          </div>
+          <button onClick="{{ b.go }}" style="{{ b.ctaStyle }}">{{ b.cta }}</button>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isAuto }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:50;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 16px;border:1px solid rgba(167,139,250,.45);border-radius:99px;background:rgba(15,15,17,.92);backdrop-filter:blur(10px);box-shadow:0 12px 32px rgba(0,0,0,.5)">
+      <span style="width:7px;height:7px;border-radius:99px;background:#a78bfa;animation:vcPulse 1.4s ease-in-out infinite"></span>
+      <span style="font:700 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#a78bfa;white-space:nowrap">{{ autoLabel }}</span>
+      <button onClick="{{ stopAuto }}" style="height:26px;padding:0 10px;border:1px solid #3f3f46;border-radius:99px;background:transparent;color:#fafafa;font:500 11px/1 'DM Sans',sans-serif;cursor:pointer">Stop</button>
+    </div>
+  </sc-if>
+
+  <!-- ==================== CREATE LOBBY (admin) ==================== -->
+  <sc-if value="{{ isCreate }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:28px;max-width:940px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+      <button onClick="{{ goBattles }}" style="height:30px;padding:0 12px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#a1a1aa;font:500 12px/1 'DM Sans',sans-serif;cursor:pointer">← Battles</button>
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Create battle</h2>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#a78bfa;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.12);border-radius:6px;padding:6px 8px">ADMIN</span>
+    </div>
+
+    <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #1c1c20">
+        <div style="padding:20px;border-right:1px solid #1c1c20">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">PRIZE POOL</div>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
+            <button onClick="{{ prizeDown }}" style="width:34px;height:34px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:700 16px/1 'JetBrains Mono',monospace;cursor:pointer">−</button>
+            <div style="display:flex;align-items:baseline;gap:8px;padding:6px 10px;border:1px solid #27272a;border-radius:9px;background:#131316">
+              <input type="text" inputMode="decimal" value="{{ prizeText }}" onChange="{{ onPrizeInput }}" onBlur="{{ onPrizeBlur }}" style="width:112px;border:none;outline:none;background:transparent;color:#c8ff00;font:700 30px/1.1 'JetBrains Mono',monospace;letter-spacing:-.02em;padding:0" />
+              <span style="font:700 16px/1 'JetBrains Mono',monospace;color:#71717a">ETH</span>
+            </div>
+            <button onClick="{{ prizeUp }}" style="width:34px;height:34px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:700 16px/1 'JetBrains Mono',monospace;cursor:pointer">+</button>
+          </div>
+          <div style="margin-top:12px;font:400 11.5px/1.55 'DM Sans',sans-serif;color:#a1a1aa;text-wrap:pretty">Adjustable until the lobby is published. Once public the prize is locked for every player who joins.</div>
+        </div>
+        <div style="padding:20px">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">ENTRY PER PLAYER</div>
+          <div style="margin-top:14px;font:700 32px/1 'JetBrains Mono',monospace;letter-spacing:-.02em">{{ entryLabel }}</div>
+          <div style="margin-top:12px;font:400 11.5px/1.55 'DM Sans',sans-serif;color:#a1a1aa">Half the pool each in 1v1. Winner takes the full pool.</div>
+        </div>
+      </div>
+
+      <div style="padding:18px 20px;border-bottom:1px solid #1c1c20">
+        <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">LOBBY NAME</div>
+        <input type="text" value="{{ lobbyName }}" onChange="{{ onLobbyName }}" placeholder="Room #4471" style="width:100%;max-width:420px;height:38px;margin-top:12px;padding:0 12px;border:1px solid #27272a;border-radius:9px;background:#131316;color:#fafafa;font:700 14px/1 'DM Sans',sans-serif;outline:none" />
+      </div>
+
+      <div style="padding:18px 20px;border-bottom:1px solid #1c1c20">
+        <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">MARKET</div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <sc-for list="{{ marketTabs }}" as="m" hint-placeholder-count="3">
+            <button onClick="{{ m.go }}" style="{{ m.style }}">
+              <span style="font:700 12px/1 'DM Sans',sans-serif">{{ m.label }}</span>
+              <span style="font:400 10px/1 'JetBrains Mono',monospace;opacity:.7">{{ m.note }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid #1c1c20">
+        <div style="padding:18px 20px;border-right:1px solid #1c1c20">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">MODE</div>
+          <div style="margin-top:12px;font:700 15px/1 'JetBrains Mono',monospace">1v1</div>
+          <div style="margin-top:6px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#52525b">2 players · winner takes all</div>
+        </div>
+        <div style="padding:18px 20px;border-right:1px solid #1c1c20">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">PICKS EACH</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+            <button onClick="{{ picksDown }}" style="{{ stepBtnStyle }}">−</button>
+            <span style="font:700 17px/1 'JetBrains Mono',monospace;min-width:18px;text-align:center">{{ picksMax }}</span>
+            <button onClick="{{ picksUp }}" style="{{ stepBtnStyle }}">+</button>
+          </div>
+          <div style="margin-top:8px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#52525b">{{ bansNote }}</div>
+        </div>
+        <div style="padding:18px 20px;border-right:1px solid #1c1c20">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">CHARTS IN ARENA</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+            <button onClick="{{ chartsDown }}" style="{{ stepBtnStyle }}">−</button>
+            <span style="font:700 17px/1 'JetBrains Mono',monospace;min-width:18px;text-align:center">{{ chartCount }}</span>
+            <button onClick="{{ chartsUp }}" style="{{ stepBtnStyle }}">+</button>
+          </div>
+          <div style="margin-top:8px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#52525b">random window per asset</div>
+        </div>
+        <div style="padding:18px 20px">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">TAPE SPEED</div>
+          <div style="display:flex;gap:6px;margin-top:12px">
+            <sc-for list="{{ speedTabs }}" as="s" hint-placeholder-count="3">
+              <button onClick="{{ s.go }}" style="{{ s.style }}">{{ s.label }}</button>
+            </sc-for>
+          </div>
+          <div style="margin-top:8px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#52525b">{{ speedNote }}</div>
+        </div>
+      </div>
+
+      <div style="padding:20px">
+        <div style="display:flex;align-items:baseline;gap:10px">
+          <div style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">{{ universeLabel }}</div>
+          <span style="font:400 10.5px/1 'DM Sans',sans-serif;color:#52525b">tap to include or drop an asset</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+          <sc-for list="{{ universe }}" as="u" hint-placeholder-count="9">
+            <button onClick="{{ u.toggle }}" style="{{ u.style }}">
+              <span style="font:700 12px/1 'JetBrains Mono',monospace">{{ u.sym }}</span>
+              <span style="font:400 10px/1 'JetBrains Mono',monospace;opacity:.62">{{ u.sector }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:14px;padding:16px 20px;border-top:1px solid #27272a;background:#0f0f11">
+        <span style="font:400 11.5px/1.5 'DM Sans',sans-serif;color:#a1a1aa">Publishing opens the room to one opponent and freezes the prize.</span>
+        <div style="flex:1"></div>
+        <button onClick="{{ publishLobby }}" style="height:40px;padding:0 18px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 13px/1 'DM Sans',sans-serif;cursor:pointer;white-space:nowrap">Publish lobby · {{ prizeLabel }}</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== CASE STUDY (after draft, before parlay) ==================== -->
+  <sc-if value="{{ isStudy }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:24px 28px;max-width:1720px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px">
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Case study</h2>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#38bdf8;border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.12);border-radius:6px;padding:6px 8px">STUDY PHASE · NO BETS YET</span>
+      <div style="flex:1"></div>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">POOL</span>
+      <span style="font:700 18px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ prizeLabel }}</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start">
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+        <sc-for list="{{ studyCharts }}" as="c" hint-placeholder-count="5">
+          <div style="{{ c.cardStyle }}">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between">
+              <div>
+                <div style="font:700 15px/1 'JetBrains Mono',monospace">{{ c.sym }}</div>
+                <div style="margin-top:5px;font:400 9.5px/1 'JetBrains Mono',monospace;color:#52525b">{{ c.window }}</div>
+              </div>
+              <div style="text-align:right">
+                <div style="{{ c.pctStyle }}">{{ c.pct }}</div>
+                <div style="margin-top:5px;font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ c.px }}</div>
+              </div>
+            </div>
+            <svg viewBox="0 0 260 110" preserveAspectRatio="none" style="width:100%;height:110px;display:block;margin-top:12px;overflow:visible">
+              <line x1="0" x2="260" y1="{{ c.baseY }}" y2="{{ c.baseY }}" stroke="#27272a" stroke-width="1" stroke-dasharray="3 3"></line>
+              <path d="{{ c.fill }}" fill="{{ c.fillColor }}"></path>
+              <path d="{{ c.path }}" fill="none" stroke="{{ c.stroke }}" stroke-width="1.8" stroke-linejoin="round"></path>
+            </svg>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px;padding-top:12px;border-top:1px solid #1c1c20">
+              <sc-for list="{{ c.stats }}" as="s" hint-placeholder-count="3">
+                <div>
+                  <div style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#52525b">{{ s.label }}</div>
+                  <div style="margin-top:5px;font:700 11.5px/1 'JetBrains Mono',monospace">{{ s.value }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div style="border:1px solid #27272a;border-radius:12px;background:#0f0f11;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #27272a">
+            <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#c8ff00);display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;color:#09090b">AI</div>
+            <span style="font:700 13px/1 'DM Sans',sans-serif">Coach reads the tape</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;padding:16px">
+            <sc-for list="{{ studyNotes }}" as="n" hint-placeholder-count="3">
+              <div style="border-left:2px solid #3f3f46;padding-left:12px">
+                <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#c8ff00">{{ n.tag }}</div>
+                <div style="margin-top:7px;font:700 12px/1.35 'DM Sans',sans-serif">{{ n.title }}</div>
+                <div style="margin-top:5px;font:400 11.5px/1.55 'DM Sans',sans-serif;color:#a1a1aa;text-wrap:pretty">{{ n.body }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="border:1px solid #27272a;border-radius:12px;background:#0f0f11;padding:16px">
+          <div style="font:400 11.5px/1.6 'DM Sans',sans-serif;color:#a1a1aa;text-wrap:pretty">These are the tickers that survived the draft, on the window the engine drew. Study them, then place your parlay — the tape you bet on starts where these charts end.</div>
+          <button onClick="{{ goPick }}" style="width:100%;height:40px;margin-top:14px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 13px/1 'DM Sans',sans-serif;cursor:pointer">Done studying → parlay</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== PARLAY LOCK (60s, opponent hidden) ==================== -->
+  <sc-if value="{{ isPick }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:24px 28px;max-width:1440px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Parlay selection</h2>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#c8ff00;border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 8px">BLIND · OPPONENT SLIP HIDDEN</span>
+      <div style="flex:1"></div>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">LOCK IN</span>
+      <span style="{{ countdownStyle }}">{{ countdown }}</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start">
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #27272a">
+          <span style="font:700 14px/1 'DM Sans',sans-serif">Your legs</span>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">PICK A DIRECTION PER DRAFTED TICKER</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:16px">
+          <sc-for list="{{ legPicker }}" as="l" hint-placeholder-count="3">
+            <div style="border:1px solid #27272a;border-radius:11px;background:#101013;padding:14px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span style="font:700 15px/1 'JetBrains Mono',monospace">{{ l.sym }}</span>
+                <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ l.sector }}</span>
+              </div>
+              <div style="margin-top:12px;display:flex;gap:6px">
+                <button onClick="{{ l.setOver }}" style="{{ l.overStyle }}">OVER</button>
+                <button onClick="{{ l.setUnder }}" style="{{ l.underStyle }}">UNDER</button>
+              </div>
+              <div style="margin-top:12px;font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#52525b">TARGET MOVE</div>
+              <div style="margin-top:7px;font:700 18px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ l.target }}</div>
+              <div style="margin-top:10px;font:400 10.5px/1.4 'JetBrains Mono',monospace;color:#52525b">{{ l.odds }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-top:1px solid #27272a;background:#0f0f11">
+          <span style="font:400 11.5px/1.5 'DM Sans',sans-serif;color:#a1a1aa">Coach: three legs on one timeline is one bet. Split directions to survive a flat tape.</span>
+          <div style="flex:1"></div>
+          <button onClick="{{ startFight }}" style="height:36px;padding:0 16px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 12px/1 'DM Sans',sans-serif;cursor:pointer;white-space:nowrap">Lock parlay → fight</button>
+        </div>
+      </div>
+
+      <div style="border:1px solid rgba(248,113,113,.35);border-radius:12px;background:linear-gradient(180deg,rgba(248,113,113,.08),#0f0f11 40%);overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #27272a">
+          <div style="width:30px;height:30px;border-radius:9px;background:#f87171;display:grid;place-items:center;font:700 12px/1 'DM Sans',sans-serif;color:#09090b">KZ</div>
+          <div>
+            <div style="font:700 13px/1 'DM Sans',sans-serif">kazuo.eth</div>
+            <div style="margin-top:4px;font:400 10px/1 'JetBrains Mono',monospace;color:#f87171">selecting…</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;padding:16px">
+          <sc-for list="{{ hiddenLegs }}" as="x" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px;border:1px dashed #3f3f46;border-radius:9px">
+              <span style="width:22px;height:22px;flex:none;border-radius:6px;background:#27272a;display:grid;place-items:center;font:700 10px/1 'JetBrains Mono',monospace;color:#52525b">?</span>
+              <span style="font:700 13px/1 'JetBrains Mono',monospace;letter-spacing:.24em;color:#3f3f46">{{ x.mask }}</span>
+            </div>
+          </sc-for>
+          <div style="margin-top:6px;font:400 11px/1.5 'JetBrains Mono',monospace;color:#52525b;text-align:center">Revealed when both slips lock.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== LIVE FIGHT ==================== -->
+  <sc-if value="{{ isLive }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:24px 28px;max-width:1720px;margin:0 auto">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px">
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Live fight · {{ lobbyName }}</h2>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#c8ff00;border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 8px">{{ tapeLabel }}</span>
+      <div style="flex:1"></div>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">POOL</span>
+      <span style="font:700 18px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ prizeLabel }}</span>
+    </div>
+
+    <div style="height:3px;border-radius:99px;background:#1c1c20;overflow:hidden;margin-bottom:18px">
+      <div style="{{ raceBarStyle }}"></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:250px minmax(0,1fr) 250px;gap:18px;align-items:start">
+      <div style="border:1px solid rgba(99,102,241,.4);border-radius:12px;background:linear-gradient(180deg,rgba(99,102,241,.1),#0f0f11 40%);padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid #27272a">
+          <span style="font:700 13px/1 'DM Sans',sans-serif">{{ p1Name }}</span>
+          <span style="font:700 20px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ myScore }}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+          <sc-for list="{{ myLive }}" as="l" hint-placeholder-count="3">
+            <div style="{{ l.rowStyle }}">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span style="font:700 12px/1 'JetBrains Mono',monospace">{{ l.sym }}</span>
+                <span style="{{ l.stateStyle }}">{{ l.state }}</span>
+              </div>
+              <div style="margin-top:7px;display:flex;align-items:baseline;justify-content:space-between">
+                <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ l.need }}</span>
+                <span style="{{ l.pctStyle }}">{{ l.pct }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+        <sc-for list="{{ charts }}" as="c" hint-placeholder-count="5">
+          <div style="{{ c.cardStyle }}">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font:700 14px/1 'JetBrains Mono',monospace">{{ c.sym }}</div>
+                <div style="margin-top:5px;font:400 9.5px/1 'JetBrains Mono',monospace;color:#52525b">{{ c.window }}</div>
+              </div>
+              <div style="text-align:right">
+                <div style="{{ c.pctStyle }}">{{ c.pct }}</div>
+                <div style="margin-top:5px;font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ c.px }}</div>
+              </div>
+            </div>
+            <svg viewBox="0 0 260 96" preserveAspectRatio="none" style="width:100%;height:96px;display:block;margin-top:12px;overflow:visible">
+              <line x1="0" x2="260" y1="{{ c.baseY }}" y2="{{ c.baseY }}" stroke="#27272a" stroke-width="1" stroke-dasharray="3 3"></line>
+              <path d="{{ c.fill }}" fill="{{ c.fillColor }}"></path>
+              <path d="{{ c.path }}" fill="none" stroke="{{ c.stroke }}" stroke-width="1.8" stroke-linejoin="round"></path>
+              <circle cx="{{ c.headX }}" cy="{{ c.headY }}" r="2.6" fill="{{ c.stroke }}"></circle>
+            </svg>
+            <div style="display:flex;gap:6px;margin-top:10px">
+              <sc-for list="{{ c.holders }}" as="hd" hint-placeholder-count="1">
+                <span style="{{ hd.style }}">{{ hd.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="border:1px solid rgba(248,113,113,.35);border-radius:12px;background:linear-gradient(180deg,rgba(248,113,113,.09),#0f0f11 40%);padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid #27272a">
+          <span style="font:700 13px/1 'DM Sans',sans-serif">kazuo.eth</span>
+          <span style="font:700 20px/1 'JetBrains Mono',monospace;color:#f87171">{{ oppScore }}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+          <sc-for list="{{ oppLive }}" as="l" hint-placeholder-count="3">
+            <div style="{{ l.rowStyle }}">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span style="font:700 12px/1 'JetBrains Mono',monospace">{{ l.sym }}</span>
+                <span style="{{ l.stateStyle }}">{{ l.state }}</span>
+              </div>
+              <div style="margin-top:7px;display:flex;align-items:baseline;justify-content:space-between">
+                <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ l.need }}</span>
+                <span style="{{ l.pctStyle }}">{{ l.pct }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:14px;margin-top:18px;padding:14px 18px;border:1px solid #27272a;border-radius:12px;background:#0f0f11">
+      <span style="font:400 11.5px/1.5 'DM Sans',sans-serif;color:#a1a1aa">{{ raceNote }}</span>
+      <div style="flex:1"></div>
+      <sc-if value="{{ raceDone }}" hint-placeholder-val="{{ true }}">
+        <button onClick="{{ goResult }}" style="height:36px;padding:0 16px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 12px/1 'DM Sans',sans-serif;cursor:pointer;white-space:nowrap">Settle → result</button>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== RESULT ==================== -->
+  <sc-if value="{{ isResult }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:28px;max-width:1100px;margin:0 auto">
+    <div style="position:relative;overflow:hidden;border:1px solid rgba(200,255,0,.35);border-radius:14px;background:linear-gradient(150deg,rgba(200,255,0,.12),#0f0f11 55%);padding:28px 30px">
+      <div style="display:flex;align-items:flex-start;gap:24px">
+        <pre style="margin:0;font:700 10px/1.15 'JetBrains Mono',monospace;color:#c8ff00;white-space:pre">{{ champArt }}</pre>
+        <div>
+          <div style="font:700 10px/1 'JetBrains Mono',monospace;letter-spacing:.18em;color:#c8ff00;animation:vcPulse 2.4s ease-in-out infinite">WINNER WINNER CHICKEN DINNER</div>
+          <h2 style="margin:14px 0 0;font:700 34px/1.05 'Space Grotesk','DM Sans',sans-serif;letter-spacing:-.03em">{{ winnerName }} {{ winnerVerb }} the pool</h2>
+          <div style="margin-top:12px;display:flex;align-items:baseline;gap:16px">
+            <span style="font:700 30px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ prizeLabel }}</span>
+            <span style="font:500 12px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ scoreLine }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #27272a;border-radius:12px;background:#0f0f11;overflow:hidden;margin-top:18px">
+      <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #27272a">
+        <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#c8ff00);display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;color:#09090b">AI</div>
+        <span style="font:700 13px/1 'DM Sans',sans-serif">Coach · match summary</span>
+        <span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">STRATEGY READ · GENERATED FROM BOTH SLIPS</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #1c1c20">
+        <sc-for list="{{ aiPlayers }}" as="p" hint-placeholder-count="2">
+          <div style="{{ p.style }}">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="{{ p.tagStyle }}">{{ p.tag }}</span>
+              <span style="font:700 12.5px/1 'DM Sans',sans-serif">{{ p.who }}</span>
+              <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ p.style_ }}</span>
+            </div>
+            <div style="margin-top:10px;font:400 12px/1.6 'DM Sans',sans-serif;color:#d4d4d8;text-wrap:pretty">{{ p.read }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+        <div style="padding:16px;border-right:1px solid #1c1c20">
+          <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#c8ff00">WHAT DECIDED IT</div>
+          <div style="margin-top:8px;font:400 12px/1.6 'DM Sans',sans-serif;color:#d4d4d8;text-wrap:pretty">{{ aiDecider }}</div>
+        </div>
+        <div style="padding:16px">
+          <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#38bdf8">LESSON FOR NEXT DUEL</div>
+          <div style="margin-top:8px;font:400 12px/1.6 'DM Sans',sans-serif;color:#d4d4d8;text-wrap:pretty">{{ aiLesson }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:18px">
+      <sc-for list="{{ resultCards }}" as="r" hint-placeholder-count="2">
+        <div style="{{ r.style }}">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid #27272a">
+            <span style="font:700 13px/1 'DM Sans',sans-serif">{{ r.who }}</span>
+            <span style="{{ r.scoreStyle }}">{{ r.score }}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:0;margin-top:6px">
+            <sc-for list="{{ r.legs }}" as="l" hint-placeholder-count="3">
+              <div style="display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid #1c1c20">
+                <span style="{{ l.dotStyle }}"></span>
+                <span style="font:700 12px/1 'JetBrains Mono',monospace;min-width:56px">{{ l.sym }}</span>
+                <span style="font:400 10.5px/1 'JetBrains Mono',monospace;color:#71717a;flex:1">{{ l.need }}</span>
+                <span style="{{ l.pctStyle }}">{{ l.pct }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button onClick="{{ goBattles }}" style="height:40px;padding:0 18px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 13px/1 'DM Sans',sans-serif;cursor:pointer">Back to battles</button>
+      <button onClick="{{ goCreate }}" style="height:40px;padding:0 18px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:500 13px/1 'DM Sans',sans-serif;cursor:pointer">Rematch · new lobby</button>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== DRAFT ==================== -->
+  <sc-if value="{{ isDraft }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:24px 28px;max-width:1720px;margin:0 auto;overflow-x:auto">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+      <button onClick="{{ goBattles }}" style="height:30px;padding:0 12px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#a1a1aa;font:500 12px/1 'DM Sans',sans-serif;cursor:pointer">← Battles</button>
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Draft · {{ lobbyName }}</h2>
+      <span style="font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#c8ff00;border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 8px">{{ draftPhase }}</span>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:16px">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid rgba(200,255,0,.28);border-radius:9px;background:rgba(200,255,0,.06)">
+          <span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">PRIZE POOL</span>
+          <span style="font:700 17px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ prizeLabel }}</span>
+          <span style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#c8ff00;border:1px solid rgba(200,255,0,.3);border-radius:4px;padding:4px 5px">LOCKED</span>
+        </div>
+        <button onClick="{{ startGame }}" style="{{ startBtnStyle }}">{{ startBtnLabel }}</button>
+      </div>
+    </div>
+
+    <div style="position:relative;border:1px solid #27272a;border-radius:12px;background:#0b0b0d;padding:14px 16px;margin-bottom:20px;overflow:hidden">
+      <div style="position:absolute;top:0;left:0;width:34%;height:2px;background:#c8ff00"></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <sc-for list="{{ draftSteps }}" as="s" hint-placeholder-count="8">
+          <div style="{{ s.style }}">
+            <span style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;opacity:.7">{{ s.kind }}</span>
+            <span style="font:700 11px/1 'JetBrains Mono',monospace">{{ s.label }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(240px,280px) minmax(430px,1fr) minmax(240px,280px);gap:20px;align-items:start;min-width:980px">
+      <div style="border:1px solid rgba(99,102,241,.4);border-radius:12px;background:linear-gradient(180deg,rgba(99,102,241,.1),#0f0f11 40%);padding:16px">
+        <div style="display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid #27272a">
+          <div style="width:32px;height:32px;border-radius:9px;background:#6366f1;display:grid;place-items:center;font:700 13px/1 'DM Sans',sans-serif;color:#fff">{{ p1Init }}</div>
+          <div>
+            <div style="font:700 13px/1 'DM Sans',sans-serif">{{ p1Name }}</div>
+            <div style="margin-top:4px;font:400 10px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ p1Meta }}</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+          <sc-for list="{{ teamA }}" as="p" hint-placeholder-count="5">
+            <div style="{{ p.style }}">
+              <span style="{{ p.badgeStyle }}">{{ p.slot }}</span>
+              <div style="min-width:0">
+                <div style="font:700 12px/1 'JetBrains Mono',monospace">{{ p.label }}</div>
+                <div style="margin-top:5px;font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ p.meta }}</div>
+              </div>
+              <div style="flex:1"></div>
+              <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ p.prem }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid #27272a;font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">
+          <span>BOARD</span><span style="color:#fafafa">{{ myBoard }}</span>
+        </div>
+      </div>
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #27272a">
+          <span style="font:700 13px/1 'DM Sans',sans-serif">Contract pool</span>
+          <div style="display:flex;gap:6px">
+            <sc-for list="{{ poolFilters }}" as="f" hint-placeholder-count="4">
+              <button onClick="{{ f.go }}" style="{{ f.style }}">{{ f.label }}</button>
+            </sc-for>
+          </div>
+          <div style="flex:1"></div>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">MM QUOTES · 1.2s</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;padding:16px">
+          <sc-for list="{{ pool }}" as="c" hint-placeholder-count="9">
+            <div onClick="{{ c.pick }}" style="{{ c.style }}">
+              <div style="{{ c.glowStyle }}"></div>
+              <div style="position:relative">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="{{ c.typeStyle }}">{{ c.type }}</span>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <span style="{{ c.badgeStyle }}">{{ c.badge }}</span>
+                    <button onClick="{{ c.ban }}" style="{{ c.banStyle }}">BAN</button>
+                  </div>
+                </div>
+                <div style="margin-top:12px;font:700 16px/1 'JetBrains Mono',monospace;letter-spacing:-.01em">{{ c.label }}</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:14px">
+                  <div>
+                    <div style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#52525b">{{ c.k1 }}</div>
+                    <div style="margin-top:5px;font:700 12px/1 'JetBrains Mono',monospace;color:#c8ff00">{{ c.prem }}</div>
+                  </div>
+                  <div>
+                    <div style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#52525b">{{ c.k2 }}</div>
+                    <div style="margin-top:5px;font:700 12px/1 'JetBrains Mono',monospace">{{ c.iv }}</div>
+                  </div>
+                  <div>
+                    <div style="font:500 8px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#52525b">{{ c.k3 }}</div>
+                    <div style="margin-top:5px;font:700 12px/1 'JetBrains Mono',monospace">{{ c.delta }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-top:1px solid #27272a;background:#0f0f11">
+          <span style="font:400 11.5px/1.5 'DM Sans',sans-serif;color:#a1a1aa">{{ draftHint }}</span>
+          <div style="flex:1"></div>
+          <button onClick="{{ goStudy }}" style="{{ draftCtaStyle }}">Confirm picks → case study</button>
+        </div>
+      </div>
+
+      <div style="border:1px solid rgba(248,113,113,.35);border-radius:12px;background:linear-gradient(180deg,rgba(248,113,113,.09),#0f0f11 40%);padding:16px">
+        <div style="display:flex;align-items:center;gap:10px;padding-bottom:14px;border-bottom:1px solid #27272a">
+          <div style="width:32px;height:32px;border-radius:9px;background:#f87171;display:grid;place-items:center;font:700 13px/1 'DM Sans',sans-serif;color:#09090b">KZ</div>
+          <div>
+            <div style="font:700 13px/1 'DM Sans',sans-serif">kazuo.eth</div>
+            <div style="margin-top:4px;font:400 10px/1 'JetBrains Mono',monospace;color:#a1a1aa">bankroll 5.10 ETH</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+          <sc-for list="{{ teamB }}" as="p" hint-placeholder-count="5">
+            <div style="{{ p.style }}">
+              <span style="{{ p.badgeStyle }}">{{ p.slot }}</span>
+              <div style="min-width:0">
+                <div style="font:700 12px/1 'JetBrains Mono',monospace">{{ p.label }}</div>
+                <div style="margin-top:5px;font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ p.meta }}</div>
+              </div>
+              <div style="flex:1"></div>
+              <span style="font:500 11px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ p.prem }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:16px;padding-top:14px;border-top:1px solid #27272a;font:500 11px/1 'JetBrains Mono',monospace;color:#71717a">
+          <span>BOARD</span><span style="color:#fafafa">3 picks · 2 bans</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ==================== PARLAY ==================== -->
+  <sc-if value="{{ isParlay }}" hint-placeholder-val="{{ true }}">
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:24px;padding:24px 28px;max-width:1720px;margin:0 auto;align-items:start">
+    <div style="display:flex;flex-direction:column;gap:20px;min-width:0">
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid #27272a">
+          <span style="font:700 14px/1 'DM Sans',sans-serif">Combined payoff at expiry</span>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">4 LEGS · ETH · 27 SEP</span>
+          <div style="flex:1"></div>
+          <div style="display:flex;gap:14px;font:500 10px/1 'JetBrains Mono',monospace;color:#a1a1aa">
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:2px;background:#c8ff00;display:block"></span>PARLAY</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:2px;background:#52525b;display:block"></span>SPOT</span>
+          </div>
+        </div>
+        <div style="padding:18px">
+          <svg viewBox="0 0 900 300" style="width:100%;height:300px;display:block;overflow:visible">
+            <sc-for list="{{ gridY }}" as="g" hint-placeholder-count="5">
+              <g><line x1="52" x2="880" y1="{{ g.y }}" y2="{{ g.y }}" stroke="#1f1f23" stroke-width="1"></line><text x="44" y="{{ g.ty }}" text-anchor="end" fill="#52525b" font-family="'JetBrains Mono',monospace" font-size="10">{{ g.label }}</text></g>
+            </sc-for>
+            <sc-for list="{{ gridX }}" as="g" hint-placeholder-count="6">
+              <g><line y1="18" y2="252" x1="{{ g.x }}" x2="{{ g.x }}" stroke="#161619" stroke-width="1"></line><text y="272" x="{{ g.x }}" text-anchor="middle" fill="#52525b" font-family="'JetBrains Mono',monospace" font-size="10">{{ g.label }}</text></g>
+            </sc-for>
+            <line x1="52" x2="880" y1="{{ zeroY }}" y2="{{ zeroY }}" stroke="#3f3f46" stroke-width="1" stroke-dasharray="4 4"></line>
+            <path d="{{ payoffFill }}" fill="rgba(200,255,0,.1)"></path>
+            <path d="{{ payoffPath }}" fill="none" stroke="#c8ff00" stroke-width="2.5" stroke-linejoin="round"></path>
+            <line x1="{{ spotX }}" x2="{{ spotX }}" y1="18" y2="252" stroke="#71717a" stroke-width="1.5" stroke-dasharray="3 3"></line>
+            <text x="{{ spotLabelX }}" y="14" fill="#a1a1aa" font-family="'JetBrains Mono',monospace" font-size="10">SPOT 4,182</text>
+            <sc-for list="{{ strikeMarks }}" as="s" hint-placeholder-count="4">
+              <g><circle cx="{{ s.x }}" cy="{{ s.y }}" r="3.5" fill="#09090b" stroke="#c8ff00" stroke-width="2"></circle><text x="{{ s.x }}" y="{{ s.ty }}" text-anchor="middle" fill="#c8ff00" font-family="'JetBrains Mono',monospace" font-size="9">{{ s.label }}</text></g>
+            </sc-for>
+          </svg>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid #1c1c20">
+            <sc-for list="{{ payoffStats }}" as="s" hint-placeholder-count="4">
+              <div>
+                <div style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.12em;color:#71717a">{{ s.label }}</div>
+                <div style="{{ s.style }}">{{ s.value }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #27272a">
+          <span style="font:700 14px/1 'DM Sans',sans-serif">MM pricing</span>
+          <div style="display:flex;gap:6px">
+            <sc-for list="{{ assetTabs }}" as="a" hint-placeholder-count="2">
+              <button onClick="{{ a.go }}" style="{{ a.style }}">{{ a.label }}</button>
+            </sc-for>
+          </div>
+          <div style="flex:1"></div>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#4ade80">● client.mmPricing.getPricingArray</span>
+        </div>
+        <div style="overflow-x:auto">
+          <div style="display:grid;grid-template-columns:88px 96px 110px 100px 100px 84px 84px 1fr;gap:10px;padding:10px 18px;background:#131316;border-bottom:1px solid #27272a;font:500 10px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#71717a">
+            <div>TYPE</div><div>STRIKE</div><div>EXPIRY</div><div>BID</div><div>ASK</div><div>IV</div><div>Δ</div><div>SIZE</div>
+          </div>
+          <sc-for list="{{ pricing }}" as="r" hint-placeholder-count="8">
+            <div style="{{ r.rowStyle }}">
+              <div><span style="{{ r.typeStyle }}">{{ r.type }}</span></div>
+              <div style="font:700 12px/1 'JetBrains Mono',monospace">{{ r.strike }}</div>
+              <div style="font:400 12px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ r.expiry }}</div>
+              <div style="font:500 12px/1 'JetBrains Mono',monospace;color:#4ade80">{{ r.bid }}</div>
+              <div style="font:500 12px/1 'JetBrains Mono',monospace;color:#f87171">{{ r.ask }}</div>
+              <div style="font:400 12px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ r.iv }}</div>
+              <div style="font:400 12px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ r.delta }}</div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="flex:1;height:4px;border-radius:99px;background:#1f1f23;overflow:hidden;max-width:110px"><div style="{{ r.barStyle }}"></div></div>
+                <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ r.size }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0b0b0d;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #27272a">
+          <span style="font:700 14px/1 'DM Sans',sans-serif">Live orders</span>
+          <span style="font:500 10px/1 'JetBrains Mono',monospace;color:#71717a">client.api.fetchOrders</span>
+          <div style="flex:1"></div>
+          <span style="display:flex;align-items:center;gap:7px;font:500 10px/1 'JetBrains Mono',monospace;color:#a1a1aa"><span style="width:6px;height:6px;border-radius:99px;background:#4ade80;animation:vcPulse 2s infinite"></span>STREAMING</span>
+        </div>
+        <sc-for list="{{ orders }}" as="o" hint-placeholder-count="7">
+          <div style="{{ o.rowStyle }}">
+            <span style="{{ o.sideStyle }}">{{ o.side }}</span>
+            <span style="font:700 12px/1 'JetBrains Mono',monospace;min-width:150px">{{ o.instrument }}</span>
+            <span style="font:400 11px/1 'JetBrains Mono',monospace;color:#a1a1aa;min-width:80px">{{ o.size }}</span>
+            <span style="font:500 12px/1 'JetBrains Mono',monospace;min-width:90px">{{ o.px }}</span>
+            <span style="{{ o.statusStyle }}">{{ o.status }}</span>
+            <div style="flex:1"></div>
+            <span style="font:400 10px/1 'JetBrains Mono',monospace;color:#52525b">{{ o.time }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <aside style="display:flex;flex-direction:column;gap:16px;position:sticky;top:88px">
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0f0f11;overflow:hidden">
+        <div style="padding:14px 16px;border-bottom:1px solid #27272a;display:flex;align-items:center;gap:10px">
+          <span style="font:700 14px/1 'DM Sans',sans-serif">Duel attack</span>
+          <span style="font:500 9px/1 'JetBrains Mono',monospace;letter-spacing:.1em;color:#09090b;background:#c8ff00;border-radius:5px;padding:5px 6px">4 LEGS</span>
+        </div>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ legs }}" as="l" hint-placeholder-count="4">
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #1c1c20">
+              <span style="{{ l.sideStyle }}">{{ l.side }}</span>
+              <div style="min-width:0;flex:1">
+                <div style="font:700 12px/1 'JetBrains Mono',monospace">{{ l.label }}</div>
+                <div style="margin-top:5px;font:400 10px/1 'JetBrains Mono',monospace;color:#71717a">{{ l.meta }}</div>
+              </div>
+              <span style="font:500 12px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ l.prem }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <sc-for list="{{ slipRows }}" as="r" hint-placeholder-count="3">
+            <div style="display:flex;justify-content:space-between;font:500 11.5px/1 'JetBrains Mono',monospace;color:#71717a">
+              <span>{{ r.label }}</span><span style="{{ r.style }}">{{ r.value }}</span>
+            </div>
+          </sc-for>
+          <button style="height:42px;margin-top:6px;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 13px/1 'DM Sans',sans-serif;cursor:pointer">Launch attack · 0.412 ETH</button>
+          <span style="font:400 10.5px/1.5 'JetBrains Mono',monospace;color:#52525b;text-align:center">Read-only preview. No signer connected.</span>
+        </div>
+      </div>
+
+      <div style="border:1px solid #27272a;border-radius:12px;background:#0f0f11;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #27272a">
+          <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#c8ff00);display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;color:#09090b">AI</div>
+          <span style="font:700 13px/1 'DM Sans',sans-serif">Coach reads your slip</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;padding:16px">
+          <sc-for list="{{ slipNotes }}" as="n" hint-placeholder-count="3">
+            <div style="border:1px solid #27272a;border-radius:9px;background:#131316;padding:12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="{{ n.tagStyle }}">{{ n.tag }}</span>
+                <span style="font:700 11.5px/1 'DM Sans',sans-serif">{{ n.title }}</span>
+              </div>
+              <div style="margin-top:8px;font:400 11.5px/1.55 'DM Sans',sans-serif;color:#a1a1aa;text-wrap:pretty">{{ n.body }}</div>
+            </div>
+          </sc-for>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <sc-for list="{{ askChips }}" as="c" hint-placeholder-count="3">
+              <button style="height:28px;padding:0 10px;border:1px solid #3f3f46;border-radius:99px;background:transparent;color:#a1a1aa;font:500 11px/1 'DM Sans',sans-serif;cursor:pointer">{{ c.label }}</button>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+  </sc-if>
+
+  <!-- ==================== CASES ==================== -->
+  <sc-if value="{{ isCases }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:28px;max-width:1720px;margin:0 auto">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:20px">
+      <h2 style="margin:0;font:700 19px/1 'DM Sans',sans-serif;letter-spacing:-.02em">Rewards system</h2>
+      <span style="font:400 12px/1 'DM Sans',sans-serif;color:#71717a">Each reward case is a distribution over strikes, generated locally by client.utils.calculatePayout</span>
+    </div>
+    <div data-tilt-scope style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px">
+      <sc-for list="{{ library }}" as="c" hint-placeholder-count="8">
+        <div data-tilt style="position:relative;height:320px;border:1px solid #27272a;border-radius:16px;overflow:hidden;background:#0f0f11;cursor:pointer;perspective:900px">
+          <div style="{{ c.wallStyle }}"></div>
+          <div data-tilt-layer style="position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;padding:18px;transform:translateZ(46px)">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <div style="{{ c.tagStyle }}">{{ c.tag }}</div>
+              <div style="font:500 10px/1 'JetBrains Mono',monospace;color:#a1a1aa">{{ c.legs }}</div>
+            </div>
+            <div>
+              <div style="display:flex;align-items:flex-end;gap:3px;height:56px;margin-bottom:14px">
+                <sc-for list="{{ c.bars }}" as="b" hint-placeholder-count="12">
+                  <div style="{{ b.style }}"></div>
+                </sc-for>
+              </div>
+              <div style="font:700 21px/1.1 'DM Sans',sans-serif;letter-spacing:-.02em">{{ c.name }}</div>
+              <div style="margin-top:7px;font:400 11.5px/1.5 'DM Sans',sans-serif;color:#a1a1aa;text-wrap:pretty">{{ c.blurb }}</div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:16px">
+                <button onClick="{{ goDraft }}" style="height:36px;flex:1;border:none;border-radius:8px;background:#c8ff00;color:#09090b;font:700 12px/1 'DM Sans',sans-serif;cursor:pointer">Open · {{ c.cost }}</button>
+                <button style="height:36px;padding:0 12px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:500 12px/1 'DM Sans',sans-serif;cursor:pointer">Odds</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <footer style="display:flex;align-items:center;gap:16px;padding:20px 28px;border-top:1px solid #1c1c20;margin-top:20px;font:400 11px/1 'JetBrains Mono',monospace;color:#52525b">
+    <span>THETHADUEL · prototype</span><span>·</span><span>@thetanuts-finance/thetanuts-client 0.2.5</span><span>·</span><span>Base mainnet 8453</span>
+    <div style="flex:1"></div><span>mock data — read only</span>
+  </footer>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1600,&quot;height&quot;:1000}}">
+const MONO = "'JetBrains Mono',monospace";
+
+class Component extends DCLogic {
+  state = {
+    tab: 'lobby', filter: 'All', pool: 'ALL', asset: 'ETH', wallet: false,
+    roomFilter: '1v1', prize: 5.0, published: false, started: false,
+    picks: [], bans: [], legDir: {}, tick: 0,
+    market: 'MIXED', excluded: [], picksMax: 3, chartCount: 5, tapeSpeed: 64,
+    prizeText: '5.00', lobbyName: 'Room #4471',
+    auto: null, seed: 0, oppPicks: [], oppBans: [], oppDir: {}
+  };
+
+  studySalt() { return 1 + this.state.seed * 3; }
+  fightSalt() { return 2 + this.state.seed * 3; }
+
+  // ---------- autopilot: random demo / spectate bots ----------
+  stopAuto() {
+    (this._autoQ || []).forEach(clearTimeout);
+    this._autoQ = [];
+    if (this._autoPoll) clearInterval(this._autoPoll);
+    this._autoPoll = null;
+    if (this.state.auto) this.setState({ auto: null });
+  }
+
+  botPick(side) {
+    this.setState(s => {
+      const taken = s.picks.concat(s.oppPicks, s.bans, s.oppBans);
+      const avail = this.activeUniverse().map(u => u.sym).filter(x => taken.indexOf(x) < 0);
+      if (!avail.length) return {};
+      const sym = avail[Math.floor(Math.random() * avail.length)];
+      return side === 'me'
+        ? { picks: s.picks.length < s.picksMax ? s.picks.concat([sym]) : s.picks }
+        : { oppPicks: s.oppPicks.length < s.picksMax ? s.oppPicks.concat([sym]) : s.oppPicks };
+    });
+  }
+
+  botBan(side) {
+    this.setState(s => {
+      const taken = s.picks.concat(s.oppPicks, s.bans, s.oppBans);
+      const avail = this.activeUniverse().map(u => u.sym).filter(x => taken.indexOf(x) < 0);
+      if (!avail.length) return {};
+      const sym = avail[Math.floor(Math.random() * avail.length)];
+      return side === 'me' ? { bans: s.bans.concat([sym]) } : { oppBans: s.oppBans.concat([sym]) };
+    });
+  }
+
+  runAuto(mode) {
+    this.stopAuto();
+    const q = [];
+    let t = 500;
+    const at = (fn, ms) => { q.push(setTimeout(fn, t)); t += ms; };
+    this.setState({
+      auto: mode, seed: Math.floor(Math.random() * 100000), published: true, started: false,
+      picks: [], bans: [], oppPicks: [], oppBans: [], legDir: {}, oppDir: {}, tick: 0, tab: 'draft',
+      lobbyName: mode === 'spectate' ? 'Room #' + (4000 + Math.floor(Math.random() * 900)) : this.state.lobbyName
+    });
+    const n = this.state.picksMax;
+    for (let i = 0; i < n; i++) {
+      at(() => this.botPick('me'), 620);
+      at(() => this.botPick('opp'), 620);
+    }
+    at(() => this.botBan('me'), 560);
+    at(() => this.botBan('opp'), 560);
+    at(() => this.botBan('me'), 560);
+    at(() => this.botBan('opp'), 800);
+    at(() => this.setState({ started: true }), 900);
+    at(() => this.setState({ tab: 'study' }), 3400);
+    at(() => this.setState({ tab: 'pick', tick: 0 }), 600);
+    for (let i = 0; i < n; i++) {
+      at(() => this.setState(s => {
+        const legs = this.myLegs(); const l = legs[i]; if (!l) return {};
+        return { legDir: Object.assign({}, s.legDir, { [l.sym]: Math.random() < 0.5 ? 'over' : 'under' }) };
+      }), 520);
+    }
+    at(() => this.setState(s => {
+      const d = {};
+      s.oppPicks.forEach(sym => { d[sym] = Math.random() < 0.5 ? 'over' : 'under'; });
+      return { oppDir: d };
+    }), 700);
+    at(() => this.setState({ tab: 'live', tick: 0 }), 200);
+    at(() => {
+      this._autoPoll = setInterval(() => {
+        const step = this.state.tapeSpeed === 32 ? 2 : this.state.tapeSpeed === 128 ? 5 : 3;
+        if (this.state.tab === 'live' && this.state.tick * step >= this.TAPE_LEN) {
+          clearInterval(this._autoPoll); this._autoPoll = null;
+          this._autoQ.push(setTimeout(() => this.setState({ tab: 'result', auto: null }), 1400));
+        }
+      }, 200);
+    }, 0);
+    this._autoQ = q;
+  }
+
+  UNIVERSE = [
+    { sym: 'NVDA', name: 'Nvidia', sector: 'SEMIS', mkt: 'STOCK', px: 118.40, t: 4.0, vol: 0.030 },
+    { sym: 'AAPL', name: 'Apple', sector: 'TECH', mkt: 'STOCK', px: 232.10, t: 2.0, vol: 0.016 },
+    { sym: 'TSLA', name: 'Tesla', sector: 'AUTO', mkt: 'STOCK', px: 248.60, t: 5.0, vol: 0.034 },
+    { sym: 'XOM', name: 'Exxon', sector: 'ENERGY', mkt: 'STOCK', px: 112.30, t: 1.5, vol: 0.014 },
+    { sym: 'JPM', name: 'JPMorgan', sector: 'FIN', mkt: 'STOCK', px: 214.80, t: 1.5, vol: 0.013 },
+    { sym: 'AMD', name: 'AMD', sector: 'SEMIS', mkt: 'STOCK', px: 158.20, t: 4.5, vol: 0.031 },
+    { sym: 'META', name: 'Meta', sector: 'TECH', mkt: 'STOCK', px: 604.50, t: 2.5, vol: 0.019 },
+    { sym: 'GLD', name: 'Gold ETF', sector: 'METALS', mkt: 'STOCK', px: 246.10, t: 1.0, vol: 0.009 },
+    { sym: 'COIN', name: 'Coinbase', sector: 'EQUITY-BETA', mkt: 'STOCK', px: 188.70, t: 6.0, vol: 0.040 },
+    { sym: 'BTC', name: 'Bitcoin', sector: 'L1', mkt: 'CRYPTO', px: 96410, t: 4.0, vol: 0.028 },
+    { sym: 'ETH', name: 'Ethereum', sector: 'L1', mkt: 'CRYPTO', px: 4182.60, t: 5.0, vol: 0.036 },
+    { sym: 'SOL', name: 'Solana', sector: 'L1', mkt: 'CRYPTO', px: 214.40, t: 7.0, vol: 0.052 },
+    { sym: 'ARB', name: 'Arbitrum', sector: 'L2', mkt: 'CRYPTO', px: 0.842, t: 9.0, vol: 0.061 },
+    { sym: 'LINK', name: 'Chainlink', sector: 'ORACLE', mkt: 'CRYPTO', px: 22.86, t: 6.5, vol: 0.048 },
+    { sym: 'UNI', name: 'Uniswap', sector: 'DEFI', mkt: 'CRYPTO', px: 13.42, t: 8.0, vol: 0.055 },
+    { sym: 'AAVE', name: 'Aave', sector: 'DEFI', mkt: 'CRYPTO', px: 178.30, t: 8.5, vol: 0.058 },
+    { sym: 'DOGE', name: 'Dogecoin', sector: 'MEME', mkt: 'CRYPTO', px: 0.164, t: 12.0, vol: 0.074 },
+    { sym: 'PEPE', name: 'Pepe', sector: 'MEME', mkt: 'CRYPTO', px: 0.0000112, t: 16.0, vol: 0.092 }
+  ];
+
+  activeUniverse() {
+    const m = this.state.market;
+    const ex = this.state.excluded;
+    return this.UNIVERSE.filter(u => (m === 'MIXED' || u.mkt === m) && ex.indexOf(u.sym) < 0);
+  }
+
+  oppLegs() {
+    const n = this.state.picksMax;
+    const mine = this.myLegs().map(l => l.sym);
+    const banned = this.state.bans.concat(this.state.oppBans);
+    const out = [];
+    this.state.oppPicks.slice(0, n).forEach((sym, i) => {
+      out.push({ sym: sym, dir: this.state.oppDir[sym] || (i % 2 === 0 ? 'over' : 'under'), t: this.meta(sym).t });
+    });
+    const avail = this.activeUniverse().filter(u => mine.indexOf(u.sym) < 0 && banned.indexOf(u.sym) < 0 && !out.some(o => o.sym === u.sym));
+    for (let i = 0; i < avail.length && out.length < n; i++) {
+      const u = avail[(i * 3 + 1) % avail.length];
+      if (out.some(o => o.sym === u.sym)) continue;
+      out.push({ sym: u.sym, dir: this.state.oppDir[u.sym] || (i % 2 === 0 ? 'over' : 'under'), t: u.t });
+    }
+    return out;
+  }
+
+  TAPE_LEN = 200;
+
+  fmtPx(v) {
+    if (v < 0.001) return v.toExponential(2);
+    if (v < 1) return v.toFixed(4);
+    if (v < 1000) return v.toFixed(2);
+    return Math.round(v).toLocaleString('en-US');
+  }
+
+  meta(sym) {
+    for (const u of this.UNIVERSE) if (u.sym === sym) return u;
+    return this.UNIVERSE[0];
+  }
+
+  // Seeded random walk — deterministic per symbol, so the same tape replays.
+  series(sym, salt) {
+    const key = sym + ':' + salt;
+    this._series = this._series || {};
+    if (this._series[key]) return this._series[key];
+    const u = this.meta(sym);
+    let s = 0;
+    for (let i = 0; i < sym.length; i++) s = (s * 31 + sym.charCodeAt(i)) >>> 0;
+    s = (s + salt * 7919) >>> 0;
+    const rand = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+    const drift = (rand() - 0.45) * 0.0022;
+    const out = [u.px];
+    for (let i = 1; i < this.TAPE_LEN; i++) {
+      const shock = (rand() - 0.5) * 2 * u.vol;
+      out.push(Math.max(1, out[i - 1] * (1 + drift + shock)));
+    }
+    this._series[key] = out;
+    return out;
+  }
+
+  windowLabel(sym, salt) {
+    const M = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    let s = salt;
+    for (let i = 0; i < sym.length; i++) s = (s * 33 + sym.charCodeAt(i)) >>> 0;
+    const m = s % 12, y = 2017 + (s >> 4) % 8;
+    return M[m] + ' ' + y + ' · ' + (m + 3 > 11 ? M[(m + 3) % 12] + ' ' + (y + 1) : M[m + 3] + ' ' + y);
+  }
+
+  geom(data, count, w, h, pad) {
+    const pts = data.slice(0, Math.max(2, count));
+    let lo = Infinity, hi = -Infinity;
+    for (const v of pts) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    const span = hi - lo || 1;
+    const X = i => (i / (Math.max(2, count) - 1)) * w;
+    const Y = v => h - pad - ((v - lo) / span) * (h - pad * 2);
+    const path = 'M' + pts.map((v, i) => X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join('L');
+    return {
+      path,
+      fill: path + 'L' + X(pts.length - 1).toFixed(1) + ',' + h + 'L0,' + h + 'Z',
+      baseY: Y(data[0]).toFixed(1),
+      headX: X(pts.length - 1).toFixed(1),
+      headY: Y(pts[pts.length - 1]).toFixed(1),
+      last: pts[pts.length - 1]
+    };
+  }
+
+  myLegs() {
+    const n = this.state.picksMax;
+    const av = this.activeUniverse();
+    const picked = this.state.picks.slice(0, n).filter(s => av.some(u => u.sym === s));
+    const syms = picked.concat(av.map(u => u.sym).filter(s => picked.indexOf(s) < 0)).slice(0, n);
+    return syms.map(sym => {
+      const u = this.meta(sym);
+      return { sym: sym, dir: this.state.legDir[sym] || 'over', t: u.t, sector: u.sector };
+    });
+  }
+
+  arena() {
+    const cap = this.state.chartCount;
+    const out = [];
+    this.myLegs().concat(this.oppLegs()).forEach(l => { if (out.indexOf(l.sym) < 0) out.push(l.sym); });
+    for (const u of this.activeUniverse()) { if (out.length >= cap) break; if (out.indexOf(u.sym) < 0) out.push(u.sym); }
+    return out.slice(0, cap);
+  }
+
+  pctAt(sym, pos) {
+    const s = this.series(sym, this.fightSalt());
+    const p = s[Math.max(0, Math.min(s.length - 1, pos - 1))];
+    return ((p - s[0]) / s[0]) * 100;
+  }
+
+  legState(leg, pos) {
+    const pct = this.pctAt(leg.sym, pos);
+    const won = leg.dir === 'over' ? pct >= leg.t : pct <= -leg.t;
+    return { pct: pct, won: won };
+  }
+
+  componentDidMount() {
+    this._tilt = (e) => {
+      const card = e.target.closest && e.target.closest('[data-tilt]');
+      document.querySelectorAll('[data-tilt]').forEach(el => {
+        if (el !== card) { el.style.transform = ''; el.style.boxShadow = '';
+          el.querySelectorAll('[data-tilt-layer]').forEach(l => { l.style.transform = l.dataset.z ? 'translateZ(' + l.dataset.z + 'px)' : l.style.transform; });
+        }
+      });
+      if (!card) return;
+      const r = card.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5;
+      const py = (e.clientY - r.top) / r.height - 0.5;
+      card.style.transform = 'perspective(900px) rotateY(' + (px * 13).toFixed(2) + 'deg) rotateX(' + (-py * 13).toFixed(2) + 'deg) scale(1.025)';
+      card.style.boxShadow = (-px * 26).toFixed(1) + 'px ' + (-py * 26 + 14).toFixed(1) + 'px 42px rgba(0,0,0,.6)';
+      const layer = card.querySelector('[data-tilt-layer]');
+      if (layer) layer.style.transform = 'translateZ(46px) translate3d(' + (-px * 18).toFixed(1) + 'px,' + (-py * 14).toFixed(1) + 'px,0)';
+      const wall = card.querySelector('[data-wall]');
+      if (wall) wall.style.transform = 'translate3d(' + (px * 26).toFixed(1) + 'px,' + (py * 20).toFixed(1) + 'px,0) scale(1.14)';
+    };
+    this._leave = () => {
+      document.querySelectorAll('[data-tilt]').forEach(el => { el.style.transform = ''; el.style.boxShadow = ''; });
+      document.querySelectorAll('[data-wall]').forEach(el => { el.style.transform = ''; });
+    };
+    window.addEventListener('mousemove', this._tilt);
+    window.addEventListener('mouseleave', this._leave);
+
+    this._timer = setInterval(() => {
+      const t = this.state.tab;
+      if (t === 'pick' || t === 'live') this.setState(s => ({ tick: s.tick + 1 }));
+    }, 120);
+  }
+  componentWillUnmount() {
+    this.stopAuto();
+    if (this._timer) clearInterval(this._timer);
+    window.removeEventListener('mousemove', this._tilt);
+    window.removeEventListener('mouseleave', this._leave);
+  }
+
+  tabBtn(active) {
+    return 'height:32px;padding:0 13px;border:none;border-radius:8px;cursor:pointer;font:' + (active ? '700' : '500') + ' 12.5px/1 \'DM Sans\',sans-serif;' +
+      (active ? 'background:#1f1f23;color:#fafafa' : 'background:transparent;color:#a1a1aa');
+  }
+  pill(active) {
+    return 'height:26px;padding:0 10px;border-radius:99px;cursor:pointer;font:500 11px/1 ' + MONO + ';border:1px solid ' +
+      (active ? 'rgba(200,255,0,.4);background:rgba(200,255,0,.12);color:#c8ff00' : '#27272a;background:transparent;color:#a1a1aa');
+  }
+  wall(a, b, deg) {
+    return 'position:absolute;inset:-10%;background:linear-gradient(' + deg + 'deg,' + a + ' 0%,#0d0d0f 62%),radial-gradient(60% 55% at 70% 22%,' + b + ',transparent 70%);transition:transform .2s cubic-bezier(.2,.8,.2,1)';
+  }
+  tag(color) {
+    return 'display:inline-flex;align-items:center;font:500 9px/1 ' + MONO + ';letter-spacing:.12em;padding:6px 8px;border-radius:6px;border:1px solid ' + color + '55;background:' + color + '1f;color:' + color;
+  }
+
+  // --- local payoff math (mirrors client.utils.calculatePayout shape) ---
+  payoff(s) {
+    const legs = [
+      { type: 'CALL', k: 4300, q: 2, side: 1 },
+      { type: 'CALL', k: 4700, q: 2, side: -1 },
+      { type: 'PUT', k: 3900, q: 1, side: 1 },
+      { type: 'PUT', k: 3600, q: 1, side: -1 }
+    ];
+    const mult = 0.0023275; // Ξ per $1 of intrinsic per contract
+    const debit = 0.412;
+    let v = 0;
+    for (const l of legs) {
+      const intr = l.type === 'CALL' ? Math.max(0, s - l.k) : Math.max(0, l.k - s);
+      v += l.side * l.q * intr * mult;
+    }
+    return v - debit;
+  }
+
+  renderVals() {
+    const t = this.state.tab;
+    const set = (tab) => () => { this.stopAuto(); this.setState({ tab }); };
+    const spectating = this.state.auto === 'spectate';
+    const p1Name = spectating ? 'mira.base' : 'You';
+    const p1Init = spectating ? 'MI' : 'YO';
+
+    const FLOW = ['battles', 'create', 'draft', 'study', 'pick', 'live', 'result'];
+    const tabs = [['lobby', 'Home'], ['battles', 'Battles'], ['parlay', 'Duel attack'], ['cases', 'Rewards']]
+      .map(([k, label]) => ({
+        label,
+        style: this.tabBtn(k === 'battles' ? FLOW.indexOf(t) >= 0 : t === k),
+        go: set(k)
+      }));
+
+    const filters = ['All', '1v1', '2v2', 'Ranger'].map(label => ({
+      label, style: this.pill(this.state.filter === label), go: () => this.setState({ filter: label })
+    }));
+    const secs = [];
+    this.activeUniverse().forEach(u => { if (secs.indexOf(u.sector) < 0) secs.push(u.sector); });
+    const poolFilters = ['ALL'].concat(secs.slice(0, 5)).map(label => ({
+      label, style: this.pill(this.state.pool === label), go: () => this.setState({ pool: label })
+    }));
+    const assetTabs = ['ETH', 'BTC'].map(label => ({
+      label, style: this.pill(this.state.asset === label), go: () => this.setState({ asset: label })
+    }));
+
+    const avatar = (initial, bg) => ({ initial, style: 'width:26px;height:26px;border-radius:8px;background:' + bg + ';display:grid;place-items:center;font:700 10px/1 \'DM Sans\',sans-serif;color:#09090b' });
+    const chip = (label, c) => ({ label, style: 'flex:none;font:500 10px/1 ' + MONO + ';padding:6px 8px;border-radius:6px;border:1px solid #27272a;background:#131316;color:' + c });
+
+    const battleRaw = [
+      { mode: '1v1', status: 'DRAFTING', sc: '#c8ff00', rounds: '6 picks · 2 bans', pot: '4.80 ETH', entry: '2.40', chips: [['ETH VOL BOX', '#a1a1aa'], ['27 SEP', '#71717a']], players: [['YO', '#6366f1'], ['KZ', '#f87171']], slots: '2/2', cta: 'Spectate', hot: true },
+      { mode: '2v2', status: 'OPEN', sc: '#4ade80', rounds: '8 picks · 4 bans', pot: '12.00 ETH', entry: '3.00', chips: [['BTC RANGER', '#f59e0b'], ['ETH SKEW', '#a1a1aa'], ['04 OCT', '#71717a']], players: [['MI', '#4ade80'], ['DR', '#c8ff00'], ['LX', '#a78bfa']], slots: '3/4', cta: 'Join' },
+      { mode: '1v1', status: 'OPEN', sc: '#4ade80', rounds: '4 picks · 2 bans', pot: '1.20 ETH', entry: '0.60', chips: [['ETH WEEKLY', '#a1a1aa'], ['12 SEP', '#71717a']], players: [['SN', '#38bdf8']], slots: '1/2', cta: 'Join' },
+      { mode: '1v1v1v1', status: 'OPEN', sc: '#4ade80', rounds: '12 picks · 0 bans', pot: '8.00 ETH', entry: '2.00', chips: [['MIXED VOL', '#a78bfa'], ['BTC + ETH', '#f59e0b'], ['27 SEP', '#71717a']], players: [['QB', '#f472b6'], ['ZE', '#c8ff00']], slots: '2/4', cta: 'Join' },
+      { mode: '2v2', status: 'SETTLING', sc: '#f59e0b', rounds: '8 picks · 4 bans', pot: '6.40 ETH', entry: '1.60', chips: [['ETH VOL BOX', '#a1a1aa'], ['05 SEP', '#71717a']], players: [['AR', '#38bdf8'], ['TO', '#f87171'], ['VN', '#4ade80'], ['JP', '#a78bfa']], slots: '4/4', cta: 'Result' },
+      { mode: '1v1', status: 'OPEN', sc: '#4ade80', rounds: '6 picks · 2 bans', pot: '20.00 ETH', entry: '10.00', chips: [['WHALE BOX', '#c8ff00'], ['27 SEP', '#71717a']], players: [['0X', '#c8ff00']], slots: '1/2', cta: 'Join' }
+    ];
+    const battles = battleRaw.map((b, i) => ({
+      mode: b.mode, status: b.status, rounds: b.rounds, pot: b.pot, entry: b.entry, slots: b.slots, cta: b.cta,
+      rowStyle: 'display:grid;grid-template-columns:80px minmax(248px,1.4fr) minmax(118px,1fr) minmax(96px,.8fr) minmax(124px,1.1fr) 104px;gap:12px;align-items:center;padding:15px 16px;min-width:760px;border-bottom:1px solid #1a1a1e;background:' + (b.hot ? 'rgba(200,255,0,.035)' : (i % 2 ? '#0d0d10' : 'transparent')),
+      statusStyle: 'font:500 9px/1 ' + MONO + ';letter-spacing:.11em;color:' + b.sc,
+      chips: b.chips.map(c => chip(c[0], c[1])),
+      players: b.players.map(p => avatar(p[0], p[1])),
+      ctaStyle: 'height:32px;border-radius:8px;cursor:pointer;font:700 12px/1 \'DM Sans\',sans-serif;' + (b.cta === 'Join'
+        ? 'border:none;background:#c8ff00;color:#09090b'
+        : 'border:1px solid #3f3f46;background:transparent;color:#fafafa')
+    }));
+
+    const topWins = [
+      { rank: '01', payout: '+46.0 Ξ', mult: '4.60×', who: '0xsilo', structure: 'WHALE BOX · 8 legs · 27 sep' },
+      { rank: '02', payout: '+12.4 Ξ', mult: '8.20×', who: 'kazuo.eth', structure: 'SKEW HUNTER · 6 legs · 27 sep' },
+      { rank: '03', payout: '+9.85 Ξ', mult: '3.10×', who: 'mira.base', structure: 'ETH VOL BOX · 4 legs · 27 sep' }
+    ].map((w, i) => ({
+      rank: w.rank, payout: w.payout, mult: w.mult, who: w.who, structure: w.structure, isChamp: i === 0,
+      style: 'padding:16px;background:' + (i === 0 ? 'linear-gradient(180deg,rgba(200,255,0,.09),transparent 70%)' : 'transparent') + ';border-right:' + (i < 2 ? '1px solid #1c1c20' : 'none'),
+      rankStyle: 'font:700 10px/1 ' + MONO + ';letter-spacing:.1em;padding:5px 7px;border-radius:5px;background:' + (i === 0 ? '#c8ff00;color:#09090b' : 'rgba(255,255,255,.06);color:#a1a1aa')
+    }));
+
+    const duels = [
+      { who: 'kazuo.eth', initial: 'KZ', bg: '#f87171', mode: '1v1', payout: '+1.42 Ξ', structure: 'ETH 4300/4700 CS', win: true },
+      { who: 'lexa', initial: 'LX', bg: '#a78bfa', mode: '2v2', payout: '+0.86 Ξ', structure: 'BTC RANGER 90–104K', win: true },
+      { who: '0xdrift', initial: 'DR', bg: '#c8ff00', mode: '1v1', payout: '+3.90 Ξ', structure: 'SKEW HUNTER 6L', win: true },
+      { who: 'tonoi', initial: 'TO', bg: '#38bdf8', mode: '1v1', payout: '−0.28 Ξ', structure: 'ETH 3900 P LADDER', win: false },
+      { who: 'saph.base', initial: 'SP', bg: '#4ade80', mode: '1v1v1v1', payout: '+2.05 Ξ', structure: 'MIXED VOL 5L', win: true },
+      { who: 'vane', initial: 'VN', bg: '#f472b6', mode: '2v2', payout: '+0.44 Ξ', structure: 'WEEKLY GRIND 3L', win: true },
+      { who: 'qbit', initial: 'QB', bg: '#fbbf24', mode: '1v1', payout: '−1.60 Ξ', structure: 'GAMMA SPRINT 4L', win: false },
+      { who: 'arlo.eth', initial: 'AR', bg: '#6366f1', mode: '1v1', payout: '+5.20 Ξ', structure: 'WHALE BOX 8L', win: true },
+      { who: 'noor', initial: 'NO', bg: '#2dd4bf', mode: '2v2', payout: '+0.72 Ξ', structure: 'DOWNSIDE VAULT 2L', win: true },
+      { who: 'zeph', initial: 'ZE', bg: '#c8ff00', mode: '1v1', payout: '+1.18 Ξ', structure: 'DUAL ASSET 5L', win: true },
+      { who: 'mira.base', initial: 'MI', bg: '#4ade80', mode: '1v1', payout: '+0.31 Ξ', structure: 'ETH WEEKLY 3L', win: true },
+      { who: 'jpx', initial: 'JP', bg: '#f87171', mode: '2v2', payout: '−0.95 Ξ', structure: 'BTC 88K P SPREAD', win: false }
+    ];
+    const liveWins = duels.concat(duels).map(w => ({
+      who: w.who, initial: w.initial, mode: w.mode, payout: w.payout, structure: w.structure,
+      payoutStyle: 'margin-top:14px;font:700 15px/1 ' + MONO + ';color:' + (w.win ? '#c8ff00' : '#f87171'),
+      style: 'flex:none;width:172px;padding:14px;border-right:1px solid #1c1c20;background:' + (w.win ? 'transparent' : 'rgba(248,113,113,.045)'),
+      avatarStyle: 'width:22px;height:22px;border-radius:7px;flex:none;display:grid;place-items:center;font:700 9px/1 \'DM Sans\',sans-serif;color:#09090b;background:' + w.bg
+    }));
+
+    const caseDefs = [
+      { name: 'ETH Vol Box', tag: 'STRUCTURED', tc: '#c8ff00', legs: '4 LEGS', blurb: 'Long call spread against a short put spread. Wins on drift, dies on chop.', cost: '0.41 Ξ', max: '1.86 Ξ', w: ['#1c2a12', 'rgba(200,255,0,.22)', 145] },
+      { name: 'BTC Ranger', tag: 'BASE ONLY', tc: '#f59e0b', legs: '2 LEGS', blurb: 'Pays if BTC stays inside the band until expiry. Reverts on breakout.', cost: '0.28 Ξ', max: '1.12 Ξ', w: ['#2a1f0d', 'rgba(245,158,11,.22)', 120] },
+      { name: 'Skew Hunter', tag: 'HIGH VAR', tc: '#a78bfa', legs: '6 LEGS', blurb: 'Buys the wings where MM skew is fattest. Rare, large outcomes.', cost: '0.64 Ξ', max: '5.40 Ξ', w: ['#221436', 'rgba(167,139,250,.24)', 165] },
+      { name: 'Weekly Grind', tag: 'LOW VAR', tc: '#38bdf8', legs: '3 LEGS', blurb: 'Short-dated theta collection. Small, frequent, boring wins.', cost: '0.12 Ξ', max: '0.31 Ξ', w: ['#0c2230', 'rgba(56,189,248,.2)', 130] }
+    ];
+    const mkCase = (c) => ({
+      name: c.name, tag: c.tag, legs: c.legs, blurb: c.blurb, cost: c.cost, max: c.max,
+      wallStyle: this.wall(c.w[0], c.w[1], c.w[2]), tagStyle: this.tag(c.tc)
+    });
+    const cases = caseDefs.map(mkCase);
+
+    const library = caseDefs.concat([
+      { name: 'Gamma Sprint', tag: 'STRUCTURED', tc: '#c8ff00', legs: '4 LEGS', blurb: 'Straddle bought two days before expiry. Pure realized-vol bet.', cost: '0.33 Ξ', max: '2.40 Ξ', w: ['#1c2a12', 'rgba(200,255,0,.18)', 200] },
+      { name: 'Downside Vault', tag: 'HEDGE', tc: '#f87171', legs: '2 LEGS', blurb: 'Put ladder financed by a covered call. Insurance with a coupon.', cost: '0.19 Ξ', max: '0.88 Ξ', w: ['#2e1215', 'rgba(248,113,113,.2)', 110] },
+      { name: 'Dual Asset', tag: 'MIXED', tc: '#a1a1aa', legs: '5 LEGS', blurb: 'ETH calls against BTC puts. Trades the correlation, not direction.', cost: '0.52 Ξ', max: '3.10 Ξ', w: ['#1a1a1f', 'rgba(161,161,170,.16)', 155] },
+      { name: 'Whale Box', tag: 'WHALE', tc: '#c8ff00', legs: '8 LEGS', blurb: '10 ETH entry. Full-book draft, no bans, winner takes the pot.', cost: '10.0 Ξ', max: '46.0 Ξ', w: ['#252a10', 'rgba(200,255,0,.3)', 175] }
+    ]).map(c => {
+      const seed = c.name.length * 7;
+      const bars = Array.from({ length: 14 }, (_, i) => {
+        const h = 16 + Math.abs(Math.sin((i + seed) * 0.9)) * 84;
+        const hot = h > 66;
+        return { style: 'flex:1;height:' + h.toFixed(0) + '%;border-radius:2px;background:' + (hot ? c.tc : '#2a2a30') + ';opacity:' + (hot ? '.9' : '.7') };
+      });
+      return Object.assign(mkCase(c), { bars });
+    });
+
+    const results = [
+      { who: 'kazuo.eth', case: 'ETH VOL BOX', pnl: '+1.42 Ξ', win: true },
+      { who: 'mira.base', case: 'BTC RANGER', pnl: '−0.28 Ξ', win: false },
+      { who: '0xdrift', case: 'SKEW HUNTER', pnl: '+3.90 Ξ', win: true },
+      { who: 'lexa', case: 'WEEKLY GRIND', pnl: '+0.06 Ξ', win: true },
+      { who: 'tonoi', case: 'WHALE BOX', pnl: '−10.0 Ξ', win: false }
+    ].map(r => ({
+      who: r.who, case: r.case, pnl: r.pnl,
+      dotStyle: 'width:6px;height:6px;border-radius:99px;background:' + (r.win ? '#4ade80' : '#f87171'),
+      pnlStyle: 'font:700 11.5px/1 ' + MONO + ';color:' + (r.win ? '#4ade80' : '#f87171')
+    }));
+
+    const tips = [
+      { tag: 'LESSON 04', title: 'A parlay is not a portfolio', body: 'Legs in a case share one expiry, so their payoffs correlate. Two long calls are one bet in two coats.' },
+      { tag: 'READ', title: 'Skew is the draft board', body: 'When put IV sits 6+ points above calls, the pool is pricing downside. Drafting cheap calls is where the edge hides.' },
+      { tag: 'BANKROLL', title: 'Cap the entry at 5%', body: 'Whale Box is 10 ETH. On a 2.4 ETH bankroll that is the whole book on one expiry.' }
+    ];
+
+    const draftSteps = [
+      { kind: 'BAN', label: 'YOU', s: 'done' }, { kind: 'BAN', label: 'KZ', s: 'active' },
+      { kind: 'PICK', label: 'KZ', s: 'next' }, { kind: 'PICK', label: 'YOU', s: 'idle' },
+      { kind: 'PICK', label: 'YOU', s: 'idle' }, { kind: 'PICK', label: 'KZ', s: 'idle' },
+      { kind: 'BAN', label: 'YOU', s: 'idle' }, { kind: 'PICK', label: 'KZ', s: 'idle' },
+      { kind: 'PICK', label: 'YOU', s: 'idle' }, { kind: 'LOCK', label: '—', s: 'idle' }
+    ].map(s => {
+      const bg = { done: '#1f1f23;color:#52525b;border:1px solid #27272a', active: 'rgba(200,255,0,.14);color:#c8ff00;border:1px solid rgba(200,255,0,.45)', next: '#131316;color:#a1a1aa;border:1px solid #3f3f46', idle: 'transparent;color:#3f3f46;border:1px dashed #27272a' }[s.s];
+      return { kind: s.kind, label: s.label, style: 'flex:1;display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:9px 11px;border-radius:8px;background:' + bg };
+    });
+
+    const slotRow = (p) => ({
+      slot: p.slot, label: p.label, meta: p.meta, prem: p.prem,
+      style: 'display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:9px;background:' + (p.empty ? 'transparent' : '#131316') + ';border:1px ' + (p.empty ? 'dashed #27272a' : 'solid #27272a'),
+      badgeStyle: 'width:22px;height:22px;flex:none;border-radius:6px;display:grid;place-items:center;font:700 9px/1 ' + MONO + ';background:' + (p.empty ? 'transparent;color:#3f3f46;border:1px solid #27272a' : (p.side === 'S' ? '#f87171;color:#09090b' : '#4ade80;color:#09090b'))
+    });
+    const pickRows = (syms, bansList, hint) => {
+      const nMax = this.state.picksMax;
+      const rows = [];
+      for (let i = 0; i < nMax; i++) {
+        const sym = syms[i];
+        if (!sym) { rows.push({ slot: 'P' + (i + 1), label: 'Empty slot', meta: hint, prem: '—', empty: true }); continue; }
+        const u = this.meta(sym);
+        rows.push({ slot: 'P' + (i + 1), label: sym, meta: u.name + ' · ' + u.sector, prem: '$' + this.fmtPx(u.px), side: 'B' });
+      }
+      for (let i = 0; i < 2; i++) {
+        const sym = bansList[i];
+        if (!sym) { rows.push({ slot: 'X', label: 'No ban', meta: 'ban slot open', prem: '—', empty: true }); continue; }
+        rows.push({ slot: 'X', label: sym, meta: 'banned · ' + this.meta(sym).sector, prem: 'out', side: 'S' });
+      }
+      return rows.map(slotRow);
+    };
+    const teamA = pickRows(this.state.picks, this.state.bans, this.state.auto ? 'drafting…' : 'tap a ticker to pick');
+    const oppL0 = this.oppLegs();
+    const oppBansDerived = this.activeUniverse().map(u => u.sym)
+      .filter(s => oppL0.every(l => l.sym !== s) && this.state.picks.indexOf(s) < 0 && this.state.bans.indexOf(s) < 0);
+    const teamB = this.state.auto
+      ? pickRows(this.state.oppPicks, this.state.oppBans, 'opponent drafting…')
+      : pickRows(oppL0.map(l => l.sym), oppBansDerived.slice(0, 2), 'opponent picking');
+
+    const SEC_COLOR = {
+      SEMIS: '#4ade80', TECH: '#38bdf8', AUTO: '#f472b6', ENERGY: '#f59e0b', FIN: '#a78bfa',
+      METALS: '#fbbf24', 'EQUITY-BETA': '#c8ff00', L1: '#c8ff00', L2: '#38bdf8',
+      ORACLE: '#2dd4bf', DEFI: '#a78bfa', MEME: '#f472b6'
+    };
+    const pf = this.state.pool;
+    const picks = this.state.picks, bans = this.state.bans;
+    const activeU = this.activeUniverse();
+    const pool = activeU.filter(u => pf === 'ALL' || u.sector === pf).map(u => {
+      const isPick = picks.indexOf(u.sym) >= 0;
+      const isOppPick = this.state.oppPicks.indexOf(u.sym) >= 0;
+      const isBan = bans.indexOf(u.sym) >= 0 || this.state.oppBans.indexOf(u.sym) >= 0;
+      const day = ((u.px * 100) % 7) / 2 - 1.4;
+      const c = SEC_COLOR[u.sector] || '#a1a1aa';
+      return {
+        type: u.sector, label: u.sym + ' · ' + u.name,
+        k1: 'LAST', prem: this.fmtPx(u.px),
+        k2: 'DAY', iv: (day >= 0 ? '+' : '') + day.toFixed(2) + '%',
+        k3: 'σ', delta: (u.vol * 100).toFixed(1),
+        badge: isPick ? 'PICKED' : isOppPick ? 'TAKEN' : isBan ? 'BANNED' : '',
+        badgeStyle: 'font:700 8px/1 ' + MONO + ';letter-spacing:.1em;padding:4px 6px;border-radius:4px;' +
+          (isPick ? 'background:#c8ff00;color:#09090b' : isOppPick ? 'background:#3f1d1d;color:#f87171' : isBan ? 'background:#27272a;color:#71717a' : 'display:none'),
+        banStyle: 'height:20px;padding:0 7px;border-radius:5px;cursor:pointer;font:700 8px/1 ' + MONO + ';letter-spacing:.1em;border:1px solid ' +
+          (isBan ? 'rgba(248,113,113,.5);background:rgba(248,113,113,.18);color:#f87171' : '#3f3f46;background:transparent;color:#71717a'),
+        ban: (e) => {
+          if (e && e.stopPropagation) e.stopPropagation();
+          this.setState(s => ({
+            bans: s.bans.indexOf(u.sym) >= 0 ? s.bans.filter(x => x !== u.sym) : s.bans.concat([u.sym]),
+            picks: s.picks.filter(x => x !== u.sym)
+          }));
+        },
+        pick: () => {
+          if (isBan || isOppPick || this.state.auto) return;
+          this.setState(s => ({
+            picks: s.picks.indexOf(u.sym) >= 0
+              ? s.picks.filter(x => x !== u.sym)
+              : (s.picks.length >= s.picksMax ? s.picks : s.picks.concat([u.sym]))
+          }));
+        },
+        style: 'position:relative;overflow:hidden;padding:14px;border-radius:11px;cursor:pointer;background:#101013;border:1px solid ' +
+          (isBan ? 'rgba(248,113,113,.35);opacity:.45' : isPick ? 'rgba(200,255,0,.45)' : isOppPick ? 'rgba(248,113,113,.4)' : '#27272a'),
+        glowStyle: 'position:absolute;inset:-40%;background:radial-gradient(55% 55% at 72% 20%,' + c + '26,transparent 70%);pointer-events:none',
+        typeStyle: this.tag(c)
+      };
+    });
+
+    // payoff geometry
+    const lo = 3200, hi = 5200;
+    const xs = Array.from({ length: 81 }, (_, i) => lo + (hi - lo) * i / 80);
+    const vals = xs.map(s => this.payoff(s));
+    const rawMin = Math.min(...vals), rawMax = Math.max(...vals);
+    const pad = (rawMax - rawMin) * 0.12;
+    const vmin = rawMin - pad, vmax = rawMax + pad;
+    let beLo = null;
+    for (let i = 1; i < vals.length; i++) {
+      if (vals[i - 1] < 0 && vals[i] >= 0) {
+        const f = -vals[i - 1] / (vals[i] - vals[i - 1]);
+        beLo = xs[i - 1] + f * (xs[i] - xs[i - 1]);
+        break;
+      }
+    }
+    const winZone = vals.filter(v => v > 0).length / vals.length;
+    const X = s => 52 + (s - lo) / (hi - lo) * 828;
+    const Y = v => 252 - (v - vmin) / (vmax - vmin) * 234;
+    const pts = xs.map((s, i) => X(s).toFixed(1) + ',' + Y(vals[i]).toFixed(1));
+    const payoffPath = 'M' + pts.join('L');
+    const payoffFill = payoffPath + 'L' + X(hi).toFixed(1) + ',' + Y(0).toFixed(1) + 'L' + X(lo).toFixed(1) + ',' + Y(0).toFixed(1) + 'Z';
+
+    const gridY = [vmax, vmax * 0.5, 0, vmin * 0.5, vmin].map(v => ({
+      y: Y(v).toFixed(1), ty: (Y(v) + 3.5).toFixed(1), label: (v >= 0 ? '+' : '') + v.toFixed(2)
+    }));
+    const gridX = [3200, 3600, 4000, 4400, 4800, 5200].map(s => ({ x: X(s).toFixed(1), label: (s / 1000).toFixed(1) + 'k' }));
+
+    const strikeMarks = [3600, 3900, 4300, 4700].map(k => ({
+      x: X(k).toFixed(1), y: Y(this.payoff(k)).toFixed(1), ty: (Y(this.payoff(k)) - 10).toFixed(1), label: (k / 1000).toFixed(1) + 'k'
+    }));
+
+    const payoffStats = [
+      { label: 'MAX PROFIT', value: '+' + rawMax.toFixed(2) + ' Ξ', c: '#4ade80' },
+      { label: 'MAX LOSS', value: rawMin.toFixed(2) + ' Ξ', c: '#f87171' },
+      { label: 'BREAKEVEN', value: beLo ? Math.round(beLo).toLocaleString('en-US') : '—', c: '#fafafa' },
+      { label: 'WIN ZONE', value: (winZone * 100).toFixed(1) + '%', c: '#c8ff00' }
+    ].map(s => ({ label: s.label, value: s.value, style: 'margin-top:8px;font:700 18px/1 ' + MONO + ';letter-spacing:-.02em;color:' + s.c }));
+
+    const priceRaw = {
+      ETH: [
+        ['CALL', '4,000', '27 SEP', '0.1284', '0.1341', '55.1%', '0.61', 84, '12.4'],
+        ['CALL', '4,200', '27 SEP', '0.0902', '0.0948', '56.8%', '0.49', 71, '9.8'],
+        ['CALL', '4,400', '27 SEP', '0.0662', '0.0714', '58.2%', '0.36', 58, '7.1'],
+        ['CALL', '4,600', '27 SEP', '0.0441', '0.0489', '61.0%', '0.24', 40, '4.6'],
+        ['PUT', '4,000', '27 SEP', '0.0651', '0.0692', '64.4%', '−0.34', 62, '8.2'],
+        ['PUT', '3,800', '27 SEP', '0.0408', '0.0446', '67.1%', '−0.21', 44, '5.4'],
+        ['PUT', '3,600', '27 SEP', '0.0221', '0.0258', '70.3%', '−0.12', 26, '3.0'],
+        ['RANGER', '3.9–4.6k', '27 SEP', '0.1310', '0.1402', '—', '0.02', 33, '4.0']
+      ],
+      BTC: [
+        ['CALL', '96,000', '27 SEP', '0.1401', '0.1466', '46.2%', '0.52', 76, '18.2'],
+        ['CALL', '100,000', '27 SEP', '0.1980', '0.2104', '49.8%', '0.38', 61, '14.0'],
+        ['CALL', '108,000', '27 SEP', '0.0884', '0.0951', '53.4%', '0.19', 35, '6.8'],
+        ['PUT', '92,000', '27 SEP', '0.1120', '0.1188', '50.1%', '−0.35', 54, '11.4'],
+        ['PUT', '88,000', '27 SEP', '0.1471', '0.1552', '52.6%', '−0.29', 48, '9.2'],
+        ['PUT', '80,000', '27 SEP', '0.0612', '0.0668', '57.0%', '−0.11', 22, '4.1'],
+        ['RANGER', '90–104k', '04 OCT', '0.1760', '0.1882', '—', '0.01', 29, '5.5']
+      ]
+    }[this.state.asset];
+    const tc = { CALL: '#4ade80', PUT: '#f87171', RANGER: '#a78bfa' };
+    const pricing = priceRaw.map((r, i) => ({
+      type: r[0], strike: r[1], expiry: r[2], bid: r[3], ask: r[4], iv: r[5], delta: r[6], size: r[8] + 'k',
+      rowStyle: 'display:grid;grid-template-columns:88px 96px 110px 100px 100px 84px 84px 1fr;gap:10px;align-items:center;padding:12px 18px;border-bottom:1px solid #1a1a1e;background:' + (i % 2 ? '#0d0d10' : 'transparent'),
+      typeStyle: this.tag(tc[r[0]]),
+      barStyle: 'height:100%;width:' + r[7] + '%;background:' + tc[r[0]] + ';opacity:.75'
+    }));
+
+    const orders = [
+      ['BUY', 'ETH-27SEP-4400-C', '12.0', '0.0714', 'FILLED', '12:04:18'],
+      ['SELL', 'ETH-27SEP-4700-C', '12.0', '0.0311', 'FILLED', '12:04:18'],
+      ['BUY', 'ETH-27SEP-3900-P', '6.0', '0.0624', 'PARTIAL', '12:03:55'],
+      ['SELL', 'BTC-27SEP-88000-P', '0.8', '0.1552', 'OPEN', '12:03:41'],
+      ['BUY', 'ETH-27SEP-RANGER', '4.0', '0.1402', 'OPEN', '12:02:09'],
+      ['SELL', 'ETH-12SEP-4200-C', '20.0', '0.0186', 'CANCELLED', '11:58:32'],
+      ['BUY', 'BTC-04OCT-RANGER', '1.2', '0.1882', 'FILLED', '11:57:04']
+    ].map((o, i) => {
+      const sc = { FILLED: '#4ade80', PARTIAL: '#f59e0b', OPEN: '#38bdf8', CANCELLED: '#71717a' }[o[4]];
+      return {
+        side: o[0], instrument: o[1], size: o[2], px: o[3], status: o[4], time: o[5],
+        rowStyle: 'display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #1a1a1e;background:' + (i % 2 ? '#0d0d10' : 'transparent'),
+        sideStyle: 'min-width:44px;font:700 10px/1 ' + MONO + ';letter-spacing:.1em;padding:6px 7px;border-radius:5px;text-align:center;background:' + (o[0] === 'BUY' ? 'rgba(74,222,128,.14);color:#4ade80' : 'rgba(248,113,113,.14);color:#f87171'),
+        statusStyle: 'font:500 10px/1 ' + MONO + ';letter-spacing:.1em;color:' + sc
+      };
+    });
+
+    const legs = [
+      { side: 'B', label: 'ETH 4300 C ×2', meta: '27 sep · Δ0.42 · IV 57.4%', prem: '−0.172' },
+      { side: 'S', label: 'ETH 4700 C ×2', meta: '27 sep · Δ0.18 · IV 61.8%', prem: '+0.062' },
+      { side: 'B', label: 'ETH 3900 P ×1', meta: '27 sep · Δ−0.31 · IV 65.2%', prem: '−0.062' },
+      { side: 'S', label: 'ETH 3600 P ×1', meta: '27 sep · Δ−0.14 · IV 70.3%', prem: '+0.024' }
+    ].map(l => Object.assign({}, l, {
+      sideStyle: 'width:22px;height:22px;flex:none;border-radius:6px;display:grid;place-items:center;font:700 9px/1 ' + MONO + ';background:' + (l.side === 'B' ? '#4ade80' : '#f87171') + ';color:#09090b'
+    }));
+
+    const slipRows = [
+      { label: 'NET DEBIT', value: '0.412 Ξ', c: '#fafafa' },
+      { label: 'MAX PAYOUT', value: '1.86 Ξ', c: '#c8ff00' },
+      { label: 'IMPLIED ODDS', value: '4.51×', c: '#fafafa' },
+      { label: 'NET DELTA / VEGA', value: '+0.29 / −1.4', c: '#a1a1aa' }
+    ].map(r => ({ label: r.label, value: r.value, style: 'color:' + r.c }));
+
+    const slipNotes = [
+      { tag: 'RISK', tc: '#f87171', title: 'Your legs share one expiry', body: 'All four settle 27 Sep. A quiet fortnight is a total loss on the box, not a partial one.' },
+      { tag: 'EDGE', tc: '#c8ff00', title: 'You are short the fat wing', body: 'The 4700 call you sold carries 4.4 IV points more than the 4300 you bought. That spread is the trade.' },
+      { tag: 'SIZING', tc: '#38bdf8', title: '17% of bankroll', body: '0.412 of 2.40 ETH. Above the 5% rule the coach teaches for single-expiry structures.' }
+    ].map(n => ({ tag: n.tag, title: n.title, body: n.body, tagStyle: this.tag(n.tc) }));
+
+    const askChips = [{ label: 'Why is vega negative?' }, { label: 'Cheaper version?' }, { label: 'Explain rangers' }];
+
+    // ================= battle flow (1v1 demo) =================
+    const prize = this.state.prize;
+    const rooms = [
+      { mode: '1v1', status: 'DRAFTING', sc: '#c8ff00', phase: 'pick & ban', pot: '4.80', entry: '2.40', syms: ['NVDA', 'TSLA', 'XOM'], players: [['YO', '#6366f1'], ['KZ', '#f87171']], slots: '2/2', cta: 'Spectate', hot: true },
+      { mode: '1v1', status: 'OPEN', sc: '#4ade80', phase: 'waiting for P2', pot: prize.toFixed(2), entry: (prize / 2).toFixed(2), syms: ['AAPL', 'META', 'GLD'], players: [['YO', '#6366f1']], slots: '1/2', cta: 'Join' },
+      { mode: '1v1', status: 'OPEN', sc: '#4ade80', phase: 'waiting for P2', pot: '1.20', entry: '0.60', syms: ['COIN', 'AMD'], players: [['SN', '#38bdf8']], slots: '1/2', cta: 'Join' },
+      { mode: '1v1', status: 'STUDY', sc: '#38bdf8', phase: 'case study', pot: '8.00', entry: '4.00', syms: ['JPM', 'XOM', 'GLD'], players: [['QB', '#f472b6'], ['ZE', '#c8ff00']], slots: '2/2', cta: 'Spectate' },
+      { mode: '1v1', status: 'LIVE TAPE', sc: '#f59e0b', phase: 'fighting', pot: '6.40', entry: '3.20', syms: ['NVDA', 'AMD', 'COIN'], players: [['AR', '#38bdf8'], ['TO', '#f87171']], slots: '2/2', cta: 'Watch' },
+      { mode: '1v1', status: 'OPEN', sc: '#4ade80', phase: 'waiting for P2', pot: '20.00', entry: '10.00', syms: ['TSLA', 'NVDA', 'META'], players: [['0X', '#c8ff00']], slots: '1/2', cta: 'Join' }
+    ].map((b, i) => ({
+      mode: b.mode, status: b.status, phase: b.phase, pot: b.pot + ' ETH', entry: b.entry, slots: b.slots, cta: b.cta,
+      go: b.cta === 'Join'
+        ? () => { this.stopAuto(); this.setState({ tab: 'draft', picks: [], bans: [], oppPicks: [], oppBans: [], started: false, published: true }); }
+        : () => this.runAuto('spectate'),
+      rowStyle: 'display:grid;grid-template-columns:80px minmax(248px,1.4fr) minmax(0,1fr) minmax(120px,.9fr) minmax(0,1.1fr) 104px;gap:12px;align-items:center;padding:15px 16px;border-bottom:1px solid #1a1a1e;background:' + (b.hot ? 'rgba(200,255,0,.035)' : (i % 2 ? '#0d0d10' : 'transparent')),
+      statusStyle: 'font:500 9px/1 ' + MONO + ';letter-spacing:.11em;color:' + b.sc,
+      chips: b.syms.map(s => chip(s, SEC_COLOR[this.meta(s).sector] || '#a1a1aa')),
+      players: b.players.map(p => avatar(p[0], p[1])),
+      ctaStyle: 'height:32px;border-radius:8px;cursor:pointer;font:700 12px/1 \'DM Sans\',sans-serif;' + (b.cta === 'Join'
+        ? 'border:none;background:#c8ff00;color:#09090b'
+        : 'border:1px solid #3f3f46;background:transparent;color:#fafafa')
+    }));
+
+    const arenaSyms = this.arena();
+    const myL = this.myLegs();
+    const oppL = this.oppLegs();
+    const nLegs = myL.length;
+
+    const chartCard = (sym, salt, count, h) => {
+      const s = this.series(sym, salt);
+      const g = this.geom(s, count, 260, h, 8);
+      const pct = ((g.last - s[0]) / s[0]) * 100;
+      const up = pct >= 0;
+      const c = up ? '#4ade80' : '#f87171';
+      return {
+        sym: sym, window: this.windowLabel(sym, salt),
+        pct: (up ? '+' : '') + pct.toFixed(2) + '%',
+        px: '$' + g.last.toFixed(2),
+        pctStyle: 'font:700 14px/1 ' + MONO + ';color:' + c,
+        path: g.path, fill: g.fill, baseY: g.baseY, headX: g.headX, headY: g.headY,
+        stroke: c, fillColor: up ? 'rgba(74,222,128,.1)' : 'rgba(248,113,113,.1)',
+        cardStyle: 'border:1px solid #27272a;border-radius:12px;background:#0b0b0d;padding:14px'
+      };
+    };
+
+    const studyCharts = arenaSyms.map(sym => {
+      const u = this.meta(sym);
+      const s = this.series(sym, this.studySalt());
+      const hi = Math.max.apply(null, s), lo = Math.min.apply(null, s);
+      return Object.assign(chartCard(sym, this.studySalt(), this.TAPE_LEN, 110), {
+        stats: [
+          { label: 'RANGE', value: this.fmtPx(lo) + '–' + this.fmtPx(hi) },
+          { label: 'σ DAILY', value: (u.vol * 100).toFixed(1) + '%' },
+          { label: 'SECTOR', value: u.sector }
+        ]
+      });
+    });
+
+    const studyNotes = [
+      { tag: 'READ 01', title: 'Trend, then target', body: 'Two of these five trended more than 20% across the window. A ±' + myL[0].t.toFixed(1) + '% leg on a trending name is not the same bet as on a flat one.' },
+      { tag: 'READ 02', title: 'The tape you bet on is new', body: 'These charts are the study window. The fight draws a fresh random window on the same tickers, so read behaviour, not levels.' },
+      { tag: 'READ 03', title: 'Split your directions', body: 'Three legs the same way is one bet. If the whole tape drifts against you, you lose all three at once.' }
+    ];
+
+    const legPicker = myL.map(l => {
+      const u = this.meta(l.sym);
+      const on = 'height:28px;flex:1;border-radius:7px;cursor:pointer;font:700 10px/1 ' + MONO + ';letter-spacing:.1em;border:none;';
+      const off = 'height:28px;flex:1;border-radius:7px;cursor:pointer;font:700 10px/1 ' + MONO + ';letter-spacing:.1em;border:1px solid #3f3f46;background:transparent;color:#71717a';
+      return {
+        sym: l.sym, sector: u.sector,
+        target: (l.dir === 'over' ? '+' : '−') + l.t.toFixed(1) + '%',
+        odds: l.dir === 'over' ? 'wins if it closes above target' : 'wins if it closes below target',
+        overStyle: l.dir === 'over' ? on + 'background:#4ade80;color:#09090b' : off,
+        underStyle: l.dir === 'under' ? on + 'background:#f87171;color:#09090b' : off,
+        setOver: () => this.setState(s => ({ legDir: Object.assign({}, s.legDir, { [l.sym]: 'over' }) })),
+        setUnder: () => this.setState(s => ({ legDir: Object.assign({}, s.legDir, { [l.sym]: 'under' }) }))
+      };
+    });
+
+    const cdSecs = Math.max(0, 60 - Math.floor(this.state.tick / 8));
+    const cd = { secs: cdSecs, label: '0:' + (cdSecs < 10 ? '0' : '') + cdSecs };
+
+    const step = this.state.tapeSpeed === 32 ? 2 : this.state.tapeSpeed === 128 ? 5 : 3;
+    const pos = Math.min(this.TAPE_LEN, Math.max(2, this.state.tick * step));
+    const raceDone = pos >= this.TAPE_LEN;
+    const liveCharts = arenaSyms.map(sym => {
+      const card = chartCard(sym, this.fightSalt(), pos, 96);
+      const holders = [];
+      myL.forEach(l => { if (l.sym === sym) holders.push({ label: p1Init + ' ' + (l.dir === 'over' ? '↑' : '↓') + l.t.toFixed(1) + '%', c: '#6366f1' }); });
+      oppL.forEach(l => { if (l.sym === sym) holders.push({ label: 'KZ ' + (l.dir === 'over' ? '↑' : '↓') + l.t.toFixed(1) + '%', c: '#f87171' }); });
+      return Object.assign(card, {
+        holders: holders.map(hd => ({
+          label: hd.label,
+          style: 'font:700 8.5px/1 ' + MONO + ';letter-spacing:.06em;padding:5px 6px;border-radius:5px;background:' + hd.c + '26;color:' + hd.c
+        }))
+      });
+    });
+
+    const liveRow = (l) => {
+      const st = this.legState(l, pos);
+      const c = st.won ? '#4ade80' : (raceDone ? '#f87171' : '#71717a');
+      return {
+        sym: l.sym,
+        need: (l.dir === 'over' ? 'over +' : 'under −') + l.t.toFixed(1) + '%',
+        pct: (st.pct >= 0 ? '+' : '') + st.pct.toFixed(2) + '%',
+        state: st.won ? 'WON' : (raceDone ? 'LOST' : 'OPEN'),
+        stateStyle: 'font:700 8px/1 ' + MONO + ';letter-spacing:.1em;padding:4px 5px;border-radius:4px;background:' + c + '26;color:' + c,
+        pctStyle: 'font:700 12px/1 ' + MONO + ';color:' + (st.pct >= 0 ? '#4ade80' : '#f87171'),
+        rowStyle: 'padding:11px;border-radius:9px;background:#131316;border:1px solid ' + (st.won ? 'rgba(74,222,128,.4)' : '#27272a')
+      };
+    };
+    const myLive = myL.map(liveRow);
+    const oppLive = oppL.map(liveRow);
+    const myScore = myL.filter(l => this.legState(l, pos).won).length;
+    const oppScore = oppL.filter(l => this.legState(l, pos).won).length;
+    // Tie-break: sum of |move| on won legs (bigger conviction wins), then P1.
+    const edge = (legs) => legs.reduce((a, l) => { const st = this.legState(l, this.TAPE_LEN); return a + (st.won ? Math.abs(st.pct) : 0); }, 0);
+    const myEdge = edge(myL), oppEdge = edge(oppL);
+    const tied = myScore === oppScore;
+    const meWins = myScore > oppScore || (tied && myEdge >= oppEdge);
+    const winner = meWins ? p1Name : 'kazuo.eth';
+    const winnerVerb = winner === 'You' ? 'take' : 'takes';
+    const tieNote = tied ? ' · tied ' + myScore + '–' + oppScore + ', broken on conviction (' + (meWins ? myEdge : oppEdge).toFixed(1) + ' vs ' + (meWins ? oppEdge : myEdge).toFixed(1) + ' pts on won legs)' : '';
+
+    // ---- AI strategy read (rule-based over both slips) ----
+    const readPlayer = (who, legs, score, won) => {
+      const fin = legs.map(l => Object.assign({ st: this.legState(l, this.TAPE_LEN) }, l));
+      const overs = legs.filter(l => l.dir === 'over').length;
+      const unders = legs.length - overs;
+      const sectors = []; legs.forEach(l => { const s = this.meta(l.sym).sector; if (sectors.indexOf(s) < 0) sectors.push(s); });
+      const avgT = legs.reduce((a, l) => a + l.t, 0) / Math.max(1, legs.length);
+      const cryptoN = legs.filter(l => this.meta(l.sym).mkt === 'CRYPTO').length;
+      const style = overs === legs.length ? 'All-in bull' : unders === legs.length ? 'All-in bear' : 'Hedged book';
+      const risk = avgT >= 6 ? 'high-variance' : avgT >= 3 ? 'balanced' : 'grinder';
+      const best = fin.slice().sort((a, b) => Math.abs(b.st.pct) - Math.abs(a.st.pct))[0];
+      const miss = fin.filter(l => !l.st.won);
+      const nearMiss = miss.slice().sort((a, b) => Math.abs(Math.abs(a.st.pct) - a.t) - Math.abs(Math.abs(b.st.pct) - b.t))[0];
+      let read = who + ' ran a ' + risk + ' ' + style.toLowerCase() + ': ' + overs + ' over, ' + unders + ' under across ' + sectors.length +
+        (sectors.length === 1 ? ' sector' : ' sectors') + (cryptoN ? ' with ' + cryptoN + ' crypto leg' + (cryptoN > 1 ? 's' : '') : '') +
+        ', average target ±' + avgT.toFixed(1) + '%. ';
+      if (best) read += best.sym + ' was the biggest mover at ' + (best.st.pct >= 0 ? '+' : '') + best.st.pct.toFixed(1) + '%' + (best.st.won ? ', and it paid. ' : ', but it went the wrong way. ');
+      if (nearMiss && !won) read += nearMiss.sym + ' missed by ' + Math.abs(Math.abs(nearMiss.st.pct) - nearMiss.t).toFixed(1) + ' points — the leg that cost the match.';
+      else if (won) read += 'Cashed ' + score + ' of ' + legs.length + ' legs and took the pool.';
+      return { who, style: style + ' · ' + risk, read, won };
+    };
+    const meRead = readPlayer(p1Name, myL, myScore, meWins);
+    const oppRead = readPlayer('kazuo.eth', oppL, oppScore, !meWins);
+    const aiPlayers = [meRead, oppRead].map((r, i) => ({
+      who: r.who, style_: r.style, read: r.read,
+      tag: r.won ? 'WINNER' : 'RUNNER-UP',
+      tagStyle: 'font:700 8px/1 ' + MONO + ';letter-spacing:.1em;padding:4px 6px;border-radius:4px;background:' + (r.won ? '#c8ff00;color:#09090b' : '#27272a;color:#a1a1aa'),
+      style: 'padding:16px;' + (i === 0 ? 'border-right:1px solid #1c1c20' : '')
+    }));
+    const tapeMoves = arenaSyms.map(s => ({ sym: s, pct: this.pctAt(s, this.TAPE_LEN) }));
+    const upN = tapeMoves.filter(m => m.pct > 0).length;
+    const tapeBias = upN >= arenaSyms.length - 1 ? 'a broadly bullish tape' : upN <= 1 ? 'a broadly bearish tape' : 'a mixed tape';
+    const winRead = meWins ? meRead : oppRead;
+    const loseRead = meWins ? oppRead : meRead;
+    const aiDecider = 'The window drew ' + tapeBias + ' (' + upN + ' of ' + arenaSyms.length + ' assets closed up). ' +
+      (tied
+        ? 'Both slips cashed ' + myScore + ' leg' + (myScore === 1 ? '' : 's') + ', so it went to conviction: ' + winRead.who + '\u2019s won legs moved ' +
+          (meWins ? myEdge : oppEdge).toFixed(1) + ' points combined against ' + (meWins ? oppEdge : myEdge).toFixed(1) + ' for ' + loseRead.who + '.'
+        : winRead.who + '\u2019s ' + winRead.style.split(' · ')[0].toLowerCase() + ' lined up with it; ' + loseRead.who + '\u2019s ' +
+          loseRead.style.split(' · ')[0].toLowerCase() + ' needed the opposite drift. Final legs ' + Math.max(myScore, oppScore) + '–' + Math.min(myScore, oppScore) + '.');
+    const aiLesson = loseRead.style.indexOf('All-in') === 0
+      ? 'Three legs the same direction is one bet in three coats. Splitting one leg the other way keeps a wrong-way tape from wiping the slip.'
+      : loseRead.style.indexOf('high-variance') >= 0
+        ? 'Targets above ±6% only pay on outlier windows. Bank one low-target grinder leg so a quiet tape still scores.'
+        : 'Draft for the tape, not the ticker: ban the highest-vol name your opponent could ride, then read the study charts for drift before picking direction.';
+
+    const resultCards = [
+      { who: p1Name, legs: myL, score: myScore, win: meWins },
+      { who: 'kazuo.eth', legs: oppL, score: oppScore, win: !meWins }
+    ].map(r => ({
+      who: r.who, score: r.score + ' / ' + nLegs,
+      scoreStyle: 'font:700 18px/1 ' + MONO + ';color:' + (r.win ? '#c8ff00' : '#71717a'),
+      style: 'border-radius:12px;padding:16px;background:#0f0f11;border:1px solid ' + (r.win ? 'rgba(200,255,0,.4)' : '#27272a'),
+      legs: r.legs.map(l => {
+        const st = this.legState(l, this.TAPE_LEN);
+        return {
+          sym: l.sym,
+          need: (l.dir === 'over' ? 'over +' : 'under −') + l.t.toFixed(1) + '%',
+          pct: (st.pct >= 0 ? '+' : '') + st.pct.toFixed(2) + '%',
+          dotStyle: 'width:7px;height:7px;flex:none;border-radius:99px;background:' + (st.won ? '#4ade80' : '#f87171'),
+          pctStyle: 'font:700 12px/1 ' + MONO + ';color:' + (st.won ? '#4ade80' : '#f87171')
+        };
+      })
+    }));
+
+    return {
+      tabs, filters, poolFilters, assetTabs,
+      isLobby: t === 'lobby', isDraft: t === 'draft', isParlay: t === 'parlay', isCases: t === 'cases',
+      goDraft: set('draft'), goParlay: set('parlay'), goCases: set('cases'),
+      walletLabel: this.state.wallet ? '0x71c…4Af2' : 'Connect wallet',
+      walletBtnProps: {
+        border: { borderWidth: 1, borderStyle: 'solid', borderColor: 'rgba(200,255,0,.22)' },
+        font: {
+          fontFamily: this.state.wallet ? MONO : "'DM Sans',sans-serif",
+          fontWeight: 700, fontSize: 12, lineHeight: '1.35em', letterSpacing: '0.01em'
+        }
+      },
+      walletBtnStyle: 'height:34px;padding:0 14px;border-radius:8px;cursor:pointer;font:700 12px/1 ' + (this.state.wallet ? MONO : "'DM Sans',sans-serif") + ';' +
+        (this.state.wallet ? 'border:1px solid #3f3f46;background:#131316;color:#fafafa' : 'border:none;background:#fafafa;color:#09090b'),
+      toggleWallet: () => this.setState({ wallet: !this.state.wallet }),
+      // ---------- battle flow ----------
+      isBattles: t === 'battles', isCreate: t === 'create', isStudy: t === 'study',
+      isPick: t === 'pick', isLive: t === 'live', isResult: t === 'result',
+      goBattles: set('battles'), goCreate: set('create'), goStudy: () => this.setState({ tab: 'study' }),
+      goPick: () => this.setState({ tab: 'pick', tick: 0 }),
+      goResult: set('result'),
+      startFight: () => this.setState({ tab: 'live', tick: 0 }),
+      roomFilters: [{ label: '1v1', style: this.pill(true), go: () => {} }],
+      rooms: rooms, roomCount: rooms.length,
+      prizeLabel: prize.toFixed(2) + ' ETH', entryLabel: (prize / 2).toFixed(2) + ' ETH',
+      prizeText: this.state.prizeText, lobbyName: this.state.lobbyName,
+      onPrizeInput: (e) => {
+        const raw = e.target.value.replace(/[^0-9.]/g, '');
+        const f = parseFloat(raw);
+        this.setState(isFinite(f)
+          ? { prizeText: raw, prize: Math.max(0.1, Math.min(999, f)) }
+          : { prizeText: raw });
+      },
+      onPrizeBlur: () => this.setState(s => ({ prizeText: s.prize.toFixed(2) })),
+      onLobbyName: (e) => this.setState({ lobbyName: e.target.value }),
+      prizeUp: () => this.setState(s => {
+        const v = Math.min(999, +(s.prize + 0.5).toFixed(2));
+        return { prize: v, prizeText: v.toFixed(2) };
+      }),
+      prizeDown: () => this.setState(s => {
+        const v = Math.max(0.1, +(s.prize - 0.5).toFixed(2));
+        return { prize: v, prizeText: v.toFixed(2) };
+      }),
+      publishLobby: () => this.setState({ published: true, tab: 'draft' }),
+      marketTabs: [
+        { k: 'STOCK', label: 'Stocks', note: '9 tickers' },
+        { k: 'CRYPTO', label: 'Web3 crypto', note: '9 assets' },
+        { k: 'MIXED', label: 'Mixed', note: 'both books' }
+      ].map(m => ({
+        label: m.label, note: m.note,
+        go: () => this.setState({ market: m.k, picks: [], bans: [], legDir: {} }),
+        style: 'display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:11px 14px;border-radius:9px;cursor:pointer;' +
+          (this.state.market === m.k
+            ? 'border:1px solid rgba(200,255,0,.45);background:rgba(200,255,0,.1);color:#c8ff00'
+            : 'border:1px solid #27272a;background:#131316;color:#a1a1aa')
+      })),
+      stepBtnStyle: 'width:30px;height:30px;border:1px solid #3f3f46;border-radius:8px;background:transparent;color:#fafafa;font:700 15px/1 ' + MONO + ';cursor:pointer',
+      picksMax: this.state.picksMax, chartCount: this.state.chartCount,
+      picksUp: () => this.setState(s => ({ picksMax: Math.min(4, s.picksMax + 1) })),
+      picksDown: () => this.setState(s => ({ picksMax: Math.max(2, s.picksMax - 1), picks: s.picks.slice(0, Math.max(2, s.picksMax - 1)) })),
+      chartsUp: () => this.setState(s => ({ chartCount: Math.min(6, s.chartCount + 1) })),
+      chartsDown: () => this.setState(s => ({ chartCount: Math.max(3, s.chartCount - 1) })),
+      bansNote: '2 bans each · ' + (this.state.picksMax * 2 + 4) + ' draft turns',
+      speedTabs: [32, 64, 128].map(v => ({
+        label: '×' + v, go: () => this.setState({ tapeSpeed: v }),
+        style: this.pill(this.state.tapeSpeed === v)
+      })),
+      speedNote: this.state.tapeSpeed === 32 ? 'tape plays in ~12s' : this.state.tapeSpeed === 128 ? 'tape plays in ~5s' : 'tape plays in ~8s',
+      universeLabel: (this.state.market === 'CRYPTO' ? 'CRYPTO UNIVERSE' : this.state.market === 'STOCK' ? 'STOCK UNIVERSE' : 'MIXED UNIVERSE') +
+        ' · ' + this.activeUniverse().length + ' ACTIVE',
+      universe: this.UNIVERSE.filter(u => this.state.market === 'MIXED' || u.mkt === this.state.market).map(u => {
+        const on = this.state.excluded.indexOf(u.sym) < 0;
+        return {
+          sym: u.sym, sector: u.sector,
+          toggle: () => this.setState(s => ({
+            excluded: on ? s.excluded.concat([u.sym]) : s.excluded.filter(x => x !== u.sym),
+            picks: on ? s.picks.filter(x => x !== u.sym) : s.picks
+          })),
+          style: 'display:flex;align-items:center;gap:8px;padding:8px 11px;border-radius:8px;cursor:pointer;' +
+            (on ? 'border:1px solid rgba(200,255,0,.35);background:rgba(200,255,0,.07);color:#fafafa'
+                : 'border:1px dashed #3f3f46;background:transparent;color:#52525b')
+        };
+      }),
+      draftPhase: this.state.picks.length >= 3 ? 'PICKS COMPLETE' : 'PICK & BAN · ' + this.state.picks.length + ' OF 3',
+      draftHint: this.state.picks.length >= 3
+        ? 'Board locked. Admin starts the match, then everyone studies the tape.'
+        : 'Tap a ticker to pick it, BAN to take it off the board. Ban what you cannot read.',
+      draftCtaStyle: 'height:36px;padding:0 16px;border:none;border-radius:8px;cursor:pointer;font:700 12px/1 \'DM Sans\',sans-serif;white-space:nowrap;' +
+        (this.state.picks.length >= 3 ? 'background:#c8ff00;color:#09090b' : 'background:#27272a;color:#71717a'),
+      startGame: () => this.setState({ started: true }),
+      startBtnLabel: this.state.started ? 'Match started' : 'Start game (admin)',
+      startBtnStyle: 'height:36px;padding:0 16px;border-radius:8px;cursor:pointer;font:700 12px/1 \'DM Sans\',sans-serif;' +
+        (this.state.started ? 'border:1px solid #3f3f46;background:#131316;color:#4ade80' : 'border:none;background:#a78bfa;color:#09090b'),
+      myBoard: this.state.picks.length + ' picks · ' + this.state.bans.length + ' bans',
+      studyCharts: studyCharts, studyNotes: studyNotes,
+      legPicker: legPicker, hiddenLegs: [{ mask: '•••••' }, { mask: '•••••' }, { mask: '•••••' }],
+      countdown: cd.label, countdownStyle: 'font:700 22px/1 ' + MONO + ';color:' + (cd.secs <= 10 ? '#f87171' : '#fafafa') + (cd.secs <= 10 ? ';animation:vcPulse 1.2s ease-in-out infinite' : ''),
+      charts: liveCharts, myLive: myLive, oppLive: oppLive,
+      myScore: myScore + ' / ' + nLegs, oppScore: oppScore + ' / ' + nLegs,
+      tapeLabel: 'TAPE ×' + this.state.tapeSpeed + ' · ' + this.windowLabel(arenaSyms[0], this.fightSalt()),
+      p1Name: p1Name, p1Init: p1Init,
+      p1Meta: spectating ? 'bankroll 6.80 ETH · spectating' : 'bankroll 2.40 ETH',
+      isAuto: !!this.state.auto,
+      autoLabel: spectating ? 'SPECTATING · mira.base vs kazuo.eth' : 'RANDOM DEMO · autopilot',
+      stopAuto: () => this.stopAuto(),
+      runDemo: () => this.runAuto('demo'),
+      runSpectate: () => this.runAuto('spectate'),
+      raceBarStyle: 'height:100%;width:' + ((pos / this.TAPE_LEN) * 100).toFixed(1) + '%;background:#c8ff00;transition:width .1s linear',
+      raceDone: raceDone,
+      raceNote: raceDone
+        ? 'Tape complete. ' + (myScore === oppScore ? 'Tied on legs — settle to break it.' : (myScore > oppScore ? 'You lead on legs.' : 'kazuo.eth leads on legs.'))
+        : 'Compressing the window… ' + Math.round((pos / this.TAPE_LEN) * 100) + '% of the tape played.',
+      winnerName: winner, winnerVerb: winnerVerb,
+      scoreLine: myScore + ' leg' + (myScore === 1 ? '' : 's') + ' vs ' + oppScore + (tied ? tieNote : ' · winner takes the pool'),
+      resultCards: resultCards, aiPlayers: aiPlayers, aiDecider: aiDecider, aiLesson: aiLesson,
+      champArt: [
+        '  \\_______/',
+        '   \\_____/',
+        '    |___|',
+        '     |_|',
+        '   __|_|__',
+        '  |_______|'
+      ].join('\n'),
+      battles, battleCount: battles.length, topWins, liveWins, cases, library,
+      draftSteps, teamA, teamB, pool,
+      payoffPath, payoffFill, gridY, gridX, zeroY: Y(0).toFixed(1),
+      spotX: X(4182).toFixed(1), spotLabelX: (X(4182) + 8).toFixed(1),
+      strikeMarks, payoffStats, pricing, orders, legs, slipRows, slipNotes, askChips
+    };
+  }
+}
+</script>
+</body>
+</html>

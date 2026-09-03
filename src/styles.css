@@ -1,0 +1,83 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #09090b;
+  color: #fafafa;
+  font-family: "DM Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: #c8ff00;
+  text-decoration: none;
+}
+a:hover {
+  color: #e2ff7a;
+}
+
+::selection {
+  background: #c8ff00;
+  color: #09090b;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Slow blink on live badges and the final-seconds countdown. */
+@keyframes vcPulse {
+  0%,
+  100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes vcSweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+
+/* Lazy parallax on the hero's dither panel. */
+@keyframes vcDrift {
+  0% { transform: translate3d(0, 0, 0) scale(1.04); }
+  33% { transform: translate3d(-14px, -8px, 0) scale(1.07); }
+  66% { transform: translate3d(10px, 6px, 0) scale(1.05); }
+  100% { transform: translate3d(0, 0, 0) scale(1.04); }
+}
+
+/* The wins marquee renders its list twice; -50% is one full list. */
+@keyframes vcStream {
+  from { transform: translate3d(-50%, 0, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+[data-tilt] {
+  transition:
+    transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.18s ease;
+}
+[data-tilt-layer] {
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.vc-marquee:hover {
+  animation-play-state: paused;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
