@@ -3,12 +3,12 @@ import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tabBtn } from "../theme.ts";
 import type { Tab } from "../types.ts";
 
-/** Screens that belong to a case run. Any of them lights the "Cases" tab. */
-const CASE_FLOW: readonly Tab[] = ["cases", "spin", "parlay-build", "study", "tape", "settled"];
+/** Screens that belong to a match. Any of them lights the "Battles" tab. */
+const MATCH_FLOW: readonly Tab[] = ["battles", "create", "room", "spin", "study", "parlay", "duel", "result"];
 
 const NAV: readonly { key: Tab; label: string }[] = [
   { key: "lobby", label: "Home" },
-  { key: "cases", label: "Cases" },
+  { key: "battles", label: "Battles" },
   { key: "desk", label: "Options desk" },
 ];
 
@@ -27,10 +27,7 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
           "height:60px;background:rgba(9,9,11,.86);backdrop-filter:blur(12px);border-bottom:1px solid #27272a",
       )}
     >
-      <div
-        onClick={() => onNavigate("cases")}
-        style={sx("display:flex;align-items:center;gap:10px;cursor:pointer")}
-      >
+      <div onClick={() => onNavigate("lobby")} style={sx("display:flex;align-items:center;gap:10px;cursor:pointer")}>
         <div
           style={sx(
             `width:26px;height:26px;border-radius:7px;background:${C.accent};display:grid;` +
@@ -47,7 +44,7 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
           <button
             key={n.key}
             onClick={() => onNavigate(n.key)}
-            style={sx(tabBtn(n.key === "cases" ? CASE_FLOW.includes(tab) : tab === n.key))}
+            style={sx(tabBtn(n.key === "battles" ? MATCH_FLOW.includes(tab) : tab === n.key))}
           >
             {n.label}
           </button>
@@ -65,13 +62,7 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
           fill="#0f0f11"
           textColor={C.text}
           border={{ borderWidth: 1, borderStyle: "solid", borderColor: "rgba(200,255,0,.22)" }}
-          font={{
-            fontFamily: wallet ? MONO : SANS,
-            fontWeight: 700,
-            fontSize: 12,
-            lineHeight: "1.35em",
-            letterSpacing: "0.01em",
-          }}
+          font={{ fontFamily: wallet ? MONO : SANS, fontWeight: 700, fontSize: 12, lineHeight: "1.35em", letterSpacing: "0.01em" }}
           lightColor={C.accent}
           lightSize={46}
           lightThickness={2}

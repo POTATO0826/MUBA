@@ -1,113 +1,162 @@
 import { useCallback, useEffect, useState } from "react";
-import { CaseSpin } from "./components/CaseSpin.tsx";
-import { useTilt } from "./components/useTilt.ts";
-import { caseById, stakePointsFor } from "./data/cases.ts";
+import { MatchSpin } from "./components/MatchSpin.tsx";
+import { scoreOf } from "./engine/match.ts";
+import { MARKET_COLOR, MARKET_LABEL, YOU, bookFor, stakePointsFor } from "./data/lobbies.ts";
 import type { MarketSource } from "./data/market.ts";
-import { PLAYER, lockedBy } from "./data/rewards.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
 import { sx } from "./lib/sx.ts";
-import { useCaseRun } from "./state/caseRun.ts";
 import { useLedger } from "./state/ledger.ts";
+import { useMatch } from "./state/match.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
-import { Cases } from "./views/Cases.tsx";
+import { Battles } from "./views/Battles.tsx";
+import { CreateLobby } from "./views/CreateLobby.tsx";
+import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
 import { Parlay } from "./views/Parlay.tsx";
-import { ParlayBuilder } from "./views/ParlayBuilder.tsx";
-import { Settled } from "./views/Settled.tsx";
+import { ParlayPick } from "./views/ParlayPick.tsx";
+import { Result } from "./views/Result.tsx";
+import { Room } from "./views/Room.tsx";
 import { Study } from "./views/Study.tsx";
-import { Tape } from "./views/Tape.tsx";
 
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
   "radial-gradient(900px 500px at 8% 0%, rgba(99,102,241,.08), transparent 55%),#09090b";
 
-const CASE_FLOW = new Set(["spin", "parlay-build", "study", "tape", "settled"]);
+const MATCH_STAGES = new Set(["room", "spin", "study", "parlay", "duel", "result"]);
 
 function currentRoute(): Route {
-  if (typeof window === "undefined") return { tab: "cases", caseId: null, seed: null };
+  if (typeof window === "undefined") return { tab: "lobby", lobbyId: null, seed: null };
   return parseRoute(window.location.pathname, window.location.search);
 }
 
 /**
- * One case run, end to end:
+ * One match, end to end:
  *
- *   cases → spin → parlay-build → study → tape → settled
+ *   battles → room → spin → study → parlay → duel → result
  *
- * Open a case, the reel deals its legs, tier each leg, study the charts, hold
- * the position through the tape, settle. `lobby` and `desk` sit beside it.
+ * Take a seat, both players ready up in the room, the spin deals the tickers
+ * both of you play on, read the case, pick a parlay card, hold through the
+ * tape, settle. `lobby` (home), `create` and `desk` sit beside it.
  */
 export function App({ source, route }: { source: MarketSource; route?: Route }) {
-  const { state, derived, actions } = useCaseRun(route ?? currentRoute());
+  const { state, derived, actions } = useMatch(route ?? currentRoute());
   const ledger = useLedger();
   const [wallet, setWallet] = useState(false);
-  useTilt();
 
-  // The address follows the run, so a spin can be shared with its seed in it.
+  // The address follows the match, so a spin can be shared with its seed in it.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const seed = CASE_FLOW.has(state.tab) ? state.seed : null;
-    const path = routePath(state.tab, state.caseId, seed);
+    const seed = MATCH_STAGES.has(state.tab) ? state.seed : null;
+    const path = routePath(state.tab, state.lobbyId, seed);
     if (window.location.pathname + window.location.search !== path) {
       window.history.replaceState(null, "", path);
     }
-  }, [state.tab, state.caseId, state.seed]);
+  }, [state.tab, state.lobbyId, state.seed]);
 
-  /** Buy the position, then spin. A locked case is not openable from anywhere. */
-  const openCase = useCallback(
+  const stakeOf = useCallback(
     (id: string) => {
-      const c = caseById(id);
-      if (!c || lockedBy(c.tier, PLAYER.tier)) return;
-      ledger.open(stakePointsFor(c));
-      actions.openCase(id);
+      const l = state.lobbies.find((x) => x.id === id);
+      return l ? stakePointsFor(l) : 0;
     },
-    [actions, ledger],
+    [state.lobbies],
   );
 
-  /** The position settles: whatever it paid comes back to the balance. */
+  /** Take the second seat on someone's lobby: into the room. */
+  const accept = useCallback((id: string) => actions.accept(id), [actions]);
+  /** Your lobby filled: into the room. */
+  const start = useCallback((id: string) => actions.start(id), [actions]);
+
+  /** Readying up is when the entry leaves the balance. Before that, the seat can still be given back. */
+  const readyUp = useCallback(() => {
+    if (state.lobbyId) ledger.enter(stakeOf(state.lobbyId));
+    actions.readyUp();
+  }, [actions, ledger, stakeOf, state.lobbyId]);
+
+  /** The duel settled: the winner banks the stake at their parlay's odds. */
   const settle = useCallback(() => {
     const v = derived.verdict;
-    if (derived.caseDef && v) {
+    if (derived.lobby && v) {
       ledger.settle({
-        caseId: derived.caseDef.id,
+        lobbyId: derived.lobby.id,
         seed: state.seed,
         stake: derived.stakePoints,
-        points: v.points,
-        allHit: v.allHit,
+        points: v.meWins ? derived.pointsIfWon : 0,
+        won: v.meWins,
       });
     }
     actions.settle();
-  }, [actions, derived.caseDef, derived.verdict, derived.stakePoints, ledger, state.seed]);
+  }, [actions, derived.lobby, derived.verdict, derived.stakePoints, derived.pointsIfWon, ledger, state.seed]);
 
-  const c = derived.caseDef;
-  const potentialLabel = derived.summary
-    ? `${derived.summary.potentialPoints.toLocaleString("en-US")} PTS`
-    : "—";
+  const lobby = derived.lobby;
+  const opp = derived.opponent;
 
   return (
     <div style={sx(PAGE)}>
-      <Header
-        tab={state.tab}
-        wallet={wallet}
-        onNavigate={(t) => actions.go(t)()}
-        onToggleWallet={() => setWallet((w) => !w)}
-      />
+      <Header tab={state.tab} wallet={wallet} onNavigate={(t) => actions.go(t)()} onToggleWallet={() => setWallet((w) => !w)} />
 
       {state.tab === "lobby" && (
-        <Lobby onBrowseCases={actions.go("cases")} onDesk={actions.go("desk")} onOpenCase={openCase} />
+        <Lobby
+          lobbies={state.lobbies}
+          onFindMatch={actions.go("battles")}
+          onCreate={actions.go("create")}
+          onAccept={accept}
+          onStart={start}
+        />
       )}
 
-      {/* The spin is a dialog over the library, so closing it lands back on the grid. */}
-      {(state.tab === "cases" || state.tab === "spin") && (
-        <Cases points={ledger.points} onOpenCase={openCase} />
+      {/* The spin is a dialog over the board, so closing it lands back on the grid. */}
+      {(state.tab === "battles" || state.tab === "spin") && (
+        <Battles
+          lobbies={state.lobbies}
+          points={ledger.points}
+          onAccept={accept}
+          onStart={start}
+          onCreate={actions.go("create")}
+        />
       )}
 
-      {state.tab === "spin" && c && derived.spin && (
-        <CaseSpin
+      {state.tab === "create" && (
+        <CreateLobby
+          form={state.form}
+          entryLabel={derived.formEntryLabel}
+          prizeLabel={derived.formPrizeLabel}
+          onName={actions.setFormName}
+          onMarket={actions.setFormMarket}
+          onLegsUp={actions.formLegsUp}
+          onLegsDown={actions.formLegsDown}
+          onPrizeInput={actions.onPrizeInput}
+          onPrizeBlur={actions.onPrizeBlur}
+          onPrizeUp={actions.prizeUp}
+          onPrizeDown={actions.prizeDown}
+          onPublish={actions.publishLobby}
+          onBack={actions.go("battles")}
+        />
+      )}
+
+      {state.tab === "room" && lobby && opp && (
+        <Room
+          lobby={lobby}
+          you={YOU}
+          opponent={opp}
+          ready={state.ready}
+          entryLabel={derived.entryLabel}
+          prizeLabel={derived.prizeLabel}
+          onReady={readyUp}
+          onBegin={actions.beginSpin}
+          onLeave={actions.leaveRoom}
+        />
+      )}
+
+      {state.tab === "spin" && lobby && opp && derived.spin && (
+        <MatchSpin
           key={state.seed}
-          c={c}
-          assets={c.eligibleAssets.map(meta)}
+          lobbyName={lobby.name}
+          marketLabel={MARKET_LABEL[lobby.market]}
+          color={MARKET_COLOR[lobby.market]}
+          opponent={opp}
+          assets={bookFor(lobby.market).map(meta)}
           result={derived.spin}
           respinsLeft={state.respinsLeft}
           onRespin={actions.respin}
@@ -116,57 +165,71 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
         />
       )}
 
-      {state.tab === "parlay-build" && c && derived.summary && (
-        <ParlayBuilder
-          c={c}
-          legs={derived.legs}
-          summary={derived.summary}
-          stakePoints={derived.stakePoints}
-          onTier={actions.setTier}
-          onDir={actions.setDir}
-          onLock={actions.lockParlay}
-          onBack={actions.backToCases}
-        />
-      )}
-
-      {state.tab === "study" && c && (
+      {state.tab === "study" && lobby && opp && (
         <Study
           arena={derived.arena}
-          myLegs={derived.legs}
+          briefs={derived.briefs}
           salt={derived.studySalt}
-          potentialLabel={potentialLabel}
-          onDone={actions.runTape}
+          opponent={opp}
+          prizeLabel={derived.prizeLabel}
+          onDone={actions.doneStudy}
         />
       )}
 
-      {state.tab === "tape" && c && (
-        <Tape
-          caseName={c.name}
-          potentialLabel={potentialLabel}
+      {state.tab === "parlay" && lobby && opp && (
+        <ParlayPick
+          lobbyName={lobby.name}
+          opponent={opp}
           arena={derived.arena}
-          legs={derived.legs}
+          selected={derived.myCard}
+          myLegs={derived.myLegs}
+          stakePoints={derived.stakePoints}
+          prizeLabel={derived.prizeLabel}
+          onPick={actions.pickCard}
+          onLock={actions.lockParlay}
+        />
+      )}
+
+      {state.tab === "duel" && lobby && opp && derived.verdict && (
+        <Live
+          lobbyName={lobby.name}
+          prizeLabel={derived.prizeLabel}
+          arena={derived.arena}
+          myLegs={derived.myLegs}
+          oppLegs={derived.oppLegs}
+          myCardLabel={derived.myCard?.label ?? "EVEN · BULLISH"}
+          oppCardLabel="HIDDEN UNTIL SETTLED"
           salt={derived.fightSalt}
           pos={derived.pos}
           raceDone={derived.raceDone}
+          you={YOU}
+          opponent={opp}
+          myScore={scoreOf(derived.myLegs, derived.fightSalt, derived.pos)}
+          oppScore={scoreOf(derived.oppLegs, derived.fightSalt, derived.pos)}
           onSettle={settle}
         />
       )}
 
-      {state.tab === "settled" && c && derived.verdict && derived.summary && (
-        <Settled
-          c={c}
+      {state.tab === "result" && lobby && opp && derived.verdict && (
+        <Result
           verdict={derived.verdict}
-          summary={derived.summary}
-          legs={derived.legs}
-          stakePoints={derived.stakePoints}
-          onBackToCases={actions.backToCases}
-          onOpenAgain={() => openCase(c.id)}
+          you={YOU}
+          opponent={opp}
+          myLegs={derived.myLegs}
+          oppLegs={derived.oppLegs}
+          myCard={derived.myCard}
+          oppCard={derived.oppCard}
+          myMult={derived.mySummary.mult}
+          oppMult={derived.oppSummary.mult}
+          pointsWon={derived.pointsIfWon}
+          salt={derived.fightSalt}
+          prizeLabel={derived.prizeLabel}
+          onBackToBattles={actions.backToBattles}
+          onRematch={actions.go("create")}
         />
       )}
 
-      {state.tab === "desk" && (
-        <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />
-      )}
+      {state.tab === "desk" && <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />}
 
       <Footer source={source} />
     </div>

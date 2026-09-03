@@ -1,12 +1,11 @@
-import type { CaseDef, Direction, Leg, LegOutcome } from "../types.ts";
-import { caseOdds } from "../data/cases.ts";
+import type { Direction, Leg } from "../types.ts";
 import { meta } from "../data/universe.ts";
-import { legState } from "./match.ts";
 import { fmtPx } from "./tape.ts";
 
 /**
- * Parlays: a condition per leg, a multiplier that is the product of the legs,
- * and a payout only when every leg hits.
+ * Parlays: every leg gets the same line and the same direction, chosen as one
+ * card — the way a sportsbook sells them. The multiplier is the product of the
+ * legs, and a parlay only pays when every leg lands.
  *
  * Settlement is untouched. `legState` still decides a leg on `{sym, dir, t}`;
  * a tier only changes how far `t` sits from the asset's base target. SAFE is a
@@ -21,27 +20,21 @@ export const TIER_ORDER: readonly Tier[] = ["SAFE", "EVEN", "SHARP", "DEGEN"];
 export interface TierSpec {
   /** Payout multiplier for the leg. */
   mult: number;
-  /** Implied hit rate, so the summary bar can multiply them out. */
+  /** Implied hit rate, so the summary can multiply them out. */
   prob: number;
   /** Multiplies the asset's base target to get the leg's target. */
   scale: number;
-  blurb: string;
+  risk: string;
 }
 
 export const TIERS: Record<Tier, TierSpec> = {
-  SAFE: { mult: 1.2, prob: 0.7, scale: 0.35, blurb: "wide band" },
-  EVEN: { mult: 1.9, prob: 0.5, scale: 1, blurb: "base target" },
-  SHARP: { mult: 3.6, prob: 0.25, scale: 1.8, blurb: "tight, directional" },
-  DEGEN: { mult: 11, prob: 0.08, scale: 3.2, blurb: "tail" },
+  SAFE: { mult: 1.2, prob: 0.7, scale: 0.35, risk: "low risk" },
+  EVEN: { mult: 1.9, prob: 0.5, scale: 1, risk: "even" },
+  SHARP: { mult: 3.6, prob: 0.25, scale: 1.8, risk: "high risk" },
+  DEGEN: { mult: 11, prob: 0.08, scale: 3.2, risk: "tail risk" },
 };
 
-/**
- * Partial credit: when N-1 of N legs hit, the stake comes back instead of going
- * to zero. Off by default — the point of a parlay is that every leg must hit.
- */
-export const PARTIAL_CREDIT = false;
-
-/** Below this implied probability the summary goes loud. */
+/** Below this implied probability the card goes loud. */
 export const LOUD_BELOW = 0.1;
 
 export interface ParlayLeg extends Leg {
@@ -86,46 +79,17 @@ export function impliedProbability(legs: readonly ParlayLeg[]): number {
 }
 
 export interface ParlaySummary {
-  /** Product of the leg multipliers. */
-  parlayMult: number;
-  /** The case's own odds — max payout over open cost. */
-  floor: number;
-  /** What actually pays: the parlay, but never below the case. */
-  effectiveMult: number;
-  /** Never above the case's own implied probability. */
+  mult: number;
   prob: number;
   potentialPoints: number;
-  /** True when the parlay is sitting on the case floor. */
-  floored: boolean;
   /** True when `prob` is below `LOUD_BELOW`. */
   loud: boolean;
 }
 
-/**
- * The summary bar's numbers.
- *
- * The case's ODDS is a floor: a parlay can only raise the multiplier and lower
- * the probability from the base case. Below the floor the case pays its own
- * odds regardless of how the legs are tiered.
- */
-export function summarize(
-  legs: readonly ParlayLeg[],
-  c: CaseDef,
-  stakePoints: number,
-): ParlaySummary {
-  const parlayMult = parlayMultiplier(legs);
-  const floor = caseOdds(c);
-  const effectiveMult = Math.max(floor, parlayMult);
-  const prob = Math.min(1 / floor, impliedProbability(legs));
-  return {
-    parlayMult,
-    floor,
-    effectiveMult,
-    prob,
-    potentialPoints: Math.round(stakePoints * effectiveMult),
-    floored: parlayMult < floor,
-    loud: prob < LOUD_BELOW,
-  };
+export function summarize(legs: readonly ParlayLeg[], stakePoints: number): ParlaySummary {
+  const mult = parlayMultiplier(legs);
+  const prob = impliedProbability(legs);
+  return { mult, prob, potentialPoints: Math.round(stakePoints * mult), loud: prob < LOUD_BELOW };
 }
 
 /** "BTC closes above 100,266 (+4.0%) by Fri expiry". */
@@ -135,99 +99,34 @@ export function conditionText(leg: ParlayLeg): string {
   return `${leg.sym} ${verb} ${fmtPx(leg.strike)} (${sign}${leg.t.toFixed(1)}%) by Fri expiry`;
 }
 
-export interface CaseVerdict {
-  outcomes: readonly LegOutcome[];
-  hits: number;
-  allHit: boolean;
-  /** Partial credit fired: N-1 legs hit and the stake came back. */
-  refunded: boolean;
-  points: number;
-  /** Total absolute move across the legs that landed. */
-  edge: number;
-  read: string;
-  lesson: string;
+// ---------- the cards ----------
+
+export type Stance = "bull" | "bear";
+
+/** One parlay a player can pick: a tier and a stance, applied to every leg. */
+export interface ParlayCard {
+  id: string;
+  tier: Tier;
+  stance: Stance;
+  label: string;
 }
 
-/** Settle a case run at print `pos`. */
-export function settleCase(
-  legs: readonly ParlayLeg[],
-  salt: number,
-  pos: number,
-  stakePoints: number,
-  effectiveMult: number,
-  partialCredit: boolean = PARTIAL_CREDIT,
-): CaseVerdict {
-  const outcomes = legs.map((l) => legState(l, salt, pos));
-  const hits = outcomes.filter((o) => o.won).length;
-  const allHit = legs.length > 0 && hits === legs.length;
-  const refunded = !allHit && partialCredit && hits === legs.length - 1;
-  const points = allHit ? Math.round(stakePoints * effectiveMult) : refunded ? stakePoints : 0;
-  const edge = outcomes.reduce((a, o) => a + (o.won ? Math.abs(o.pct) : 0), 0);
+/** Four tiers, bullish and bearish each. Eight cards on the table. */
+export const PARLAY_CARDS: readonly ParlayCard[] = TIER_ORDER.flatMap((tier) =>
+  (["bull", "bear"] as const).map((stance) => ({
+    id: `${tier.toLowerCase()}-${stance}`,
+    tier,
+    stance,
+    label: `${tier} · ${stance === "bull" ? "BULLISH" : "BEARISH"}`,
+  })),
+);
 
-  return {
-    outcomes,
-    hits,
-    allHit,
-    refunded,
-    points,
-    edge,
-    read: readCase(legs, outcomes, allHit),
-    lesson: lessonFor(legs, outcomes, allHit),
-  };
+export function cardById(id: string | null | undefined): ParlayCard | null {
+  return id ? (PARLAY_CARDS.find((c) => c.id === id) ?? null) : null;
 }
 
-/** Rule-based commentary over the position — no model call. */
-function readCase(
-  legs: readonly ParlayLeg[],
-  outcomes: readonly LegOutcome[],
-  allHit: boolean,
-): string {
-  if (!legs.length) return "";
-  const settled = legs.map((l, i) => ({ ...l, st: outcomes[i]! }));
-  const overs = legs.filter((l) => l.dir === "over").length;
-  const unders = legs.length - overs;
-  const degen = legs.filter((l) => l.tier === "DEGEN").length;
-  const shape =
-    overs === legs.length ? "all-in bull" : unders === legs.length ? "all-in bear" : "hedged";
-
-  const biggest = [...settled].sort((a, b) => Math.abs(b.st.pct) - Math.abs(a.st.pct))[0]!;
-  const nearMiss = [...settled]
-    .filter((l) => !l.st.won)
-    .sort((a, b) => Math.abs(Math.abs(a.st.pct) - a.t) - Math.abs(Math.abs(b.st.pct) - b.t))[0];
-
-  let read =
-    `A ${shape} position: ${overs} over, ${unders} under` +
-    (degen ? `, ${degen} on the tail` : "") +
-    `. ${biggest.sym} was the biggest mover at ${biggest.st.pct >= 0 ? "+" : ""}` +
-    `${biggest.st.pct.toFixed(1)}%` +
-    (biggest.st.won ? ", and it paid. " : ", but it went the wrong way. ");
-
-  if (allHit) {
-    read += `Every leg closed beyond its line. The case paid in full.`;
-  } else if (nearMiss) {
-    read +=
-      `${nearMiss.sym} missed its ${nearMiss.tier} line by ` +
-      `${Math.abs(Math.abs(nearMiss.st.pct) - nearMiss.t).toFixed(1)} points — ` +
-      `one leg short is the whole parlay short.`;
-  }
-  return read;
-}
-
-function lessonFor(
-  legs: readonly ParlayLeg[],
-  outcomes: readonly LegOutcome[],
-  allHit: boolean,
-): string {
-  if (allHit) {
-    return "It paid — now check whether it paid because the read was right or because the tape was kind. A hedged position that pays on a one-way tape got lucky.";
-  }
-  const missedDegen = legs.some((l, i) => l.tier === "DEGEN" && !outcomes[i]!.won);
-  if (missedDegen) {
-    return "A DEGEN leg is an 8% line. It belongs on a case whose base odds already cover the stake, not on one that needs every leg to make the floor.";
-  }
-  const oneWay = legs.every((l) => l.dir === legs[0]!.dir);
-  if (oneWay) {
-    return "Every leg the same direction is one bet in several coats. Flip one leg and a wrong-way tape costs you a leg, not the case.";
-  }
-  return "Read the study charts for drift before tiering up. A SHARP line on a name that has been chopping is a SAFE line's payout at a DEGEN line's odds.";
+/** The slip a card produces on the spun tickers. */
+export function legsForCard(syms: readonly string[], card: ParlayCard): readonly ParlayLeg[] {
+  const dir: Direction = card.stance === "bull" ? "over" : "under";
+  return syms.map((sym) => buildLeg(sym, dir, card.tier));
 }

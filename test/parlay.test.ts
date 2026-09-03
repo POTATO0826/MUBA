@@ -1,19 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { caseById, caseOdds, stakePointsFor } from "../src/data/cases.ts";
+import { briefsFor } from "../src/data/briefs.ts";
 import { meta } from "../src/data/universe.ts";
 import {
+  PARLAY_CARDS,
   TIERS,
   buildLeg,
+  cardById,
   conditionText,
   impliedProbability,
+  legsForCard,
   parlayMultiplier,
-  settleCase,
   summarize,
-  type ParlayLeg,
 } from "../src/engine/parlay.ts";
-import { TAPE_LEN, pctAt } from "../src/engine/tape.ts";
-
-const box = caseById("eth-vol-box")!;
 
 describe("legs", () => {
   test("a tier scales the asset's base target and sets the strike from spot", () => {
@@ -30,8 +28,7 @@ describe("legs", () => {
   });
 
   test("the condition reads as a sentence", () => {
-    const leg = buildLeg("BTC", "over", "EVEN");
-    expect(conditionText(leg)).toMatch(/^BTC closes above [\d,]+ \(\+4\.0%\) by Fri expiry$/);
+    expect(conditionText(buildLeg("BTC", "over", "EVEN"))).toMatch(/^BTC closes above [\d,]+ \(\+4\.0%\) by Fri expiry$/);
     expect(conditionText(buildLeg("BTC", "under", "EVEN"))).toContain("closes below");
   });
 });
@@ -53,94 +50,61 @@ describe("multiplier", () => {
     expect(impliedProbability(legs)).toBeCloseTo(0.7 * 0.5 * 0.25 * 0.08, 10);
   });
 
-  test("changing one leg changes the product", () => {
-    const before = parlayMultiplier(legs);
-    const after = parlayMultiplier([buildLeg("ETH", "over", "DEGEN"), ...legs.slice(1)]);
-    expect(after).toBeCloseTo((before / 1.2) * 11, 10);
-  });
-});
-
-describe("summary", () => {
-  const stake = stakePointsFor(box);
-
-  test("the case's odds are the floor of the multiplier and the ceiling of the probability", () => {
-    const allSafe = Array.from({ length: 4 }, (_, i) =>
-      buildLeg(["ETH", "BTC", "SOL", "ARB"][i]!, "over", "SAFE"),
-    );
-    const s = summarize(allSafe, box, stake);
-    expect(s.floor).toBeCloseTo(caseOdds(box), 10);
-    expect(s.parlayMult).toBeCloseTo(1.2 ** 4, 10);
-    expect(s.parlayMult).toBeLessThan(s.floor);
-    expect(s.effectiveMult).toBeCloseTo(s.floor, 10);
-    expect(s.floored).toBe(true);
-    expect(s.prob).toBeCloseTo(1 / s.floor, 10); // 0.7^4 = 0.24 would be above the case
-    expect(s.loud).toBe(false);
-    expect(s.potentialPoints).toBe(Math.round(stake * s.floor));
-  });
-
-  test("above the floor the parlay pays its own product and goes loud under 10%", () => {
-    const legs = Array.from({ length: 4 }, (_, i) =>
-      buildLeg(["ETH", "BTC", "SOL", "ARB"][i]!, "over", "DEGEN"),
-    );
-    const s = summarize(legs, box, stake);
-    expect(s.effectiveMult).toBeCloseTo(11 ** 4, 6);
-    expect(s.floored).toBe(false);
-    expect(s.prob).toBeCloseTo(0.08 ** 4, 10);
+  test("the summary multiplies the stake by the product and goes loud under 10%", () => {
+    const s = summarize(legs, 2400);
+    expect(s.mult).toBeCloseTo(parlayMultiplier(legs), 10);
+    expect(s.potentialPoints).toBe(Math.round(2400 * s.mult));
     expect(s.loud).toBe(true);
-  });
-
-  test("stake points come from the open cost", () => {
-    expect(stakePointsFor(box)).toBe(410);
-    expect(stakePointsFor(caseById("whale-box")!)).toBe(10000);
+    expect(summarize([buildLeg("ETH", "over", "SAFE")], 100).loud).toBe(false);
   });
 });
 
-describe("settlement", () => {
-  const salt = 11;
-
-  /** A leg that is certain to land: tiny target in the tape's own direction. */
-  const sure = (sym: string): ParlayLeg => {
-    const dir = pctAt(sym, salt, TAPE_LEN) >= 0 ? "over" : "under";
-    return { ...buildLeg(sym, dir, "EVEN"), t: 0.001 };
-  };
-  /** A leg that cannot land. */
-  const doomed = (sym: string): ParlayLeg => ({ ...buildLeg(sym, "over", "EVEN"), t: 999 });
-
-  test("every leg landing pays the stake times the multiplier", () => {
-    const legs = [sure("ETH"), sure("BTC"), sure("SOL")];
-    const v = settleCase(legs, salt, TAPE_LEN, 410, 6.859);
-    expect(v.hits).toBe(3);
-    expect(v.allHit).toBe(true);
-    expect(v.refunded).toBe(false);
-    expect(v.points).toBe(Math.round(410 * 6.859));
-    expect(v.edge).toBeGreaterThan(0);
-    expect(v.read).toContain("paid in full");
+describe("cards", () => {
+  test("eight cards: every tier, bullish and bearish, with unique ids", () => {
+    expect(PARLAY_CARDS).toHaveLength(8);
+    expect(new Set(PARLAY_CARDS.map((c) => c.id)).size).toBe(8);
+    for (const tier of ["SAFE", "EVEN", "SHARP", "DEGEN"] as const) {
+      expect(cardById(`${tier.toLowerCase()}-bull`)?.tier).toBe(tier);
+      expect(cardById(`${tier.toLowerCase()}-bear`)?.stance).toBe("bear");
+    }
+    expect(cardById("nope")).toBeNull();
+    expect(cardById(null)).toBeNull();
   });
 
-  test("one miss pays zero — the whole point of a parlay", () => {
-    const legs = [sure("ETH"), sure("BTC"), doomed("SOL")];
-    const v = settleCase(legs, salt, TAPE_LEN, 410, 6.859);
-    expect(v.hits).toBe(2);
-    expect(v.allHit).toBe(false);
-    expect(v.refunded).toBe(false);
-    expect(v.points).toBe(0);
-    expect(v.read).toContain("one leg short");
+  test("a card sets the same line and direction on every leg", () => {
+    const syms = ["NVDA", "AAPL", "TSLA"];
+    const bull = legsForCard(syms, cardById("sharp-bull")!);
+    expect(bull.map((l) => l.sym)).toEqual(syms);
+    expect(bull.every((l) => l.dir === "over" && l.tier === "SHARP")).toBe(true);
+    const bear = legsForCard(syms, cardById("safe-bear")!);
+    expect(bear.every((l) => l.dir === "under" && l.tier === "SAFE")).toBe(true);
+    expect(parlayMultiplier(bull)).toBeCloseTo(3.6 ** 3, 10);
   });
 
-  test("partial credit, when switched on, refunds the stake on N-1 hits", () => {
-    const legs = [sure("ETH"), sure("BTC"), doomed("SOL")];
-    const v = settleCase(legs, salt, TAPE_LEN, 410, 6.859, true);
-    expect(v.refunded).toBe(true);
-    expect(v.points).toBe(410);
+  test("cards climb in odds and fall in probability, tier by tier", () => {
+    const syms = ["NVDA", "AAPL", "TSLA"];
+    const order = ["safe-bull", "even-bull", "sharp-bull", "degen-bull"].map((id) => summarize(legsForCard(syms, cardById(id)!), 100));
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i]!.mult).toBeGreaterThan(order[i - 1]!.mult);
+      expect(order[i]!.prob).toBeLessThan(order[i - 1]!.prob);
+    }
+  });
+});
 
-    // Two misses is still nothing, even with the flag on.
-    const two = settleCase([sure("ETH"), doomed("BTC"), doomed("SOL")], salt, TAPE_LEN, 410, 6.859, true);
-    expect(two.refunded).toBe(false);
-    expect(two.points).toBe(0);
+describe("briefs", () => {
+  test("one news line per ticker, then a desk exchange, replayable by seed", () => {
+    const syms = ["NVDA", "AAPL", "TSLA"];
+    const a = briefsFor(syms, 7);
+    const b = briefsFor(syms, 7);
+    expect(a).toEqual(b);
+    expect(a.filter((x) => x.kind === "news").map((x) => x.sym)).toEqual(syms);
+    expect(a.filter((x) => x.kind === "desk")).toHaveLength(2);
+    for (const n of a.filter((x) => x.kind === "news")) expect(n.text).toContain(n.sym!);
   });
 
-  test("partial credit is off by default", () => {
-    const legs = [sure("ETH"), sure("BTC"), doomed("SOL")];
-    expect(settleCase(legs, salt, TAPE_LEN, 410, 6.859).points).toBe(0);
+  test("a different seed can draw a different wire", () => {
+    const syms = ["NVDA", "AAPL", "TSLA"];
+    const seen = new Set(Array.from({ length: 30 }, (_, i) => JSON.stringify(briefsFor(syms, i + 1))));
+    expect(seen.size).toBeGreaterThan(1);
   });
 });

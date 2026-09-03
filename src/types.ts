@@ -1,22 +1,25 @@
-/** Domain types for the THETADUEL case prototype. */
+/** Domain types for the THETADUEL prototype. */
 
 export type Market = "STOCK" | "CRYPTO";
+export type MarketFilter = Market | "MIXED";
 export type Direction = "over" | "under";
 
 /**
  * Screens in the app.
  *
- * `cases → spin → parlay-build → study → tape → settled` is one case run.
- * `lobby` and `desk` sit outside it.
+ * `battles → room → spin → study → parlay → duel → result` is one match;
+ * `create` feeds it a lobby. `lobby` (home) and `desk` sit outside it.
  */
 export type Tab =
   | "lobby"
-  | "cases"
+  | "battles"
+  | "create"
+  | "room"
   | "spin"
-  | "parlay-build"
   | "study"
-  | "tape"
-  | "settled"
+  | "parlay"
+  | "duel"
+  | "result"
   | "desk";
 
 export interface Asset {
@@ -55,28 +58,32 @@ export interface Geometry {
   last: number;
 }
 
-export interface CaseDef {
-  /** URL-safe key, e.g. `eth-vol-box`. */
+export interface Player {
+  name: string;
+  initial: string;
+  /** Avatar colour. */
+  bg: string;
+}
+
+/** A lobby a player has published and is waiting to fill. */
+export interface LobbyDef {
+  /** URL-safe key. */
   id: string;
   name: string;
-  tag: string;
-  /** Tag colour. */
-  tc: string;
-  /** How many legs the spin fills. */
-  legCount: number;
-  blurb: string;
-  cost: string;
-  max: string;
-  /** Backdrop: `[gradient stop, radial tint, angle]`. */
-  w: [string, string, number];
-  /** Season tier required to open it. Absent means always available. */
-  tier?: string;
-  /**
-   * The only tickers the reel can land on. Lives on the case, not the spin —
-   * a LOW VAR case must not be able to deal PEPE. Must hold at least
-   * `legCount` names, or the reel can never fill the slots without a duplicate.
-   */
-  eligibleAssets: readonly string[];
+  host: Player;
+  /** Which book the spin deals from. */
+  market: MarketFilter;
+  /** How many legs the spin fills — both slips run on the same tickers. */
+  legs: number;
+  /** Prize pool in ETH. Each player puts up half. */
+  prize: number;
+  status: "open" | "matched";
+  /** Published from this browser. */
+  mine: boolean;
+  /** The second player, once the lobby is matched. On someone else's lobby
+   *  the host is the opponent; on yours, this is. */
+  opponent: Player | null;
+  createdAgo: string;
 }
 
 export interface PricingRow {

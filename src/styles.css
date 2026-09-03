@@ -57,13 +57,70 @@ button {
   to { transform: translate3d(0, 0, 0); }
 }
 
-[data-tilt] {
+/*
+ * Lobby cards on hover: the card dims and goes a touch translucent, the name
+ * and tags step back, and the match details step forward over them. The
+ * footer — stats, status, the button — stays put and clickable.
+ */
+.vc-lobby {
   transition:
-    transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.18s ease,
+    border-color 0.18s ease,
     box-shadow 0.18s ease;
 }
-[data-tilt-layer] {
-  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+.vc-lobby::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: rgba(9, 9, 11, 0.52);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+.vc-lobby:hover {
+  opacity: 0.94;
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+.vc-lobby:hover::before {
+  opacity: 1;
+}
+.vc-lobby-body {
+  position: relative;
+  z-index: 3;
+}
+.vc-lobby-fade {
+  transition: opacity 0.18s ease;
+}
+.vc-lobby:hover .vc-lobby-fade {
+  opacity: 0.18;
+}
+.vc-lobby-details {
+  position: absolute;
+  z-index: 4;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+  pointer-events: none;
+}
+.vc-lobby:hover .vc-lobby-details {
+  opacity: 1;
+  transform: none;
+}
+
+/* Dashes running along a streamline in the card art. */
+@keyframes vcFlow {
+  from { stroke-dashoffset: 182; }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-art] * {
+    animation: none !important;
+  }
 }
 
 .vc-marquee:hover {

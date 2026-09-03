@@ -3,28 +3,25 @@ import { useCallback, useMemo, useState } from "react";
 /**
  * Everything that will one day live on-chain, behind one hook.
  *
- * Points balance, case opens and settlements are in-memory here. Swapping this
+ * Points balance, entries and settlements are in-memory here. Swapping this
  * for contract reads and writes means reimplementing `useLedger` against the
  * chain and nothing else — no view knows where the balance comes from.
- *
- * Non-custodial framing throughout: `open` is buying a position, `settle` is
- * that position paying out or expiring. There is no house on the other side.
  */
 
 export interface SettledRecord {
-  caseId: string;
+  lobbyId: string;
   seed: number;
   stake: number;
   points: number;
-  allHit: boolean;
+  won: boolean;
 }
 
 export interface Ledger {
   /** Points on hand. */
   points: number;
-  /** Buy the position: the stake leaves the balance. */
-  open: (stake: number) => void;
-  /** The position settled: whatever it paid comes back. */
+  /** Take a seat: the entry leaves the balance. */
+  enter: (stake: number) => void;
+  /** The duel settled: whatever it paid comes back. */
   settle: (record: SettledRecord) => void;
   history: readonly SettledRecord[];
 }
@@ -35,12 +32,12 @@ export function useLedger(): Ledger {
   const [points, setPoints] = useState(OPENING_BALANCE);
   const [history, setHistory] = useState<readonly SettledRecord[]>([]);
 
-  const open = useCallback((stake: number) => setPoints((p) => p - stake), []);
+  const enter = useCallback((stake: number) => setPoints((p) => p - stake), []);
 
   const settle = useCallback((record: SettledRecord) => {
     setPoints((p) => p + record.points);
     setHistory((h) => [record, ...h]);
   }, []);
 
-  return useMemo(() => ({ points, open, settle, history }), [points, open, settle, history]);
+  return useMemo(() => ({ points, enter, settle, history }), [points, enter, settle, history]);
 }

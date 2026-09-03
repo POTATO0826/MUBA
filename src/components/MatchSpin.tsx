@@ -3,7 +3,7 @@ import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../eng
 import { fmtPx } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
-import type { Asset, CaseDef } from "../types.ts";
+import type { Asset, Player } from "../types.ts";
 
 const SPIN_MS = 3200;
 /** Pause between one landing and the next spin, so each slot registers. */
@@ -12,9 +12,12 @@ const SETTLE_MS = 650;
 /** Quintic ease-out: fast off the line, long slow settle. */
 const ease = (t: number) => 1 - Math.pow(1 - t, 5);
 
-interface CaseSpinProps {
-  c: CaseDef;
-  /** The case's own book, in the same order `spinCase` indexed it. */
+interface MatchSpinProps {
+  lobbyName: string;
+  marketLabel: string;
+  color: string;
+  opponent: Player;
+  /** The lobby's book, in the same order `spinCase` indexed it. */
   assets: readonly Asset[];
   result: SpinResult;
   respinsLeft: number;
@@ -24,19 +27,20 @@ interface CaseSpinProps {
 }
 
 /**
- * The case-opening reel. A strip of the case's own tickers flies past a centre
- * pointer, decelerates, and stops — once per leg. Each landing fills a slot
- * under the reel, so the position is visibly built rather than revealed.
+ * The lucky spin. Both seats are taken; a strip of the lobby's book flies past
+ * a centre pointer, decelerates, and stops — once per leg. Each landing fills
+ * a slot under the reel. Both players run their slips on exactly these
+ * tickers, so the reel is the one thing in the match neither side chose.
  *
  * Everything about *where* it stops was decided before the first frame by
  * `spinCase`; this component only draws the plan it was handed. Remount it
  * (key it on the seed) for a new result.
  */
-export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, onClose }: CaseSpinProps) {
+export function MatchSpin(p: MatchSpinProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
 
-  const n = result.plans.length;
+  const n = p.result.plans.length;
   /** Which plan is on the reel. Equals `n` once every slot has landed. */
   const [step, setStep] = useState(0);
   const [spinning, setSpinning] = useState(true);
@@ -47,8 +51,8 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
   const done = step >= n;
   const landedCount = spinning ? step : Math.min(n, step + 1);
 
-  const tiles = Array.from({ length: STRIP_LEN }, (_, i) => assets[i % assets.length]!);
-  const plan = result.plans[Math.min(step, n - 1)]!;
+  const tiles = Array.from({ length: STRIP_LEN }, (_, i) => p.assets[i % p.assets.length]!);
+  const plan = p.result.plans[Math.min(step, n - 1)]!;
 
   useEffect(() => {
     const strip = stripRef.current;
@@ -61,7 +65,7 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
 
     // Skip: park the strip on the last plan and mark every slot landed.
     if (skipped) {
-      const last = result.plans[n - 1]!;
+      const last = p.result.plans[n - 1]!;
       strip.style.transition = "none";
       strip.style.transform = `translate3d(${-offsetFor(last.target, last.jitter)}px,0,0)`;
       setUnder(last.target);
@@ -104,15 +108,15 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
       cancelAnimationFrame(raf);
       if (settleTimer) clearTimeout(settleTimer);
     };
-  }, [step, skipped, done, n, plan, result.plans]);
+  }, [step, skipped, done, n, plan, p.result.plans]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") p.onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [p.onClose]);
 
   const live = tiles[under] ?? tiles[plan.target]!;
   const shown = spinning ? live : tiles[plan.target]!;
@@ -124,15 +128,15 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
       ? `spinning the book… leg ${step + 1} of ${n}`
       : `leg ${step + 1} of ${n} landed`;
 
-  const respinBlocked = !done || respinsLeft === 0;
-  const respinTitle = respinsLeft === 0 ? "One free re-roll per case open — spent." : undefined;
+  const respinBlocked = !done || p.respinsLeft === 0;
+  const respinTitle = p.respinsLeft === 0 ? "One free re-roll per match — spent." : undefined;
 
   return (
     <div
       role="dialog"
       aria-modal
-      aria-label={`${c.name} spin`}
-      onClick={onClose}
+      aria-label={`${p.lobbyName} spin`}
+      onClick={p.onClose}
       style={sx(
         "position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;" +
           "background:rgba(9,9,11,.82);backdrop-filter:blur(10px)",
@@ -141,8 +145,8 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
       <div
         onClick={(e) => e.stopPropagation()}
         style={sx(
-          `width:min(800px,100%);border:1px solid ${c.tc}59;border-radius:16px;` +
-            `background:linear-gradient(160deg,${c.tc}14,${C.card} 45%);overflow:hidden;` +
+          `width:min(800px,100%);border:1px solid ${p.color}59;border-radius:16px;` +
+            `background:linear-gradient(160deg,${p.color}14,${C.card} 45%);overflow:hidden;` +
             "box-shadow:0 30px 80px rgba(0,0,0,.6)",
         )}
       >
@@ -153,18 +157,19 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
         >
           <span
             style={sx(
-              `width:7px;height:7px;border-radius:99px;background:${c.tc};` +
+              `width:7px;height:7px;border-radius:99px;background:${p.color};` +
                 (done ? "" : "animation:vcPulse 1.4s ease-in-out infinite"),
             )}
           />
-          <span style={sx(`font:700 10px/1 ${MONO};letter-spacing:.14em;color:${c.tc}`)}>
-            {c.name.toUpperCase()} · SPIN
+          <span style={sx(`font:700 10px/1 ${MONO};letter-spacing:.14em;color:${p.color}`)}>
+            LUCKY SPIN · {p.lobbyName.toUpperCase()}
           </span>
-          <span style={sx(tag(c.tc))}>{c.tag}</span>
+          <span style={sx(tag(p.color))}>{p.marketLabel}</span>
+          <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>you vs {p.opponent.name}</span>
           <div style={sx("flex:1")} />
           <span style={sx(`font:500 10px/1 ${MONO};color:${done ? C.accent : C.dim}`)}>{status}</span>
           <button
-            onClick={onClose}
+            onClick={p.onClose}
             aria-label="Close"
             style={sx(
               `width:28px;height:28px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
@@ -271,18 +276,18 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
           />
         </div>
 
-        {/* The position being built, one slot per leg. */}
-        <div style={sx(`display:flex;gap:8px;padding:14px 18px 4px;flex-wrap:wrap`)}>
+        {/* The board being built, one slot per leg. */}
+        <div style={sx("display:flex;gap:8px;padding:14px 18px 4px;flex-wrap:wrap")}>
           {Array.from({ length: n }, (_, i) => {
-            const sym = i < landedCount ? result.syms[i] : null;
-            const a = sym ? assets.find((x) => x.sym === sym) : null;
+            const sym = i < landedCount ? p.result.syms[i] : null;
+            const a = sym ? p.assets.find((x) => x.sym === sym) : null;
             const color = a ? sectorColor(a.sector) : C.borderMid;
             return (
               <div
                 key={i}
                 data-slot={i}
                 style={sx(
-                  `flex:1 1 96px;min-width:96px;height:52px;padding:9px 11px;border-radius:9px;display:flex;flex-direction:column;justify-content:space-between;` +
+                  "flex:1 1 96px;min-width:96px;height:52px;padding:9px 11px;border-radius:9px;display:flex;flex-direction:column;justify-content:space-between;" +
                     (a
                       ? `border:1px solid ${color}66;background:${color}14`
                       : `border:1px dashed ${C.borderMid};background:transparent`),
@@ -302,8 +307,8 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
         <div style={sx("display:flex;align-items:center;gap:12px;padding:12px 18px 16px")}>
           <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};max-width:380px`)}>
             {done
-              ? `Locked · ${result.syms.join(" · ")}. Tier each leg next, then hold through expiry.`
-              : `The reel runs this case's own book — ${assets.length} names. One spin per leg; the same ticker never fills two slots.`}
+              ? `Locked · ${p.result.syms.join(" · ")}. Both slips run on these. Next: the case study.`
+              : `The reel picks what you both play on — ${p.assets.length} names in this book. One spin per leg; the same ticker never fills two slots.`}
           </span>
           <div style={sx("flex:1")} />
           {!done && (
@@ -320,7 +325,7 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
           <button
             disabled={respinBlocked}
             title={respinTitle}
-            onClick={onRespin}
+            onClick={p.onRespin}
             style={sx(
               `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
                 `color:${respinBlocked ? C.faint : C.text};font:500 12px/1 ${SANS};cursor:${
@@ -328,11 +333,11 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
                 };white-space:nowrap`,
             )}
           >
-            Spin again{respinsLeft === 0 ? " · used" : ""}
+            Spin again{p.respinsLeft === 0 ? " · used" : ""}
           </button>
           <button
             disabled={!done}
-            onClick={onClaim}
+            onClick={p.onClaim}
             style={sx(
               `height:36px;padding:0 16px;border:none;border-radius:8px;font:700 12px/1 ${SANS};white-space:nowrap;` +
                 (done
@@ -340,7 +345,7 @@ export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, on
                   : `background:${C.border};color:${C.dim};cursor:default`),
             )}
           >
-            Claim → parlay
+            Claim → case study
           </button>
         </div>
       </div>

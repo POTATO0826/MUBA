@@ -1,4 +1,4 @@
-/** Season progression fixtures for the case library. */
+/** Season progression fixtures. */
 
 export const TIERS = [
   { name: "MINNOW", xp: 0 },
@@ -23,10 +23,10 @@ export const PLAYER = {
 } as const;
 
 export const MISSIONS = [
-  { id: "settle", label: "Settle a case", xp: 200, done: true },
+  { id: "win", label: "Win a duel", xp: 200, done: true },
   { id: "crypto", label: "Spin a crypto leg", xp: 50, done: true },
-  { id: "lowvar", label: "Open a LOW VAR case", xp: 80, done: false },
-  { id: "degen", label: "Lock a DEGEN leg", xp: 30, done: false },
+  { id: "stocks", label: "Play a stocks lobby", xp: 80, done: false },
+  { id: "degen", label: "Lock a DEGEN parlay", xp: 30, done: false },
 ] as const;
 
 export const tierIndex = (name: string): number => TIERS.findIndex((t) => t.name === name);
@@ -43,10 +43,4 @@ export function tierFor(xp: number): Tier {
 /** The next tier above `xp`, or null at the top. */
 export function nextTier(xp: number): Tier | null {
   return TIERS.find((t) => t.xp > xp) ?? null;
-}
-
-/** Name of the tier gating a case, or null when the player can open it. */
-export function lockedBy(required: string | undefined, playerTier: string): string | null {
-  if (!required) return null;
-  return tierIndex(required) > tierIndex(playerTier) ? required : null;
 }

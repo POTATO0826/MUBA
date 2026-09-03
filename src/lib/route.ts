@@ -2,62 +2,70 @@ import type { Tab } from "../types.ts";
 
 /**
  * The URL, both ways. There is no router — the app is a `Tab` switch — but a
- * case run wants a shareable address, and the spin wants its seed in it so
- * the same link replays the same legs.
+ * match wants a shareable address, and the spin wants its seed in it so the
+ * same link replays the same tickers.
  *
- *   /               the case library
- *   /home           the lobby
- *   /desk           the options desk
- *   /case/:id?seed=N            the spin
- *   /case/:id/parlay?seed=N     the parlay builder
- *   /case/:id/study?seed=N      the case study
- *   /case/:id/tape?seed=N       the tape running
- *   /case/:id/settled?seed=N    the result
+ *   /                 home
+ *   /battles          the lobby board
+ *   /create           the lobby builder
+ *   /desk             the options desk
+ *   /match/:id/room?seed=N       the lobby room — both players ready up
+ *   /match/:id?seed=N            the spin
+ *   /match/:id/study?seed=N      the case study
+ *   /match/:id/parlay?seed=N     the parlay cards
+ *   /match/:id/duel?seed=N       the tape running
+ *   /match/:id/result?seed=N     the result
  */
 
 export interface Route {
   tab: Tab;
-  caseId: string | null;
+  lobbyId: string | null;
   seed: number | null;
 }
 
 const STAGE_TO_TAB: Record<string, Tab> = {
   "": "spin",
-  parlay: "parlay-build",
+  room: "room",
   study: "study",
-  tape: "tape",
-  settled: "settled",
+  parlay: "parlay",
+  duel: "duel",
+  result: "result",
 };
 
 const TAB_TO_STAGE: Partial<Record<Tab, string>> = {
   spin: "",
-  "parlay-build": "parlay",
+  room: "room",
   study: "study",
-  tape: "tape",
-  settled: "settled",
+  parlay: "parlay",
+  duel: "duel",
+  result: "result",
 };
+
+const NONE = { lobbyId: null, seed: null } as const;
 
 export function parseRoute(pathname: string, search: string): Route {
   const parts = pathname.split("/").filter(Boolean);
   const seedRaw = new URLSearchParams(search).get("seed");
   const seed = seedRaw && /^\d+$/.test(seedRaw) ? Number(seedRaw) : null;
 
-  if (parts[0] === "case" && parts[1]) {
+  if (parts[0] === "match" && parts[1]) {
     const tab = STAGE_TO_TAB[parts[2] ?? ""];
-    if (tab) return { tab, caseId: parts[1], seed };
+    if (tab) return { tab, lobbyId: parts[1], seed };
   }
-  if (parts[0] === "home") return { tab: "lobby", caseId: null, seed: null };
-  if (parts[0] === "desk") return { tab: "desk", caseId: null, seed: null };
-  return { tab: "cases", caseId: null, seed: null };
+  if (parts[0] === "battles") return { tab: "battles", ...NONE };
+  if (parts[0] === "create") return { tab: "create", ...NONE };
+  if (parts[0] === "desk") return { tab: "desk", ...NONE };
+  return { tab: "lobby", ...NONE };
 }
 
-export function routePath(tab: Tab, caseId: string | null, seed: number | null): string {
+export function routePath(tab: Tab, lobbyId: string | null, seed: number | null): string {
   const stage = TAB_TO_STAGE[tab];
-  if (stage !== undefined && caseId) {
+  if (stage !== undefined && lobbyId) {
     const q = seed !== null ? `?seed=${seed}` : "";
-    return stage ? `/case/${caseId}/${stage}${q}` : `/case/${caseId}${q}`;
+    return stage ? `/match/${lobbyId}/${stage}${q}` : `/match/${lobbyId}${q}`;
   }
-  if (tab === "lobby") return "/home";
+  if (tab === "battles") return "/battles";
+  if (tab === "create") return "/create";
   if (tab === "desk") return "/desk";
   return "/";
 }
