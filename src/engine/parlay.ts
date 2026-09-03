@@ -3,9 +3,10 @@ import { meta } from "../data/universe.ts";
 import { fmtPx } from "./tape.ts";
 
 /**
- * Parlays: every leg gets the same line and the same direction, chosen as one
- * card — the way a sportsbook sells them. The multiplier is the product of the
- * legs, and a parlay only pays when every leg lands.
+ * Parlays: each leg gets its own line and direction, picked from a card, and
+ * the parlay is the combination — the way a sportsbook builds one game at a
+ * time. The multiplier is the product of the legs, and a parlay only pays when
+ * every leg lands.
  *
  * Settlement is untouched. `legState` still decides a leg on `{sym, dir, t}`;
  * a tier only changes how far `t` sits from the asset's base target. SAFE is a
@@ -103,7 +104,7 @@ export function conditionText(leg: ParlayLeg): string {
 
 export type Stance = "bull" | "bear";
 
-/** One parlay a player can pick: a tier and a stance, applied to every leg. */
+/** One pick for one leg: a tier and a stance. */
 export interface ParlayCard {
   id: string;
   tier: Tier;
@@ -111,7 +112,7 @@ export interface ParlayCard {
   label: string;
 }
 
-/** Four tiers, bullish and bearish each. Eight cards on the table. */
+/** Four tiers, bullish and bearish each. Eight cards per leg. */
 export const PARLAY_CARDS: readonly ParlayCard[] = TIER_ORDER.flatMap((tier) =>
   (["bull", "bear"] as const).map((stance) => ({
     id: `${tier.toLowerCase()}-${stance}`,
@@ -125,8 +126,20 @@ export function cardById(id: string | null | undefined): ParlayCard | null {
   return id ? (PARLAY_CARDS.find((c) => c.id === id) ?? null) : null;
 }
 
-/** The slip a card produces on the spun tickers. */
-export function legsForCard(syms: readonly string[], card: ParlayCard): readonly ParlayLeg[] {
-  const dir: Direction = card.stance === "bull" ? "over" : "under";
-  return syms.map((sym) => buildLeg(sym, dir, card.tier));
+/** One leg from one pick. */
+export function legForCard(sym: string, card: ParlayCard): ParlayLeg {
+  return buildLeg(sym, card.stance === "bull" ? "over" : "under", card.tier);
+}
+
+/** The slip a pick per ticker produces. Every ticker must have one. */
+export function legsForPicks(
+  syms: readonly string[],
+  picks: Readonly<Record<string, ParlayCard>>,
+): readonly ParlayLeg[] {
+  return syms.map((sym) => legForCard(sym, picks[sym]!));
+}
+
+/** "SAFE↑ EVEN↓ DEGEN↑" — the slip, one glyph per leg. */
+export function slipLabel(legs: readonly ParlayLeg[]): string {
+  return legs.map((l) => `${l.tier}${l.dir === "over" ? "↑" : "↓"}`).join(" ");
 }

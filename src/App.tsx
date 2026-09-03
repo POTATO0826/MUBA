@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { MatchSpin } from "./components/MatchSpin.tsx";
 import { scoreOf } from "./engine/match.ts";
+import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookFor, stakePointsFor } from "./data/lobbies.ts";
 import type { MarketSource } from "./data/market.ts";
 import { meta } from "./data/universe.ts";
@@ -179,11 +180,13 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
           lobbyName={lobby.name}
           opponent={opp}
           arena={derived.arena}
-          selected={derived.myCard}
+          picks={derived.myPicks}
+          allPicked={derived.allPicked}
           myLegs={derived.myLegs}
+          summary={derived.mySummary}
           stakePoints={derived.stakePoints}
           prizeLabel={derived.prizeLabel}
-          onPick={actions.pickCard}
+          onPick={actions.pick}
           onLock={actions.lockParlay}
         />
       )}
@@ -195,7 +198,7 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
           arena={derived.arena}
           myLegs={derived.myLegs}
           oppLegs={derived.oppLegs}
-          myCardLabel={derived.myCard?.label ?? "EVEN · BULLISH"}
+          myCardLabel={slipLabel(derived.myLegs)}
           oppCardLabel="HIDDEN UNTIL SETTLED"
           salt={derived.fightSalt}
           pos={derived.pos}
@@ -215,8 +218,6 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
           opponent={opp}
           myLegs={derived.myLegs}
           oppLegs={derived.oppLegs}
-          myCard={derived.myCard}
-          oppCard={derived.oppCard}
           myMult={derived.mySummary.mult}
           oppMult={derived.oppSummary.mult}
           pointsWon={derived.pointsIfWon}

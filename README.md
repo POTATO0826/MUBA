@@ -32,7 +32,7 @@ battles → room → spin → study → parlay → duel → result
 | Room | `/match/:id/room?seed=N` | Both seats taken. Both players ready up — readying locks your entry — and only then does the spin start. Leave, and the seat goes back. |
 | Spin | `/match/:id?seed=N` | The reel deals one ticker per leg from the lobby's book. |
 | Study | `/match/:id/study?seed=N` | The dealt charts, a news line per ticker, the desk talking. Both players read the same thing. |
-| Parlay | `/match/:id/parlay?seed=N` | Eight cards: four tiers × bullish/bearish. Pick one; the opponent's stays hidden. |
+| Parlay | `/match/:id/parlay?seed=N` | Eight cards per ticker: four tiers × bullish/bearish. One pick per ticker; the combination is the parlay. The opponent's stays hidden. |
 | Duel | `/match/:id/duel?seed=N` | Both slips run through a fresh window of the tape. |
 | Result | `/match/:id/result?seed=N` | Who took the pool, and a read of what each player chose. |
 
@@ -80,7 +80,8 @@ shows the same wire to both players.
 
 ## The parlay cards
 
-`src/engine/parlay.ts`. A card is a tier and a stance, applied to every leg:
+`src/engine/parlay.ts`. Each dealt ticker gets its own pick — a card that is a
+tier and a stance — and the parlay is the combination:
 
 | Tier | Implied hit | Multiplier | Line |
 |---|---|---|---|
@@ -89,15 +90,16 @@ shows the same wire to both players.
 | SHARP | ~25% | ×3.6 | 1.8× |
 | DEGEN | ~8% | ×11 | 3.2× |
 
-Bullish sets every leg *over* its line, bearish *under*. The odds on a card are
-the product of the leg multipliers; the chance is the product of the hit
-rates. Higher tiers pay more and land less often.
+Bullish puts that leg *over* its line, bearish *under*. The odds on the slip
+are the product of the leg multipliers; the chance is the product of the hit
+rates. Higher tiers pay more and land less often, and the lock waits until
+every ticker has a pick.
 
 The duel itself is decided by legs landed, tie broken on conviction — the
 untouched `settle()` in `src/engine/match.ts`. The parlay decides what the
-winner banks: the entry stake at their card's odds, in points. A SAFE win pays
-little; a DEGEN win pays a lot. The opponent's card is drawn from the same
-seed and hidden until settlement.
+winner banks: the entry stake at their slip's odds, in points. An all-SAFE
+win pays little; a slip with DEGEN legs pays a lot. The opponent's picks are
+drawn from the same seed and hidden until settlement.
 
 Settlement is untouched: `legState` still decides a leg on `{sym, dir, t}`. A
 tier only changes how far `t` sits from the asset's base target.

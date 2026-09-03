@@ -8,8 +8,10 @@ import {
   cardById,
   conditionText,
   impliedProbability,
-  legsForCard,
+  legForCard,
+  legsForPicks,
   parlayMultiplier,
+  slipLabel,
   summarize,
 } from "../src/engine/parlay.ts";
 
@@ -60,7 +62,7 @@ describe("multiplier", () => {
 });
 
 describe("cards", () => {
-  test("eight cards: every tier, bullish and bearish, with unique ids", () => {
+  test("eight cards per leg: every tier, bullish and bearish, with unique ids", () => {
     expect(PARLAY_CARDS).toHaveLength(8);
     expect(new Set(PARLAY_CARDS.map((c) => c.id)).size).toBe(8);
     for (const tier of ["SAFE", "EVEN", "SHARP", "DEGEN"] as const) {
@@ -71,19 +73,28 @@ describe("cards", () => {
     expect(cardById(null)).toBeNull();
   });
 
-  test("a card sets the same line and direction on every leg", () => {
-    const syms = ["NVDA", "AAPL", "TSLA"];
-    const bull = legsForCard(syms, cardById("sharp-bull")!);
-    expect(bull.map((l) => l.sym)).toEqual(syms);
-    expect(bull.every((l) => l.dir === "over" && l.tier === "SHARP")).toBe(true);
-    const bear = legsForCard(syms, cardById("safe-bear")!);
-    expect(bear.every((l) => l.dir === "under" && l.tier === "SAFE")).toBe(true);
-    expect(parlayMultiplier(bull)).toBeCloseTo(3.6 ** 3, 10);
+  test("a pick sets that leg's line and direction, and legs combine per ticker", () => {
+    const sharpBull = legForCard("NVDA", cardById("sharp-bull")!);
+    expect(sharpBull.dir).toBe("over");
+    expect(sharpBull.tier).toBe("SHARP");
+    const safeBear = legForCard("AAPL", cardById("safe-bear")!);
+    expect(safeBear.dir).toBe("under");
+    expect(safeBear.tier).toBe("SAFE");
+
+    const legs = legsForPicks(["NVDA", "AAPL", "TSLA"], {
+      NVDA: cardById("sharp-bull")!,
+      AAPL: cardById("safe-bear")!,
+      TSLA: cardById("degen-bull")!,
+    });
+    expect(legs.map((l) => l.sym)).toEqual(["NVDA", "AAPL", "TSLA"]);
+    expect(legs.map((l) => l.tier)).toEqual(["SHARP", "SAFE", "DEGEN"]);
+    expect(legs.map((l) => l.dir)).toEqual(["over", "under", "over"]);
+    expect(parlayMultiplier(legs)).toBeCloseTo(3.6 * 1.2 * 11, 10);
+    expect(slipLabel(legs)).toBe("SHARP↑ SAFE↓ DEGEN↑");
   });
 
-  test("cards climb in odds and fall in probability, tier by tier", () => {
-    const syms = ["NVDA", "AAPL", "TSLA"];
-    const order = ["safe-bull", "even-bull", "sharp-bull", "degen-bull"].map((id) => summarize(legsForCard(syms, cardById(id)!), 100));
+  test("tiers climb in odds and fall in probability", () => {
+    const order = ["safe-bull", "even-bull", "sharp-bull", "degen-bull"].map((id) => legForCard("NVDA", cardById(id)!));
     for (let i = 1; i < order.length; i++) {
       expect(order[i]!.mult).toBeGreaterThan(order[i - 1]!.mult);
       expect(order[i]!.prob).toBeLessThan(order[i - 1]!.prob);

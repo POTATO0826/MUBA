@@ -381,58 +381,69 @@ describe("the case study", () => {
   });
 });
 
-describe("the parlay cards", () => {
+describe("the parlay picks", () => {
+  const pickers = () => Array.from(container.querySelectorAll<HTMLElement>("[data-leg-picker]"));
   const cards = () => Array.from(container.querySelectorAll<HTMLButtonElement>("[data-parlay]"));
-  const pick = (id: string) => act(() => cards().find((c) => c.dataset.parlay === id)!.click());
-  const lock = () => buttons().find((b) => (b.textContent ?? "").startsWith("Lock parlay"))!;
+  const pick = (sym: string, id: string) =>
+    act(() => cards().find((c) => c.dataset.parlay === `${sym}:${id}`)!.click());
+  const lock = () => buttons().find((b) => /Lock parlay|Pick \d+ more/.test(b.textContent ?? ""))!;
+  const mult = () => container.querySelector('[data-testid="combined-mult"]')?.textContent;
+  const prob = () => container.querySelector('[data-testid="implied-prob"]')?.textContent;
 
-  test("eight cards on the table, four tiers bullish and bearish, odds on each", () => {
+  test("every dealt ticker has its own eight cards", () => {
     mount("/match/kz-semis/parlay?seed=424242");
-    expect(text()).toContain("Pick your parlay · Semis sprint");
+    expect(text()).toContain("Build your parlay · Semis sprint");
     expect(text()).toContain("BLIND · OPPONENT SLIP HIDDEN");
-    expect(cards()).toHaveLength(8);
-    for (const tier of ["SAFE", "EVEN", "SHARP", "DEGEN"]) {
-      for (const stance of ["bull", "bear"]) {
-        expect(cards().some((c) => c.dataset.parlay === `${tier.toLowerCase()}-${stance}`)).toBe(true);
+    expect(pickers()).toHaveLength(3);
+    expect(cards()).toHaveLength(24); // 8 per ticker
+    for (const sec of pickers()) {
+      const sym = sec.dataset.legPicker!;
+      for (const tier of ["safe", "even", "sharp", "degen"]) {
+        for (const stance of ["bull", "bear"]) {
+          expect(cards().some((c) => c.dataset.parlay === `${sym}:${tier}-${stance}`)).toBe(true);
+        }
       }
+      expect(sec.textContent).toContain("×1.2");
+      expect(sec.textContent).toContain("×11.0");
+      expect(sec.textContent).toContain("↑ BULL");
+      expect(sec.textContent).toContain("↓ BEAR");
     }
-    // Three legs: the odds are the product of the leg multipliers.
-    const safeBull = cards().find((c) => c.dataset.parlay === "safe-bull")!;
-    expect(safeBull.textContent).toContain("×1.73"); // 1.2^3
-    expect(safeBull.textContent).toContain("↑ BULLISH");
-    expect(safeBull.textContent).toContain("low risk");
-    const degenBear = cards().find((c) => c.dataset.parlay === "degen-bear")!;
-    expect(degenBear.textContent).toContain("×1331.00"); // 11^3
-    expect(degenBear.textContent).toContain("↓ BEARISH");
-    expect(degenBear.textContent).toContain("tail risk");
   });
 
-  test("higher tiers pay more and land less often", () => {
+  test("the lock waits until every ticker has a pick", () => {
     mount("/match/kz-semis/parlay?seed=424242");
-    const odds = (id: string) => Number(cards().find((c) => c.dataset.parlay === id)!.textContent!.match(/×([\d.]+)/)![1]);
-    expect(odds("even-bull")).toBeGreaterThan(odds("safe-bull"));
-    expect(odds("sharp-bull")).toBeGreaterThan(odds("even-bull"));
-    expect(odds("degen-bull")).toBeGreaterThan(odds("sharp-bull"));
-  });
-
-  test("locking needs a card, and a card sets every leg's line and direction", () => {
-    mount("/match/kz-semis/parlay?seed=424242");
+    const syms = slipLegs() as string[];
     expect(lock().disabled).toBe(true);
-    expect(text()).toContain("line set by the card you pick");
+    expect(lock().textContent).toContain("Pick 3 more");
+    expect(mult()).toBe("—");
 
-    pick("sharp-bear");
+    pick(syms[0]!, "sharp-bear");
+    expect(lock().disabled).toBe(true);
+    expect(lock().textContent).toContain("Pick 2 more");
+    pick(syms[1]!, "safe-bull");
+    pick(syms[2]!, "degen-bull");
     expect(lock().disabled).toBe(false);
-    expect(text()).toContain("SHARP · BEARISH");
-    expect(text()).toContain("closes below");
-    expect(text()).not.toContain("closes above");
-    expect(cards().find((c) => c.dataset.parlay === "sharp-bear")?.getAttribute("aria-pressed")).toBe("true");
-
-    pick("safe-bull");
-    expect(text()).toContain("closes above");
-    expect(text()).not.toContain("closes below");
+    expect(lock().textContent).toContain("Lock parlay → duel");
   });
 
-  test("the opponent's slip stays hidden until both lock", () => {
+  test("the slip's odds are the product of the picks, per ticker, and update on every change", () => {
+    mount("/match/kz-semis/parlay?seed=424242");
+    const syms = slipLegs() as string[];
+    pick(syms[0]!, "sharp-bear"); // 3.6
+    pick(syms[1]!, "safe-bull"); // 1.2
+    pick(syms[2]!, "degen-bull"); // 11
+    expect(mult()).toBe("×47.52");
+    expect(prob()).toBe("1.4%"); // .25 × .7 × .08
+    expect(text()).toContain("SHARP↓ SAFE↑ DEGEN↑");
+    expect(text()).toContain("closes below");
+    expect(text()).toContain("closes above");
+
+    pick(syms[2]!, "even-bull"); // 11 → 1.9
+    expect(mult()).toBe("×8.21");
+    expect(prob()).toBe("8.8%"); // .25 × .7 × .5, one decimal under the 10% line
+  });
+
+  test("the opponent's picks stay hidden until both lock", () => {
     mount("/match/kz-semis/parlay?seed=424242");
     expect(text()).toContain("•••••");
     expect(text()).toContain("Revealed when both slips lock.");
@@ -440,10 +451,10 @@ describe("the parlay cards", () => {
 
   test("locking starts the duel on both slips", () => {
     mount("/match/kz-semis/parlay?seed=424242");
-    pick("even-bull");
+    for (const sym of slipLegs()) pick(sym!, "even-bull");
     act(() => lock().click());
     expect(text()).toContain("Live duel · Semis sprint");
-    expect(text()).toContain("EVEN · BULLISH");
+    expect(text()).toContain("EVEN↑ EVEN↑ EVEN↑");
     expect(text()).toContain("kazuo.eth");
     expect(text()).toContain("HIDDEN UNTIL SETTLED");
     expect(text()).not.toContain("Settle → result"); // the tape has not played yet

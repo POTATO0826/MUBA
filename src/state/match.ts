@@ -13,8 +13,9 @@ import {
   PARLAY_CARDS,
   buildLeg,
   cardById,
-  legsForCard,
+  legForCard,
   summarize,
+  type ParlayCard,
   type ParlayLeg,
 } from "../engine/parlay.ts";
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
@@ -29,8 +30,8 @@ import type { LobbyDef, MarketFilter, Tab } from "../types.ts";
  *
  * The tickers are not state. They fall out of `spinCase(book, legs, seed)`,
  * which is deterministic — so a `/match/:id/parlay?seed=N` link rebuilt from
- * nothing shows the same slip the person who sent it saw. The opponent's card
- * is drawn from the same seed, so it replays too.
+ * nothing shows the same slip the person who sent it saw. The opponent's picks
+ * are drawn from the same seed, so they replay too.
  */
 export interface LobbyForm {
   name: string;
@@ -50,8 +51,8 @@ export interface MatchState {
   seed: number;
   /** Who has readied up in the room. The spin waits on both. */
   ready: { me: boolean; opp: boolean };
-  /** The parlay card you picked. Null until you do. */
-  myCard: string | null;
+  /** Your pick per ticker: card id by symbol. The lock waits for every ticker. */
+  myPicks: Readonly<Record<string, string>>;
   /** Advances every 120ms while the tape is running. */
   tick: number;
   /** Underlying selected on the options desk. */
@@ -86,7 +87,7 @@ export function initialState(route: Route): MatchState {
     lobbyId: lobby ? lobby.id : null,
     seed: route.seed ?? newSeed(),
     ready: NOT_READY,
-    myCard: null,
+    myPicks: {},
     tick: 0,
     asset: "ETH",
     form: INITIAL_FORM,
@@ -148,7 +149,7 @@ export function useMatch(route: Route) {
         lobbyId,
         seed: newSeed(),
         ready: NOT_READY,
-        myCard: null,
+        myPicks: {},
         tick: 0,
       });
 
@@ -235,8 +236,9 @@ export function useMatch(route: Route) {
       closeSpin: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY }),
       claim: () => patch({ tab: "study" }),
       doneStudy: () => patch({ tab: "parlay" }),
-      pickCard: (myCard: string) => patch({ myCard }),
-      lockParlay: () => patch((s) => (s.myCard ? { tab: "duel", tick: 0 } : {})),
+      pick: (sym: string, cardId: string) =>
+        patch((s) => ({ myPicks: { ...s.myPicks, [sym]: cardId } })),
+      lockParlay: () => patch({ tab: "duel", tick: 0 }),
       settle: () => patch({ tab: "result" }),
       backToBattles: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY, tick: 0 }),
     };
@@ -248,17 +250,24 @@ export function useMatch(route: Route) {
     const spin = lobby ? spinCase(bookFor(lobby.market), lobby.legs, state.seed) : null;
     const arena = spin ? spin.syms : [];
 
-    // The opponent's card is drawn from the same seed, so it replays with the
-    // link and stays hidden until both slips lock.
-    const oppCard = PARLAY_CARDS[Math.floor(seededRandom(state.seed ^ 0x5bd1e995)() * PARLAY_CARDS.length)]!;
-    const myCard = cardById(state.myCard);
+    // The opponent's pick per ticker is drawn from the same seed, so it
+    // replays with the link and stays hidden until both slips lock.
+    const oppRandom = seededRandom(state.seed ^ 0x5bd1e995);
+    const oppPicks: Record<string, ParlayCard> = {};
+    for (const sym of arena) oppPicks[sym] = PARLAY_CARDS[Math.floor(oppRandom() * PARLAY_CARDS.length)]!;
 
-    // Until a card is picked the slip shows the tickers at EVEN, bullish — a
-    // preview, not a position.
-    const myLegs: readonly ParlayLeg[] = myCard
-      ? legsForCard(arena, myCard)
-      : arena.map((sym) => buildLeg(sym, "over", "EVEN"));
-    const oppLegs = legsForCard(arena, oppCard);
+    const myPicks: Record<string, ParlayCard> = {};
+    for (const sym of arena) {
+      const c = cardById(state.myPicks[sym]);
+      if (c) myPicks[sym] = c;
+    }
+    const allPicked = arena.length > 0 && arena.every((sym) => sym in myPicks);
+
+    // A ticker without a pick shows at EVEN, bullish — a preview, not a position.
+    const myLegs: readonly ParlayLeg[] = arena.map((sym) =>
+      myPicks[sym] ? legForCard(sym, myPicks[sym]!) : buildLeg(sym, "over", "EVEN"),
+    );
+    const oppLegs: readonly ParlayLeg[] = arena.map((sym) => legForCard(sym, oppPicks[sym]!));
 
     const stakePoints = lobby ? stakePointsFor(lobby) : 0;
     const studySalt = 1 + state.seed * 3;
@@ -278,8 +287,9 @@ export function useMatch(route: Route) {
       bothReady: state.ready.me && state.ready.opp,
       spin,
       arena,
-      myCard,
-      oppCard,
+      myPicks,
+      oppPicks,
+      allPicked,
       myLegs,
       oppLegs,
       stakePoints,
@@ -299,7 +309,7 @@ export function useMatch(route: Route) {
       formPrizeLabel: `${state.form.prize.toFixed(2)} ETH`,
       formEntryLabel: `${(state.form.prize / 2).toFixed(2)} ETH`,
     };
-  }, [state.lobbies, state.lobbyId, state.seed, state.ready, state.myCard, state.tick, state.form.prize]);
+  }, [state.lobbies, state.lobbyId, state.seed, state.ready, state.myPicks, state.tick, state.form.prize]);
 
   return { state, derived, actions };
 }

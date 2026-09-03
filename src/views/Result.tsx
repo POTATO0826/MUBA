@@ -1,6 +1,6 @@
 import { CHAMP_ART } from "../data/fixtures.ts";
 import { legState, type MatchVerdict } from "../engine/match.ts";
-import { conditionText, type ParlayCard, type ParlayLeg } from "../engine/parlay.ts";
+import { conditionText, type ParlayLeg } from "../engine/parlay.ts";
 import { TAPE_LEN } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, tag } from "../theme.ts";
@@ -13,8 +13,6 @@ interface ResultProps {
   opponent: Player;
   myLegs: readonly ParlayLeg[];
   oppLegs: readonly ParlayLeg[];
-  myCard: ParlayCard | null;
-  oppCard: ParlayCard;
   myMult: number;
   oppMult: number;
   /** What you banked in points: the stake at your parlay's odds, or nothing. */
@@ -31,8 +29,8 @@ export function Result(p: ResultProps) {
   const nLegs = p.myLegs.length;
 
   const sides = [
-    { who: p.you, legs: p.myLegs, card: p.myCard, mult: p.myMult, score: v.myScore, win: v.meWins, read: v.myRead },
-    { who: p.opponent, legs: p.oppLegs, card: p.oppCard, mult: p.oppMult, score: v.oppScore, win: !v.meWins, read: v.oppRead },
+    { who: p.you, legs: p.myLegs, mult: p.myMult, score: v.myScore, win: v.meWins, read: v.myRead },
+    { who: p.opponent, legs: p.oppLegs, mult: p.oppMult, score: v.oppScore, win: !v.meWins, read: v.oppRead },
   ];
 
   return (
@@ -95,8 +93,13 @@ export function Result(p: ResultProps) {
                   {s.win ? "WINNER" : "RUNNER-UP"}
                 </span>
               </div>
-              <div style={sx("display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap")}>
-                {s.card ? <span style={sx(tag(TIER_COLOR[s.card.tier]))}>{s.card.label}</span> : null}
+              <div style={sx("display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap")}>
+                {s.legs.map((l) => (
+                  <span key={l.sym} style={sx(tag(TIER_COLOR[l.tier]))}>
+                    {l.sym} {l.tier}
+                    {l.dir === "over" ? "↑" : "↓"}
+                  </span>
+                ))}
                 <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>×{s.mult.toFixed(2)} · {s.read.style}</span>
               </div>
               <div style={sx(`margin-top:10px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>{s.read.read}</div>
