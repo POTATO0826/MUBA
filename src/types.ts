@@ -1,23 +1,23 @@
-/** Domain types for the THETHADUEL battle prototype. */
+/** Domain types for the THETADUEL case prototype. */
 
 export type Market = "STOCK" | "CRYPTO";
-export type MarketFilter = Market | "MIXED";
 export type Direction = "over" | "under";
-export type AutoMode = "demo" | "spectate";
 
-/** Screens in the app. `battles → create → draft → study → pick → live → result`
- *  is the match flow; `lobby`, `parlay` and `cases` sit outside it. */
+/**
+ * Screens in the app.
+ *
+ * `cases → spin → parlay-build → study → tape → settled` is one case run.
+ * `lobby` and `desk` sit outside it.
+ */
 export type Tab =
   | "lobby"
-  | "battles"
-  | "create"
-  | "draft"
+  | "cases"
+  | "spin"
+  | "parlay-build"
   | "study"
-  | "pick"
-  | "live"
-  | "result"
-  | "parlay"
-  | "cases";
+  | "tape"
+  | "settled"
+  | "desk";
 
 export interface Asset {
   sym: string;
@@ -56,11 +56,14 @@ export interface Geometry {
 }
 
 export interface CaseDef {
+  /** URL-safe key, e.g. `eth-vol-box`. */
+  id: string;
   name: string;
   tag: string;
   /** Tag colour. */
   tc: string;
-  legs: string;
+  /** How many legs the spin fills. */
+  legCount: number;
   blurb: string;
   cost: string;
   max: string;
@@ -68,6 +71,12 @@ export interface CaseDef {
   w: [string, string, number];
   /** Season tier required to open it. Absent means always available. */
   tier?: string;
+  /**
+   * The only tickers the reel can land on. Lives on the case, not the spin —
+   * a LOW VAR case must not be able to deal PEPE. Must hold at least
+   * `legCount` names, or the reel can never fill the slots without a duplicate.
+   */
+  eligibleAssets: readonly string[];
 }
 
 export interface PricingRow {

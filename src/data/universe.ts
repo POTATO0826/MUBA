@@ -1,6 +1,6 @@
 import type { Asset } from "../types.ts";
 
-/** The draftable board. `t` is the percentage move a leg must clear; `vol` drives
+/** The board. `t` is the percentage move a leg must clear; `vol` drives
  *  the generated tape, so a high-`t` name is also the noisy one. */
 export const UNIVERSE: readonly Asset[] = [
   { sym: "NVDA", name: "Nvidia", sector: "SEMIS", mkt: "STOCK", px: 118.4, t: 4.0, vol: 0.03 },

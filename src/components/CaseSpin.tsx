@@ -1,79 +1,83 @@
 import { useEffect, useRef, useState } from "react";
+import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
-import type { Asset } from "../types.ts";
+import type { Asset, CaseDef } from "../types.ts";
 
-/** Tile pitch in px: width plus gap. The strip's transform is computed from it. */
-export const TILE_W = 124;
-export const TILE_GAP = 8;
-export const TILE_PITCH = TILE_W + TILE_GAP;
-/** Tiles on the strip. Enough that the reel never runs out before it stops. */
-export const STRIP_LEN = 64;
-const SPIN_MS = 4200;
-
-export interface SpinPlan {
-  /** Index on the strip the pointer stops on. */
-  target: number;
-  /** Where inside that tile it stops, -0.35..0.35 of a tile — so landings
-   *  don't always sit dead centre. */
-  jitter: number;
-}
-
-/**
- * Decide where a spin ends before it starts. The target sits in the last
- * quarter of the strip so the reel travels far enough to read as a real spin.
- *
- * Which asset that is falls out of `target % assets.length`, since the strip
- * repeats the list — so the plan needs no knowledge of the asset count.
- */
-export function planSpin(random: () => number = Math.random): SpinPlan {
-  const lo = Math.floor(STRIP_LEN * 0.72);
-  const hi = STRIP_LEN - 2;
-  return {
-    target: lo + Math.floor(random() * (hi - lo)),
-    jitter: (random() - 0.5) * 0.7,
-  };
-}
+const SPIN_MS = 3200;
+/** Pause between one landing and the next spin, so each slot registers. */
+const SETTLE_MS = 650;
 
 /** Quintic ease-out: fast off the line, long slow settle. */
 const ease = (t: number) => 1 - Math.pow(1 - t, 5);
 
-interface RouletteProps {
+interface CaseSpinProps {
+  c: CaseDef;
+  /** The case's own book, in the same order `spinCase` indexed it. */
   assets: readonly Asset[];
+  result: SpinResult;
+  respinsLeft: number;
+  onRespin: () => void;
+  onClaim: () => void;
   onClose: () => void;
-  onClaim: (sym: string) => void;
 }
 
 /**
- * Case-opening reel. A strip of asset tiles flies past a centre pointer,
- * decelerates, and stops on one. Prices on the tiles flicker while the strip is
- * moving and freeze on the landed asset.
+ * The case-opening reel. A strip of the case's own tickers flies past a centre
+ * pointer, decelerates, and stops — once per leg. Each landing fills a slot
+ * under the reel, so the position is visibly built rather than revealed.
+ *
+ * Everything about *where* it stops was decided before the first frame by
+ * `spinCase`; this component only draws the plan it was handed. Remount it
+ * (key it on the seed) for a new result.
  */
-export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
+export function CaseSpin({ c, assets, result, respinsLeft, onRespin, onClaim, onClose }: CaseSpinProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
 
-  const [plan, setPlan] = useState<SpinPlan>(() => planSpin());
+  const n = result.plans.length;
+  /** Which plan is on the reel. Equals `n` once every slot has landed. */
+  const [step, setStep] = useState(0);
   const [spinning, setSpinning] = useState(true);
   const [under, setUnder] = useState(0);
   const [flicker, setFlicker] = useState(0);
+  const [skipped, setSkipped] = useState(false);
+
+  const done = step >= n;
+  const landedCount = spinning ? step : Math.min(n, step + 1);
 
   const tiles = Array.from({ length: STRIP_LEN }, (_, i) => assets[i % assets.length]!);
-  const landed = tiles[plan.target]!;
+  const plan = result.plans[Math.min(step, n - 1)]!;
 
   useEffect(() => {
     const strip = stripRef.current;
     const viewport = viewportRef.current;
-    if (!strip || !viewport) return;
+    if (!strip || !viewport || done) return;
 
     const vw = viewport.clientWidth || 720;
-    const finalOffset = plan.target * TILE_PITCH + TILE_W / 2 + plan.jitter * TILE_W - vw / 2;
+    const offsetFor = (target: number, jitter: number) =>
+      target * TILE_PITCH + TILE_W / 2 + jitter * TILE_W - vw / 2;
 
+    // Skip: park the strip on the last plan and mark every slot landed.
+    if (skipped) {
+      const last = result.plans[n - 1]!;
+      strip.style.transition = "none";
+      strip.style.transform = `translate3d(${-offsetFor(last.target, last.jitter)}px,0,0)`;
+      setUnder(last.target);
+      setFlicker(0);
+      setSpinning(false);
+      setStep(n);
+      return;
+    }
+
+    const finalOffset = offsetFor(plan.target, plan.jitter);
     const start = performance.now();
     let raf = 0;
     let lastUnder = -1;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
+    setSpinning(true);
     const frame = () => {
       const t = Math.min(1, (performance.now() - start) / SPIN_MS);
       const offset = ease(t) * finalOffset;
@@ -87,12 +91,20 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
       // Small price wobble while the reel is moving — settles to the true print.
       setFlicker(t < 1 ? (Math.random() - 0.5) * 0.006 * (1 - t) : 0);
 
-      if (t < 1) raf = requestAnimationFrame(frame);
-      else setSpinning(false);
+      if (t < 1) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
+      setSpinning(false);
+      // Hold on the landing, then either the next leg or lock.
+      settleTimer = setTimeout(() => setStep((s) => s + 1), SETTLE_MS);
     };
     raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
-  }, [plan]);
+    return () => {
+      cancelAnimationFrame(raf);
+      if (settleTimer) clearTimeout(settleTimer);
+    };
+  }, [step, skipped, done, n, plan, result.plans]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -102,15 +114,24 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const live = tiles[under] ?? landed;
-  const shown = spinning ? live : landed;
+  const live = tiles[under] ?? tiles[plan.target]!;
+  const shown = spinning ? live : tiles[plan.target]!;
   const price = shown.px * (1 + flicker);
+
+  const status = done
+    ? "locked"
+    : spinning
+      ? `spinning the book… leg ${step + 1} of ${n}`
+      : `leg ${step + 1} of ${n} landed`;
+
+  const respinBlocked = !done || respinsLeft === 0;
+  const respinTitle = respinsLeft === 0 ? "One free re-roll per case open — spent." : undefined;
 
   return (
     <div
       role="dialog"
       aria-modal
-      aria-label="Free crypto battle roulette"
+      aria-label={`${c.name} spin`}
       onClick={onClose}
       style={sx(
         "position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;" +
@@ -120,8 +141,8 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
       <div
         onClick={(e) => e.stopPropagation()}
         style={sx(
-          `width:min(760px,100%);border:1px solid rgba(200,255,0,.35);border-radius:16px;` +
-            `background:linear-gradient(160deg,rgba(200,255,0,.08),${C.card} 45%);overflow:hidden;` +
+          `width:min(800px,100%);border:1px solid ${c.tc}59;border-radius:16px;` +
+            `background:linear-gradient(160deg,${c.tc}14,${C.card} 45%);overflow:hidden;` +
             "box-shadow:0 30px 80px rgba(0,0,0,.6)",
         )}
       >
@@ -132,16 +153,16 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
         >
           <span
             style={sx(
-              `width:7px;height:7px;border-radius:99px;background:${C.accent};animation:vcPulse 1.4s ease-in-out infinite`,
+              `width:7px;height:7px;border-radius:99px;background:${c.tc};` +
+                (done ? "" : "animation:vcPulse 1.4s ease-in-out infinite"),
             )}
           />
-          <span style={sx(`font:700 10px/1 ${MONO};letter-spacing:.14em;color:${C.accent}`)}>
-            FREE CRYPTO BATTLE · SPIN
+          <span style={sx(`font:700 10px/1 ${MONO};letter-spacing:.14em;color:${c.tc}`)}>
+            {c.name.toUpperCase()} · SPIN
           </span>
+          <span style={sx(tag(c.tc))}>{c.tag}</span>
           <div style={sx("flex:1")} />
-          <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>
-            {spinning ? "spinning the book…" : "landed"}
-          </span>
+          <span style={sx(`font:500 10px/1 ${MONO};color:${done ? C.accent : C.dim}`)}>{status}</span>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -154,7 +175,7 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
           </button>
         </div>
 
-        <div style={sx("padding:22px 18px 10px;text-align:center")}>
+        <div style={sx("padding:20px 18px 8px;text-align:center")}>
           <div style={sx(`font:500 9px/1 ${MONO};letter-spacing:.14em;color:${C.dim}`)}>
             UNDER THE POINTER
           </div>
@@ -250,51 +271,76 @@ export function Roulette({ assets, onClose, onClaim }: RouletteProps) {
           />
         </div>
 
-        <div style={sx("display:flex;align-items:center;gap:14px;padding:16px 18px")}>
-          {spinning ? (
-            <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted}`)}>
-              One free 1v1 entry on whatever the pointer stops on. The prize pool is covered by
-              the house; the opponent is a random open room.
-            </span>
-          ) : (
-            <>
-              <div>
-                <div style={sx(`font:500 9px/1 ${MONO};letter-spacing:.14em;color:${C.accent}`)}>
-                  YOU WON
+        {/* The position being built, one slot per leg. */}
+        <div style={sx(`display:flex;gap:8px;padding:14px 18px 4px;flex-wrap:wrap`)}>
+          {Array.from({ length: n }, (_, i) => {
+            const sym = i < landedCount ? result.syms[i] : null;
+            const a = sym ? assets.find((x) => x.sym === sym) : null;
+            const color = a ? sectorColor(a.sector) : C.borderMid;
+            return (
+              <div
+                key={i}
+                data-slot={i}
+                style={sx(
+                  `flex:1 1 96px;min-width:96px;height:52px;padding:9px 11px;border-radius:9px;display:flex;flex-direction:column;justify-content:space-between;` +
+                    (a
+                      ? `border:1px solid ${color}66;background:${color}14`
+                      : `border:1px dashed ${C.borderMid};background:transparent`),
+                )}
+              >
+                <div style={sx(`font:500 8px/1 ${MONO};letter-spacing:.12em;color:${a ? color : C.faint}`)}>
+                  {a ? a.sector : `SLOT ${i + 1}`}
                 </div>
-                <div style={sx(`margin-top:6px;font:700 15px/1.2 ${SANS}`)}>
-                  Free 1v1 on {landed.name} · 0.50 ETH pool covered
-                </div>
-                <div style={sx(`margin-top:5px;font:400 10.5px/1.4 ${MONO};color:${C.dim}`)}>
-                  {landed.sym} drafted into your first slot · target ±{landed.t.toFixed(1)}%
+                <div style={sx(`font:700 13px/1 ${MONO};color:${a ? C.text : C.faint}`)}>
+                  {a ? a.sym : "?"}
                 </div>
               </div>
-            </>
-          )}
+            );
+          })}
+        </div>
+
+        <div style={sx("display:flex;align-items:center;gap:12px;padding:12px 18px 16px")}>
+          <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};max-width:380px`)}>
+            {done
+              ? `Locked · ${result.syms.join(" · ")}. Tier each leg next, then hold through expiry.`
+              : `The reel runs this case's own book — ${assets.length} names. One spin per leg; the same ticker never fills two slots.`}
+          </span>
           <div style={sx("flex:1")} />
+          {!done && (
+            <button
+              onClick={() => setSkipped(true)}
+              style={sx(
+                `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
+                  `color:${C.text};font:500 12px/1 ${SANS};cursor:pointer;white-space:nowrap`,
+              )}
+            >
+              Skip ↦
+            </button>
+          )}
           <button
-            disabled={spinning}
-            onClick={() => setPlan(planSpin())}
+            disabled={respinBlocked}
+            title={respinTitle}
+            onClick={onRespin}
             style={sx(
               `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
-                `color:${spinning ? C.faint : C.text};font:500 12px/1 ${SANS};cursor:${
-                  spinning ? "default" : "pointer"
+                `color:${respinBlocked ? C.faint : C.text};font:500 12px/1 ${SANS};cursor:${
+                  respinBlocked ? "not-allowed" : "pointer"
                 };white-space:nowrap`,
             )}
           >
-            Spin again
+            Spin again{respinsLeft === 0 ? " · used" : ""}
           </button>
           <button
-            disabled={spinning}
-            onClick={() => onClaim(landed.sym)}
+            disabled={!done}
+            onClick={onClaim}
             style={sx(
               `height:36px;padding:0 16px;border:none;border-radius:8px;font:700 12px/1 ${SANS};white-space:nowrap;` +
-                (spinning
-                  ? `background:${C.border};color:${C.dim};cursor:default`
-                  : `background:${C.accent};color:${C.bg};cursor:pointer`),
+                (done
+                  ? `background:${C.accent};color:${C.bg};cursor:pointer`
+                  : `background:${C.border};color:${C.dim};cursor:default`),
             )}
           >
-            Claim → draft
+            Claim → parlay
           </button>
         </div>
       </div>

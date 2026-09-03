@@ -1,4 +1,4 @@
-/** Season progression fixtures for the Rewards hub. */
+/** Season progression fixtures for the case library. */
 
 export const TIERS = [
   { name: "MINNOW", xp: 0 },
@@ -16,24 +16,17 @@ export const PLAYER = {
   rank: 7,
   tier: "SHARK" as TierName,
   xp: 2340,
-  winRate: 0.58,
+  hitRate: 0.58,
   streak: 4,
   streakMult: 1.4,
   casesOpened: 31,
 } as const;
 
 export const MISSIONS = [
-  { id: "win", label: "Win a 1v1", xp: 200, done: true },
-  { id: "crypto", label: "Draft a crypto leg", xp: 50, done: true },
+  { id: "settle", label: "Settle a case", xp: 200, done: true },
+  { id: "crypto", label: "Spin a crypto leg", xp: 50, done: true },
   { id: "lowvar", label: "Open a LOW VAR case", xp: 80, done: false },
-  { id: "spin", label: "Spin the wheel", xp: 30, done: false },
-] as const;
-
-/** Recent roulette outcomes, for the free-spin panel. */
-export const LAST_SPINS = [
-  { who: "noor", sym: "SOL", result: "+0.50 Ξ", win: true },
-  { who: "zeph", sym: "PEPE", result: "lost", win: false },
-  { who: "arlo.eth", sym: "LINK", result: "+0.50 Ξ", win: true },
+  { id: "degen", label: "Lock a DEGEN leg", xp: 30, done: false },
 ] as const;
 
 export const tierIndex = (name: string): number => TIERS.findIndex((t) => t.name === name);

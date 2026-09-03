@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
@@ -7,7 +7,9 @@ import { mockMarketSource } from "../src/data/market.ts";
 let container: HTMLDivElement;
 let root: Root;
 
-function mount() {
+/** Mount at a path. The app reads its route once, on mount. */
+function mount(path = "/") {
+  window.history.replaceState(null, "", path);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -19,6 +21,8 @@ function mount() {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  // The app writes the run into the address bar; the next test starts clean.
+  window.history.replaceState(null, "", "/");
 });
 
 const text = () => container.textContent ?? "";
@@ -41,198 +45,63 @@ function clickContaining(fragment: string) {
   act(() => el.click());
 }
 
-/** Click a contract-pool card by its ticker. */
-function pickTicker(sym: string) {
-  const card = Array.from(container.querySelectorAll<HTMLElement>("div")).find((d) =>
-    (d.textContent ?? "").startsWith(`${sym} · `),
-  );
-  if (!card) throw new Error(`no pool card for ${sym}`);
-  act(() => card.click());
+const dialog = () => container.querySelector<HTMLElement>('[role="dialog"]');
+const claimButton = () => buttons().find((b) => (b.textContent ?? "").startsWith("Claim"));
+
+/** Open the first case on the grid and jump the reel to its landing. */
+function openAndSkip() {
+  click("Open case · 0.41 Ξ");
+  click("Skip ↦");
 }
 
-describe("navigation", () => {
-  beforeEach(mount);
+/** The tickers the builder shows, in row order. */
+const builderLegs = () =>
+  Array.from(container.querySelectorAll<HTMLElement>("[data-leg]")).map((d) => d.dataset.leg);
 
-  test("opens on the lobby", () => {
-    expect(text()).toContain("Battle the book, not the market.");
-    expect(text()).toContain("BIGGEST WINS 24H");
-    expect(text()).toContain("Featured cases");
+/** The tickers sitting in the spin's slots. An unfilled slot reads "?". */
+const slotSyms = () =>
+  Array.from(container.querySelectorAll<HTMLElement>("[data-slot]")).map(
+    (d) => d.lastElementChild?.textContent ?? "",
+  );
+
+/** Battle-era vocabulary. None of it may reach the screen. */
+const FORBIDDEN = /battle|draft|\bban\b|opponent/i;
+
+describe("landing", () => {
+  test("opens on the case library — there is no lobby table to reach", () => {
+    mount();
+    expect(text()).toContain("Case library");
+    expect(text()).toContain("7 / 8 unlocked · 8 shown");
+    expect(text()).not.toContain("Open battles");
+    expect(buttons().map((b) => b.textContent)).not.toContain("Battles");
+    expect(window.location.pathname).toBe("/");
   });
 
   test("every top-level tab renders", () => {
-    click("Battles");
-    expect(text()).toContain("Open battles");
-    expect(text()).toContain("▶ Random demo");
+    mount();
+    click("Home");
+    expect(text()).toContain("Open the case. Hold the legs. Take the payoff.");
+    expect(text()).toContain("BIGGEST PAYOFFS 24H");
+    expect(text()).toContain("Featured cases");
 
-    click("Duel attack");
+    click("Options desk");
     expect(text()).toContain("Combined payoff at expiry");
     expect(text()).toContain("MM pricing");
 
-    click("Rewards");
+    click("Cases");
     expect(text()).toContain("Case library");
-    expect(text()).toContain("FREE CRYPTO BATTLES");
-
-    click("Home");
-    expect(text()).toContain("Battle the book, not the market.");
   });
 
   test("the wallet button toggles between connect and address", () => {
+    mount();
     expect(text()).toContain("Connect wallet");
     click("Connect wallet");
     expect(text()).toContain("0x71c…4Af2");
     expect(text()).not.toContain("Connect wallet");
   });
-});
-
-describe("lobby builder", () => {
-  beforeEach(mount);
-
-  test("the prize steppers move the pool and the entry with it", () => {
-    click("Battles");
-    click("Create battle");
-    expect(text()).toContain("ENTRY PER PLAYER");
-    expect(text()).toContain("2.50 ETH"); // half of the default 5.00 pool
-
-    click("+");
-    expect(text()).toContain("2.75 ETH");
-    expect(container.querySelector<HTMLInputElement>('input[inputmode="decimal"]')?.value).toBe("5.50");
-
-    click("−");
-    expect(text()).toContain("2.50 ETH");
-  });
-
-  test("switching market swaps the draftable universe", () => {
-    click("Battles");
-    click("Create battle");
-    expect(text()).toContain("MIXED UNIVERSE · 18 ACTIVE");
-
-    clickContaining("Web3 crypto");
-    expect(text()).toContain("CRYPTO UNIVERSE · 9 ACTIVE");
-    expect(text()).not.toContain("NVDA");
-
-    clickContaining("Stocks");
-    expect(text()).toContain("STOCK UNIVERSE · 9 ACTIVE");
-    expect(text()).toContain("NVDA");
-  });
-
-  test("dropping an asset shrinks the active count", () => {
-    click("Battles");
-    click("Create battle");
-    clickContaining("Stocks");
-    expect(text()).toContain("STOCK UNIVERSE · 9 ACTIVE");
-
-    clickContaining("NVDASEMIS");
-    expect(text()).toContain("STOCK UNIVERSE · 8 ACTIVE");
-  });
-
-  test("the picks stepper is clamped to 2–4", () => {
-    click("Battles");
-    click("Create battle");
-    const picksNote = () => text().includes("draft turns");
-    expect(picksNote()).toBe(true);
-    expect(text()).toContain("10 draft turns"); // 3 picks → 3*2+4
-
-    // Two "+" buttons on the row of steppers; the first is PICKS EACH.
-    const plus = buttons().filter((b) => (b.textContent ?? "").trim() === "+");
-    act(() => plus[1]!.click());
-    expect(text()).toContain("12 draft turns"); // 4 picks
-    act(() => plus[1]!.click());
-    expect(text()).toContain("12 draft turns"); // clamped at 4
-  });
-});
-
-describe("match flow", () => {
-  beforeEach(mount);
-
-  test("publish → draft → study → parlay → live", () => {
-    click("Battles");
-    click("Create battle");
-    clickContaining("Publish lobby");
-
-    // Draft
-    expect(text()).toContain("Draft · Room #4471");
-    expect(text()).toContain("PICK & BAN · 0 OF 3");
-    expect(text()).toContain("Contract pool");
-
-    pickTicker("NVDA");
-    expect(text()).toContain("PICK & BAN · 1 OF 3");
-    pickTicker("AAPL");
-    pickTicker("TSLA");
-    expect(text()).toContain("PICKS COMPLETE");
-    expect(text()).toContain("3 picks · 0 bans");
-
-    click("Confirm picks → case study");
-    expect(text()).toContain("Case study");
-    expect(text()).toContain("STUDY PHASE · NO BETS YET");
-
-    click("Done studying → parlay");
-    expect(text()).toContain("Parlay selection");
-    expect(text()).toContain("BLIND · OPPONENT SLIP HIDDEN");
-
-    click("Lock parlay → fight");
-    expect(text()).toContain("Live fight · Room #4471");
-    expect(text()).toContain("TAPE ×64");
-  });
-
-  test("a picked ticker can be un-picked, and banning releases it", () => {
-    click("Battles");
-    click("Create battle");
-    clickContaining("Publish lobby");
-
-    pickTicker("NVDA");
-    expect(text()).toContain("1 picks · 0 bans");
-    pickTicker("NVDA");
-    expect(text()).toContain("0 picks · 0 bans");
-
-    pickTicker("AAPL");
-    expect(text()).toContain("1 picks · 0 bans");
-    click("BAN"); // first card on the board is NVDA
-    expect(text()).toContain("1 picks · 1 bans");
-  });
-
-  test("direction buttons flip the target sign on a leg", () => {
-    click("Battles");
-    click("Create battle");
-    clickContaining("Publish lobby");
-    pickTicker("NVDA");
-    pickTicker("AAPL");
-    pickTicker("TSLA");
-    click("Confirm picks → case study");
-    click("Done studying → parlay");
-
-    expect(text()).toContain("+4.0%"); // NVDA defaults to over
-    click("UNDER");
-    expect(text()).toContain("−4.0%");
-    expect(text()).toContain("wins if it closes below target");
-  });
-});
-
-describe("rewards", () => {
-  beforeEach(mount);
-
-  test("shows the season track, missions and every case with its picture", () => {
-    click("Rewards");
-    expect(text()).toContain("RANK 07");
-    expect(text()).toContain("SHARK");
-    expect(text()).toContain("DAILY MISSIONS");
-    expect(text()).toContain("2 / 4");
-    // Skew Hunter needs SHARK (held); only Whale Box (ORCA) is out of reach.
-    expect(text()).toContain("7 / 8 unlocked");
-    // One <pre> per case card carries its ASCII art.
-    const art = Array.from(container.querySelectorAll("pre")).filter((p) => (p.textContent ?? "").length > 40);
-    expect(art.length).toBe(8);
-  });
-
-  test("cases above the player's tier are locked", () => {
-    click("Rewards");
-    expect(text()).toContain("LOCKED · ORCA");
-    expect(text()).toContain("Reach ORCA to open");
-    // Skew Hunter needs SHARK, which the player has.
-    expect(text()).not.toContain("LOCKED · SHARK");
-  });
 
   test("tag filters narrow the library", () => {
-    click("Rewards");
+    mount();
     click("WHALE");
     expect(text()).toContain("1 shown");
     expect(text()).toContain("Whale Box");
@@ -241,42 +110,221 @@ describe("rewards", () => {
     expect(text()).toContain("8 shown");
   });
 
-  test("the wheel opens as a dialog and closes again", () => {
-    click("Rewards");
-    click("Spin the wheel");
-    const dialog = container.querySelector('[role="dialog"]');
-    expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain("FREE CRYPTO BATTLE · SPIN");
-    expect(dialog?.textContent).toContain("UNDER THE POINTER");
-    // Claim is disabled until the reel stops.
-    const claim = buttons().find((b) => (b.textContent ?? "").includes("Claim"));
-    expect(claim?.disabled).toBe(true);
-
-    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
-    act(() => close!.click());
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  test("every case shows its picture and its leg count", () => {
+    mount();
+    const art = Array.from(container.querySelectorAll("pre")).filter((p) => (p.textContent ?? "").length > 40);
+    expect(art.length).toBe(8);
+    expect(text()).toContain("4 LEGS");
+    expect(text()).toContain("8 LEGS");
   });
 });
 
-describe("duel attack", () => {
-  beforeEach(mount);
+describe("opening a case", () => {
+  test("a card spins once per leg and fills exactly that many slots, no duplicates", () => {
+    mount();
+    click("Open case · 0.41 Ξ"); // ETH Vol Box, 4 legs
+    expect(dialog()?.getAttribute("aria-label")).toBe("ETH Vol Box spin");
+    expect(window.location.pathname).toBe("/case/eth-vol-box");
+    expect(window.location.search).toMatch(/^\?seed=\d{6}$/);
 
-  test("the pricing table follows the selected underlying", () => {
-    click("Duel attack");
-    expect(text()).toContain("4,000");
-    expect(text()).not.toContain("96,000");
+    expect(slotSyms()).toHaveLength(4);
+    expect(text()).toContain("spinning the book…");
+    expect(claimButton()?.disabled).toBe(true);
 
-    click("BTC");
-    expect(text()).toContain("96,000");
-    expect(text()).toContain("90–104k");
+    click("Skip ↦");
+    expect(text()).toContain("locked");
+    expect(claimButton()?.disabled).toBe(false);
+
+    const syms = slotSyms();
+    expect(syms).toHaveLength(4);
+    expect(syms.every((s) => s !== "?")).toBe(true);
+    expect(new Set(syms).size).toBe(4);
   });
 
-  test("payoff stats are computed, not hard-coded", () => {
-    click("Duel attack");
-    expect(text()).toContain("MAX PROFIT");
-    expect(text()).toContain("MAX LOSS");
-    expect(text()).toContain("-0.41 Ξ"); // the debit, when both spreads expire worthless
-    expect(text()).toContain("BREAKEVEN");
-    expect(text()).toContain("WIN ZONE");
+  test("the reel only deals from the case's own book", () => {
+    mount();
+    clickContaining("Open case · 0.12 Ξ"); // Weekly Grind: the quiet end, no memes
+    click("Skip ↦");
+    const syms = slotSyms();
+    expect(syms).toHaveLength(3);
+    for (const s of syms) expect(["AAPL", "XOM", "JPM", "GLD", "META", "BTC"]).toContain(s);
+    expect(syms).not.toContain("PEPE");
+  });
+
+  test("locked cases are not openable — from the card or from a link", () => {
+    mount();
+    const whale = container.querySelector<HTMLElement>('[data-case="whale-box"]');
+    expect(whale?.textContent).toContain("LOCKED · reach ORCA to open");
+    expect(whale?.querySelector("button")).toBeNull();
+    act(() => whale!.click());
+    expect(dialog()).toBeNull();
+    expect(text()).toContain("Case library");
+
+    act(() => root.unmount());
+    container.remove();
+    mount("/case/whale-box?seed=123456");
+    expect(dialog()).toBeNull();
+    expect(text()).toContain("Case library");
+    expect(window.location.pathname).toBe("/");
+  });
+
+  test("the same seed replays the same spin", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    const first = builderLegs();
+    expect(first).toHaveLength(4);
+
+    act(() => root.unmount());
+    container.remove();
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    expect(builderLegs()).toEqual(first);
+  });
+
+  test("one free re-roll per open, then it is spent", () => {
+    mount();
+    openAndSkip();
+    const seedBefore = window.location.search;
+
+    click("Spin again");
+    expect(dialog()).not.toBeNull();
+    expect(window.location.search).not.toBe(seedBefore);
+    expect(claimButton()?.disabled).toBe(true); // a fresh reel
+
+    click("Skip ↦");
+    const spent = buttons().find((b) => (b.textContent ?? "").startsWith("Spin again"));
+    expect(spent?.textContent).toContain("used");
+    expect(spent?.disabled).toBe(true);
+    expect(spent?.title).toContain("One free re-roll");
+  });
+
+  test("closing the spin lands back on the library", () => {
+    mount();
+    click("Open case · 0.41 Ξ");
+    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
+    act(() => close!.click());
+    expect(dialog()).toBeNull();
+    expect(text()).toContain("Case library");
+    expect(window.location.pathname).toBe("/");
+  });
+
+  test("claiming the spin opens the parlay builder on those legs", () => {
+    mount();
+    openAndSkip();
+    const dealt = slotSyms();
+    click("Claim → parlay");
+    expect(text()).toContain("Build the parlay · ETH Vol Box");
+    expect(builderLegs()).toEqual(dealt);
+    expect(window.location.pathname).toBe("/case/eth-vol-box/parlay");
+  });
+});
+
+describe("parlay builder", () => {
+  const mult = () => container.querySelector('[data-testid="combined-mult"]')?.textContent;
+  const prob = () => container.querySelector('[data-testid="implied-prob"]')?.textContent;
+  const rows = () => Array.from(container.querySelectorAll<HTMLElement>("[data-leg]"));
+  const tierIn = (row: HTMLElement, tier: string) => {
+    const b = Array.from(row.querySelectorAll("button")).find((x) => x.textContent === tier);
+    act(() => b!.click());
+  };
+
+  test("one row per leg, and the rule stated plainly", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    expect(rows()).toHaveLength(4);
+    expect(text()).toContain("4 LEGS · ALL MUST HIT");
+    expect(text()).toContain("All 4 legs must hit for the case to pay. One miss pays zero.");
+    expect(text()).toContain("by Fri expiry");
+  });
+
+  test("the multiplier is the product of the leg multipliers and updates on every change", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    // Four legs default to EVEN: 1.9^4.
+    expect(mult()).toBe("×13.03");
+
+    tierIn(rows()[0]!, "DEGEN"); // 11 × 1.9^3
+    expect(mult()).toBe("×75.45");
+    expect(prob()).toBe("1.0%"); // 0.08 × 0.5^3, well under the loud line
+    expect(text()).toContain("Under a 10% line");
+
+    tierIn(rows()[0]!, "SHARP"); // 3.6 × 1.9^3
+    expect(mult()).toBe("×24.69");
+  });
+
+  test("the case's own odds are the floor", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    for (const r of rows()) tierIn(r, "SAFE"); // 1.2^4 = 2.07, under the 4.54 floor
+    expect(mult()).toBe("×4.54"); // 1.86 / 0.41
+    expect(text()).toContain("on the case floor");
+    // Probability can only come down from the case, never up.
+    expect(prob()).toBe("22%");
+  });
+
+  test("direction flips the condition", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    const first = rows()[0]!;
+    expect(first.textContent).toContain("closes above");
+    const under = Array.from(first.querySelectorAll("button")).find((b) => b.textContent?.includes("under"));
+    act(() => under!.click());
+    expect(rows()[0]!.textContent).toContain("closes below");
+  });
+
+  test("locking leads to the case study on the spun legs, then the tape", () => {
+    mount("/case/eth-vol-box/parlay?seed=424242");
+    const legs = builderLegs();
+    click("Lock parlay → case study");
+    expect(text()).toContain("Case study");
+    expect(text()).toContain("STUDY PHASE · TAPE NOT STARTED");
+    for (const sym of legs) expect(text()).toContain(sym!);
+    expect(window.location.pathname).toBe("/case/eth-vol-box/study");
+
+    click("Done studying → run the tape");
+    expect(text()).toContain("Running the tape · ETH Vol Box");
+    expect(text()).toContain("Your position");
+    expect(text()).not.toContain("Settle → result"); // the tape has not played yet
+  });
+});
+
+describe("settlement", () => {
+  test("a settled case reports points, every leg, and a coach read", () => {
+    mount("/case/eth-vol-box/settled?seed=424242");
+    expect(text()).toMatch(/PTS/);
+    expect(text()).toMatch(/The case paid in full|The case expired short/);
+    expect(text()).toContain("HOW IT SETTLED");
+    expect(text()).toContain("LESSON FOR NEXT CASE");
+    expect(text()).toContain("Your legs");
+    expect(text()).toContain("of 4 legs");
+
+    click("Back to cases");
+    expect(text()).toContain("Case library");
+  });
+
+  test("the balance moves when a case opens", () => {
+    mount();
+    expect(text()).toContain("5,000 PTS");
+    click("Open case · 0.41 Ξ"); // 410 pts leave the balance
+    expect(text()).toContain("4,590 PTS");
+  });
+});
+
+describe("copy", () => {
+  test("no battle-era vocabulary reaches any screen", () => {
+    mount();
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Home");
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Options desk");
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Cases");
+    openAndSkip();
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Claim → parlay");
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Lock parlay → case study");
+    expect(text()).not.toMatch(FORBIDDEN);
+    click("Done studying → run the tape");
+    expect(text()).not.toMatch(FORBIDDEN);
+
+    act(() => root.unmount());
+    container.remove();
+    mount("/case/eth-vol-box/settled?seed=424242");
+    expect(text()).not.toMatch(FORBIDDEN);
   });
 });

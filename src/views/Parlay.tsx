@@ -318,7 +318,7 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
               `padding:14px 16px;border-bottom:1px solid ${C.border};display:flex;align-items:center;gap:10px`,
             )}
           >
-            <span style={sx(`font:700 14px/1 ${SANS}`)}>Duel attack</span>
+            <span style={sx(`font:700 14px/1 ${SANS}`)}>Options desk</span>
             <span
               style={sx(
                 `font:500 9px/1 ${MONO};letter-spacing:.1em;color:${C.bg};background:${C.accent};` +

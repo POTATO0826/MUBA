@@ -7,33 +7,36 @@ import { C, MONO, SANS } from "../theme.ts";
 import type { Leg } from "../types.ts";
 
 interface StudyProps {
+  /** Symbols to chart: the legs the spin dealt. */
   arena: readonly string[];
+  /** The parlay-annotated legs. Only the shape `{sym, dir, t}` is read here. */
   myLegs: readonly Leg[];
   salt: number;
-  prizeLabel: string;
+  potentialLabel: string;
   onDone: () => void;
 }
 
-export function Study({ arena, myLegs, salt, prizeLabel, onDone }: StudyProps) {
+export function Study({ arena, myLegs, salt, potentialLabel, onDone }: StudyProps) {
   const firstTarget = myLegs[0]?.t ?? 0;
+  const cols = Math.min(3, Math.max(2, arena.length));
 
   const notes = [
     {
       tag: "READ 01",
       title: "Trend, then target",
       body:
-        `Two of these five trended more than 20% across the window. A ±${firstTarget.toFixed(1)}% ` +
-        "leg on a trending name is not the same bet as on a flat one.",
+        `Some of these trended more than 20% across the window. A ±${firstTarget.toFixed(1)}% ` +
+        "line on a trending name is not the same position as on a flat one.",
     },
     {
       tag: "READ 02",
-      title: "The tape you bet on is new",
-      body: "These charts are the study window. The fight draws a fresh random window on the same tickers, so read behaviour, not levels.",
+      title: "The tape you hold through is new",
+      body: "These charts are the study window. Settlement draws a fresh random window on the same tickers, so read behaviour, not levels.",
     },
     {
       tag: "READ 03",
       title: "Split your directions",
-      body: "Three legs the same way is one bet. If the whole tape drifts against you, you lose all three at once.",
+      body: "Every leg the same way is one position. If the whole tape drifts against you, the whole parlay misses at once.",
     },
   ];
 
@@ -48,17 +51,17 @@ export function Study({ arena, myLegs, salt, prizeLabel, onDone }: StudyProps) {
               "border-radius:6px;padding:6px 8px",
           )}
         >
-          STUDY PHASE · NO BETS YET
+          STUDY PHASE · TAPE NOT STARTED
         </span>
         <div style={sx("flex:1")} />
-        <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>
-        <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{prizeLabel}</span>
+        <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POTENTIAL</span>
+        <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{potentialLabel}</span>
       </div>
 
       <div
         style={sx("display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start")}
       >
-        <div style={sx("display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px")}>
+        <div style={sx(`display:grid;grid-template-columns:repeat(${cols},minmax(0,1fr));gap:12px`)}>
           {arena.map((sym) => {
             const card = buildChartCard(sym, salt, TAPE_LEN, 110);
             const u = meta(sym);
@@ -166,8 +169,8 @@ export function Study({ arena, myLegs, salt, prizeLabel, onDone }: StudyProps) {
             <div
               style={sx(`font:400 11.5px/1.6 ${SANS};color:${C.muted};text-wrap:pretty`)}
             >
-              These are the tickers that survived the draft, on the window the engine drew. Study
-              them, then place your parlay — the tape you bet on starts where these charts end.
+              These are the tickers the spin dealt you, on the window the engine drew. Study
+              them — the tape you hold through starts where these charts end.
             </div>
             <button
               onClick={onDone}
@@ -176,7 +179,7 @@ export function Study({ arena, myLegs, salt, prizeLabel, onDone }: StudyProps) {
                   `background:${C.accent};color:${C.bg};font:700 13px/1 ${SANS};cursor:pointer`,
               )}
             >
-              Done studying → parlay
+              Done studying → run the tape
             </button>
           </div>
         </div>

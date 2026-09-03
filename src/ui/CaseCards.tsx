@@ -1,4 +1,5 @@
 import { caseArt } from "../data/ascii.ts";
+import { caseOdds } from "../data/cases.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tag, wall } from "../theme.ts";
 import type { CaseDef } from "../types.ts";
@@ -15,14 +16,14 @@ const NO_ART = String.raw`
    .   .   .   .   .   .
   _|___|___|___|___|___|_`.slice(1);
 
-/** "0.41 Ξ" → 0.41. Cost and max are display strings in the fixtures. */
-const eth = (s: string): number => parseFloat(s);
+const LEGS = (c: CaseDef) => `${c.legCount} LEGS`;
 
 /** Compact card on the lobby: cost and max payout, no picture. */
-export function LobbyCaseCard({ c }: { c: CaseDef }) {
+export function LobbyCaseCard({ c, onOpen }: { c: CaseDef; onOpen: () => void }) {
   return (
     <div
       data-tilt
+      onClick={onOpen}
       style={sx(
         `position:relative;height:246px;border:1px solid ${C.border};border-radius:14px;` +
           `overflow:hidden;background:${C.card};cursor:pointer;transform-style:preserve-3d;perspective:900px`,
@@ -38,7 +39,7 @@ export function LobbyCaseCard({ c }: { c: CaseDef }) {
       >
         <div style={sx("display:flex;justify-content:space-between;align-items:flex-start")}>
           <div style={sx(tag(c.tc))}>{c.tag}</div>
-          <div style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{c.legs}</div>
+          <div style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{LEGS(c)}</div>
         </div>
         <div>
           <div style={sx(`font:700 19px/1.1 ${SANS};letter-spacing:-.02em`)}>{c.name}</div>
@@ -76,17 +77,26 @@ interface LibraryCaseCardProps {
   lockedBy?: string | null;
 }
 
-/** Full card in the rewards library: ASCII picture, odds, tier lock, actions. */
+/**
+ * Full card in the library: ASCII picture, odds, tier lock, the open action.
+ *
+ * The whole card is the target — clicking anywhere opens the case — and the
+ * lime button is the same action made obvious. A locked card has no action at
+ * all: it says why instead.
+ */
 export function LibraryCaseCard({ c, onOpen, lockedBy = null }: LibraryCaseCardProps) {
-  const odds = eth(c.max) / eth(c.cost);
   const locked = lockedBy !== null;
+  const open = locked ? undefined : onOpen;
 
   return (
     <div
       data-tilt
+      data-case={c.id}
+      onClick={open}
+      aria-disabled={locked || undefined}
       style={sx(
-        `position:relative;height:372px;border:1px solid ${locked ? C.border : C.border};border-radius:16px;` +
-          `overflow:hidden;background:${C.card};cursor:pointer;perspective:900px`,
+        `position:relative;height:392px;border:1px solid ${C.border};border-radius:16px;` +
+          `overflow:hidden;background:${C.card};cursor:${locked ? "not-allowed" : "pointer"};perspective:900px`,
       )}
     >
       <div data-wall style={sx(wall(c.w[0], c.w[1], c.w[2]) + (locked ? ";opacity:.45" : ""))} />
@@ -111,7 +121,14 @@ export function LibraryCaseCard({ c, onOpen, lockedBy = null }: LibraryCaseCardP
                 LOCKED · {lockedBy}
               </span>
             )}
-            <div style={sx(`font:500 10px/1 ${MONO};color:${C.muted}`)}>{c.legs}</div>
+            <div
+              style={sx(
+                `font:700 9px/1 ${MONO};letter-spacing:.1em;padding:5px 7px;border-radius:5px;` +
+                  `border:1px solid ${C.border};background:rgba(0,0,0,.28);color:${C.muted}`,
+              )}
+            >
+              {LEGS(c)}
+            </div>
           </div>
         </div>
 
@@ -134,7 +151,12 @@ export function LibraryCaseCard({ c, onOpen, lockedBy = null }: LibraryCaseCardP
           </div>
 
           <div style={sx(`font:700 21px/1.1 ${SANS};letter-spacing:-.02em`)}>{c.name}</div>
-          <div style={sx(`margin-top:7px;font:400 11.5px/1.5 ${SANS};color:${C.muted};text-wrap:pretty`)}>
+          <div
+            style={sx(
+              `margin-top:7px;height:34px;font:400 11.5px/1.5 ${SANS};color:${C.muted};text-wrap:pretty;` +
+                "overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical",
+            )}
+          >
             {c.blurb}
           </div>
 
@@ -146,30 +168,33 @@ export function LibraryCaseCard({ c, onOpen, lockedBy = null }: LibraryCaseCardP
           >
             <Figure label="OPEN COST" value={c.cost} color={C.accent} />
             <Figure label="MAX PAYOUT" value={c.max} />
-            <Figure label="ODDS" value={`${odds.toFixed(1)}×`} color={c.tc} />
+            <Figure label="ODDS" value={`${caseOdds(c).toFixed(1)}×`} color={c.tc} />
           </div>
 
-          <div style={sx("display:flex;align-items:center;gap:10px;margin-top:14px")}>
-            <button
-              onClick={locked ? undefined : onOpen}
-              disabled={locked}
-              style={sx(
-                `height:36px;flex:1;border:none;border-radius:8px;font:700 12px/1 ${SANS};` +
-                  (locked
-                    ? `background:${C.border};color:${C.dim};cursor:not-allowed`
-                    : `background:${C.accent};color:${C.bg};cursor:pointer`),
-              )}
-            >
-              {locked ? `Reach ${lockedBy} to open` : `Open · ${c.cost}`}
-            </button>
-            <button
-              style={sx(
-                `height:36px;padding:0 12px;border:1px solid ${C.borderMid};border-radius:8px;` +
-                  `background:transparent;color:${C.text};font:500 12px/1 ${SANS};cursor:pointer`,
-              )}
-            >
-              Odds
-            </button>
+          <div style={sx("margin-top:14px")}>
+            {locked ? (
+              <div
+                style={sx(
+                  `height:36px;display:flex;align-items:center;justify-content:center;gap:8px;border-radius:8px;` +
+                    `border:1px dashed ${C.borderMid};font:500 11px/1 ${MONO};letter-spacing:.06em;color:${C.dim}`,
+                )}
+              >
+                LOCKED · reach {lockedBy} to open
+              </div>
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpen();
+                }}
+                style={sx(
+                  `height:36px;width:100%;border:none;border-radius:8px;font:700 12px/1 ${SANS};` +
+                    `background:${C.accent};color:${C.bg};cursor:pointer`,
+                )}
+              >
+                Open case · {c.cost}
+              </button>
+            )}
           </div>
         </div>
       </div>

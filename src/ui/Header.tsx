@@ -3,14 +3,13 @@ import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tabBtn } from "../theme.ts";
 import type { Tab } from "../types.ts";
 
-/** Screens that belong to a match. Any of them lights the "Battles" tab. */
-const MATCH_FLOW: readonly Tab[] = ["battles", "create", "draft", "study", "pick", "live", "result"];
+/** Screens that belong to a case run. Any of them lights the "Cases" tab. */
+const CASE_FLOW: readonly Tab[] = ["cases", "spin", "parlay-build", "study", "tape", "settled"];
 
 const NAV: readonly { key: Tab; label: string }[] = [
   { key: "lobby", label: "Home" },
-  { key: "battles", label: "Battles" },
-  { key: "parlay", label: "Duel attack" },
-  { key: "cases", label: "Rewards" },
+  { key: "cases", label: "Cases" },
+  { key: "desk", label: "Options desk" },
 ];
 
 interface HeaderProps {
@@ -28,16 +27,19 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
           "height:60px;background:rgba(9,9,11,.86);backdrop-filter:blur(12px);border-bottom:1px solid #27272a",
       )}
     >
-      <div style={sx("display:flex;align-items:center;gap:10px")}>
+      <div
+        onClick={() => onNavigate("cases")}
+        style={sx("display:flex;align-items:center;gap:10px;cursor:pointer")}
+      >
         <div
           style={sx(
             `width:26px;height:26px;border-radius:7px;background:${C.accent};display:grid;` +
               `place-items:center;color:${C.bg};font:700 15px/1 ${SANS}`,
           )}
         >
-          T
+          θ
         </div>
-        <span style={sx(`font:700 16px/1 ${SANS};letter-spacing:-.02em`)}>THETHADUEL</span>
+        <span style={sx(`font:700 16px/1 ${SANS};letter-spacing:-.02em`)}>THETADUEL</span>
       </div>
 
       <nav style={sx("display:flex;gap:2px;margin-left:8px")}>
@@ -45,7 +47,7 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
           <button
             key={n.key}
             onClick={() => onNavigate(n.key)}
-            style={sx(tabBtn(n.key === "battles" ? MATCH_FLOW.includes(tab) : tab === n.key))}
+            style={sx(tabBtn(n.key === "cases" ? CASE_FLOW.includes(tab) : tab === n.key))}
           >
             {n.label}
           </button>

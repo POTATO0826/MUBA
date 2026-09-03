@@ -13,4 +13,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`THETHADUEL running at ${server.url}`);
+console.log(`THETADUEL running at ${server.url}`);

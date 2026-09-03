@@ -1,25 +1,17 @@
 import { DitherReveal } from "../components/DitherReveal.tsx";
-import { CHAMP_ART, DUELS, FEATURED_CASES, TOP_WINS } from "../data/fixtures.ts";
+import { FEATURED_CASES } from "../data/cases.ts";
+import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import { LobbyCaseCard } from "../ui/CaseCards.tsx";
-import { RoomsTable } from "../ui/RoomsTable.tsx";
 
 interface LobbyProps {
-  prize: number;
-  onCreateBattle: () => void;
-  onBrowseRewards: () => void;
-  onJoinRoom: () => void;
-  onSpectate: () => void;
+  onBrowseCases: () => void;
+  onDesk: () => void;
+  onOpenCase: (id: string) => void;
 }
 
-export function Lobby({
-  prize,
-  onCreateBattle,
-  onBrowseRewards,
-  onJoinRoom,
-  onSpectate,
-}: LobbyProps) {
+export function Lobby({ onBrowseCases, onDesk, onOpenCase }: LobbyProps) {
   return (
     <div
       style={sx(
@@ -28,37 +20,28 @@ export function Lobby({
       )}
     >
       <div style={sx("display:flex;flex-direction:column;gap:24px;min-width:0")}>
-        <Hero onCreateBattle={onCreateBattle} onBrowseRewards={onBrowseRewards} />
-        <BiggestWins />
-
-        <section>
-          <div style={sx("display:flex;align-items:center;gap:14px;margin-bottom:14px")}>
-            <h2 style={sx(`margin:0;font:700 17px/1 ${SANS};letter-spacing:-.02em`)}>Open battles</h2>
-            <div style={sx("display:flex;gap:6px")}>
-              <button
-                style={sx(
-                  `height:26px;padding:0 10px;border-radius:99px;cursor:pointer;font:500 11px/1 ${MONO};` +
-                    "border:1px solid rgba(200,255,0,.4);background:rgba(200,255,0,.12);color:#c8ff00",
-                )}
-              >
-                1v1
-              </button>
-            </div>
-            <div style={sx("flex:1")} />
-            <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>6 rooms</span>
-          </div>
-          <RoomsTable prize={prize} onJoin={onJoinRoom} onSpectate={onSpectate} scroll />
-        </section>
+        <Hero onBrowseCases={onBrowseCases} onDesk={onDesk} />
+        <BiggestPayoffs />
 
         <section>
           <div style={sx("display:flex;align-items:baseline;gap:12px;margin-bottom:14px")}>
             <h2 style={sx(`margin:0;font:700 17px/1 ${SANS};letter-spacing:-.02em`)}>
               Featured cases
             </h2>
+            <div style={sx("flex:1")} />
+            <button
+              onClick={onBrowseCases}
+              style={sx(
+                `height:26px;padding:0 10px;border-radius:99px;cursor:pointer;font:500 11px/1 ${MONO};` +
+                  `border:1px solid ${C.border};background:transparent;color:${C.muted}`,
+              )}
+            >
+              All cases →
+            </button>
           </div>
-          <div style={sx("display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px")}>
+          <div style={sx("display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px")}>
             {FEATURED_CASES.map((c) => (
-              <LobbyCaseCard key={c.name} c={c} />
+              <LobbyCaseCard key={c.id} c={c} onOpen={() => onOpenCase(c.id)} />
             ))}
           </div>
         </section>
@@ -67,13 +50,7 @@ export function Lobby({
   );
 }
 
-function Hero({
-  onCreateBattle,
-  onBrowseRewards,
-}: {
-  onCreateBattle: () => void;
-  onBrowseRewards: () => void;
-}) {
+function Hero({ onBrowseCases, onDesk }: { onBrowseCases: () => void; onDesk: () => void }) {
   return (
     <section
       style={sx(
@@ -116,34 +93,34 @@ function Hero({
             SEASON 01 · LIVE
           </div>
           <h1 style={sx(`margin:16px 0 10px;font:700 36px/1.08 ${SANS};letter-spacing:-.03em`)}>
-            Battle the book, not the market.
+            Open the case. Hold the legs. Take the payoff.
           </h1>
           <p
             style={sx(
               `margin:0 0 22px;font:400 14px/1.6 ${SANS};color:${C.muted};max-width:470px;text-wrap:pretty`,
             )}
           >
-            Pick a case, draft your contracts against an opponent, then parlay the legs into one
-            payoff. Options pricing streams live from Thetanuts on Base.
+            Pick a case, spin its book for your legs, tier each one, then hold the position to
+            expiry. Options pricing streams live from Thetanuts on Base.
           </p>
           <div style={sx("display:flex;gap:10px")}>
             <button
-              onClick={onCreateBattle}
+              onClick={onBrowseCases}
               style={sx(
                 `height:40px;padding:0 18px;border:none;border-radius:8px;background:${C.accent};` +
                   `color:${C.bg};font:700 13px/1 ${SANS};cursor:pointer`,
               )}
             >
-              Create battle
+              Open a case
             </button>
             <button
-              onClick={onBrowseRewards}
+              onClick={onDesk}
               style={sx(
                 `height:40px;padding:0 18px;border:1px solid ${C.borderMid};border-radius:8px;` +
                   `background:transparent;color:${C.text};font:500 13px/1 ${SANS};cursor:pointer`,
               )}
             >
-              Browse rewards
+              Options desk
             </button>
           </div>
         </div>
@@ -152,9 +129,9 @@ function Hero({
   );
 }
 
-function BiggestWins() {
+function BiggestPayoffs() {
   // The strip renders the list twice so `vcStream`'s -50% translate loops seamlessly.
-  const marquee = [...DUELS, ...DUELS];
+  const marquee = [...SETTLED_CASES, ...SETTLED_CASES];
 
   return (
     <div
@@ -169,7 +146,7 @@ function BiggestWins() {
       >
         <span style={sx(`width:6px;height:6px;border-radius:99px;background:${C.accent}`)} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.14em;color:${C.accent}`)}>
-          BIGGEST WINS 24H
+          BIGGEST PAYOFFS 24H
         </span>
       </div>
 
@@ -219,13 +196,13 @@ function BiggestWins() {
                         "animation:vcPulse 2.4s ease-in-out infinite",
                     )}
                   >
-                    WINNER
+                    FULL
                     <br />
-                    WINNER
+                    HOUSE
                     <br />
-                    CHICKEN
+                    EVERY
                     <br />
-                    DINNER
+                    LEG
                   </div>
                 </div>
               )}
@@ -267,7 +244,7 @@ function BiggestWins() {
                   >
                     {w.initial}
                   </div>
-                  <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{w.mode}</span>
+                  <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{w.legs}</span>
                 </div>
                 <div
                   style={sx(

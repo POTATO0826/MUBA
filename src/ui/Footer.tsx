@@ -11,7 +11,7 @@ export function Footer({ source }: { source: MarketSource }) {
           `margin-top:20px;font:400 11px/1 ${MONO};color:#52525b`,
       )}
     >
-      <span>THETHADUEL · prototype</span>
+      <span>THETADUEL · prototype</span>
       <span>·</span>
       <span>@thetanuts-finance/thetanuts-client 0.2.5</span>
       <span>·</span>
