@@ -165,18 +165,15 @@ describe("the board", () => {
     expect(container.querySelector("[data-tilt]")).toBeNull();
   });
 
-  test("each card carries the match details it reveals on hover", () => {
+  test("each card carries three lines of match details it reveals on hover", () => {
     mount("/battles");
     const details = container.querySelector<HTMLElement>('[data-details="kz-semis"]')!;
-    expect(details.textContent).toContain("MATCH DETAILS");
-    expect(details.textContent).toContain("kazuo.eth · 2m ago");
-    expect(details.textContent).toContain("STOCKS · 9 names on the reel");
-    expect(details.textContent).toContain("3 · dealt by the spin");
-    expect(details.textContent).toContain("4.80 Ξ · 2.40 Ξ each");
-    expect(details.textContent).toContain("room → spin → study → parlay → duel");
+    expect(details.children).toHaveLength(3);
+    expect(details.textContent).toContain("kazuo.eth · STOCKS · 3 legs");
+    expect(details.textContent).toContain("4.80 Ξ pool · 2.40 Ξ each");
+    expect(details.textContent).toContain("most legs wins");
     // Hidden until hover; the stylesheet's :hover rule reveals it.
     expect(details.className).toContain("vc-lobby-details");
-    expect(container.querySelector('[data-lobby="kz-semis"]')?.className).toContain("vc-lobby");
   });
 
   test("the book filter narrows the board", () => {

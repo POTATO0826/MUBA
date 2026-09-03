@@ -1,5 +1,5 @@
 import { CardArt } from "../components/CardArt.tsx";
-import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL, bookFor } from "../data/lobbies.ts";
+import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, tag, wall } from "../theme.ts";
 import type { LobbyDef } from "../types.ts";
@@ -35,13 +35,11 @@ export function LobbyCard({
       ? { text: `MATCHED · VS ${lobby.opponent?.name.toUpperCase() ?? "?"}`, color: C.green, pulse: false }
       : { text: "OPEN · WAITING FOR P2", color: C.green, pulse: true };
 
-  const details: readonly [string, string][] = [
-    ["HOST", `${lobby.host.name} · ${lobby.createdAgo} ago`],
-    ["BOOK", `${MARKET_LABEL[lobby.market]} · ${bookFor(lobby.market).length} names on the reel`],
-    ["LEGS", `${lobby.legs} · dealt by the spin, same for both`],
-    ["POOL", `${lobby.prize.toFixed(2)} Ξ · ${(lobby.prize / 2).toFixed(2)} Ξ each`],
-    ["FLOW", "room → spin → study → parlay → duel"],
-    ["SETTLES", "more legs landed wins · tie on conviction"],
+  /** Three lines on hover. Enough to know what you are sitting down to. */
+  const details = [
+    `${lobby.host.name} · ${MARKET_LABEL[lobby.market]} · ${lobby.legs} legs`,
+    `${lobby.prize.toFixed(2)} Ξ pool · ${(lobby.prize / 2).toFixed(2)} Ξ each`,
+    "Spin deals the tickers · most legs wins",
   ];
 
   return (
@@ -56,17 +54,15 @@ export function LobbyCard({
       <div style={sx(wall(a, b, deg))} />
       <CardArt id={lobby.id} color={color} />
 
-      {/* Hover: what this match actually is. Sits over the name and tags. */}
+      {/* Hover: three lines over the name. */}
       <div
         className="vc-lobby-details"
         data-details={lobby.id}
-        style={sx("left:18px;right:18px;top:60px;bottom:126px;display:flex;flex-direction:column;justify-content:flex-end;gap:6px")}
+        style={sx("left:18px;right:18px;top:60px;bottom:126px;display:flex;flex-direction:column;justify-content:flex-end;gap:7px")}
       >
-        <div style={sx(`font:500 9px/1 ${MONO};letter-spacing:.14em;color:${color};margin-bottom:2px`)}>MATCH DETAILS</div>
-        {details.map(([k, v]) => (
-          <div key={k} style={sx("display:grid;grid-template-columns:54px minmax(0,1fr);gap:8px;align-items:baseline")}>
-            <span style={sx(`font:500 8.5px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>{k}</span>
-            <span style={sx(`font:500 10.5px/1.3 ${MONO};color:${C.textSoft};white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>{v}</span>
+        {details.map((line) => (
+          <div key={line} style={sx(`font:500 11px/1.35 ${MONO};color:${C.textSoft};text-shadow:0 1px 8px rgba(0,0,0,.7)`)}>
+            {line}
           </div>
         ))}
       </div>
