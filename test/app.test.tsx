@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
 import { bookFor } from "../src/data/lobbies.ts";
 import { mockMarketSource } from "../src/data/market.ts";
+import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS } from "../src/state/match.ts";
 
 let container: HTMLDivElement;
@@ -54,7 +55,6 @@ function clickContaining(fragment: string) {
 }
 
 const dialog = () => container.querySelector<HTMLElement>('[role="dialog"]');
-const claimButton = () => buttons().find((b) => (b.textContent ?? "").startsWith("Claim"));
 const lobbyCards = () => Array.from(container.querySelectorAll<HTMLElement>("[data-lobby]"));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -294,11 +294,12 @@ describe("the spin", () => {
 
     expect(slotSyms()).toHaveLength(3);
     expect(text()).toContain("spinning the book…");
-    expect(claimButton()?.disabled).toBe(true);
+    // Nothing to press: no claim button, ever.
+    expect(buttons().some((b) => (b.textContent ?? "").includes("Claim"))).toBe(false);
 
     click("Skip ↦");
     expect(text()).toContain("locked");
-    expect(claimButton()?.disabled).toBe(false);
+    expect(text()).toContain("Opening the case study…");
 
     const syms = slotSyms();
     expect(syms.every((s) => s !== "?")).toBe(true);
@@ -340,11 +341,15 @@ describe("the spin", () => {
     expect(window.location.pathname).toBe("/battles");
   });
 
-  test("claiming the spin opens the case study on those tickers", async () => {
+  test("once the last leg lands the case study opens on its own, on those tickers", async () => {
     mount("/battles");
     await acceptAndSkip();
     const dealt = slotSyms();
-    click("Claim → case study");
+    expect(dialog()).not.toBeNull(); // the locked board holds for a beat
+    await act(async () => {
+      await sleep(LOCK_MS + 150);
+    });
+    expect(dialog()).toBeNull();
     expect(text()).toContain("Case study");
     for (const s of dealt) expect(text()).toContain(s);
     expect(window.location.pathname).toBe("/match/kz-semis/study");

@@ -67,8 +67,9 @@ Both paths lead to the spin, because both mean the two seats are taken.
   exactly these tickers — the reel is the one thing in the match neither
   player chose.
 - **No duplicates.** A landing on a seated ticker is rejected and re-spun.
-- **No re-roll.** The system spins once, for both players. `Skip ↦` only
-  jumps the animation to its landing.
+- **No re-roll, nothing to press.** The system spins once, for both players,
+  holds on the locked board for a beat, and the case study opens on its own.
+  `Skip ↦` only jumps the animation to its landing.
 
 ## The case study
 

@@ -8,6 +8,8 @@ import type { Asset, Player } from "../types.ts";
 const SPIN_MS = 3200;
 /** Pause between one landing and the next spin, so each slot registers. */
 const SETTLE_MS = 650;
+/** How long the locked board is shown before the case study opens on its own. */
+export const LOCK_MS = 1400;
 
 /** Quintic ease-out: fast off the line, long slow settle. */
 const ease = (t: number) => 1 - Math.pow(1 - t, 5);
@@ -20,7 +22,8 @@ interface MatchSpinProps {
   /** The lobby's book, in the same order `spinCase` indexed it. */
   assets: readonly Asset[];
   result: SpinResult;
-  onClaim: () => void;
+  /** Called on its own once every slot has landed and the board has been seen. */
+  onDone: () => void;
   onClose: () => void;
 }
 
@@ -32,7 +35,8 @@ interface MatchSpinProps {
  *
  * Everything about *where* it stops was decided before the first frame by
  * `spinCase`; this component only draws the plan it was handed. There is no
- * re-roll: the system spins once, for both players, and that is the board.
+ * re-roll and nothing to press: the system spins once, for both players, holds
+ * on the locked board for a beat, and the case study opens on its own.
  */
 export function MatchSpin(p: MatchSpinProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -107,6 +111,13 @@ export function MatchSpin(p: MatchSpinProps) {
       if (settleTimer) clearTimeout(settleTimer);
     };
   }, [step, skipped, done, n, plan, p.result.plans]);
+
+  // Locked: hold so the board registers, then move on without a click.
+  useEffect(() => {
+    if (!done) return;
+    const t = setTimeout(p.onDone, LOCK_MS);
+    return () => clearTimeout(t);
+  }, [done, p.onDone]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -302,7 +313,7 @@ export function MatchSpin(p: MatchSpinProps) {
         <div style={sx("display:flex;align-items:center;gap:12px;padding:12px 18px 16px")}>
           <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};max-width:380px`)}>
             {done
-              ? `Locked · ${p.result.syms.join(" · ")}. Both slips run on these. Next: the case study.`
+              ? `Locked · ${p.result.syms.join(" · ")}. Both slips run on these. Opening the case study…`
               : `The reel picks what you both play on — ${p.assets.length} names in this book. One spin per leg; the same ticker never fills two slots.`}
           </span>
           <div style={sx("flex:1")} />
@@ -317,18 +328,12 @@ export function MatchSpin(p: MatchSpinProps) {
               Skip ↦
             </button>
           )}
-          <button
-            disabled={!done}
-            onClick={p.onClaim}
-            style={sx(
-              `height:36px;padding:0 16px;border:none;border-radius:8px;font:700 12px/1 ${SANS};white-space:nowrap;` +
-                (done
-                  ? `background:${C.accent};color:${C.bg};cursor:pointer`
-                  : `background:${C.border};color:${C.dim};cursor:default`),
-            )}
-          >
-            Claim → case study
-          </button>
+          {done && (
+            <span style={sx(`display:inline-flex;align-items:center;gap:8px;font:700 10px/1 ${MONO};letter-spacing:.12em;color:${C.accent}`)}>
+              <span style={sx(`width:6px;height:6px;border-radius:99px;background:${C.accent};animation:vcPulse 1s ease-in-out infinite`)} />
+              LOCKED
+            </span>
+          )}
         </div>
       </div>
     </div>
