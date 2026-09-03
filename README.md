@@ -11,11 +11,15 @@ React on Bun. No Vite, no webpack — Bun bundles `src/index.html` directly.
 
 ```bash
 bun install
+cp .env.example .env   # optional — add a WalletConnect project id
 bun dev          # http://localhost:3000, hot reload
-bun test         # 28 tests
+bun test         # 55 tests
 bun run typecheck
 bun run build    # → dist/
 ```
+
+Without a `WALLETCONNECT_PROJECT_ID` the app runs on the mock wallet, so a fresh
+clone plays with no signup. See **Connecting a wallet** below.
 
 ## Layout
 
@@ -30,6 +34,7 @@ src/
   lib/sx.ts           CSS declaration string → React.CSSProperties, cached
   state/
     battle.ts         all screen state, the actions, and the autopilot
+    room.ts           useRoom() — create/join/ready, 1s polling, share-link parsing
     selectors.ts      activeUniverse / myLegs / oppLegs / arena
   engine/
     tape.ts           seeded random walk, sparkline geometry, price formatting
@@ -40,6 +45,16 @@ src/
     universe.ts       the 18 draftable assets
     fixtures.ts       static content (cases, wins, rooms, slip)
     market.ts         MarketSource interface + the mock implementation
+    wallet.ts         WalletSource interface, Base chain id, address formatting
+    room.ts           RoomView wire shape, error codes, seat helpers
+  server/
+    rooms.ts          the in-memory room store; every transition a compare-and-set
+  wallet/
+    boundary.tsx      picks the tier at boot; the only AppKit importer
+    injected.ts       EIP-6963 extension wallets — no configuration at all
+    appkit.tsx        AppKit + ethers, adds the QR flow for phone wallets
+    mock.ts           the placeholder wallet (no wallet installed at all)
+    config.ts         network, metadata, modal theme, project-id fetch
   components/         DitherReveal, StarfieldButton, Sparkline, useTilt
   ui/                 Header, Footer, RoomsTable, CaseCards, AutoBanner
   views/              one file per screen
@@ -81,6 +96,170 @@ ethers provider, so it has to run server-side — add routes to `index.ts` and
 have the `MarketSource` fetch them. And `getPricingArray` is typed to `ETH | BTC`
 only; every other asset returns `[]`, so `underlyings()` should stay explicit
 rather than derived from the price feeds.
+
+## Connecting a wallet
+
+The wallet sits behind one interface, `WalletSource` in `src/data/wallet.ts` —
+deliberately the same shape of seam as `MarketSource`:
+
+```ts
+interface WalletSource {
+  readonly id: string;
+  readonly identity: WalletIdentity;   // address, chainId, connected, wrongNetwork, …
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  openAccount(): Promise<void>;
+  switchToBase(): Promise<void>;
+  getSigner(): Promise<Signer | null>; // the seam for the on-chain trade
+}
+```
+
+Three implementations, and `src/wallet/boundary.tsx` picks the best available at
+boot:
+
+1. **`useAppKitWallet()`** — [Reown AppKit](https://docs.walletconnect.network/app-sdk/react/installation)
+   with the ethers adapter, scoped to Base. Needs `WALLETCONNECT_PROJECT_ID`.
+   Browser extensions *and* phone wallets over a QR code.
+2. **`useInjectedWallet()`** — browser extensions, via EIP-6963. Needs nothing.
+   Real addresses, real signing; the only thing it cannot do is let a phone in.
+3. **`useMockWallet()`** — the design's fixed `0x71c…4Af2`, for when no wallet is
+   installed at all, and for `bun test`, where AppKit cannot initialise (it
+   reaches for `window.crypto`, IndexedDB and a relay socket on init).
+
+The ordering matters, and the first cut of this got it wrong: gating everything
+behind the project id made MetaMask — the wallet that needs no setup whatsoever —
+unreachable until you had registered a WalletConnect account. Tier 2 is why a
+fresh clone connects a real wallet on the first click.
+
+### Why EIP-6963 and not `window.ethereum`
+
+With several extensions installed they fight over that one property. The symptom
+is `TypeError: Cannot redefine property: ethereum` in the console, and whichever
+lost the race is unreachable — so `window.ethereum` might hand you Phantom when
+you wanted MetaMask. EIP-6963 has each wallet announce itself separately, so all
+of them stay addressable and `src/ui/WalletPicker.tsx` lets the user choose.
+Tested here against Rabby, OKX, MetaMask and Phantom side by side.
+
+Note the SDK split, because it is easy to install the wrong half:
+`@reown/walletkit` is the **Wallet SDK**, for building a wallet that dApps
+connect *to*. This is a dApp, so it wants the **App SDK**, `@reown/appkit`.
+
+### Why ethers and not wagmi
+
+Thetanuts' own client is ethers 6 (`tnuts-test/FINDINGS.md` pins 6.17.0). Using
+`@reown/appkit-adapter-ethers` keeps one web3 stack at one version instead of
+carrying viem and wagmi alongside it, and makes `getSigner()` a two-line
+`BrowserProvider` call against the same library the SDK already speaks.
+
+### The project id
+
+Optional. Without it, extension wallets work and phone wallets do not — the
+project id buys the WalletConnect relay, which is what a QR code talks to.
+
+`WALLETCONNECT_PROJECT_ID` in `.env`, from
+[dashboard.walletconnect.com](https://dashboard.walletconnect.com). Add the
+app's origin to the project's allowed domains or wallets refuse the session.
+
+It reaches the browser over `/api/wallet-config` rather than through the bundle,
+because Bun's HTML bundler does not inline `process.env` for `Bun.serve` routes —
+only `bun build --env` does, so a compile-time read would work in `bun run build`
+and silently be `undefined` under `bun dev`. The id is public either way (it
+ships in every dApp bundle and is domain-restricted); serving it keeps it out of
+git. Unset means the mock.
+
+### Signing, and what is not done yet
+
+`getSigner()` is wired and typed but nothing calls it. The intended split, given
+that the Thetanuts client is provider-only and has to run server-side: the server
+prices and builds the order, this signer signs and submits it from the browser.
+
+Also open:
+
+- **Balance.** `derived.p1Meta` shows the design's `bankroll 2.40 ETH` only while
+  disconnected. With a real address it reads `base · <wallet>` instead — quoting
+  a made-up balance under someone's actual address would be a fabricated number.
+  A real one is a `useAppKitBalance()` call away.
+- **ENS.** `p1Name` is the truncated address; Base has no L2 primary names, so
+  this wants an L1 reverse lookup.
+- **PvP.** The address is the player identity, which is the whole reason this
+  landed before multiplayer — matchmaking and settlement now have something real
+  to name players by. `useBattle(player)` takes one `PlayerIdentity`; the
+  opponent is still the `kazuo.eth` fixture, and that fixture is the single thing
+  the wire has to replace.
+
+## Duel rooms and invite links
+
+Connect a wallet, publish a lobby, get a link, send it to someone. They open it,
+connect their own wallet, take the seat, both sides ready up, and the duel has
+two real addresses in it.
+
+```
+POST /api/rooms            {address, prize, lobbyName}  -> {id, joinPath, seed, ...}
+GET  /api/rooms/:id                                     -> RoomView
+POST /api/rooms/:id/join   {address}
+POST /api/rooms/:id/ready  {address}
+GET  /room/:id             the share link (served by the SPA wildcard)
+```
+
+The store is a `Map` in `src/server/rooms.ts`. No database: a room lives for one
+duel, and Postgres would buy durability nobody needs yet. A restart drops every
+room, and rooms do not survive across processes.
+
+### Every transition is a compare-and-set
+
+`joinRoom` checks `guest !== null` and assigns in one synchronous step, so on a
+single-threaded runtime it is a genuine CAS. Send one link to three friends and
+let them all click at once: exactly one becomes the guest, the other two get a
+409. The same shape against SQL is
+`UPDATE rooms SET guest = ? WHERE id = ? AND guest IS NULL`, which is how the
+store can move to a table without anything above it changing.
+
+`readyBothAt` is written only while null, so whichever client reports the second
+readiness fixes the start instant and a duplicate cannot drag it forward.
+
+### Why both players see the same tape
+
+The room carries a `seed`, fixed at creation. `studySalt` and `fightSalt` in
+`src/state/selectors.ts` derive from it, so `actions.setSeed(room.seed)` on
+entering the draft makes both browsers walk the same random walk. Without that
+the two sides would be watching different prices and the result would mean
+nothing.
+
+### Polling, not sockets
+
+`useRoom` re-reads the room every second while it is waiting on someone, and
+stops once both sides are ready. A two-player lobby only ever waits on one event
+— has my opponent shown up — and a 1s fetch against our own Bun server is less
+machinery than a socket lifecycle for the same latency. The tape itself never
+polls: a shared seed plus a shared start instant leaves nothing to sync.
+
+### Two tabs on one machine
+
+The mock wallet hands every tab the same address, and the store correctly refuses
+to let a host fill their own challenger seat — so a local duel needs two
+identities. `?as=0x…` overrides the mock address for one tab:
+
+```
+http://localhost:3000/?as=0xAAAA000000000000000000000000000000000001   # host
+http://localhost:3000/room/<id>?as=0xBBBB000000000000000000000000000000000002   # guest
+```
+
+Dev affordance on the mock only. The live `WalletSource` takes its address from
+the wallet and ignores the URL.
+
+### What rooms do not do yet
+
+- **No signature check.** Identity is the address in the request body, and
+  nothing proves the caller controls it — anyone can POST someone else's address
+  and take their seat. The fix is a nonce signed with `getSigner()` and verified
+  with `verifyMessage`; `normalizeAddress` in `src/server/rooms.ts` is the one
+  place it goes. Fine for two people who trust each other, not fine once a room
+  holds money.
+- **The draft is still local.** `derived.opponent` is the `kazuo.eth` fixture and
+  the opponent's picks are simulated in `src/state/battle.ts`. The room agrees on
+  who is playing and on the tape; it does not yet carry picks, bans or leg
+  directions between the two browsers.
+- **No stake escrow.** `prize` is a number in a room, not money anywhere.
 
 ## Rewards hub
 
@@ -124,5 +303,7 @@ the legs that landed — and, failing that, to player one.
 - The lobby's room table pinned a 760px minimum width on its header row but not
   its body rows, so columns drifted apart once scrolled. `RoomsTable` applies it
   to both.
-- Thetanuts is deliberately not wired up yet. `tnuts-test/` is untouched.
+- Thetanuts market data is deliberately not wired up yet — `mockMarketSource`
+  still backs the pricing table. `tnuts-test/` is untouched. The wallet, by
+  contrast, is live; see **Connecting a wallet**.
 - The imported design source is kept in `.design/` for reference.

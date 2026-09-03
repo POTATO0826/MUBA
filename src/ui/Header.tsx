@@ -1,4 +1,5 @@
 import { StarfieldButton } from "../components/StarfieldButton.tsx";
+import { shortAddress, type WalletIdentity } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tabBtn } from "../theme.ts";
 import type { Tab } from "../types.ts";
@@ -15,12 +16,42 @@ const NAV: readonly { key: Tab; label: string }[] = [
 
 interface HeaderProps {
   tab: Tab;
-  wallet: boolean;
+  wallet: WalletIdentity;
   onNavigate: (tab: Tab) => void;
-  onToggleWallet: () => void;
+  onConnect: () => void;
+  onManage: () => void;
+  onSwitchNetwork: () => void;
 }
 
-export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps) {
+/**
+ * The four states the one button carries, in the order they're checked.
+ *
+ * Wrong-network outranks the address on purpose: someone connected on Ethereum
+ * can draft a whole duel and only discover at signing that Thetanuts isn't
+ * there, so the header says so first and the accent goes amber to match.
+ */
+function walletButton(wallet: WalletIdentity) {
+  if (wallet.connecting) return { label: "Connecting…", mono: false, tone: C.accent };
+  if (wallet.wrongNetwork) return { label: "Switch to Base", mono: false, tone: C.amber };
+  if (wallet.address) return { label: shortAddress(wallet.address), mono: true, tone: C.accent };
+  return { label: "Connect wallet", mono: false, tone: C.accent };
+}
+
+export function Header({
+  tab,
+  wallet,
+  onNavigate,
+  onConnect,
+  onManage,
+  onSwitchNetwork,
+}: HeaderProps) {
+  const btn = walletButton(wallet);
+  const onWalletClick = wallet.wrongNetwork
+    ? onSwitchNetwork
+    : wallet.address
+      ? onManage
+      : onConnect;
+
   return (
     <header
       style={sx(
@@ -56,31 +87,35 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
 
       <div style={sx("display:flex;align-items:center;gap:14px")}>
         <StarfieldButton
-          label={wallet ? "0x71c…4Af2" : "Connect wallet"}
-          onClick={onToggleWallet}
+          label={btn.label}
+          onClick={onWalletClick}
           rounded={47}
           padding="9px 15px"
           fill="#0f0f11"
           textColor={C.text}
-          border={{ borderWidth: 1, borderStyle: "solid", borderColor: "rgba(200,255,0,.22)" }}
+          border={{
+            borderWidth: 1,
+            borderStyle: "solid",
+            borderColor: wallet.wrongNetwork ? "rgba(245,158,11,.38)" : "rgba(200,255,0,.22)",
+          }}
           font={{
-            fontFamily: wallet ? MONO : SANS,
+            fontFamily: btn.mono ? MONO : SANS,
             fontWeight: 700,
             fontSize: 12,
             lineHeight: "1.35em",
             letterSpacing: "0.01em",
           }}
-          lightColor={C.accent}
+          lightColor={btn.tone}
           lightSize={46}
           lightThickness={2}
           lightCount={2}
           speed={58}
           movement="continuous"
           direction="ccw"
-          glowColor={C.accent}
+          glowColor={btn.tone}
           glowSize={12}
           glowOpacity={70}
-          pixelColor={C.accent}
+          pixelColor={btn.tone}
           pixelSize={4}
           pixelDensity={46}
           pixelBrightness={100}

@@ -9,7 +9,6 @@ export interface BattleState {
   pool: string;
   /** Underlying selected on the MM pricing table. */
   asset: string;
-  wallet: boolean;
   /** Prize pool in ETH. */
   prize: number;
   /** Raw text in the prize field — kept apart from `prize` so a half-typed
@@ -44,7 +43,6 @@ export const INITIAL_STATE: BattleState = {
   tab: "lobby",
   pool: "ALL",
   asset: "ETH",
-  wallet: false,
   prize: 5.0,
   prizeText: "5.00",
   lobbyName: "Room #4471",
@@ -70,7 +68,34 @@ type Patch = Partial<BattleState> | ((s: BattleState) => Partial<BattleState>);
 
 const OPPONENT = "kazuo.eth";
 
-export function useBattle() {
+/**
+ * How the local player is labelled on the board.
+ *
+ * Passed in rather than derived because the source of truth is the connected
+ * wallet, which lives outside this store (`src/data/wallet.ts`). Omitting it
+ * gives the design's `"You"` placeholder, which is what the headless tests and
+ * the mock wallet run on.
+ *
+ * This is the hook PvP lands on: today one identity comes in and the opponent
+ * is the `OPPONENT` fixture; multiplayer replaces that fixture with a second
+ * real identity off the wire and nothing else in this file has to move.
+ */
+export interface PlayerIdentity {
+  /** Display name — a short address, or an ENS name once resolved. */
+  name: string;
+  /** Two characters for the avatar. */
+  init: string;
+  /** The line under the name. */
+  meta: string;
+}
+
+const ANON: PlayerIdentity = {
+  name: "You",
+  init: "YO",
+  meta: "bankroll 2.40 ETH",
+};
+
+export function useBattle(player: PlayerIdentity = ANON) {
   const [state, setState] = useState<BattleState>(INITIAL_STATE);
 
   // Timers and the autopilot script run outside React's render, so they read
@@ -238,7 +263,6 @@ export function useBattle() {
       goResult: () => patch({ tab: "result" }),
       startGame: () => patch({ started: true }),
 
-      toggleWallet: () => patch((s) => ({ wallet: !s.wallet })),
       setPool: (pool: string) => patch({ pool }),
       setAsset: (asset: string) => patch({ asset }),
       setTapeSpeed: (tapeSpeed: 32 | 64 | 128) => patch({ tapeSpeed }),
@@ -277,6 +301,14 @@ export function useBattle() {
         }),
       setLobbyName: (lobbyName: string) => patch({ lobbyName }),
       publishLobby: () => patch({ published: true, tab: "draft" }),
+
+      /**
+       * Adopt a duel room's tape seed.
+       *
+       * `studySalt`/`fightSalt` derive from `seed`, so setting it from the room
+       * is what makes two browsers draw the same random walk.
+       */
+      setSeed: (seed: number) => patch({ seed }),
 
       picksUp: () => patch((s) => ({ picksMax: Math.min(4, s.picksMax + 1) })),
       picksDown: () =>
@@ -367,14 +399,14 @@ export function useBattle() {
       pos,
       raceDone: pos >= TAPE_LEN,
       spectating,
-      p1Name: spectating ? "mira.base" : "You",
-      p1Init: spectating ? "MI" : "YO",
-      p1Meta: spectating ? "bankroll 6.80 ETH · spectating" : "bankroll 2.40 ETH",
+      p1Name: spectating ? "mira.base" : player.name,
+      p1Init: spectating ? "MI" : player.init,
+      p1Meta: spectating ? "bankroll 6.80 ETH · spectating" : player.meta,
       opponent: OPPONENT,
       prizeLabel: `${state.prize.toFixed(2)} ETH`,
       entryLabel: `${(state.prize / 2).toFixed(2)} ETH`,
     };
-  }, [state]);
+  }, [state, player]);
 
   return { state, derived, actions };
 }
