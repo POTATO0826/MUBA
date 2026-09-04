@@ -3,6 +3,9 @@ node_modules
 
 # output
 out
+# ...except the committed solc artifact: contracts/out/DuelEscrow.json is the
+# reviewed, deployed bytecode and contracts/deploy.ts refuses to run without it.
+!contracts/out/
 dist
 *.tgz
 

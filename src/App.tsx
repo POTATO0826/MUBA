@@ -49,7 +49,7 @@ function currentRoute(): Route {
  * both of you play on, read the case, pick a parlay card, hold through the
  * tape, settle. `lobby` (home), `create`, `desk` and `ranks` sit beside it.
  */
-export function App({ source, newsSource = mockNewsSource, route, wallet }: {
+export function App({ source, newsSource = mockNewsSource, route, wallet, marketError }: {
   source: MarketSource;
   /** The study wire's feed. Defaults to the seeded one, so tests and the
    *  offline build touch no network; `client.tsx` injects the live source. */
@@ -61,6 +61,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
    * mock below stands in. `client.tsx` always passes one.
    */
   wallet?: WalletSource;
+  /**
+   * Why the live book is degraded, threaded straight to the footer and read by
+   * nothing else. Optional so the tests keep mounting `App` with a mock source
+   * and no market layer at all.
+   */
+  marketError?: string | null;
 }) {
   // First hook in the tree: the audio context is built inside the very first
   // gesture, capture-phase, so the click that starts the session is audible.
@@ -326,7 +332,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
           mock tier won. Say so, rather than letting it pass for a wallet. */}
       {active.id === "mock" && <MockWalletBanner />}
 
-      <Footer source={source} />
+      <Footer source={source} marketError={marketError ?? null} />
     </div>
   );
 }

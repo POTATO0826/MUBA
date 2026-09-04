@@ -1,0 +1,1388 @@
+{
+ "_provenance": {
+  "what": "One real Thetanuts response, frozen. The input to buildSnapshot(raw, at) — never the network.",
+  "captured": "2026-09-04T09:31Z",
+  "how": "client.api.fetchOrders() + client.api.getMarketData(), @thetanuts-finance/thetanuts-client 0.3.0, Base mainnet 8453 over https://mainnet.base.org. chainConfig is bundled static config (getChainConfigById(8453)), not a network read.",
+  "trimmed": "30 of 426 live orders, hand-picked by level to cover: both tradable underlyings (ETH + BTC), both sides, two-sided levels AND one-sided levels (which must render '—'), orders with no greeks, all three live collateral decimal scales (USDC 6dp, aBasUSDC 6dp, aBasWETH 18dp), and one of each multi-leg structure the book was quoting (SPREAD, FLY, RANGER).",
+  "notes": [
+   "prices/spot are the live USD marks from the same response: ETH 2522.13, BTC 81004.04.",
+   "priceFeeds is the full 10-key/8-asset map, aliases included, so the ETH/USD -> ETH dedupe is exercised.",
+   "Every order's rawApiData.optionBookAddress agreed with chainConfig.contracts.optionBook on this capture (0x1bDff855d6811728acaDC00989e79143a2bdfDed).",
+   "No CONDOR was resting on the book: every 4-strike order passed the ranger invariants. classify() is unit-tested directly for the condor branch."
+  ]
+ },
+ "orders": [
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "396775344",
+    "expiry": "1788595200",
+    "nonce": "73662291220110858334234689756063707424392030811417335341270103963605244169707",
+    "optionType": 0,
+    "strikes": [
+     "265000000000"
+    ],
+    "strikePrice": "265000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0xf995d43885c632305ee6794edd1abf67a4e3026b89d9f97bf29304df583ff35950126617c8a2b7441c0f3c2530f058eed061a673dc7f78b8269ab0e88a064e151c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x051791df68223AE173Fade5217C48875e36eef61",
+    "strikes": [
+     "265000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.0805,
+     "iv": 0.6879,
+     "gamma": 0.0017,
+     "theta": -7.0104,
+     "vega": 0.1909
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "543635434",
+    "expiry": "1788681600",
+    "nonce": "73662291220110858334234689756063707424392030811417335341270103963605244169707",
+    "optionType": 0,
+    "strikes": [
+     "265000000000"
+    ],
+    "strikePrice": "265000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788681600"
+   },
+   "signature": "0x946806e4d08ba91568ee890f2d018f00d7f407503442689fd472f2289fc5314309c61bb14e3bde8708c988e8c4d880cdc00a6322e67013a300095b09efefca5c1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x051791df68223AE173Fade5217C48875e36eef61",
+    "strikes": [
+     "265000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.0945,
+     "iv": 0.508,
+     "gamma": 0.0018,
+     "theta": -4.0578,
+     "vega": 0.3094
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "3962153509675579000",
+    "price": "710087",
+    "expiry": "1789113600",
+    "nonce": "50694069984912406160379230191913498701619336806785423531908458740434039391483",
+    "optionType": 0,
+    "strikes": [
+     "265000000000"
+    ],
+    "strikePrice": "265000000000",
+    "collateralToken": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1789113600"
+   },
+   "signature": "0x7df2dba16453ac7a9bcb608224f8c1b4d97817c8d3c3322cbc831b64ef9c9dab3faee564dc38fdfece3c23e70b32086005581efa8af1906222826426e63e09741b",
+   "availableAmount": "3962153509675578870",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x8c56100caE246f7daa4BC1EC4d1477d71178c563",
+    "strikes": [
+     "265000000000"
+    ],
+    "isCall": true,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x0000000000000000000000004e65fe4dba92790696d040ac24aa414708f5c0ab",
+    "maxCollateralUsable": "3962153509675578870",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.2464,
+     "iv": 0.4919,
+     "gamma": 0.0018,
+     "theta": -3.8861,
+     "vega": 1.0968
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "8085346156",
+    "expiry": "1788595200",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7900000000000"
+    ],
+    "strikePrice": "7900000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0x56c04ecfdfd63e10505059c30c8de29392fa97e122ce1b42236363defa7cbeca0f2341e1522d6f89725c32da8604d64615a1e732507bde344e70c20d3e7c72471c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7900000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0808,
+     "iv": 0.3557,
+     "gamma": 0.0001,
+     "theta": -116.7024,
+     "vega": 6.1456
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "14409347870",
+    "expiry": "1788681600",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7900000000000"
+    ],
+    "strikePrice": "7900000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788681600"
+   },
+   "signature": "0xb0520a9d9b2a47bc0f5df8540d25513898c6e0f224256fbfb54ef4e13ed7552441714c51d5d8e9e75761a49393eb2c20dd27a0bcade9015813cefc7780daf2d91b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7900000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1109,
+     "iv": 0.2844,
+     "gamma": 0.0001,
+     "theta": -81.9299,
+     "vega": 11.1562
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "23761678",
+    "price": "42084569159",
+    "expiry": "1789113600",
+    "nonce": "27169704967401453983906055309729422057929368063747089933971109994989018777968",
+    "optionType": 1,
+    "strikes": [
+     "7900000000000"
+    ],
+    "strikePrice": "7900000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1789113600"
+   },
+   "signature": "0x83c89c862d6d6e2a3571457e57961410d9950d257cb879ca03fb66585139be4218179625c9d7984ee27cd3f6d69bfb55b42a2e3e456d871e4bbb8f18501fcf551b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA",
+    "strikes": [
+     "7900000000000"
+    ],
+    "isCall": false,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x000000000000000000000000cbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.2793,
+     "iv": 0.3289,
+     "gamma": 0.0001,
+     "theta": -88.9571,
+     "vega": 37.5475
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "237453447",
+    "expiry": "1788595200",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "242000000000"
+    ],
+    "strikePrice": "242000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0x4b4dc77ed98759ca2a7e0eb641e6988f13a9caddedcf243e16d3c11e810150ce0ee153bd560cac9d0c7d5fdd2bda85719f8e8b79c213ab39808e9202f1e3fe201c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "242000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0599,
+     "iv": 0.5295,
+     "gamma": 0.0018,
+     "theta": -4.2974,
+     "vega": 0.152
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "478308787",
+    "expiry": "1788681600",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "242000000000"
+    ],
+    "strikePrice": "242000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788681600"
+   },
+   "signature": "0x59b0a354c6236217ad7e28fe67fd1e0a649c726a132fe4cf348d72c9a4adc4ef3d4ff583d70a73959d154e5dfb36abf08f8902a087daeace35eeae4e84948eac1c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "242000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0917,
+     "iv": 0.4337,
+     "gamma": 0.0021,
+     "theta": -3.3877,
+     "vega": 0.3026
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "398018189",
+    "expiry": "1788595200",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "244000000000"
+    ],
+    "strikePrice": "244000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0x4f3d5fda6ab967f72f909a3cd28b82a39f04f2b86c3645c8b9133e1d889ac1a00e66d5a44267bee3908d6160dc79eae1a51090f9bf830d58e28646572e2e1f761b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "244000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0972,
+     "iv": 0.509,
+     "gamma": 0.0026,
+     "theta": -5.9664,
+     "vega": 0.2195
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "675116445",
+    "expiry": "1788681600",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "244000000000"
+    ],
+    "strikePrice": "244000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788681600"
+   },
+   "signature": "0x2f02262a63ed9e789f6741dbe882ab5b85512060acfa1cd2d237e5257f6f98da4277a12b61cf2ee69f47a4b7af1ec6c6762a5cfb76955c0cb7cec48d65a525a71c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "244000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1285,
+     "iv": 0.4086,
+     "gamma": 0.0028,
+     "theta": -4.0686,
+     "vega": 0.3856
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "4081804372",
+    "price": "244989693",
+    "expiry": "1789113600",
+    "nonce": "59380998545873176017036931339743158016399685700606738312311203498244142206951",
+    "optionType": 1,
+    "strikes": [
+     "220000000000"
+    ],
+    "strikePrice": "220000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1789113600"
+   },
+   "signature": "0x2852348587a477ecc1ccc80c7ad0be44b2eb59043ad0b4e72d101dfa4325e68c1f3170bdea92d35ee928d450d44cab1688f328d32be5f955586649a86873f5381c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA",
+    "strikes": [
+     "220000000000"
+    ],
+    "isCall": false,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x000000000000000000000000d4a0e0b9149bcee3c920d2e00b5de09138fd8bb7",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0403,
+     "iv": 0.5838,
+     "gamma": 0.0004,
+     "theta": -1.2694,
+     "vega": 0.3017
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "1301298872",
+    "price": "768462973",
+    "expiry": "1789718400",
+    "nonce": "59380998545873176017036931339743158016399685700606738312311203498244142206951",
+    "optionType": 1,
+    "strikes": [
+     "220000000000"
+    ],
+    "strikePrice": "220000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1789718400"
+   },
+   "signature": "0x431792e345cd35002bb634ae63f6a2c3e501e0df8351fec9df1bd3dec6d50ac77017340a7fd046a95bf752f7d0788e4350e42074609f6ef57b9b6afdbc498f051c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA",
+    "strikes": [
+     "220000000000"
+    ],
+    "isCall": false,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x000000000000000000000000d4a0e0b9149bcee3c920d2e00b5de09138fd8bb7",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0837,
+     "iv": 0.5331,
+     "gamma": 0.0006,
+     "theta": -1.4511,
+     "vega": 0.7593
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "5003703461",
+    "expiry": "1788595200",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7850000000000"
+    ],
+    "strikePrice": "7850000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0x80a97e49483e05ab93bb231fdcc711d66eb51079849fba8739fd376ad187fb267ef15e2f35c77898abc41c66a6c4ed7b46c087d0a32559b0bf93c61116acb1091c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7850000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0501,
+     "iv": 0.3794,
+     "gamma": 0.0001,
+     "theta": -85.8977,
+     "vega": 4.2401
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "9150861401",
+    "expiry": "1788681600",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7850000000000"
+    ],
+    "strikePrice": "7850000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788681600"
+   },
+   "signature": "0xfb026aae257264edc028ab9cd5de11d2a3cfd4b3edeac22d6c53e4588514b40805518b4ad6a3bf0c2122c62aa9bc7ba3362f341869a4be29a8ae0a389fd0d22f1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7850000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0716,
+     "iv": 0.2972,
+     "gamma": 0.0001,
+     "theta": -61.887,
+     "vega": 8.0648
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "14418283770",
+    "expiry": "1788595200",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7950000000000"
+    ],
+    "strikePrice": "7950000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0x382526ea5dd74aa3d88ca8c56e7fcfca3435ca4b16f7e76aad08b3153da5e69245fd625559c0689e961bd5a0bb7141d823524066b13a6b2bb110929f4e7819ad1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7950000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1379,
+     "iv": 0.3422,
+     "gamma": 0.0002,
+     "theta": -165.1288,
+     "vega": 9.0369
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "23593044438",
+    "expiry": "1788681600",
+    "nonce": "79861457005557965791495769684941756422037222396955685854146794254151064052773",
+    "optionType": 1,
+    "strikes": [
+     "7950000000000"
+    ],
+    "strikePrice": "7950000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788681600"
+   },
+   "signature": "0x486bf4334758282f5a976afc20503aa46949f77f2c3b1abc4e988b9475c9e00c3ebcb329ca86d1d9a0e1f35278031e5f8a04e9395df9385e7922c28d969903ab1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "7950000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1734,
+     "iv": 0.2772,
+     "gamma": 0.0002,
+     "theta": -108.1956,
+     "vega": 15.1185
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "223567382",
+    "price": "4472924390",
+    "expiry": "1789113600",
+    "nonce": "27169704967401453983906055309729422057929368063747089933971109994989018777968",
+    "optionType": 1,
+    "strikes": [
+     "7400000000000"
+    ],
+    "strikePrice": "7400000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1789113600"
+   },
+   "signature": "0x453dce6786662bd25a6b0efce16225df9e46e3dd854fd9cd3161dc10ad041b1776f23603eefa612787451fc0dc3e5007f239e3376b3ec36ef093b584524acc491c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA",
+    "strikes": [
+     "7400000000000"
+    ],
+    "isCall": false,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x000000000000000000000000cbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0419,
+     "iv": 0.3872,
+     "gamma": 0,
+     "theta": -27.8921,
+     "vega": 9.9962
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "54670098",
+    "price": "18291534578",
+    "expiry": "1789718400",
+    "nonce": "27169704967401453983906055309729422057929368063747089933971109994989018777968",
+    "optionType": 1,
+    "strikes": [
+     "7400000000000"
+    ],
+    "strikePrice": "7400000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1789718400"
+   },
+   "signature": "0xafa161babe1bd9d539e2725ae0678e6dbda7f8260c099eb942690ac65b21c62b0129f9f4e048697bca881d65108fa78647cd6309d0e9e8cfae52de518763459d1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA",
+    "strikes": [
+     "7400000000000"
+    ],
+    "isCall": false,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x000000000000000000000000cbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.0995,
+     "iv": 0.3749,
+     "gamma": 0,
+     "theta": -37.2225,
+     "vega": 27.6997
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "30078976715",
+    "expiry": "1788595200",
+    "nonce": "10201067119052622730993612689324123011258195925005133818989471662840562054478",
+    "optionType": 0,
+    "strikes": [
+     "7950000000000",
+     "8000000000000",
+     "8100000000000",
+     "8150000000000"
+    ],
+    "strikePrice": "7950000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0x5297bba7b262d8126353078e432b8fba56a46042016bf234ccba743f382234eb23ca91dcb0a77f34b2434d1a960c7cc719e9742895b86761b1d4c0ac3c014c8b1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x9980ec85bc6fE07340adb36c76FA093bb6D4FcBc",
+    "strikes": [
+     "7950000000000",
+     "8000000000000",
+     "8100000000000",
+     "8150000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "26352806965",
+    "expiry": "1788681600",
+    "nonce": "10201067119052622730993612689324123011258195925005133818989471662840562054478",
+    "optionType": 0,
+    "strikes": [
+     "7950000000000",
+     "8000000000000",
+     "8100000000000",
+     "8150000000000"
+    ],
+    "strikePrice": "7950000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788681600"
+   },
+   "signature": "0x2c50e48eaa05424d3586ffc3e2ec42fe6fa14229cbbbeab23c8a856d273c4ccf221e777ec51e879deeb547ab405dc755fe40f6d15dfe9ee51df842a3086e4bcd1c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0x9980ec85bc6fE07340adb36c76FA093bb6D4FcBc",
+    "strikes": [
+     "7950000000000",
+     "8000000000000",
+     "8100000000000",
+     "8150000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "6248883085",
+    "expiry": "1788595200",
+    "nonce": "90573842309754008326127546163963535000170703129140024092704364723875612600774",
+    "optionType": 0,
+    "strikes": [
+     "8500000000000",
+     "8600000000000"
+    ],
+    "strikePrice": "8500000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0x8afbb394d19702e628d5e39d5f6c3d611f53a155ad122c27e5f6c9e31524ed2068430d8322bfa7148ce5afe4313db0a2e2fc283c72acb61e3bd5357e634e82c51b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0xfaeD63f7040E65b79cF0Ae29706fDc423eE249A9",
+    "strikes": [
+     "8500000000000",
+     "8600000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "36451818000",
+    "expiry": "1790323200",
+    "nonce": "85533636194309773126137313176228976549171116632848395957830214723547152826469",
+    "optionType": 0,
+    "strikes": [
+     "8500000000000",
+     "8600000000000"
+    ],
+    "strikePrice": "8500000000000",
+    "collateralToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1790323200"
+   },
+   "signature": "0x39605535f3a62ecb70607c1b0dc0ec0f0df7a8b8268edee932a90e64867663ed2e86a9b97486a769194cf1d361c3644512ecf320bb0f2cb1b03a859d16a794c91c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0xfaeD63f7040E65b79cF0Ae29706fDc423eE249A9",
+    "strikes": [
+     "8500000000000",
+     "8600000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "7290363599",
+    "expiry": "1788595200",
+    "nonce": "72959838272946846547991983193497145306577322444390693643301826085454964654548",
+    "optionType": 0,
+    "strikes": [
+     "8500000000000",
+     "8600000000000",
+     "8700000000000"
+    ],
+    "strikePrice": "8500000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+    "deadline": "1788595200"
+   },
+   "signature": "0xa1760728bf27ddb8dd317045be50febc5392ecdcc581d07a524a49288dfe9ab74ee0369e0f2ea40807e9f1aa511e1862e5f5499a9aea1e86edf6a7549fac22441c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+    "implementation": "0xa1d5f6b16A2e7f298F8d2cDF78F7779B4A20C4C2",
+    "strikes": [
+     "8500000000000",
+     "8600000000000",
+     "8700000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "1797172674",
+    "expiry": "1788595200",
+    "nonce": "73662291220110858334234689756063707424392030811417335341270103963605244169707",
+    "optionType": 0,
+    "strikes": [
+     "255000000000"
+    ],
+    "strikePrice": "255000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0x7ddcf6b83deb5367c17f828b310f075964ac38b8b967f12dd01f33ad693b86de2fd0e6ff2e87f068a82b0c9ff37d3fcace1db611f30d7f576e8034202c5099e21c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x051791df68223AE173Fade5217C48875e36eef61",
+    "strikes": [
+     "255000000000"
+    ],
+    "isCall": true,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.3407,
+     "iv": 0.5114,
+     "gamma": 0.0056,
+     "theta": -12.7905,
+     "vega": 0.4684
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "3962137811077345000",
+    "price": "123547",
+    "expiry": "1789113600",
+    "nonce": "106327114983609948510499818643137040248837157256654233269189111948971172037811",
+    "optionType": 0,
+    "strikes": [
+     "290000000000"
+    ],
+    "strikePrice": "290000000000",
+    "collateralToken": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1789113600"
+   },
+   "signature": "0x72d74d40fa91d4933864b908be70dfb2ebcdd8b93d79cd28421555bb68454bd748c2b25e2dd4046c83537271b0fc50dec3d13afccedbec54df00a69aacffd3a81b",
+   "availableAmount": "3962137811077344892",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x8c56100caE246f7daa4BC1EC4d1477d71178c563",
+    "strikes": [
+     "290000000000"
+    ],
+    "isCall": true,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x0000000000000000000000004e65fe4dba92790696d040ac24aa414708f5c0ab",
+    "maxCollateralUsable": "3962137811077344892",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.0509,
+     "iv": 0.6007,
+     "gamma": 0.0005,
+     "theta": -1.5743,
+     "vega": 0.3637
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": false,
+    "numContracts": "3958436417615042000",
+    "price": "462112",
+    "expiry": "1789718400",
+    "nonce": "80598253709594361488595473206060498689233920419831734088802881728823207053639",
+    "optionType": 0,
+    "strikes": [
+     "290000000000"
+    ],
+    "strikePrice": "290000000000",
+    "collateralToken": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1789718400"
+   },
+   "signature": "0x8b6455801598e6e99b1087de6020f4db170028dad3ec88c6eb71dfd65030e7897c2490e62be83398c392fde60f51887fc2c5d80ddfe3d869a6b2f1183b92a2061b",
+   "availableAmount": "3958436417615042058",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x8c56100caE246f7daa4BC1EC4d1477d71178c563",
+    "strikes": [
+     "290000000000"
+    ],
+    "isCall": true,
+    "isLong": true,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x0000000000000000000000004e65fe4dba92790696d040ac24aa414708f5c0ab",
+    "maxCollateralUsable": "3958436417615042058",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": 0.119,
+     "iv": 0.5719,
+     "gamma": 0.0007,
+     "theta": -2.0121,
+     "vega": 0.9815
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "633810187",
+    "expiry": "1788595200",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "246000000000"
+    ],
+    "strikePrice": "246000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0x9996c47df0ad2a5b89638b6bb535ac278b4ffb5252a0262302362da9beebd21b212e8934e729c340dda8107529c8481d441e44fa9220205aef4e071aa94ac5fd1b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "246000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1501,
+     "iv": 0.4815,
+     "gamma": 0.0038,
+     "theta": -7.6619,
+     "vega": 0.298
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "1006059696",
+    "expiry": "1788681600",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "246000000000"
+    ],
+    "strikePrice": "246000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788681600"
+   },
+   "signature": "0x8e9383ead1a8f9f34ae3d669cc6dda85a0b5f66d985b72301cb1acbcb21041221b4a51313b01c378ee29f44b333254838b3db7d0193f75169921ca22cc2647f91c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "246000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.1852,
+     "iv": 0.3913,
+     "gamma": 0.0037,
+     "theta": -4.9582,
+     "vega": 0.4907
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "1063434019",
+    "expiry": "1788595200",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "248000000000"
+    ],
+    "strikePrice": "248000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788595200"
+   },
+   "signature": "0xdfa1ed5dedcb2fa7cff47a70b74da19e1edbd5fd37f6e2e2a8b65e8425da6e455681c727b6bc6498b4a0f4dd6808bf623c6aacbc2b19158446ba557468232d241c",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "248000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.2345,
+     "iv": 0.4676,
+     "gamma": 0.0051,
+     "theta": -9.7898,
+     "vega": 0.3921
+    }
+   }
+  },
+  {
+   "order": {
+    "maker": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+    "taker": "0x0000000000000000000000000000000000000000",
+    "option": "",
+    "isBuyer": true,
+    "numContracts": "0",
+    "price": "1544766358",
+    "expiry": "1788681600",
+    "nonce": "14477029754889591871046981662660748229856230830216428605721951398619120466227",
+    "optionType": 1,
+    "strikes": [
+     "248000000000"
+    ],
+    "strikePrice": "248000000000",
+    "collateralToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "underlyingToken": "0x4200000000000000000000000000000000000006",
+    "deadline": "1788681600"
+   },
+   "signature": "0x547ca9cba8470ded0934d0c628486745fb8bb84b75de31c4a571a0f80724d13447595bec4e45c44cd8cc9aba490090e8461f26c660e3d2d8e07f73708ca49b711b",
+   "availableAmount": "10000000000",
+   "makerAddress": "0xEcda1D002FBC55F2Fd3386bB4B9B95F859f3C39E",
+   "rawApiData": {
+    "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "priceFeed": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "implementation": "0x7355EB92dfb0503DB558a70c10843618932ab290",
+    "strikes": [
+     "248000000000"
+    ],
+    "isCall": false,
+    "isLong": false,
+    "orderExpiryTimestamp": 1788514414,
+    "extraOptionData": "0x",
+    "maxCollateralUsable": "10000000000",
+    "optionBookAddress": "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
+    "greeks": {
+     "delta": -0.2665,
+     "iv": 0.3836,
+     "gamma": 0.0047,
+     "theta": -5.9767,
+     "vega": 0.6035
+    }
+   }
+  }
+ ],
+ "prices": {
+  "ETH": 2522.13,
+  "BTC": 81004.04,
+  "SOL": 104.0853111,
+  "XRP": 1.4517,
+  "BNB": 718.17701211,
+  "AVAX": 7.498
+ },
+ "chainConfig": {
+  "priceFeeds": {
+   "ETH": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+   "BTC": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F",
+   "SOL": "0x975043adBb80fc32276CbF9Bbcfd4A601a12462D",
+   "DOGE": "0x8422f3d3CAFf15Ca682939310d6A5e619AE08e57",
+   "XRP": "0x9f0C1dD78C4CBdF5b9cf923a549A201EdC676D34",
+   "BNB": "0x4b7836916781CAAfbb7Bd1E5FDd20ED544B453b1",
+   "PAXG": "0x5213eBB69743b85644dbB6E25cdF994aFBb8cF31",
+   "AVAX": "0xE70f2D34Fd04046aaEC26a198A35dD8F2dF5cd92",
+   "ETH/USD": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+   "BTC/USD": "0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F"
+  },
+  "contracts": {
+   "optionBook": "0x1bDff855d6811728acaDC00989e79143a2bdfDed"
+  },
+  "tokens": {
+   "USDC": {
+    "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "symbol": "USDC",
+    "decimals": 6
+   },
+   "WETH": {
+    "address": "0x4200000000000000000000000000000000000006",
+    "symbol": "WETH",
+    "decimals": 18
+   },
+   "cbBTC": {
+    "address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+    "symbol": "cbBTC",
+    "decimals": 8
+   },
+   "aBasWETH": {
+    "address": "0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7",
+    "symbol": "aBasWETH",
+    "decimals": 18
+   },
+   "aBascbBTC": {
+    "address": "0xBdb9300b7CDE636d9cD4AFF00f6F009fFBBc8EE6",
+    "symbol": "aBascbBTC",
+    "decimals": 8
+   },
+   "aBasUSDC": {
+    "address": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "symbol": "aBasUSDC",
+    "decimals": 6
+   },
+   "cbDOGE": {
+    "address": "0x73c7A9C372F31c1b1C7f8E5A7D12B8735c817C79",
+    "symbol": "cbDOGE",
+    "decimals": 8
+   },
+   "cbXRP": {
+    "address": "0x7B2Cd9EA5566c345C9cdbcF58f5E211a0dB47444",
+    "symbol": "cbXRP",
+    "decimals": 6
+   }
+  }
+ }
+}

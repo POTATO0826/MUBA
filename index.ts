@@ -1,5 +1,6 @@
 import index from "./src/index.html";
 import { createNewsService } from "./src/server/news.ts";
+import { createMarketService } from "./src/server/thetanuts.ts";
 
 /**
  * Bun serves the app directly from `index.html`: it walks the tags, bundles
@@ -14,6 +15,17 @@ import { createNewsService } from "./src/server/news.ts";
  * would defeat both and hammer the feeds.
  */
 const news = createNewsService();
+
+/**
+ * One market service for the process, for the same reason: its 15s TTL and its
+ * in-flight dedupe are what keep a lobby full of pollers down to one read of
+ * the Base RPC, which throttles. A per-request instance would cache nothing.
+ *
+ * Constructing it does not open a socket — the SDK client is built lazily on
+ * the first read — so a process with `THETADUEL_MARKET=off` never touches the
+ * chain at all.
+ */
+const market = createMarketService();
 
 /**
  * The optional media: the room's waiting music and the two button clips. They
@@ -57,6 +69,16 @@ const server = Bun.serve({
     // below. `handle` never throws and always answers 200 with a typed
     // envelope — a dead feed degrades the wire, it does not fail the request.
     "/api/news": (req: Request) => news.handle(new URL(req.url)),
+
+    /**
+     * The live Base option book, same contract as `/api/news`: always 200,
+     * always a typed envelope, `ok` is the client's only decision.
+     *
+     * `{ ok: false, reason: "disabled" }` is what `THETADUEL_MARKET=off`
+     * produces — the kill switch is read per request inside the service, so an
+     * operator flipping it does not have to restart the process.
+     */
+    "/api/market": () => market.handle(),
 
     /**
      * The WalletConnect project id, read at boot by `src/wallet/config.ts`.

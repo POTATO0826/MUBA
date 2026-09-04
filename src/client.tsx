@@ -1,8 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
-import { mockMarketSource } from "./data/market.ts";
 import { liveNewsSource } from "./data/news.ts";
+import { LiveMarket } from "./data/thetanuts.tsx";
 import { WalletBoundary } from "./wallet/boundary.tsx";
 
 const host = document.getElementById("root");
@@ -15,7 +15,21 @@ createRoot(host).render(
         fetch takes; `styles.css` paints `body` `#09090b`, so that frame is the
         page background rather than a white flash. */}
     <WalletBoundary>
-      {(wallet) => <App source={mockMarketSource} newsSource={liveNewsSource} wallet={wallet} />}
+      {(wallet) => (
+        // Inside the wallet boundary, not outside: the wallet decides whether
+        // the page renders at all, the book only decides what the numbers say.
+        // A market read that never answers must not hold up the connect button.
+        <LiveMarket>
+          {(market) => (
+            <App
+              source={market.source}
+              newsSource={liveNewsSource}
+              wallet={wallet}
+              marketError={market.error}
+            />
+          )}
+        </LiveMarket>
+      )}
     </WalletBoundary>
   </StrictMode>,
 );

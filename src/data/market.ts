@@ -3,17 +3,57 @@ import type { OrderRow, PricingRow } from "../types.ts";
 /**
  * Everything the UI needs from a market venue, behind one interface.
  *
- * The prototype ships `mockMarketSource` — static fixtures, no network. Wiring
- * Thetanuts in later means implementing this interface over
- * `client.mmPricing.getPricingArray` and `client.api.fetchOrders` and swapping
- * the value passed to `<App source={…} />`; no view changes.
+ * The prototype ships `mockMarketSource` — static fixtures, no network. The
+ * live implementation is `src/data/thetanuts.tsx`, built over `/api/market`;
+ * swapping the value passed to `<App source={…} />` is the whole wiring, and no
+ * view changed to accept it.
  */
+
+/**
+ * Where a source's numbers came from and how fresh they are.
+ *
+ * This exists so the footer can stop guessing from `id`. Three states, and the
+ * middle one is the interesting one:
+ *   - `mock`  — the checked-in fixtures. Honest, and labelled as such.
+ *   - `live`  — a snapshot the server built inside its TTL.
+ *   - `stale` — the last good live snapshot, still on screen because the
+ *     refresh failed. The numbers are real, just old; `fetchedAt` says how old.
+ */
+export interface MarketMeta {
+  /** False when the live read failed and nothing good was ever cached. */
+  ok: boolean;
+  source: "mock" | "live" | "stale";
+  /** When the underlying snapshot was built, ms. `0` for the mock, which has
+   *  no age — a fixture is not "from 3 seconds ago". */
+  fetchedAt: number;
+  /** Why, when there is a why. */
+  note?: string;
+}
+
 export interface MarketSource {
   readonly id: string;
+  /**
+   * Provenance. Read-only and per-source: a new source object is built each
+   * time the book refreshes, so this never goes stale relative to the rows.
+   */
+  readonly meta: MarketMeta;
   /** Assets that have an options book. */
   underlyings(): readonly string[];
   pricing(underlying: string): readonly PricingRow[];
   orders(): readonly OrderRow[];
+  /**
+   * Live USD spot for an asset, or `null`.
+   *
+   * `null` is the normal case, not an error: Thetanuts publishes spot for 7
+   * assets and the board carries 18. Callers annotate when they get a number
+   * and stay silent when they do not — live sits beside seeded, never replaces
+   * it.
+   *
+   * **Synchronous, like every other accessor here.** The network resolves
+   * before a source is constructed, so no view ever awaits and no view learns
+   * that the data arrived late. That is the whole point of the seam.
+   */
+  spot(underlying: string): number | null;
 }
 
 const PRICING: Record<string, readonly PricingRow[]> = {
@@ -50,7 +90,13 @@ const ORDERS: readonly OrderRow[] = [
 
 export const mockMarketSource: MarketSource = {
   id: "mock",
+  // `fetchedAt: 0` because a fixture has no age. The footer prints an age chip
+  // only for live snapshots, so the mock strip reads exactly as it always has.
+  meta: { ok: true, source: "mock", fetchedAt: 0 },
   underlyings: () => ["ETH", "BTC"],
   pricing: (underlying) => PRICING[underlying] ?? [],
   orders: () => ORDERS,
+  // The mock has no spot at all — inventing one here is how a seeded number
+  // starts passing for a live one. Every caller already handles `null`.
+  spot: () => null,
 };

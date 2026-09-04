@@ -21,7 +21,8 @@
     "@happy-dom/global-registrator": "^20.13.2",
     "@types/bun": "latest",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7"
+    "@types/react-dom": "^19.2.7",
+    "solc": "0.8.26"
   },
   "peerDependencies": {
     "typescript": "^5"

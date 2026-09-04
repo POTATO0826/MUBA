@@ -106,6 +106,8 @@ export interface LobbyDef {
 }
 
 export interface PricingRow {
+  /** The colour/label bucket `/desk` renders. Three members on purpose — the
+   *  finer reading lives in `structure`. */
   type: "CALL" | "PUT" | "RANGER";
   strike: string;
   expiry: string;
@@ -116,6 +118,29 @@ export interface PricingRow {
   /** Depth bar width, 0–100. */
   depth: number;
   size: string;
+  /**
+   * Signed distance from the median IV of this row's (underlying, expiry,
+   * call/put) group — `+0.08` is 8% rich to its own smile.
+   *
+   * Live rows only, and only when the order carried greeks: the order book
+   * publishes no fair value, so a quote's distance from its neighbours is the
+   * only honest mispricing signal available. `undefined` means "unscoreable",
+   * which is a real state (`rawApiData.greeks` is undocumented and may be
+   * absent) and is what `playableRows` filters on. Never set on the mock.
+   */
+  edge?: number;
+  /** `(bid + ask) / 2`, 4dp, only when both sides are quoted. A one-sided
+   *  level has no midpoint, so this is `undefined` rather than a guess. */
+  mid?: string;
+  /**
+   * What the strikes actually describe: `CALL | PUT | SPREAD | FLY | CONDOR |
+   * RANGER`. Set by `classify()` in `src/server/thetanuts.ts`.
+   *
+   * Separate from `type` because a four-strike order is a condor *or* a ranger
+   * and the SDK's payout math prices it as a condor unless told otherwise —
+   * this is the field that will carry that decision to `isRanger`.
+   */
+  structure?: string;
 }
 
 export interface OrderRow {
