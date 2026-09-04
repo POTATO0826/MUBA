@@ -35,26 +35,15 @@
   P4 spot annotations + book-delta advisory (src/data/spot.ts), P5a escrow
   (NOT deployed), P5b attest referee with EIP-191-signed locks.
   README's "Thetanuts — what is actually live" table is current.
-- IN FLIGHT at handoff time (two Opus builders; if they died mid-work, see
-  the mid-flight section at the bottom — their briefs are summarized here):
-  1) WALLET HOVER, ROUND 4 (CAT MASCOT) — src/ui/WalletPicker.tsx +
-     src/styles.css + optionally new src/components/CatMascot.tsx ONLY.
-     Already SHIPPED (6368c9d): sticker launch + brand colours (rdns map
-     for 6 majors, canvas dominant-colour fallback, all failure→neutral).
-     IN FLIGHT: the sticker's face becomes the owner's CAT mascot instead
-     of the wallet icon — asset at repo root "Cat Icon.zip" (SVG inside:
-     cream #f7f7f4 head paths + #050608 features; clean the metadata bloat,
-     inline as JSX, tint cream→wallet brand); tile more pronounced (lighter
-     surface, real shadow, bigger if the 28-check geometry harness in the
-     builder's history allows — never under the ×, never clipped); the
-     hovered ROW reads clearly brand-coloured (~18-25% mix, the reference's
-     black→green CTA move — owner explicitly upgraded this from the subtle
-     10% wash); optional one-time wink after launch. Owner steers to date:
-     NOT an exact copy of the Daniluk reference — priorities are cat
-     pop-up + wallet colour driving cat AND buttons, animated; lime
-     accents rejected; sticker-under-× rejected; sticker-covering-chip
-     ACCEPTED (the row carries the colour). Reference gifs:
-     chrome-capture-2026-09-04.gif + " (1).gif" at repo root.
+- WALLET HOVER: DONE and SHIPPED through 2f72112 — sticker launch, brand
+  colours (rdns map + canvas sampling, failures→neutral), and the owner's
+  CAT mascot on an 88px light tile (src/components/CatMascot.tsx), row at
+  a 22% brand wash, one wink. Owner-approved steers recorded in the
+  commit history (6bd54aa→6368c9d→2f72112); accepted deviations: grey cat
+  for colourless wallets, sticker may cover the INSTALLED chip. Reference
+  gifs at repo root.
+- IN FLIGHT at handoff time (ONE Opus builder; if it died mid-work, see
+  the mid-flight section at the bottom — the brief is summarized here):
   2) CHROME-CANDLES REWORK — src/components/ChromeCandles.tsx +
      src/ui/LobbyCards.tsx ONLY (styles.css belongs to builder 1). v1
      (committed) was rejected by the owner: capsules too huge, sheens are
