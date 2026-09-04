@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { LOBBIES, bookFor, bookOf, canPlay, opponentOf, stakePointsFor } from "../src/data/lobbies.ts";
 import { marketOf } from "../src/data/sectors.ts";
 import { nextTier, tierFor } from "../src/data/rewards.ts";
-import { UNIVERSE } from "../src/data/universe.ts";
+import { LIVE_BOARD } from "../src/data/universe.ts";
 import {
   CONSTRAINTS,
   MIN_WINDOW_STRIKES,
@@ -90,10 +90,14 @@ describe("spinCase", () => {
 });
 
 describe("lobbies and their books", () => {
-  test("each book is the board filtered by market", () => {
-    expect(bookFor("STOCK")).toEqual(UNIVERSE.filter((u) => u.mkt === "STOCK").map((u) => u.sym));
-    expect(bookFor("CRYPTO")).toEqual(UNIVERSE.filter((u) => u.mkt === "CRYPTO").map((u) => u.sym));
-    expect(bookFor("MIXED")).toHaveLength(UNIVERSE.length);
+  test("each book is the LIVE board filtered by market", () => {
+    // The board these filter is `LIVE_BOARD` now, not `UNIVERSE` — plan 6 §B3.
+    // There is no equity with a Base price feed, so the STOCK book is empty and
+    // the CRYPTO book is the whole board.
+    expect(bookFor("STOCK")).toEqual([]);
+    expect(bookFor("CRYPTO")).toEqual(LIVE_BOARD.map((u) => u.sym));
+    expect(bookFor("MIXED")).toHaveLength(LIVE_BOARD.length);
+    expect(bookFor("MIXED")).not.toContain("NVDA");
   });
 
   test("every lobby can fill its legs from its own sector book, and its id is unique", () => {
@@ -129,13 +133,17 @@ describe("lobbies and their books", () => {
     }
   });
 
-  test("kz-semis keeps the full stock book — its dealt tickers are pinned", () => {
-    // test/app.test.tsx and test/determinism.test.ts derive kz-semis' expected
-    // tickers from `bookFor("STOCK")` at seed 424242, and `spinCase` indexes
-    // into the book, so narrowing this fixture would silently re-deal them.
+  test("kz-semis deals the MAJORS book — its dealt tickers are pinned", () => {
+    // RE-PINNED at plan 6 §B3. This lock used to read
+    // `bookOf(kz) === bookFor("STOCK")` and `["TSLA","AMD","META"]`, which was
+    // a true statement about a book that no longer exists: the nine equities
+    // were fiction and are offered nowhere. The lock's PURPOSE survives intact
+    // — `spinCase` indexes into the book, so narrowing this fixture would still
+    // silently re-deal every seeded assertion downstream — and it is restated
+    // against the book the lobby actually has.
     const kz = LOBBIES.find((l) => l.id === "kz-semis")!;
-    expect(bookOf(kz)).toEqual([...bookFor("STOCK")]);
-    expect(spinCase(bookOf(kz), kz.legs, 424242).syms).toEqual(["TSLA", "AMD", "META"]);
+    expect(bookOf(kz)).toEqual(["ETH", "BTC", "SOL", "BNB", "AVAX", "XRP"]);
+    expect(spinCase(bookOf(kz), kz.legs, 424242).syms).toEqual(["SOL", "XRP", "BNB"]);
   });
 
   test("on someone else's lobby the host is the opponent; on yours the joiner is", () => {

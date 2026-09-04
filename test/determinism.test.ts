@@ -30,6 +30,8 @@
 import { describe, expect, test } from "bun:test";
 import { join, relative } from "node:path";
 import { bookFor } from "../src/data/lobbies.ts";
+import { bookForSectors } from "../src/data/sectors.ts";
+import { LIVE_SYMS } from "../src/data/universe.ts";
 import { type SliceBook, spinCase, spinSlice } from "../src/engine/spin.ts";
 import { TAPE_LEN, pctAt, series } from "../src/engine/tape.ts";
 import type { PricingRow } from "../src/types.ts";
@@ -211,37 +213,73 @@ describe("engine lock — the seed-replay contract", () => {
   // compatibility: the same URL now deals different legs than it did before.
   // Every shared `?seed=N` link, every recorded ledger row and both players in
   // a shared room depend on these staying byte-identical.
+  //
+  // ── RE-PINNED, ONCE, DELIBERATELY, AT PLAN 6 §B3 ───────────────────────────
+  //
+  // `bookFor` and `bookForSectors` filtered `data/universe.ts`'s eighteen
+  // invented rows when these numbers were first frozen. Nine of them were
+  // equities and Thetanuts has never quoted one, so the locks below were
+  // pinning replay compatibility for rounds that could not be filled. Retiring
+  // that board necessarily re-deals every seed that indexed into it — there is
+  // no version of "the equities are gone" in which `spinCase(bookFor('STOCK'),
+  // 3, 424242)` still answers TSLA/AMD/META.
+  //
+  // So the values moved and the CONTRACT did not: every lock is restated
+  // against the live board, read off the running code the same way, and from
+  // here it is frozen again. `series('NVDA', …)` below is untouched, because
+  // the tape still walks the fixture and those prints never depended on which
+  // board was on offer.
+  //
+  // What this DOES break, knowingly: a `?seed=N` link shared before this change
+  // deals different legs after it. That link pointed at a lobby dealing NVDA on
+  // a market that does not exist, so there was nothing on the other end of it
+  // worth preserving.
 
   test("the books themselves are pinned (order matters — spinCase indexes into them)", () => {
-    // A-k3 moves bookFor from data/lobbies.ts into data/sectors.ts and
-    // re-exports it verbatim; its behaviour must not change. The syms locks
-    // below are meaningless without this.
-    expect(bookFor("STOCK")).toEqual(["NVDA", "AAPL", "TSLA", "XOM", "JPM", "AMD", "META", "GLD", "COIN"]);
-    expect(bookFor("CRYPTO")).toEqual(["BTC", "ETH", "SOL", "ARB", "LINK", "UNI", "AAVE", "DOGE", "PEPE"]);
+    // The syms locks below are meaningless without this.
+    expect(bookFor("CRYPTO")).toEqual(["ETH", "BTC", "SOL", "BNB", "AVAX", "DOGE", "XRP"]);
+    expect(bookForSectors(["MAJORS"])).toEqual(["ETH", "BTC", "SOL", "BNB", "AVAX", "XRP"]);
+    expect(bookForSectors(["MEME"])).toEqual(["DOGE"]);
+    // There is no equity with a Base price feed, so this book is empty rather
+    // than fictional — and `spinCase` on it would (correctly) refuse.
+    expect(bookFor("STOCK")).toEqual([]);
   });
 
-  test("spinCase(bookFor('STOCK'), 3, 424242) deals TSLA / AMD / META", () => {
-    const r = spinCase(bookFor("STOCK"), 3, 424242);
-    expect(r.syms).toEqual(["TSLA", "AMD", "META"]);
+  test("spinCase(bookForSectors(['MAJORS']), 3, 424242) deals SOL / XRP / BNB", () => {
+    // Was: `bookFor('STOCK')` ⇒ TSLA / AMD / META.
+    const r = spinCase(bookForSectors(["MAJORS"]), 3, 424242);
+    expect(r.syms).toEqual(["SOL", "XRP", "BNB"]);
     expect(r.seed).toBe(424242);
     expect(r.rejected).toBe(0);
     expect(r.plans.length).toBe(3);
   });
 
-  test("spinCase(bookFor('CRYPTO'), 3, 424242) deals SOL / UNI / AAVE", () => {
+  test("spinCase(bookFor('CRYPTO'), 3, 424242) deals ETH / BNB / SOL", () => {
     // Same seed, different book — the book is part of the contract, not just
-    // the seed, which is why the sector work in Wave 3 must not perturb it.
+    // the seed. Was: SOL / UNI / AAVE, off the nine-name seeded crypto list.
     const r = spinCase(bookFor("CRYPTO"), 3, 424242);
-    expect(r.syms).toEqual(["SOL", "UNI", "AAVE"]);
+    expect(r.syms).toEqual(["ETH", "BNB", "SOL"]);
     expect(r.rejected).toBe(0);
   });
 
-  test("spinCase(bookFor('CRYPTO'), 2, 90210) deals LINK / AAVE", () => {
-    expect(spinCase(bookFor("CRYPTO"), 2, 90210).syms).toEqual(["LINK", "AAVE"]);
+  test("spinCase(bookFor('CRYPTO'), 2, 90210) deals ETH / SOL", () => {
+    // Was: LINK / AAVE.
+    expect(spinCase(bookFor("CRYPTO"), 2, 90210).syms).toEqual(["ETH", "SOL"]);
   });
 
   test("replay is idempotent — a second call on the same inputs is deep-equal", () => {
-    expect(spinCase(bookFor("STOCK"), 3, 424242)).toEqual(spinCase(bookFor("STOCK"), 3, 424242));
+    expect(spinCase(bookFor("CRYPTO"), 3, 424242)).toEqual(spinCase(bookFor("CRYPTO"), 3, 424242));
+  });
+
+  test("no lock in this file can ever deal a name the protocol has no feed for", () => {
+    // The guard that keeps the fiction from creeping back in through a pinned
+    // number: whatever the seeds decide, the pool they decide it from is the
+    // live board.
+    for (const seed of [424242, 90210, 1, 7, 999999]) {
+      for (const sym of spinCase(bookFor("CRYPTO"), 3, seed).syms) {
+        expect(LIVE_SYMS).toContain(sym);
+      }
+    }
   });
 });
 
@@ -430,15 +468,17 @@ describe("the injected seam — same seed, same slice; same seed, different book
     expect(sawMovedStrikes).toBe(SEEDS.length);
   });
 
-  test("with no book at all the reel deals nothing — the seeded board still plays", () => {
+  test("with no book at all the reel deals nothing — the seeded tape still plays", () => {
     // Offline, or a dead /api/market. A null arena is a true statement; an
     // invented one would be the house dealing a market that is not there. The
-    // seeded path is untouched by any of this and keeps its own locks above.
+    // seeded TAPE path is untouched by any of this and keeps its own locks
+    // above — the reel still deals a live underlying, and `engine/tape.ts`
+    // still draws it a chart with no network.
     for (const seed of SEEDS) {
       expect(spinSlice({}, ["ETH", "BTC"], seed)).toBeNull();
       expect(spinSlice(bookA(), [], seed)).toBeNull();
     }
-    expect(spinCase(bookFor("STOCK"), 3, 424242).syms).toEqual(["TSLA", "AMD", "META"]);
+    expect(spinCase(bookForSectors(["MAJORS"]), 3, 424242).syms).toEqual(["SOL", "XRP", "BNB"]);
   });
 });
 

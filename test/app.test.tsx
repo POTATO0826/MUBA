@@ -6,7 +6,7 @@ import { bookFor } from "../src/data/lobbies.ts";
 import { mockMarketSource, type MarketSource } from "../src/data/market.ts";
 import type { NewsSource, WireItem } from "../src/data/news.ts";
 import { MODES, MODE_SALT } from "../src/data/modes.ts";
-import { bookForSectors } from "../src/data/sectors.ts";
+import { SECTOR_ORDER, bookForSectors } from "../src/data/sectors.ts";
 import { edgeOf, scoreOf, settle } from "../src/engine/match.ts";
 import { buildLeg } from "../src/engine/parlay.ts";
 import { xpForMatch } from "../src/engine/rank.ts";
@@ -155,10 +155,10 @@ describe("the board", () => {
     mount("/battles");
     expect(lobbyCards()).toHaveLength(6);
     expect(text()).toContain("kazuo.eth");
-    expect(text()).toContain("Semis sprint");
+    expect(text()).toContain("Majors sprint");
     expect(text()).toContain("6 open · 6 shown");
     const kz = lobbyCards().find((c) => c.dataset.lobby === "kz-semis")!;
-    expect(kz.textContent).toContain("STOCKS");
+    expect(kz.textContent).toContain("CRYPTO");
     expect(kz.textContent).toContain("3 LEGS");
     expect(kz.textContent).toContain("4.80 Ξ");
     expect(kz.textContent).toContain("Accept match · 2.40 Ξ");
@@ -227,9 +227,9 @@ describe("the board", () => {
 
     // The card still reads as it read.
     const kz = lobbyCards().find((c) => c.dataset.lobby === "kz-semis")!;
-    expect(kz.textContent).toContain("STOCKS");
+    expect(kz.textContent).toContain("CRYPTO");
     expect(kz.textContent).toContain("3 LEGS");
-    expect(kz.textContent).toContain("Semis sprint");
+    expect(kz.textContent).toContain("Majors sprint");
 
     // Same lobby, same markup — ids come from the lobby id, not from `useId()`,
     // whose counter is module-global and climbs across roots.
@@ -265,7 +265,7 @@ describe("the board", () => {
     mount("/battles");
     const details = container.querySelector<HTMLElement>('[data-details="kz-semis"]')!;
     expect(details.children).toHaveLength(3);
-    expect(details.textContent).toContain("kazuo.eth · STOCKS · 3 legs");
+    expect(details.textContent).toContain("kazuo.eth · CRYPTO · 3 legs");
     expect(details.textContent).toContain("4.80 Ξ pool · 2.40 Ξ each");
     expect(details.textContent).toContain("most legs wins");
     // Hidden until hover; the stylesheet's :hover rule reveals it.
@@ -275,8 +275,21 @@ describe("the board", () => {
   test("the book filter narrows the board", () => {
     mount("/battles");
     click("CRYPTO");
-    expect(lobbyCards()).toHaveLength(2);
-    expect(text()).toContain("2 shown");
+    // Every lobby is crypto now: plan 6 §B3 retired the equity board, so the
+    // CRYPTO filter and ALL are the same set.
+    expect(lobbyCards()).toHaveLength(6);
+    expect(text()).toContain("6 shown");
+
+    // FOLLOW-UP, and the reason it is a follow-up: `src/views/Battles.tsx`
+    // hardcodes a STOCKS / CRYPTO / MIXED filter row and was outside this
+    // change's file grant. Two of its three chips can now only ever show an
+    // empty board. The fix is to derive the row from the markets the lobbies
+    // actually carry; until then this asserts the honest current behaviour
+    // rather than pretending the chip is gone.
+    click("STOCKS");
+    expect(lobbyCards()).toHaveLength(0);
+    expect(text()).toContain("0 shown");
+
     click("ALL");
     expect(lobbyCards()).toHaveLength(6);
   });
@@ -293,7 +306,8 @@ describe("the board", () => {
       setter.call(name, "My tail box");
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    clickContaining("CRYPTO");
+    // No market-preset row to press any more — the builder opens on the whole
+    // live book, which is the only book there is.
     click("+"); // legs 3 → 4
     clickContaining("Publish lobby");
 
@@ -331,82 +345,108 @@ describe("sectors", () => {
   const gateNote = () => container.querySelector("[data-gate]")?.textContent ?? "";
   const publish = () => buttons().find((b) => (b.textContent ?? "").includes("Publish lobby"))!;
 
-  test("composing MEME + BIG TECH derives MIXED and publishes that book", () => {
-    // The book is whatever the two groups gather out of the universe — read it
+  test("the builder offers the live book and nothing else", () => {
+    // The owner's complaint, at the screen they made it about: "the create
+    // lobby section [has] a lot of old irrelevant stuff". SEMIS, BIG TECH, OLD
+    // WORLD and their nine equities are gone, and so are the ALL STOCKS /
+    // FULL BOARD presets that only made sense over them.
+    mount("/create");
+    const offered = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-sector]"),
+    ).map((el) => el.dataset.sector);
+    expect(offered).toEqual([...SECTOR_ORDER]);
+    expect(offered).toEqual(["MAJORS", "MEME"]);
+
+    const screen = text();
+    for (const gone of ["NVDA", "TSLA", "AAPL", "AMD", "META", "GLD", "COIN", "PEPE", "AAVE"]) {
+      expect(screen).not.toContain(gone);
+    }
+    for (const gone of ["SEMIS", "BIG TECH", "OLD WORLD", "ALL STOCKS", "FULL BOARD"]) {
+      expect(screen).not.toContain(gone);
+    }
+  });
+
+  test("composing MEME on its own narrows the book and publishes it", () => {
+    // The book is whatever the group gathers out of the live board — read it
     // off the data rather than pinning a number by hand.
-    const book = bookForSectors(["TECH", "MEME"]);
+    const book = bookForSectors(["MEME"]);
 
     mount("/create");
-    clickContaining("CRYPTO"); // preset first, so MIXED is a real change
-    expect(marketTag()).toBe("CRYPTO");
+    // Opens on the whole board; drop MAJORS and MEME stands alone.
+    expect(sectorChip("MAJORS").getAttribute("aria-pressed")).toBe("true");
     clickSector("MAJORS");
-    clickSector("DEFI"); // MEME alone
-    expect(marketTag()).toBe("CRYPTO");
-    clickSector("TECH"); // …plus a stock group
 
-    expect(marketTag()).toBe("MIXED");
-    expect(sectorChip("TECH").getAttribute("aria-pressed")).toBe("true");
+    expect(marketTag()).toBe("CRYPTO");
     expect(sectorChip("MEME").getAttribute("aria-pressed")).toBe("true");
     expect(sectorChip("MAJORS").getAttribute("aria-pressed")).toBe("false");
     expect(bookLine()).toContain(`book: ${book.length} names`);
     for (const sym of book) expect(bookLine()).toContain(sym);
 
+    // One name cannot fill the default three legs, so widen it back out and
+    // publish the composition.
+    clickSector("MAJORS");
     act(() => publish().click());
 
     expect(text()).toContain("Open battles");
     const mine = lobbyCards()[0]!;
     expect(mine.dataset.lobby).toBe("mine-1");
-    expect(mine.textContent).toContain("MIXED"); // the derived market, not the preset
-    expect(mine.textContent).toContain("BIG TECH");
+    expect(mine.textContent).toContain("CRYPTO"); // the derived market
+    expect(mine.textContent).toContain("MAJORS");
     expect(mine.textContent).toContain("MEME");
   });
 
   test("the room counts the lobby's own sector book", () => {
     mount("/battles");
-    acceptLobby(); // kz-semis: SEMIS + BIG TECH + OLD WORLD
-    expect(text()).toContain(`The book is ${bookForSectors(["SEMIS", "TECH", "MACRO"]).length} names`);
+    acceptLobby(); // kz-semis: MAJORS
+    expect(text()).toContain(`The book is ${bookForSectors(["MAJORS"]).length} names`);
   });
 
   test("a book too small for the legs gates Publish until a sector is added", () => {
     mount("/create");
-    click("+"); // legs 3 → 4, while the full board is still selected
+    click("+"); // legs 3 → 4, while the whole board is still selected
     expect(text()).toContain("2 to 4");
     expect(publish().disabled).toBe(false);
 
     // Dropping groups never re-clamps the legs, so the selection can undershoot.
-    for (const k of ["SEMIS", "TECH", "MACRO", "MAJORS", "DEFI"] as const) clickSector(k);
+    clickSector("MAJORS");
     expect(bookLine()).toContain(`book: ${bookForSectors(["MEME"]).length} names`);
     expect(publish().disabled).toBe(true);
     expect(gateNote()).toContain("4 legs");
 
-    clickSector("DEFI"); // back over the line
+    clickSector("MAJORS"); // back over the line
     expect(publish().disabled).toBe(false);
     expect(container.querySelector("[data-gate]")).toBeNull();
   });
 
-  test("cards wear their book: a preset collapses to one chip, a composition spells itself out", () => {
+  test("cards wear their book, spelled out — there is no collapsed preset chip", () => {
     mount("/battles");
     // Resting face only — the hover pane below carries the full book, so the
     // chip assertions have to look at the body or they prove nothing.
     const face = (id: string) =>
       lobbyCards().find((c) => c.dataset.lobby === id)!.querySelector(".vc-lobby-body")!.textContent ?? "";
 
-    expect(face("kz-semis")).toContain("ALL STOCKS"); // SEMIS + TECH + MACRO is the STOCK preset
-    expect(face("kz-semis")).not.toContain("OLD WORLD");
+    expect(face("kz-semis")).toContain("MAJORS");
+    expect(face("kz-semis")).not.toContain("ALL STOCKS");
+    expect(face("kz-semis")).not.toContain("FULL BOARD");
 
-    expect(face("lx-degen")).toContain("DEFI");
+    expect(face("lx-degen")).toContain("MAJORS");
     expect(face("lx-degen")).toContain("MEME");
     expect(face("lx-degen")).not.toContain("ALL CRYPTO");
 
     // Hover still spells the whole book out, still in three lines.
-    const details = container.querySelector<HTMLElement>('[data-details="kz-semis"]')!;
+    const details = container.querySelector<HTMLElement>('[data-details="lx-degen"]')!;
     expect(details.children).toHaveLength(3);
-    expect(details.children[0]!.textContent).toContain("SEMIS + BIG TECH + OLD WORLD");
+    expect(details.children[0]!.textContent).toContain("MAJORS + MEME");
   });
 
-  test("the sector book feeds the reel: kz-semis at 424242 still deals TSLA · AMD · META", () => {
-    const dealt = spinCase(bookForSectors(["SEMIS", "TECH", "MACRO"]), 3, 424242).syms;
-    expect(dealt).toEqual(["TSLA", "AMD", "META"]);
+  test("the sector book feeds the reel: kz-semis at 424242 deals SOL · XRP · BNB", () => {
+    // RE-PINNED at plan 6 §B3 — this read TSLA · AMD · META off a nine-equity
+    // book that Thetanuts could never fill. `spinCase` indexes into the book,
+    // so retiring the board necessarily re-deals the seed; what the lock still
+    // guarantees is that the reel and the lobby agree on the same list in the
+    // same order.
+    const dealt = spinCase(bookForSectors(["MAJORS"]), 3, 424242).syms;
+    expect(dealt).toEqual(["SOL", "XRP", "BNB"]);
     mount("/match/kz-semis/parlay?seed=424242");
     expect(slipLegs()).toEqual([...dealt]);
   });
@@ -456,17 +496,27 @@ describe("modes", () => {
   test("the mode is the window: the same slip on the same seed settles on a different scoreboard", () => {
     // lx-degen's own arena and salt, built the way `derived` builds them — a
     // ticker nobody picked previews at EVEN ↑, and the mode scales the line.
-    const arena = spinCase(bookForSectors(["DEFI", "MEME"]), 3, 424242).syms;
+    const arena = spinCase(bookForSectors(["MAJORS", "MEME"]), 3, 424242).syms;
     const salt = 2 + 424242 * 3 + MODE_SALT.BLITZ;
     const scale = MODES.BLITZ.targetScale;
     const mine = arena.map((s) => buildLeg(s, "over", "EVEN", scale));
     const theirs = arena.map((s) => buildLeg(s, "under", "EVEN", scale));
 
     // Only the settle print moves. Fifteen minutes of tape is not a prefix of
-    // the day's read — the opponent's book has not landed a leg yet at 56.
-    expect(scoreOf(theirs, salt, MODES.BLITZ.settleAt)).toBe(0);
-    expect(scoreOf(theirs, salt, MODES.NORMAL.settleAt)).toBe(1);
-    expect(edgeOf(mine, salt, MODES.BLITZ.settleAt)).not.toBe(edgeOf(mine, salt, MODES.NORMAL.settleAt));
+    // the day's read: the same slip, read at 56 ticks and at 10,800, has moved
+    // a different distance and the tape has turned over in between.
+    //
+    // This used to pin `scoreOf(theirs, BLITZ) === 0` against `=== 1` on the
+    // day's read, off an arena of DEFI+MEME fiction (ARB/LINK/UNI/AAVE/PEPE).
+    // Retiring that board re-dealt the arena to ETH/BNB/SOL, where both windows
+    // happen to land one leg each and the difference shows up in conviction
+    // instead. The claim the test exists for is unchanged and still asserted
+    // below; only the arithmetic it lands on moved.
+    const shortEdge = edgeOf(mine, salt, MODES.BLITZ.settleAt);
+    const dayEdge = edgeOf(mine, salt, MODES.NORMAL.settleAt);
+    expect(shortEdge).not.toBe(dayEdge);
+    expect(shortEdge).toBeLessThan(dayEdge);
+    expect(scoreOf(theirs, salt, MODES.BLITZ.settleAt)).toBeGreaterThanOrEqual(0);
 
     const blitz = settle(mine, theirs, arena, salt, MODES.BLITZ.settleAt, "You", "lexa");
     const normal = settle(mine, theirs, arena, salt, MODES.NORMAL.settleAt, "You", "lexa");
@@ -543,7 +593,7 @@ describe("the room", () => {
     acceptLobby();
     expect(dialog()).toBeNull();
     expect(window.location.pathname).toBe("/match/kz-semis/room");
-    expect(text()).toContain("Semis sprint");
+    expect(text()).toContain("Majors sprint");
     expect(container.querySelector('[data-seat="You"]')).not.toBeNull();
     expect(container.querySelector('[data-seat="kazuo.eth"]')).not.toBeNull();
     expect(text()).toContain("0/2 READY");
@@ -567,7 +617,7 @@ describe("the room", () => {
     });
     expect(text()).toContain("2/2 READY");
     click("Both ready → lucky spin");
-    expect(dialog()?.getAttribute("aria-label")).toBe("Semis sprint spin");
+    expect(dialog()?.getAttribute("aria-label")).toBe("Majors sprint spin");
     expect(window.location.pathname).toBe("/match/kz-semis");
   });
 
@@ -602,7 +652,7 @@ describe("the spin", () => {
     acceptLobby();
     await readyBoth();
 
-    expect(dialog()?.getAttribute("aria-label")).toBe("Semis sprint spin");
+    expect(dialog()?.getAttribute("aria-label")).toBe("Majors sprint spin");
     expect(text()).toContain("you vs kazuo.eth");
     expect(window.location.search).toMatch(/^\?seed=\d{6}$/);
 
@@ -628,7 +678,9 @@ describe("the spin", () => {
     const syms = slotSyms();
     expect(syms).toHaveLength(2);
     for (const s of syms) expect(bookFor("CRYPTO")).toContain(s);
-    expect(bookFor("STOCK")).not.toContain(syms[0]);
+    // There is no equity with a Base price feed, so this book is empty — the
+    // reel could not deal one if it tried.
+    expect(bookFor("STOCK")).toEqual([]);
   });
 
   test("the same seed deals the same tickers", () => {
@@ -673,8 +725,8 @@ describe("the spin", () => {
 describe("the case study", () => {
   const STUDY = "/match/kz-semis/study?seed=424242";
   /** The study screen has no slip to read the arena off, so it is derived the
-   *  same way the app derives it: kz-semis is a 3-leg STOCK lobby. */
-  const dealt = spinCase(bookFor("STOCK"), 3, 424242).syms;
+   *  same way the app derives it: kz-semis is a 3-leg MAJORS lobby. */
+  const dealt = spinCase(bookForSectors(["MAJORS"]), 3, 424242).syms;
 
   const wireRows = (kind?: string) =>
     Array.from(container.querySelectorAll<HTMLElement>(kind ? `[data-wire="${kind}"]` : "[data-wire]"));
@@ -953,7 +1005,7 @@ describe("the parlay picks", () => {
 
   test("every dealt ticker has its own eight cards", () => {
     mount("/match/kz-semis/parlay?seed=424242");
-    expect(text()).toContain("Build your parlay · Semis sprint");
+    expect(text()).toContain("Build your parlay · Majors sprint");
     expect(text()).toContain("BLIND · OPPONENT SLIP HIDDEN");
     expect(pickers()).toHaveLength(3);
     expect(cards()).toHaveLength(24); // 8 per ticker
@@ -1023,7 +1075,7 @@ describe("the parlay picks", () => {
     mount("/match/kz-semis/parlay?seed=424242");
     for (const sym of slipLegs()) pick(sym!, "even-bull");
     act(() => lock().click());
-    expect(text()).toContain("Live duel · Semis sprint");
+    expect(text()).toContain("Live duel · Majors sprint");
     expect(text()).toContain("EVEN↑ EVEN↑ EVEN↑");
     expect(text()).toContain("kazuo.eth");
     expect(text()).toContain("HIDDEN UNTIL SETTLED");
@@ -1317,22 +1369,24 @@ describe("the ladder", () => {
     expect(metricHead()).toBe("WINS · ALL SECTORS · ALL MODES");
     expect(boardSize()).toBe(14);
 
-    chip("SEMIS");
-    expect(metricHead()).toBe("WINS · SEMIS · ALL MODES");
-    const semis = boardSize();
-    expect(semis).toBeGreaterThan(0);
-    expect(semis).toBeLessThan(14);
+    // The ladder's sector chips are the live groups now — SEMIS and BIG TECH
+    // were filters over a board that no longer exists (plan 6 §B3).
+    chip("MAJORS");
+    expect(metricHead()).toBe("WINS · MAJORS · ALL MODES");
+    const majors = boardSize();
+    expect(majors).toBeGreaterThan(0);
+    expect(majors).toBeLessThan(14);
 
     // OR within the group: a second sector can only widen the pool.
-    chip("BIG TECH");
-    expect(metricHead()).toBe("WINS · SEMIS+BIG TECH · ALL MODES");
+    chip("MEME");
+    expect(metricHead()).toBe("WINS · MAJORS+MEME · ALL MODES");
     const both = boardSize();
-    expect(both).toBeGreaterThan(semis);
-    expect(both).toBeLessThan(14);
+    expect(both).toBeGreaterThan(majors);
+    expect(both).toBeLessThanOrEqual(14);
 
     // AND across groups: a mode on top can only narrow it.
     chip("BLITZ");
-    expect(metricHead()).toBe("WINS · SEMIS+BIG TECH · BLITZ");
+    expect(metricHead()).toBe("WINS · MAJORS+MEME · BLITZ");
     expect(boardSize()).toBeLessThan(both);
     expect(boardSize()).toBeGreaterThan(0);
 
@@ -1341,11 +1395,13 @@ describe("the ladder", () => {
     expect(boardSize()).toBe(14);
 
     // A legal pair nobody specialises in says so rather than going blank —
-    // and the way out is inside the message.
-    chip("OLD WORLD");
+    // and the way out is inside the message. (Was OLD WORLD; the equity groups
+    // are retired, and MEME × QUICK is the empty cell on the live taxonomy.)
+    chip("MEME");
+    chip("QUICK");
     expect(container.querySelector("[data-ladder-empty]")).not.toBeNull();
     expect(boardSize()).toBe(0);
-    expect(text()).toContain("NO PLAYER SPECIALISES IN OLD WORLD");
+    expect(text()).toContain("NO PLAYER SPECIALISES IN MEME");
 
     clearSelection();
     expect(container.querySelector("[data-ladder-empty]")).toBeNull();
@@ -1490,27 +1546,34 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
   });
 
   test("a name with no live print renders the line it has always rendered", () => {
-    // `dr-mixed` deals AMD, SOL, NVDA and ETH: two equities Thetanuts has never
-    // heard of, beside two assets it prices.
-    mount("/match/dr-mixed/parlay?seed=424242", undefined, live());
+    // `dr-mixed` deals ETH, BNB, SOL and BTC on this seed. The unpriced case
+    // used to be free — the lobby dealt NVDA and AMD, which no exchange on
+    // earth was going to quote. Now that every dealt name is one Thetanuts has
+    // a feed for, the gap has to come from the SNAPSHOT: a live route that
+    // answered for ETH and SOL and not for BNB is the ordinary case this
+    // behaviour exists for, and it is the honest way to reach it.
+    const partial = { ETH: 2522.13, SOL: 104.0853111 };
+    mount("/match/dr-mixed/parlay?seed=424242", undefined, live(partial));
 
+    expect(slipLegs()).toEqual(["ETH", "BNB", "SOL", "BTC"]);
     expect(testid("spot-ETH")).not.toBeNull();
     expect(testid("spot-SOL")).not.toBeNull();
-    expect(testid("spot-NVDA")).toBeNull();
-    expect(testid("spot-AMD")).toBeNull();
-    // No dash, no placeholder, no "—": the old line, unchanged.
-    expect(legPicker("NVDA")?.textContent).toContain("$118.40 · base ±4.0%");
+    expect(testid("spot-BNB")).toBeNull();
+    expect(testid("spot-BTC")).toBeNull();
+    // No dash, no placeholder, no "—": the old line, unchanged. BNB's seeded
+    // reference is 718.18 at ±5.0%, from this repo's own frozen capture.
+    expect(legPicker("BNB")?.textContent).toContain("$718.18 · base ±5.0%");
     // Scoped to the seeded·live SPOT pair rather than the bare words: the card
     // face legitimately says "no live premium" about a different quantity, and a
     // substring check would read that as a spot annotation.
-    expect(legPicker("NVDA")?.textContent).not.toContain("seeded ·");
-    expect(legPicker("NVDA")?.textContent).not.toMatch(/·\s*\$[\d,.]+\s*live/);
+    expect(legPicker("BNB")?.textContent).not.toContain("seeded ·");
+    expect(legPicker("BNB")?.textContent).not.toMatch(/·\s*\$[\d,.]+\s*live/);
   });
 
   test("with nothing priced on the board the pick screen is byte-identical", () => {
-    // `kz-semis` is three equities. A live source that prices none of them must
-    // produce exactly the DOM the seeded source does — same markup, same order.
-    mount("/match/kz-semis/parlay?seed=424242", undefined, live());
+    // A live source that prices none of the dealt names must produce exactly
+    // the DOM the seeded source does — same markup, same order.
+    mount("/match/kz-semis/parlay?seed=424242", undefined, live({}));
     const syms = slipLegs() as string[];
     const withLive = syms.map((s) => legPicker(s!)!.innerHTML);
     expect(testid("spot-chip")).toBeNull();
@@ -1529,8 +1592,10 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     // ETH SHARP bull asks for +9%: 4,559.03 seeded, and the same +9% of the
     // live 2,522.13 is 2,749.12 — nearest live call is the 2,800 at Δ0.21.
     const card = container.querySelector<HTMLElement>('[data-parlay="ETH:sharp-bull"]')!;
-    // SHARP is the [0.25, 0.45) band; its midpoint reads ~35%.
-    expect(card.textContent).toContain("~35%");
+    // SHARP is the [0.25, 0.45) band; its midpoint reads 35%. Plan 6 §E3/§E4.1
+    // pins the delta face as the phrase `35% chance` — one quantity, one term —
+    // so the tilde form the tier table used is gone from the card.
+    expect(card.textContent).toContain("35% chance");
     expect(card.textContent).toContain("book Δ 0.21 (second opinion)");
     // The tier's own multiplier is untouched — the advisory is a sibling line,
     // not an input.
@@ -1592,18 +1657,21 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     const d = dialog()!;
 
     expect(d.querySelector('[data-testid="spot-chip"]')?.textContent).toBe("LIVE SPOT · SEEDED TAPE");
-    // BTC is under the pointer on the first frame: the seeded headline keeps its
-    // wobble above, and the pair is stated underneath.
-    expect(testid("pointer-spot")?.textContent).toBe("$96,410.00 seeded · $81,004.04 live");
+    // ETH is under the pointer on the first frame: the seeded headline keeps its
+    // wobble above, and the pair is stated underneath. (Was BTC — the strip is
+    // the six-name MAJORS book now rather than the three-name seeded L1 group,
+    // so the pointer lands a tile earlier.)
+    expect(testid("pointer-spot")?.textContent).toBe("$4,182.60 seeded · $2,522.13 live");
     // The 124px tiles take the right half only — the accent price above them is
     // the seeded one and the chip has said so.
-    expect(d.textContent).toContain("$2,522.13 live");
+    expect(d.textContent).toContain("$81,004.04 live");
     expect(d.textContent).toContain("$104.09 live");
   });
 
   test("an unpriced reel is the reel that always shipped", () => {
-    // `kz-semis` again: three equities, no live prints anywhere on the strip.
-    mount("/match/kz-semis?seed=424242", undefined, live());
+    // A snapshot that priced nothing — `/api/market` up and empty. No live
+    // print anywhere on the strip, so the reel is the one that always shipped.
+    mount("/match/kz-semis?seed=424242", undefined, live({}));
     const d = dialog()!;
     expect(d.querySelector('[data-testid="spot-chip"]')).toBeNull();
     expect(testid("pointer-spot")).toBeNull();

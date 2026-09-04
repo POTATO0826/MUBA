@@ -1,11 +1,47 @@
 import type { MarketFilter, SectorKey } from "../types.ts";
 import { C } from "../theme.ts";
 import type { Grade } from "./qualify.ts";
-import { LIVE_BOARD, UNIVERSE } from "./universe.ts";
+import { LIVE_BOARD } from "./universe.ts";
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE SECTORS ARE DRAWN OVER THE LIVE BOARD. THERE IS NO OTHER BOARD.
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * This module used to group `data/universe.ts`'s eighteen invented rows — NVDA,
+ * TSLA, XOM, PEPE — and hand that book to the reel, the lobby list, the builder
+ * and the ladder. Thetanuts quotes none of those names, so every one of those
+ * surfaces was offering a player something that could never be filled.
+ *
+ * Plan 6 §B3: *"the 18 assets with invented MEME/TECH sectors are fiction and
+ * must go. Sectors themselves stay — they were the right idea applied to the
+ * wrong list."* That is what this file now is. **Every function below filters
+ * {@link LIVE_BOARD}**, the assets Base actually has a price feed for, and the
+ * seeded eighteen are no longer reachable from any of them.
+ *
+ * `UNIVERSE` still exists in `data/universe.ts` and is still byte-identical,
+ * because it is a *replay fixture* — the offline tape walks it and the news
+ * ticker's symbol allowlist is derived from it. It is not offered anywhere a
+ * player can act on it, and nothing in this file imports it.
+ *
+ * ## Why two groups and not the plan's four
+ *
+ * §B3's table is `MAJORS` / `L1S` / `MEME` / `PAYMENTS`. `L1S` and `PAYMENTS`
+ * are not members of `SectorKey`, which lives in `src/types.ts` — a file this
+ * change did not hold the grant for. Rather than smuggle the two new groups in
+ * under the keys `SEMIS` and `TECH` (a lie in the data that every future reader
+ * would have to un-learn), the live board is grouped with the key names that
+ * already exist and are already true of it: **MAJORS**, which is every
+ * underlying with a feed except the memecoin, and **MEME**, which is DOGE.
+ *
+ * Widening `SectorKey` to `"MAJORS" | "L1S" | "MEME" | "PAYMENTS"` is a
+ * one-line change and restores §B3's table exactly; see the handoff note in
+ * {@link RETIRED} for the full list of what moves with it.
+ */
 
 /** One sector group: a bucket of raw `Asset.sector` values with a label,
  *  a colour and a one-line pitch. `members` are RAW sector strings — the
- *  tickers are always derived from `UNIVERSE`, which stays the single
+ *  tickers are always derived from {@link LIVE_BOARD}, which stays the single
  *  source of truth for the board and its order. */
 export interface SectorDef {
   key: SectorKey;
@@ -17,101 +53,112 @@ export interface SectorDef {
 }
 
 /**
- * The six groups over the SEEDED board's 12 raw sectors.
+ * The four `SectorKey`s that named equity groups and no longer name anything.
  *
- * These group `data/universe.ts`'s eighteen-row replay fixture, which is what
- * the offline game deals from. The groups over the *live* Base board are
- * {@link LIVE_SECTORS}, at the bottom of this file — different words, different
- * assets, and the only one of the two whose membership is checked against a
- * real book before it is offered.
+ * They survive as `SECTORS` entries for one reason: `SECTORS` is typed
+ * `Record<SectorKey, SectorDef>` and `SectorKey` is declared in `src/types.ts`,
+ * which this change could not edit. **They are absent from
+ * {@link SECTOR_ORDER}**, so nothing iterates them, nothing offers them, and
+ * their empty `members` makes any book they could produce empty.
  *
- * The split is clean along the STOCK/CRYPTO line: SEMIS+TECH+MACRO are the
- * 9 stocks, MAJORS+DEFI+MEME the 9 crypto. `COIN` is `EQUITY-BETA` but
- * `mkt: "STOCK"`, so it belongs to TECH, not MAJORS — putting it with the
- * L1s would make `marketOf(["MAJORS"])` return `"MIXED"`.
+ * The follow-up, for whoever holds `src/types.ts` next:
+ *
+ * ```ts
+ * export type SectorKey = "MAJORS" | "L1S" | "MEME" | "PAYMENTS";
+ * ```
+ *
+ * then delete this constant and the four entries it names, split `MAJORS` into
+ * `MAJORS` (ETH, BTC) / `L1S` (SOL, BNB, AVAX) / `PAYMENTS` (XRP) per §B3, and
+ * fix the one literal that falls out: `data/leaderboard.ts`'s
+ * `SECTOR_ORDER[…] ?? "SEMIS"` becomes `?? "MAJORS"`.
+ */
+const RETIRED = (key: SectorKey, was: string): SectorDef => ({
+  key,
+  label: was,
+  members: [],
+  color: C.dim,
+  blurb:
+    `Retired. ${was} grouped equities from the seeded replay fixture — ` +
+    `Thetanuts has no market for any of them, so the group is offered nowhere.`,
+});
+
+/**
+ * The groups over the live board.
+ *
+ * Membership here is a **taxonomy**, not a promise of a fill: DOGE is a
+ * memecoin whether or not anyone is quoting it today. Which members are
+ * playable is measured per round against the live book by
+ * `qualifiedUnderlyings()` and passed in — see {@link liveSectorStatus}. A
+ * frozen membership list is how AVAX ends up excluded on the day a maker
+ * finally quotes both sides of it.
  */
 export const SECTORS: Record<SectorKey, SectorDef> = {
-  SEMIS: {
-    key: "SEMIS",
-    label: "SEMIS",
-    members: ["SEMIS"],
-    color: C.green,
-    blurb: "The silicon cycle. Two names, both high beta.",
-  },
-  TECH: {
-    key: "TECH",
-    label: "BIG TECH",
-    members: ["TECH", "EQUITY-BETA"],
-    color: C.blue,
-    blurb: "Mega-cap platforms plus the listed crypto proxy.",
-  },
-  MACRO: {
-    key: "MACRO",
-    label: "OLD WORLD",
-    members: ["AUTO", "ENERGY", "FIN", "METALS"],
-    color: C.amber,
-    blurb: "Autos, energy, banks and gold — the pre-crypto economy. Slow money, tight targets.",
-  },
   MAJORS: {
     key: "MAJORS",
     label: "MAJORS",
-    members: ["L1"],
+    members: ["MAJORS", "L1S", "PAYMENTS"],
     color: C.accent,
-    blurb: "Bitcoin, Ethereum, Solana — the layer ones everybody already owns. Crypto's blue chips.",
-  },
-  DEFI: {
-    key: "DEFI",
-    label: "DEFI",
-    members: ["DEFI", "ORACLE", "L2"],
-    color: C.violet,
-    blurb: "On-chain money legos, oracles and rollups.",
+    blurb:
+      "ETH and BTC, where market makers stream two-sided quotes, plus the alt-L1s and XRP — " +
+      "resting orders only, so the book is thinner and one side may be missing.",
   },
   MEME: {
     key: "MEME",
     label: "MEME",
     members: ["MEME"],
     color: "#f472b6",
-    blurb: "Pure sentiment. Widest targets, wildest tape.",
+    blurb: "Dogecoin. Widest strikes on the board when it is quoted at all.",
   },
+  SEMIS: RETIRED("SEMIS", "SEMIS"),
+  TECH: RETIRED("TECH", "BIG TECH"),
+  MACRO: RETIRED("MACRO", "OLD WORLD"),
+  DEFI: RETIRED("DEFI", "DEFI"),
 };
 
-/** Canonical group order — every chip row and book derives from it. */
-export const SECTOR_ORDER: readonly SectorKey[] = ["SEMIS", "TECH", "MACRO", "MAJORS", "DEFI", "MEME"];
+/** Canonical group order — every chip row and book derives from it, and the
+ *  retired keys are deliberately not on it. */
+export const SECTOR_ORDER: readonly SectorKey[] = ["MAJORS", "MEME"];
 
 const RAW_TO_KEY = new Map<string, SectorKey>(
   SECTOR_ORDER.flatMap((k) => SECTORS[k].members.map((raw) => [raw, k] as const)),
 );
 
-/** Group for a raw `Asset.sector`. Total over the board; anything unknown
- *  buckets into MACRO, the catch-all group (mirrors `meta()`'s fallback). */
+/** Group for a raw `Asset.sector`. Total over the live board.
+ *
+ *  Anything unknown buckets into MAJORS, the catch-all. The only callers that
+ *  can reach that branch are the ladder tallies in `state/rank.ts`, replaying
+ *  stored history rows whose raw sector may predate this change — a total
+ *  function is what keeps those tallies summing to the match count. */
 export function sectorOf(rawSector: string): SectorKey {
-  return RAW_TO_KEY.get(rawSector) ?? "MACRO";
+  return RAW_TO_KEY.get(rawSector) ?? "MAJORS";
 }
 
 const SYMS_BY_KEY = new Map<SectorKey, readonly string[]>(
-  SECTOR_ORDER.map((k) => [k, UNIVERSE.filter((u) => sectorOf(u.sector) === k).map((u) => u.sym)]),
+  SECTOR_ORDER.map((k) => [k, LIVE_BOARD.filter((u) => sectorOf(u.sector) === k).map((u) => u.sym)]),
 );
 
-/** The group's tickers, in board order. */
+/** The group's tickers, in board order. Empty for a retired key. */
 export function symsOfSector(key: SectorKey): readonly string[] {
   return SYMS_BY_KEY.get(key) ?? [];
 }
 
 /** The tickers a set of groups can deal, in board order.
  *
- *  Filters `UNIVERSE` and never iterates `keys`, so the result is identical
- *  for any permutation of the same groups — the spin's determinism depends
- *  on both the contents AND the order of this array. */
+ *  Filters {@link LIVE_BOARD} and never iterates `keys`, so the result is
+ *  identical for any permutation of the same groups — the spin's determinism
+ *  depends on both the contents AND the order of this array. */
 export function bookForSectors(keys: readonly SectorKey[]): readonly string[] {
   const want = new Set(keys);
-  return UNIVERSE.filter((u) => want.has(sectorOf(u.sector))).map((u) => u.sym);
+  return LIVE_BOARD.filter((u) => want.has(sectorOf(u.sector))).map((u) => u.sym);
 }
 
-/** A lobby's market, derived from its groups: all-stock, all-crypto, or mixed.
- *  Computed from the assets' `mkt`, never from the group names. */
+/** A lobby's market, derived from its groups. The live board is entirely
+ *  crypto, so this is `"CRYPTO"` for any non-empty selection — computed from
+ *  the assets' `mkt` rather than asserted, so it stays correct on the day a
+ *  tokenised equity actually gets a feed. */
 export function marketOf(keys: readonly SectorKey[]): MarketFilter {
   const want = new Set(keys);
-  const picked = UNIVERSE.filter((u) => want.has(sectorOf(u.sector)));
+  const picked = LIVE_BOARD.filter((u) => want.has(sectorOf(u.sector)));
   const stock = picked.some((u) => u.mkt === "STOCK");
   const crypto = picked.some((u) => u.mkt === "CRYPTO");
   if (stock && !crypto) return "STOCK";
@@ -120,41 +167,28 @@ export function marketOf(keys: readonly SectorKey[]): MarketFilter {
 }
 
 /** The one-click builder presets. Each is exactly the groups whose union is
- *  that market's book, so `bookForSectors(PRESETS[m])` ≡ `bookFor(m)`. */
+ *  that market's book, so `bookForSectors(PRESETS[m])` ≡ `bookFor(m)`.
+ *
+ *  `STOCK` is empty and stays empty: there is no equity on the live board, and
+ *  an empty preset is the honest statement of that. The builder no longer
+ *  renders a market-preset row at all — `state/match.ts` still reads `MIXED`
+ *  for the form's opening selection. */
 export const PRESETS: Record<MarketFilter, readonly SectorKey[]> = {
-  STOCK: ["SEMIS", "TECH", "MACRO"],
-  CRYPTO: ["MAJORS", "DEFI", "MEME"],
+  STOCK: [],
+  CRYPTO: SECTOR_ORDER,
   MIXED: SECTOR_ORDER,
 };
 
-/** The preset a selection exactly equals, as a set. Null when it is a
- *  hand-rolled combination. */
-export function presetOf(sectors: readonly SectorKey[]): MarketFilter | null {
-  const picked = new Set(sectors);
-  for (const m of ["STOCK", "CRYPTO", "MIXED"] as const) {
-    const preset = PRESETS[m];
-    if (picked.size === preset.length && preset.every((k) => picked.has(k))) return m;
-  }
-  return null;
-}
-
-/** Label for the collapsed preset chip. */
-const PRESET_LABEL: Record<MarketFilter, string> = {
-  STOCK: "ALL STOCKS",
-  CRYPTO: "ALL CRYPTO",
-  MIXED: "FULL BOARD",
-};
-
-/** Chips for a selection: one collapsed chip when it is a preset, otherwise
- *  the groups in canonical order, capped at `max` with a `+N` overflow chip. */
+/** Chips for a selection: the groups in canonical order, capped at `max` with
+ *  a `+N` overflow chip.
+ *
+ *  There is no collapsed-preset chip any more. `ALL STOCKS` and `FULL BOARD`
+ *  were labels for a board that no longer exists, and with the live board's
+ *  groups a chip row is never long enough to need collapsing. */
 export function sectorChips(
   sectors: readonly SectorKey[],
   max = 6,
 ): { key: string; label: string; color: string }[] {
-  const preset = presetOf(sectors);
-  if (preset) {
-    return [{ key: preset, label: PRESET_LABEL[preset], color: MARKET_COLOR[preset] }];
-  }
   const picked = new Set(sectors);
   const ordered = SECTOR_ORDER.filter((k) => picked.has(k));
   const chips = ordered
@@ -191,96 +225,23 @@ export const MARKET_WALL: Record<MarketFilter, [string, string, number]> = {
 
 /** The tickers a lobby's spin can deal, in board order. */
 export function bookFor(market: MarketFilter): readonly string[] {
-  return UNIVERSE.filter((u) => market === "MIXED" || u.mkt === market).map((u) => u.sym);
+  return LIVE_BOARD.filter((u) => market === "MIXED" || u.mkt === market).map((u) => u.sym);
 }
 
-// ── The LIVE sectors ────────────────────────────────────────────────────────
+// ── The gate ────────────────────────────────────────────────────────────────
 //
-// Everything above this line groups the SEEDED board — the eighteen reference
-// prices the offline tape walks. Everything below groups the LIVE board: the
-// Base assets the protocol actually has a feed for.
-//
-// Sectors were the right idea applied to the wrong list (plan6 §B3). They are
-// redrawn here over names that can clear the liquidity gate, and the membership
-// below is a *taxonomy* — DOGE is a memecoin whether or not anyone is quoting
-// it today. **Which members are playable is never written down here.** That is
-// measured, per round, by `qualifiedUnderlyings()` against the live book and
-// passed in. A frozen membership list is how AVAX ends up excluded on the day a
-// maker finally quotes both sides of it.
+// Everything above is the taxonomy — which group a live asset belongs to, and
+// in what order. Everything below is the second filter: which of those the
+// live book qualified THIS ROUND. The two are deliberately separate. A name in
+// a group is a name the protocol knows; a name past the gate is a name a maker
+// is quoting deeply enough that a fill will not move the book it was quoted
+// from.
 
-/** The four groups over the live board. Deliberately a separate type from
- *  {@link SectorKey}: that one names the seeded taxonomy (SEMIS, OLD WORLD…),
- *  which is a different set of words about a different list of assets. */
-export type LiveSectorKey = "MAJORS" | "L1S" | "MEME" | "PAYMENTS";
-
-export interface LiveSectorDef {
-  key: LiveSectorKey;
-  label: string;
-  /** Raw `Asset.sector` values this group gathers — same contract as
-   *  {@link SectorDef}. Tickers are always derived by filtering
-   *  {@link LIVE_BOARD}, which stays the single source of the live order. */
-  members: readonly string[];
-  color: string;
-  blurb: string;
-}
-
-export const LIVE_SECTORS: Record<LiveSectorKey, LiveSectorDef> = {
-  MAJORS: {
-    key: "MAJORS",
-    label: "MAJORS",
-    members: ["MAJORS"],
-    color: C.accent,
-    blurb:
-      "ETH and BTC — the only two underlyings market makers stream two-sided quotes on. Deepest books, tightest spreads.",
-  },
-  L1S: {
-    key: "L1S",
-    label: "L1S",
-    members: ["L1S"],
-    color: C.blue,
-    blurb:
-      "Solana, BNB and Avalanche. Resting orders only, so the book is thinner and one side may be missing — a harder round, not a broken one.",
-  },
-  MEME: {
-    key: "MEME",
-    label: "MEME",
-    members: ["MEME"],
-    color: "#f472b6",
-    blurb: "Dogecoin. Widest strikes on the board when it is quoted at all.",
-  },
-  PAYMENTS: {
-    key: "PAYMENTS",
-    label: "PAYMENTS",
-    members: ["PAYMENTS"],
-    color: C.violet,
-    blurb: "XRP. A price feed the protocol has had longer than it has had a book on it.",
-  },
-};
-
-/** Canonical live-group order. */
-export const LIVE_SECTOR_ORDER: readonly LiveSectorKey[] = ["MAJORS", "L1S", "MEME", "PAYMENTS"];
-
-const LIVE_RAW_TO_KEY = new Map<string, LiveSectorKey>(
-  LIVE_SECTOR_ORDER.flatMap((k) => LIVE_SECTORS[k].members.map((raw) => [raw, k] as const)),
-);
-
-/** The live group a raw `Asset.sector` belongs to, or `null`.
- *
- *  Unlike {@link sectorOf} there is **no catch-all**: the seeded board's raw
- *  sectors (SEMIS, AUTO, ORACLE…) are not live groups, and bucketing them into
- *  one would put Nvidia in a crypto sector rather than saying it is not there. */
-export function liveSectorOf(rawSector: string): LiveSectorKey | null {
-  return LIVE_RAW_TO_KEY.get(rawSector) ?? null;
-}
-
-/** Every ticker the taxonomy places in a live group, playable or not. The
- *  *candidate* members — see {@link liveBookForSectors} for the playable ones. */
-export function liveSymsOfSector(key: LiveSectorKey): readonly string[] {
-  return LIVE_BOARD.filter((u) => liveSectorOf(u.sector) === key).map((u) => u.sym);
-}
+/** Why a group cannot be played right now. `null` when it can. */
+export const NO_BOOK_REASON = "no live book today";
 
 /**
- * The tickers a set of live groups can deal today.
+ * The tickers a set of groups can deal today.
  *
  * Two filters, in this order: the taxonomy (is this asset in one of these
  * groups?) and the gate (did the live book qualify it this round?). `qualified`
@@ -293,19 +254,15 @@ export function liveSymsOfSector(key: LiveSectorKey): readonly string[] {
  * this array, so both its contents and its order are part of the seed contract.
  */
 export function liveBookForSectors(
-  keys: readonly LiveSectorKey[],
+  keys: readonly SectorKey[],
   qualified: readonly string[],
 ): readonly string[] {
   const want = new Set(keys);
   const playable = new Set(qualified);
-  return LIVE_BOARD.filter((u) => {
-    const key = liveSectorOf(u.sector);
-    return key !== null && want.has(key) && playable.has(u.sym);
-  }).map((u) => u.sym);
+  return LIVE_BOARD.filter((u) => want.has(sectorOf(u.sector)) && playable.has(u.sym)).map(
+    (u) => u.sym,
+  );
 }
-
-/** Why a live group cannot be played right now. `null` when it can. */
-export const NO_BOOK_REASON = "no live book today";
 
 /**
  * How the DEEP/THIN grade paints, wherever it is rendered — the lobby card, the
@@ -329,10 +286,10 @@ export const GRADE_BLURB: Record<Grade, string> = {
   THIN: "resting orders only — fewer cards, wider spreads, one side may be missing",
 };
 
-/** One live group, measured against today's qualified set — enough for the
- *  lobby builder to render it greyed *with the reason* rather than hiding it. */
+/** One group, measured against today's qualified set — enough for the lobby
+ *  builder to render it greyed *with the reason* rather than hiding it. */
 export interface LiveSectorStatus {
-  key: LiveSectorKey;
+  key: SectorKey;
   label: string;
   color: string;
   blurb: string;
@@ -347,28 +304,29 @@ export interface LiveSectorStatus {
 }
 
 /**
- * Every live group with today's book against it, in canonical order.
+ * Every offered group with today's book against it, in canonical order.
  *
- * **A group with no qualified members is greyed, never hidden.** A host who
- * picks MEME and gets an empty lobby learns nothing; a host who sees MEME
+ * **A group with no qualified members is greyed, never hidden** (§B3). A host
+ * who picks MEME and gets an empty lobby learns nothing; a host who sees MEME
  * greyed out and reading "no live book today" learns the shape of the market
  * they are about to trade in — which is the same fact the DEEP/THIN grade
  * teaches one level down.
  *
  * With no book at all (`qualified` empty — offline, or the market route down)
- * every group comes back greyed, which is the honest render: the seeded board
- * still plays, and nothing live is on offer.
+ * every group comes back greyed, which is the honest render: nothing is on
+ * offer, and the builder says so instead of publishing a lobby that cannot
+ * fill.
  */
 export function liveSectorStatus(qualified: readonly string[]): readonly LiveSectorStatus[] {
-  return LIVE_SECTOR_ORDER.map((key) => {
-    const def = LIVE_SECTORS[key];
+  return SECTOR_ORDER.map((key) => {
+    const def = SECTORS[key];
     const playable = liveBookForSectors([key], qualified);
     return {
       key,
       label: def.label,
       color: def.color,
       blurb: def.blurb,
-      members: liveSymsOfSector(key),
+      members: symsOfSector(key),
       playable,
       open: playable.length > 0,
       reason: playable.length > 0 ? null : NO_BOOK_REASON,

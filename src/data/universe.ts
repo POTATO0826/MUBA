@@ -8,33 +8,41 @@ import type { Asset } from "../types.ts";
  * This module used to hold one list and let it mean two things at once. It no
  * longer does, because those two things have different owners:
  *
- *  - {@link UNIVERSE} is the **seeded board** — an offline fixture of eighteen
- *    reference prices and volatilities that `engine/tape.ts` walks so the game
- *    runs with no network, no wallet and no book. It is *not* a claim about
- *    what is tradeable. NVDA, TSLA and PEPE are on it and Thetanuts quotes none
- *    of them; that was the fiction plan6 §B3 set out to retire, and retiring it
- *    means **demoting the list to what it always actually was** — a replay
- *    fixture — rather than deleting the offline mode along with it. Every value
- *    on it is frozen by `test/spot.test.ts`, `test/determinism.test.ts` and
- *    `test/app.test.tsx`: a shared `?seed=N` link, a stored ledger row and both
- *    players in one room all resolve through these numbers.
+ *  - {@link LIVE_BOARD} is **the board**. The assets Base actually has a
+ *    Chainlink feed and a readable market price for, and the only list any
+ *    player-facing surface deals from: the reel, the lobby list, the builder's
+ *    sector chips, the ladder's filters. It is the *candidate* set, never the
+ *    qualified set — which of these can be dealt on a given day is measured
+ *    against the live book by `data/qualify.ts` and injected. A name here is a
+ *    name the protocol knows, not a promise of a fill.
  *
- *  - {@link LIVE_BOARD} is the **live board** — the assets Base actually has a
- *    Chainlink feed and a readable market price for. It is the *candidate* set,
- *    never the qualified set: which of these can be dealt on a given day is
- *    measured against the live book by `data/qualify.ts` and injected. A name
- *    here is a name the protocol knows, not a promise of a fill.
+ *  - {@link UNIVERSE} is a **replay fixture, and nothing else**. Eighteen
+ *    reference prices and volatilities that `engine/tape.ts` walks so a chart
+ *    still draws with no network, and that `server/news.ts` derives its symbol
+ *    allowlist from. NVDA, TSLA and PEPE are on it and Thetanuts quotes none of
+ *    them, which is exactly why **nothing offers it**: `data/sectors.ts` does
+ *    not import this array, no group gathers a row of it, and there is no
+ *    control anywhere in the product that puts one of these names in front of a
+ *    player. Plan 6 §B3 said the fictional eighteen must go; they are gone from
+ *    the product, and what is left here is the fixture the locks were always
+ *    really about.
  *
- * The reel deals from the live board, gated by the runtime probe. The tape
- * draws from whichever board holds the symbol — which is why the live-only
- * names carry seeded `px`/`t`/`vol` too, so an AVAX arena still renders with
- * the network unplugged.
+ *    Every value on it is frozen by `test/spot.test.ts`: a shared `?seed=N`
+ *    link, a stored ledger row and both players in one room all resolve through
+ *    these numbers, so the rows stay byte-identical even though nothing deals
+ *    them.
+ *
+ * The tape draws from whichever board holds the symbol — which is why the
+ * live-only names carry seeded `px`/`t`/`vol` too, so an AVAX arena still
+ * renders with the network unplugged.
  */
 
-/** The seeded board. `t` is the percentage move a leg must clear; `vol` drives
- *  the generated tape, so a high-`t` name is also the noisy one.
+/** The replay fixture. `t` is the percentage move a leg must clear; `vol`
+ *  drives the generated tape, so a high-`t` name is also the noisy one.
  *
- *  **Frozen.** Adding, removing or reordering a row re-deals every seed. */
+ *  **Frozen, and offered nowhere.** These rows back the offline tape and the
+ *  news ticker's symbol allowlist. No sector gathers them, no lobby deals them
+ *  and no control selects them — see the module header. */
 export const UNIVERSE: readonly Asset[] = [
   { sym: "NVDA", name: "Nvidia", sector: "SEMIS", mkt: "STOCK", px: 118.4, t: 4.0, vol: 0.03 },
   { sym: "AAPL", name: "Apple", sector: "TECH", mkt: "STOCK", px: 232.1, t: 2.0, vol: 0.016 },

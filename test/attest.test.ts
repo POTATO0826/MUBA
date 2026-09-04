@@ -148,8 +148,8 @@ const ARENA = spinCase(bookOf(LOBBY), LOBBY.legs, SEED).syms;
 /** Two slips on that one seed, chosen because they land on opposite sides of
  *  `settle`. Nothing about them is asserted from memory — every test that uses
  *  one re-derives its winner below. */
-const WINNING_SLIP: Record<string, string> = { TSLA: "safe-bear", AMD: "safe-bull", META: "safe-bull" };
-const LOSING_SLIP: Record<string, string> = { TSLA: "safe-bull", AMD: "safe-bull", META: "safe-bull" };
+const WINNING_SLIP: Record<string, string> = { SOL: "safe-bear", XRP: "safe-bull", BNB: "safe-bull" };
+const LOSING_SLIP: Record<string, string> = { SOL: "safe-bull", XRP: "safe-bull", BNB: "safe-bull" };
 
 /**
  * The client's verdict, recomputed here from the pure engine — NOT from
@@ -349,10 +349,10 @@ const contractDomain = (verifyingContract: string) => ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("the fixture duel is the one the rest of the repo pins", () => {
-  test("kz-semis at seed 424242 deals TSLA, AMD, META", () => {
+  test("kz-semis at seed 424242 deals SOL, XRP, BNB", () => {
     // If this changes, the two slips below stop being a win and a loss and
     // every "verdict flips" assertion becomes vacuous.
-    expect([...ARENA]).toEqual(["TSLA", "AMD", "META"]);
+    expect([...ARENA]).toEqual(["SOL", "XRP", "BNB"]);
     expect(Object.keys(WINNING_SLIP).sort()).toEqual([...ARENA].sort());
     expect(Object.keys(LOSING_SLIP).sort()).toEqual([...ARENA].sort());
   });
@@ -426,8 +426,8 @@ describe("lock commits a slip, first write wins", () => {
   });
 
   test("the commit is canonical: key order in the request cannot change it", async () => {
-    const forwards = await locked(harness(), { TSLA: "safe-bear", AMD: "safe-bull", META: "safe-bull" });
-    const backwards = await locked(harness(), { META: "safe-bull", AMD: "safe-bull", TSLA: "safe-bear" });
+    const forwards = await locked(harness(), { SOL: "safe-bear", XRP: "safe-bull", BNB: "safe-bull" });
+    const backwards = await locked(harness(), { BNB: "safe-bull", XRP: "safe-bull", SOL: "safe-bear" });
     expect(backwards.commit).toBe(forwards.commit);
     // …but a different slip is a different commit.
     expect((await locked(harness(), LOSING_SLIP)).commit).not.toBe(forwards.commit);
@@ -465,12 +465,12 @@ describe("lock refuses everything it cannot re-derive", () => {
 
   test("a pick id that is not one of the eight cards", async () => {
     for (const bad of ["safe-bulll", "SAFE-BULL", "", "godmode"]) {
-      const picks = { ...WINNING_SLIP, TSLA: bad };
+      const picks = { ...WINNING_SLIP, SOL: bad };
       expect(await fails({ matchKey: MATCH_KEY, picks, a: A, b: B })).toContain("unknown card");
     }
     // Every real card id passes the same gate.
     for (const card of PARLAY_CARDS) {
-      const res = await harness().svc.lock(lockBody(SEAT_A, { picks: { ...WINNING_SLIP, TSLA: card.id } }));
+      const res = await harness().svc.lock(lockBody(SEAT_A, { picks: { ...WINNING_SLIP, SOL: card.id } }));
       expect(res.ok).toBe(true);
     }
   });
@@ -479,14 +479,14 @@ describe("lock refuses everything it cannot re-derive", () => {
     const want = "picks must cover exactly";
     // A leg short: the client would have previewed it at EVEN/over — a preview
     // is not a position and a partial slip is not settleable.
-    expect(await fails({ matchKey: MATCH_KEY, picks: { TSLA: "safe-bull", AMD: "safe-bull" }, a: A, b: B })).toContain(want);
+    expect(await fails({ matchKey: MATCH_KEY, picks: { SOL: "safe-bull", XRP: "safe-bull" }, a: A, b: B })).toContain(want);
     // One leg too many: a caller widening the commit past the arena.
     expect(
-      await fails({ matchKey: MATCH_KEY, picks: { ...WINNING_SLIP, NVDA: "safe-bull" }, a: A, b: B }),
+      await fails({ matchKey: MATCH_KEY, picks: { ...WINNING_SLIP, AVAX: "safe-bull" }, a: A, b: B }),
     ).toContain(want);
     // The right count, the wrong tickers.
     expect(
-      await fails({ matchKey: MATCH_KEY, picks: { NVDA: "safe-bull", AAPL: "safe-bull", MSFT: "safe-bull" }, a: A, b: B }),
+      await fails({ matchKey: MATCH_KEY, picks: { ETH: "safe-bull", BTC: "safe-bull", AVAX: "safe-bull" }, a: A, b: B }),
     ).toContain(want);
     // And the arena of a DIFFERENT seed in the same lobby.
     const other = spinCase(bookOf(LOBBY), LOBBY.legs, 424243).syms;
@@ -562,7 +562,7 @@ describe("the lock is authenticated — X-1", () => {
       `b:${B}`,
       // Canonical picks: keys sorted, no whitespace — the same serialisation
       // the commit hashes, so the thing signed is the thing committed.
-      `picks:${JSON.stringify({ AMD: "safe-bull", META: "safe-bull", TSLA: "safe-bear" })}`,
+      `picks:${JSON.stringify({ BNB: "safe-bull", SOL: "safe-bear", XRP: "safe-bull" })}`,
     ].join("\n");
 
     const rebuilt = lockMessage(MATCH_KEY, A, B, WINNING_SLIP);
@@ -618,7 +618,7 @@ describe("the lock is authenticated — X-1", () => {
     const body = lockBody(SEAT_A, { picks: LOSING_SLIP });
     expect(await refused({ ...body, picks: WINNING_SLIP })).toBe("signature is not a's");
     // Even a single leg moved — the picks are bound whole, canonically.
-    expect(await refused({ ...body, picks: { ...LOSING_SLIP, TSLA: "safe-bear" } })).toBe("signature is not a's");
+    expect(await refused({ ...body, picks: { ...LOSING_SLIP, SOL: "safe-bear" } })).toBe("signature is not a's");
   });
 
   test("the match key cannot be swapped after signing", async () => {
@@ -686,14 +686,14 @@ describe("the lock is authenticated — X-1", () => {
   test("the signed message is order-independent in exactly the way the commit is", async () => {
     // A client that builds its picks object in arena order and a server that
     // sorts must still agree on one string, or every honest lock fails.
-    const forwards = lockMessage(MATCH_KEY, A, B, { TSLA: "safe-bull", AMD: "safe-bear", META: "safe-bull" });
-    const backwards = lockMessage(MATCH_KEY, A, B, { META: "safe-bull", AMD: "safe-bear", TSLA: "safe-bull" });
+    const forwards = lockMessage(MATCH_KEY, A, B, { SOL: "safe-bull", XRP: "safe-bear", BNB: "safe-bull" });
+    const backwards = lockMessage(MATCH_KEY, A, B, { BNB: "safe-bull", XRP: "safe-bear", SOL: "safe-bull" });
     expect(backwards).toBe(forwards);
     // A signature made over one ordering authorises the other ordering's body.
     const sig = SEAT_A.signMessageSync(forwards);
     const res = await harness().svc.lock({
       matchKey: MATCH_KEY,
-      picks: { META: "safe-bull", AMD: "safe-bear", TSLA: "safe-bull" },
+      picks: { BNB: "safe-bull", XRP: "safe-bear", SOL: "safe-bull" },
       a: A,
       b: B,
       sig,
@@ -1101,7 +1101,7 @@ describe("every route answers HTTP 200 with a typed envelope", () => {
     for (const req of [
       post({}),
       post({ matchKey: `mine-1:${SEED}`, picks: WINNING_SLIP, a: A }),
-      post({ matchKey: MATCH_KEY, picks: { TSLA: "nope" }, a: A }),
+      post({ matchKey: MATCH_KEY, picks: { SOL: "nope" }, a: A }),
     ]) {
       const body = await bodyOf(await h.svc.handleLock(req));
       expect(body["ok"]).toBe(false);

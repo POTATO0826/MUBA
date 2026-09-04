@@ -6,19 +6,17 @@ import {
   usd as usdcText,
 } from "../desk/escrow.ts";
 import type { DuelStake } from "../state/stake.ts";
-import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
+import { MARKET_COLOR, MARKET_LABEL } from "../data/lobbies.ts";
 import { MODES, MODE_ORDER, modeTag } from "../data/modes.ts";
 import type { Grade, QualifiedAsset } from "../data/qualify.ts";
 import {
   GRADE_BLURB,
   GRADE_COLOR,
   SECTORS,
-  SECTOR_ORDER,
   bookForSectors,
   liveSectorStatus,
   symsOfSector,
 } from "../data/sectors.ts";
-import { LIVE_SYMS } from "../data/universe.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx, sxWith } from "../lib/sx.ts";
 import { C, MONO, SANS, miniTag, pill, tag } from "../theme.ts";
@@ -47,8 +45,6 @@ const COLUMNS =
 const BOOK_LINE =
   `margin-top:10px;font:400 10.5px/1.5 ${MONO};color:${C.dim};` +
   `min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
-
-const MARKETS: readonly MarketFilter[] = ["STOCK", "CRYPTO", "MIXED"];
 
 /** One mode button. The selected one is lit in its own colour — the same
  *  border/tint idiom the sector pills use, one step brighter because the mode
@@ -193,47 +189,104 @@ function StakeField({ stake }: { stake: DuelStake | undefined }) {
   );
 }
 
-// ── The live book ───────────────────────────────────────────────────────────
+// ── The book ────────────────────────────────────────────────────────────────
 //
-// The six chips above this are the SEEDED board's groups — the eighteen-row
-// replay fixture the offline game deals from. This row is the other board: the
-// four groups drawn over assets Thetanuts actually has a feed for, each one
-// measured against today's book by the asset gate.
+// ONE row of chips, and it is the live Base board.
+//
+// This screen used to carry two: six chips over `data/universe.ts`'s eighteen
+// invented rows (SEMIS, BIG TECH, OLD WORLD — NVDA, TSLA, XOM, PEPE), and a
+// second, read-only row underneath showing what Thetanuts actually quotes. A
+// host could publish a lobby from the first row and it could never be filled.
+// Plan 6 §B3 retired that board; the second row is now the only row, and it is
+// selectable, so the thing you choose from is the thing that trades.
 //
 // A group with nothing qualified is GREYED WITH THE REASON, never hidden. A
 // host who picks MEME and gets an empty lobby learns nothing; a host who sees
 // MEME greyed, reading "no live book today", has just been told the shape of
 // the market they were about to trade in — and that is the claim the whole
 // integration rests on, made in the one place a host is deciding anything.
+//
+// Greyed does NOT mean disabled. With no book at all — offline, or `/api/market`
+// down — every group greys, and a builder that refused every chip in that state
+// would delete the offline game rather than describe the market. The chip says
+// what is true and the publish gate below still holds the line.
 
 const LIVE_ROW = "display:flex;gap:6px;margin-top:10px;flex-wrap:wrap";
 
-const LIVE_CHIP = (color: string, open: boolean): string =>
-  `display:flex;align-items:center;gap:7px;min-width:0;padding:7px 10px;border-radius:9px;` +
+/**
+ * Four states on two axes, because they are two different facts and a chip that
+ * conflated them would lie in one direction or the other:
+ *
+ *   IN THE LOBBY?  is this group part of the book I am about to publish
+ *   OPEN?          does it have a live book today
+ *
+ * Selection is the fill and the ring. The book is the BORDER: solid when the
+ * group is quoted, dashed and dimmed when it is not — so a group that is both
+ * chosen and unquoted still reads "not today" rather than being repainted as
+ * healthy by the fact that someone selected it.
+ */
+const LIVE_CHIP = (color: string, open: boolean, on: boolean): string =>
+  `display:flex;align-items:center;gap:8px;min-width:0;padding:8px 11px;border-radius:9px;` +
+  `text-align:left;cursor:pointer;` +
   (open
-    ? `border:1px solid ${color}59;background:${color}12`
-    : // Greyed, not gone: dashed and dim, so "not today" reads differently from
-      // both "selected" and "never existed".
-      `border:1px dashed ${C.border};background:transparent;opacity:.62`);
+    ? on
+      ? `border:1px solid ${color}8c;background:${color}1c;box-shadow:0 0 0 1px ${color}26`
+      : `border:1px solid ${color}59;background:transparent`
+    : on
+      ? // Greyed, not gone, and still visibly in the lobby.
+        `border:1px dashed ${color}66;background:${color}0d;opacity:.72`
+      : `border:1px dashed ${C.border};background:transparent;opacity:.62`);
 
-/** One live group, with today's book against it. */
+/** One group, with today's book against it — and the control that puts it in
+ *  the lobby. Both the chip and the status are the same element on purpose:
+ *  there is no second place where a book could be described differently from
+ *  the one being chosen. */
 function LiveSector({
   status,
   grades,
+  on,
+  onToggle,
+  onOpenTip,
+  onCloseTip,
+  hover,
 }: {
   status: ReturnType<typeof liveSectorStatus>[number];
   grades: Readonly<Record<string, Grade>>;
+  on: boolean;
+  onToggle: () => void;
+  onOpenTip: (el: HTMLElement) => void;
+  onCloseTip: () => void;
+  hover: { onPointerEnter: () => void };
 }) {
   return (
-    <div
+    <button
+      data-sector={status.key}
       data-live-sector={status.key}
       data-live-open={status.open}
+      aria-pressed={on}
       title={status.blurb}
-      style={sx(LIVE_CHIP(status.color, status.open))}
+      onClick={() => {
+        sfx("ui.toggle.on");
+        onToggle();
+      }}
+      onPointerEnter={(e) => {
+        hover.onPointerEnter();
+        onOpenTip(e.currentTarget);
+      }}
+      onPointerLeave={onCloseTip}
+      onFocus={(e) => {
+        // Keyboard only — a click already focuses the chip, and the pointer
+        // path has said its piece.
+        if (focusVisible(e.currentTarget)) onOpenTip(e.currentTarget);
+      }}
+      onBlur={onCloseTip}
+      style={sx(LIVE_CHIP(status.color, status.open, on))}
     >
       <span
         style={sx(
-          `font:700 9.5px/1 ${MONO};letter-spacing:.12em;color:${status.open ? status.color : C.dim}`,
+          `font:700 9.5px/1 ${MONO};letter-spacing:.12em;color:${
+            on || status.open ? status.color : C.dim
+          }`,
         )}
       >
         {status.label}
@@ -255,11 +308,15 @@ function LiveSector({
           ))}
         </span>
       ) : (
-        <span data-live-reason style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>
-          {status.reason}
+        <span
+          data-live-reason
+          style={sx(`display:flex;align-items:center;gap:6px;font:400 10px/1 ${MONO};color:${C.faint}`)}
+        >
+          <span style={sx("white-space:nowrap")}>{status.members.join(" · ")}</span>
+          <span style={sx("white-space:nowrap")}>— {status.reason}</span>
         </span>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -322,21 +379,13 @@ export function CreateLobby(p: CreateLobbyProps) {
   const book = bookForSectors(p.form.sectors);
   const tooSmall = p.form.sectors.length === 0 || book.length < p.form.legs;
 
-  // The live groups, measured against today's book. Recomputed each render for
-  // the same reason the book above is: it is a filter over an injected list,
-  // not state, and the list changes every time the snapshot refreshes.
+  // The groups, measured against today's book. Recomputed each render for the
+  // same reason the book above is: it is a filter over an injected list, not
+  // state, and the list changes every time the snapshot refreshes.
   const qualified = p.live ?? [];
   const liveStatus = liveSectorStatus(qualified.map((a) => a.underlying));
   const grades: Record<string, Grade> = Object.fromEntries(
     qualified.map((a) => [a.underlying, a.grade]),
-  );
-
-  // The seeded groups that name nothing the protocol has a feed for — SEMIS,
-  // BIG TECH, OLD WORLD and DEFI, today. Derived from the live board rather
-  // than listed, so this marking cannot go stale the way a list would.
-  const onChain = new Set(LIVE_SYMS);
-  const untradeable = new Set(
-    SECTOR_ORDER.filter((k) => !symsOfSector(k).some((sym) => onChain.has(sym))),
   );
 
   // Keystrokes get one click per quarter second at most: a held key must not
@@ -425,99 +474,32 @@ export function CreateLobby(p: CreateLobbyProps) {
             )}
           />
 
-          <div style={sx(`${LABEL};margin-top:20px`)}>LIVE BOOK ON BASE</div>
+          <div style={sx(`${LABEL};margin-top:20px`)}>BOOK · LIVE ON BASE</div>
           <div data-live-book style={sx(LIVE_ROW)}>
             {liveStatus.map((s) => (
-              <LiveSector key={s.key} status={s} grades={grades} />
-            ))}
-          </div>
-          <div style={sx(NOTE)}>
-            Measured against the resting order book right now — spot, order count, greeks and
-            depth. A group with no book is greyed rather than hidden, because which sectors are
-            trading today is part of what you are choosing.{" "}
-            <span style={sx(`color:${GRADE_COLOR.DEEP}`)}>DEEP</span> means market makers quote
-            both sides; <span style={sx(`color:${GRADE_COLOR.THIN}`)}>THIN</span> means resting
-            orders only — a harder round, not a broken one.
-          </div>
-
-          <div style={sx(`${LABEL};margin-top:24px;color:${C.amber}`)}>
-            PRACTICE BOARD · SEEDED, NOT TRADEABLE
-          </div>
-          <div data-seeded-warning style={sx(`${NOTE};color:${C.amber};margin-top:8px`)}>
-            The eighteen names below are a seeded replay fixture for offline play. Thetanuts has
-            no market for the equities on it — nothing dealt from this board can be filled on
-            Base. The live groups above are the ones that settle on chain.
-          </div>
-
-          <div style={sx(`${LABEL};margin-top:16px`)}>BOOK</div>
-          <div style={sx("display:flex;gap:6px;margin-top:10px;flex-wrap:wrap")}>
-            {MARKETS.map((m) => (
-              <button
-                key={m}
-                onClick={() => {
-                  sfx("ui.toggle.on");
-                  p.onMarket(m);
-                }}
-                {...hover}
-                style={sx(pill(p.form.market === m))}
-              >
-                {MARKET_LABEL[m]}
-                <span style={sx(`margin-left:6px;color:${C.faint}`)}>{bookFor(m).length}</span>
-              </button>
-            ))}
-          </div>
-          <div style={sx(NOTE)}>
-            The spin deals both players' legs from this book. Neither of you picks a ticker. Struck
-            through groups exist on the seeded board only.
-          </div>
-
-          <div style={sx(`${LABEL};margin-top:20px`)}>SECTORS</div>
-          <div style={sx("display:flex;gap:6px;margin-top:10px;flex-wrap:wrap")}>
-            {SECTOR_ORDER.map((k) => (
-              <button
-                key={k}
-                data-sector={k}
-                // Which seeded groups name nothing Thetanuts has a feed for.
-                // Computed from the live board rather than written down, so the
-                // day AVAX or XRP joins a group the marking moves on its own.
-                data-seeded-only={untradeable.has(k)}
-                title={
-                  untradeable.has(k)
-                    ? `${SECTORS[k].label} — seeded fixture only. Thetanuts has no market for these names.`
-                    : undefined
-                }
-                aria-pressed={p.form.sectors.includes(k)}
-                onClick={() => {
-                  sfx("ui.toggle.on");
-                  p.onToggleSector(k);
-                }}
-                onPointerEnter={(e) => {
-                  hover.onPointerEnter();
-                  openTip(k, e.currentTarget);
-                }}
-                onPointerLeave={closeTip}
-                onFocus={(e) => {
-                  // Keyboard only — a click already focuses the chip, and the
-                  // pointer path has said its piece.
-                  if (focusVisible(e.currentTarget)) openTip(k, e.currentTarget);
-                }}
-                onBlur={closeTip}
-                style={sx(
-                  pill(p.form.sectors.includes(k)) +
-                    // Still selectable — the seeded board is a real, playable
-                    // offline mode and disabling it would delete that mode.
-                    // Struck through and dimmed, so nobody reads NVDA as
-                    // something they could buy on Base.
-                    (untradeable.has(k) ? ";opacity:.5;text-decoration:line-through" : ""),
-                )}
-              >
-                {SECTORS[k].label}
-                <span style={sx(`margin-left:6px;color:${C.faint}`)}>{symsOfSector(k).length}</span>
-              </button>
+              <LiveSector
+                key={s.key}
+                status={s}
+                grades={grades}
+                on={p.form.sectors.includes(s.key)}
+                onToggle={() => p.onToggleSector(s.key)}
+                onOpenTip={(el) => openTip(s.key, el)}
+                onCloseTip={closeTip}
+                hover={hover}
+              />
             ))}
           </div>
           <div data-book style={sx(BOOK_LINE)} title={book.join(" · ")}>
             book: {book.length} names{book.length > 0 ? ` — ${book.join(" · ")}` : ""}
+          </div>
+          <div style={sx(NOTE)}>
+            The spin deals both players' legs from this book. Neither of you picks a ticker, and
+            every name on it is one Thetanuts has a price feed for on Base. Measured against the
+            resting order book right now — spot, order count, greeks and depth. A group with no
+            book is greyed rather than hidden, because which sectors are trading today is part of
+            what you are choosing. <span style={sx(`color:${GRADE_COLOR.DEEP}`)}>DEEP</span> means
+            market makers quote both sides; <span style={sx(`color:${GRADE_COLOR.THIN}`)}>THIN</span>{" "}
+            means resting orders only — a harder round, not a broken one.
           </div>
 
           <div style={sx(`${LABEL};margin-top:20px`)}>LEGS</div>

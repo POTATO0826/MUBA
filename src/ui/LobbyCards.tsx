@@ -8,11 +8,9 @@ import {
   GRADE_COLOR,
   SECTORS,
   SECTOR_ORDER,
-  bookForSectors,
   sectorChips,
   symsOfSector,
 } from "../data/sectors.ts";
-import { LIVE_SYMS } from "../data/universe.ts";
 import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, wall } from "../theme.ts";
@@ -21,12 +19,11 @@ import type { LobbyDef, SectorKey } from "../types.ts";
 
 /** Native `title` for a sector chip: the card face is too dense for the rich
  *  tooltip /create gives these chips, but the tickers still have to be one
- *  hover away. A collapsed preset chip ("ALL CRYPTO") names the whole book;
- *  a `+N` overflow chip names nothing, since it stands for no one group. */
-function chipTitle(key: string, label: string, sectors: readonly SectorKey[]): string | undefined {
+ *  hover away. A `+N` overflow chip names nothing, since it stands for no one
+ *  group. */
+function chipTitle(key: string, label: string): string | undefined {
   if (key in SECTORS) return `${label} — ${symsOfSector(key as SectorKey).join(" · ")}`;
-  if (key.startsWith("+")) return undefined;
-  return `${label} — ${bookForSectors(sectors).join(" · ")}`;
+  return undefined;
 }
 
 /**
@@ -114,16 +111,18 @@ export function LobbyCard({
       : { text: "OPEN · WAITING FOR P2", color: C.green, pulse: true };
 
   // Resting state shows at most two sector chips; the hover pane shows the
-  // book in full, so a collapsed `ALL STOCKS` chip is never the whole story.
+  // book in full.
+  //
+  // There is no SEEDED badge here any more, and no mechanism to compute one.
+  // It existed to warn that a lobby's whole book was `data/universe.ts` fiction
+  // that Thetanuts could never fill — four of the six fixtures were exactly
+  // that. Plan 6 §B3 retired the board those lobbies dealt from, so every book
+  // a card can now show is the live Base book and the badge would be dead
+  // markup that could only ever say "false". What replaces it is the DEEP/THIN
+  // grade below: not "does this asset exist" but "how deep is it today".
   const chips = sectorChips(lobby.sectors, 2);
   // Stable order, so two renders of the same card are the same markup.
   const graded = Object.entries(grades ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  // Does this lobby's book contain a single name the protocol has a feed for?
-  // Derived from the live board, never listed, so a lobby stops being marked
-  // the moment its assets get a book. A seeded lobby is a real, playable
-  // offline round — it just cannot be filled on Base, and the card says so
-  // rather than letting a player find out at the confirm screen.
-  const seededOnly = !bookForSectors(lobby.sectors).some((sym) => LIVE_SYMS.includes(sym));
   const mode = MODES[lobby.mode];
   const picked = new Set(lobby.sectors);
   const sectorLine = SECTOR_ORDER.filter((k) => picked.has(k))
@@ -228,7 +227,7 @@ export function LobbyCard({
                   uid={`${lobby.id}-${chip.key}`}
                   color={chip.color}
                   size="mini"
-                  title={chipTitle(chip.key, chip.label, lobby.sectors)}
+                  title={chipTitle(chip.key, chip.label)}
                 >
                   {chip.label}
                 </ChromeTag>
@@ -237,16 +236,6 @@ export function LobbyCard({
                   that this lobby is about to deal from, before anyone sits
                   down. Two at most: the card is 264px wide and the point is the
                   signal, not the inventory. */}
-              {seededOnly && (
-                <ChromeTag
-                  uid={`${lobby.id}-seeded`}
-                  color={C.amber}
-                  size="mini"
-                  title="Seeded board — Thetanuts has no market for these names, so this round cannot be filled on Base."
-                >
-                  SEEDED
-                </ChromeTag>
-              )}
               {graded.slice(0, 2).map(([underlying, grade]) => (
                 <GradeTag
                   key={underlying}

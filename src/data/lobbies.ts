@@ -28,25 +28,33 @@ export function randomOpponent(random: () => number = Math.random): Player {
  * literally so the fixtures stay readable and so the invariant is checkable
  * (`test/spin.test.ts` asserts it for every row).
  *
- * `kz-semis` carries the FULL stock preset rather than a narrower
- * SEMIS-themed book on purpose: `test/app.test.tsx` and
- * `test/determinism.test.ts` pin the tickers it deals at seed 424242 against
- * `bookFor("STOCK")`, and `spinCase` indexes into the book, so any narrowing
- * would silently re-deal that match. The other five carry themed books.
+ * **Every book here is the live Base book.** Before plan 6 §B3 four of these
+ * six dealt equities — `kz-semis` was NVDA/AAPL/TSLA/XOM/JPM/AMD/META/GLD/COIN,
+ * `no-grind` was autos/energy/banks/gold — and Thetanuts has never had a market
+ * for one of them. The groups are now `MAJORS` and `MEME` over
+ * `data/universe.ts`'s `LIVE_BOARD`, so the worst case for a player who takes
+ * any of these seats is a THIN book, never a book that does not exist.
  *
- * `kz-semis` and `mi-majors` MUST stay `NORMAL` for the same reason: `MODE_SALT`
- * rides on both match salts and `settleAt` shortens the window, and `NORMAL` is
- * the identity of both (salt 0, the whole tape, ×1 targets and odds). The
- * multipliers and percentages those two matches are pinned at in
- * `test/app.test.tsx` only survive on the identity mode.
+ * `kz-semis` and `mi-majors` MUST stay `NORMAL`: `MODE_SALT` rides on both
+ * match salts and `settleAt` shortens the window, and `NORMAL` is the identity
+ * of both (salt 0, the whole tape, ×1 targets and odds). The multipliers and
+ * percentages those two matches are pinned at in `test/app.test.tsx` only
+ * survive on the identity mode.
+ *
+ * **`kz-semis` is a stale id and deliberately still stale.** It names no sector
+ * any more — its book is MAJORS. `test/duel-stake.test.ts`, `test/seats.test.ts`
+ * and `test/news-service.test.ts` all use the literal string, two of them to
+ * route the whole app into this lobby's room, and none of the three was inside
+ * this change's grant. Renaming it is a one-line edit plus a `sed` across those
+ * three files, and it should happen the next time they are free.
  */
 export const LOBBIES: readonly LobbyDef[] = [
-  { id: "kz-semis", name: "Semis sprint", host: OPPONENTS[0]!, sectors: ["SEMIS", "TECH", "MACRO"], market: "STOCK", mode: "NORMAL", legs: 3, prize: 4.8, status: "open", mine: false, opponent: null, createdAgo: "2m" },
+  { id: "kz-semis", name: "Majors sprint", host: OPPONENTS[0]!, sectors: ["MAJORS"], market: "CRYPTO", mode: "NORMAL", legs: 3, prize: 4.8, status: "open", mine: false, opponent: null, createdAgo: "2m" },
   { id: "mi-majors", name: "Majors only", host: OPPONENTS[1]!, sectors: ["MAJORS"], market: "CRYPTO", mode: "NORMAL", legs: 2, prize: 1.2, status: "open", mine: false, opponent: null, createdAgo: "5m" },
-  { id: "dr-mixed", name: "Cross-asset box", host: OPPONENTS[2]!, sectors: ["SEMIS", "MAJORS"], market: "MIXED", mode: "QUICK", legs: 4, prize: 8.0, status: "open", mine: false, opponent: null, createdAgo: "9m" },
-  { id: "lx-degen", name: "Friday tail", host: OPPONENTS[3]!, sectors: ["DEFI", "MEME"], market: "CRYPTO", mode: "BLITZ", legs: 3, prize: 2.5, status: "open", mine: false, opponent: null, createdAgo: "12m" },
-  { id: "no-grind", name: "Weekly grind", host: OPPONENTS[4]!, sectors: ["MACRO"], market: "STOCK", mode: "QUICK", legs: 2, prize: 0.6, status: "open", mine: false, opponent: null, createdAgo: "18m" },
-  { id: "ar-whale", name: "Whale box", host: OPPONENTS[5]!, sectors: ["MACRO", "DEFI"], market: "MIXED", mode: "BLITZ", legs: 4, prize: 20.0, status: "open", mine: false, opponent: null, createdAgo: "31m" },
+  { id: "dr-mixed", name: "Whole book", host: OPPONENTS[2]!, sectors: ["MAJORS", "MEME"], market: "CRYPTO", mode: "QUICK", legs: 4, prize: 8.0, status: "open", mine: false, opponent: null, createdAgo: "9m" },
+  { id: "lx-degen", name: "Friday tail", host: OPPONENTS[3]!, sectors: ["MAJORS", "MEME"], market: "CRYPTO", mode: "BLITZ", legs: 3, prize: 2.5, status: "open", mine: false, opponent: null, createdAgo: "12m" },
+  { id: "no-grind", name: "Weekly grind", host: OPPONENTS[4]!, sectors: ["MAJORS"], market: "CRYPTO", mode: "QUICK", legs: 2, prize: 0.6, status: "open", mine: false, opponent: null, createdAgo: "18m" },
+  { id: "ar-whale", name: "Whale box", host: OPPONENTS[5]!, sectors: ["MAJORS", "MEME"], market: "CRYPTO", mode: "BLITZ", legs: 4, prize: 20.0, status: "open", mine: false, opponent: null, createdAgo: "31m" },
 ];
 
 /** Market identity and the market book live in ./sectors.ts (A-k3) so that

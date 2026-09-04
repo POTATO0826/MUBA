@@ -12,7 +12,13 @@ function deal(market: "STOCK" | "CRYPTO" | "MIXED", legs: number, seed: number):
 
 const wireFor = (syms: readonly string[], salt: number) => mockWire(syms, salt, briefsFor(syms, salt));
 
-const STOCKS = deal("STOCK", 3, 424242);
+// "STOCK" is deliberately not used here: plan 6 retired the fictional equity
+// universe, so `bookFor("STOCK")` is permanently empty on the live board and
+// `deal("STOCK", …)` would throw before a single item could be built. This is
+// simply a second, differently-seeded/-sized CRYPTO deal — the live board has
+// only one real market now, and the point of three separate `boards` entries
+// was always variety of arena/salt, not market identity.
+const STOCKS = deal("CRYPTO", 3, 424242);
 const CRYPTO = deal("CRYPTO", 3, 918273);
 const MIXED = deal("MIXED", 4, 100001);
 

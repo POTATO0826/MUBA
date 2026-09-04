@@ -714,7 +714,7 @@ describe("rankedBy — the ladder re-ranks, it never invents", () => {
   });
 
   test("SECTOR × MODE with a selection is a re-ranked SUBSET of the same objects", () => {
-    const sel: Selection = { sectors: ["SEMIS", "DEFI"], modes: ["BLITZ"] };
+    const sel: Selection = { sectors: ["MAJORS", "MEME"], modes: ["BLITZ"] };
     const all = rankedBy(LEADERBOARD, "SECTOR_MODE", SEL_NONE);
     const some = rankedBy(LEADERBOARD, "SECTOR_MODE", sel);
 
@@ -748,7 +748,7 @@ describe("rankedBy — the ladder re-ranks, it never invents", () => {
     for (const p of LEADERBOARD) {
       expect(winsIn(p, [], [])).toBe(p.wins);
       // Any real selection is a slice of a career, never more than it.
-      expect(winsIn(p, ["SEMIS"], ["BLITZ"])).toBeLessThan(p.wins);
+      expect(winsIn(p, ["MEME"], ["BLITZ"])).toBeLessThan(p.wins);
       expect(winsIn(p, SECTOR_ORDER, MODE_ORDER)).toBeGreaterThan(0);
     }
   });
