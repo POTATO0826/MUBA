@@ -1,8 +1,9 @@
 # HANDOFF — THETADUEL session continuity
 
 > For a fresh Claude session/account picking this project up. Read this, then
+> `plan6-real-parlay.md` (repo root — the CURRENT plan), then
 > docs/plans/BUILD-ORDER.md (the shipped game) and docs/plans/plan5-thetanuts.md
-> (the approved, in-progress Thetanuts integration). Updated at every wave gate.
+> (the Thetanuts integration plan 6 builds on). Updated at every wave gate.
 
 ## Who / how
 
@@ -17,17 +18,158 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
-## State at last update (post-P6 gate — every plan phase but P7 is shipped)
+## State at last update (2026-09-05 — plan 6's engine has landed, its UI has not)
 
-> Written for a FRESH ACCOUNT picking this up cold after a rate-limit switch.
-> Everything below "Older gates" is history; this block + "NEXT" + "Owner
-> still owes" is what you act on. Protocol: the MAIN session
-> orchestrates/briefs/gates/commits, Opus 5 subagents build, parallel ONLY
-> on disjoint file sets, every wave `bunx tsc --noEmit` clean + full
-> `bun test` green + commit on `zq` + push. (This session ran as Fable 5,
-> then continued as Opus 5 after a model switch — the switch KILLED every
-> in-process subagent silently, so if you switch models mid-wave, assume
-> your builders are gone and check `git status` before trusting a report.)
+> Written for a FRESH SESSION picking this up cold. Everything under "Older
+> gates" is history. Protocol unchanged: the MAIN session orchestrates, briefs,
+> gates and commits; Opus 5 subagents build; parallel ONLY on disjoint file
+> sets; every wave `bunx tsc --noEmit` clean + full `bun test` green + one
+> commit + push.
+
+### Where the branch is
+
+- Work moved to branch **`new`** (not `zq`). HEAD `c4d52df`. Plan 6's five
+  phases each landed as their own commit: `89bbd7f` A, `c4d52df` B, `a5fed99` C,
+  `185d646` D, `316d969` E, `067d4ee` the §7 asset gate.
+- **The tree is dirty.** Builders were landing throughout this write —
+  `src/data/{universe,sectors,lobbies}.ts`, `views/{CreateLobby,Parlay,ParlayPick}.tsx`,
+  `ui/LobbyCards.tsx`, `engine/score.ts`, `server/{attest,thetanuts}.ts`,
+  `types.ts`, `desk/fill.ts`, a new `components/ParlayCardFace.tsx`, and their
+  tests. `bunx tsc --noEmit` was **clean** and `determinism`/`parlay`/`qualify`/
+  `detail`/`rfq` were **green** at the end of it. Run `git status` and the full
+  suite yourself before trusting any line below.
+
+### ⚠ The single most important thing to understand about plan 6
+
+**The engine shipped ahead of the UI, and a green suite hides the gap.** Half the
+UI has since caught up; half has not. These are all built, pure and thoroughly
+unit-tested — the column that matters is the second one:
+
+| Built and tested | Wired into the app? |
+|---|---|
+| `cardsForSlice` / `multipleAt` (`engine/parlay.ts`) | **NO.** Grep finds only comments. `ParlayPick.tsx` still deals eight seeded `PARLAY_CARDS` and prices them with `desk/optionize.ts`'s `quoteFor` |
+| `spinSlice` (`engine/spin.ts`) | **NO.** No caller |
+| `qualifiedUnderlyings` / `qualifiedAssets` (`data/qualify.ts`) | **NO.** The only `data/qualify` imports in `src/` are `import type`. `CreateLobby` takes `live?: QualifiedAsset[]`; `App.tsx:440` never passes it, so the list is always `[]` |
+| `DetailToggle` + `useCardDetail` + `ParlayCardFace` | **YES**, landed mid-audit — `ParlayPick.tsx:42,44,169,281,426` |
+| `duelScore` (`engine/score.ts`) | **YES** — `attest.ts:1773-1777` scores both players off one frozen snapshot |
+| `runParlayFill` (`desk/fill.ts`) | **YES** — `views/Parlay.tsx:1377`, flag-gated |
+
+Consequences worth stating plainly, because a §9 checkbox reads as done for each:
+**the multiplier a player actually sees comes from `optionize.multiplierFor`** (a
+hand-rolled clamped ratio) or from `tierOdds` — **not** from the protocol's
+`calculatePayout`; **no screen ever renders a dead slot**, so a card always
+exists, which §A4 calls the tell that the odds are house-set; and DEEP/THIN
+defaults to `THIN` for every symbol because nothing measured. Two edits close all
+of it — see "Next" below. Full item-by-item audit with a `file:line` per row:
+**`docs/plan6-audit.md`**.
+
+### 🔴 Demo-critical: the live book endpoint is 404ing
+
+- **~~The live book endpoint is 404ing.~~ RETRACTED — the book is healthy.**
+  `fetchOrders()` never requests `indexerApiUrl`; it issues a relative `get("/")`
+  against the axios instance built on `apiBaseUrl`, a Cloudflare Worker origin
+  that has been serving ~382 greeked orders throughout. `indexerApiUrl` is a path
+  *prefix* every other SDK caller appends a subpath to, so requesting it bare
+  404s by design and always did. A real transport failure (local TLS
+  interception, since cleared) printed the wrong field in the probe's error
+  banner; someone curled that URL, got the expected 404, and two unrelated facts
+  fused into "the venue moved its book". Live probe now: ETH $1.18M and BTC
+  $1.41M depth (DEEP), SOL/XRP/BNB/AVAX qualified (THIN) — six underlyings. Do
+  NOT ask the protocol team about this. Full teardown: `docs/book-endpoint.md`.
+
+
+- **Effect:** `scripts/probe-assets.ts` cannot read a live book (its committed
+  run at `docs/asset-gate.md` says `BOOK UNREACHABLE`, exit 1); `/api/market`
+  falls back to its last good snapshot and labels itself `stale`.
+- **Fix is a URL, not a refactor.** `indexerApiUrl` is overridable in the client
+  config. **Ask the protocol team for the current book endpoint** — this is the
+  highest-value question to put to them and it blocks the §7 demo beat.
+- A second, machine-local problem stacks on top: TLS interception here makes the
+  SDK's Node agent report `unable to get local issuer certificate`. Bun's own
+  `fetch` (different CA store) reaches the host fine. Run the probe from an
+  un-intercepted network before any demo.
+- Meanwhile `bun run scripts/probe-assets.ts --fixture` demonstrates the identical
+  gate over a frozen genuine capture, banner-marked so it can never be mistaken
+  for a live table. That is the demo-safe path.
+
+### A landmine that will bite the next session
+
+`test/determinism.test.ts:139` scans engine source with a **raw text match and no
+comment stripping**. A docblock that merely *names* `src/server/thetanuts.ts`
+fails the build identically to an actual import. This audit lost time to exactly
+that false positive on `src/engine/score.ts`, and it was worked around by
+rewording the docblock rather than by fixing the scan — so it will recur. The
+sibling scan at `test/detail.test.ts:412` has a comment stripper; give this one
+the same. **Before you go hunting for a dependency, check whether it is a
+sentence.**
+
+Related: `test/determinism.test.ts`'s pinned spin locks and `bookFor` expectations
+have to be re-pinned every time §B3's universe retirement moves. They are locks
+on a board that is deliberately changing; re-pin them, never delete them.
+
+### Owner still owes — nothing below can be closed by an agent
+
+- **Two end-to-end fills on Base**, under $2 each, one of them on a **non-ETH/BTC**
+  underlying, with Basescan links in the README. **No fill has ever executed from
+  this repo.** There is no Basescan link in any doc because there is nothing to
+  link to. The second one is additionally blocked upstream by the 404 above.
+- Personally review + deploy + BaseScan-verify `DuelEscrow.sol` (compiled,
+  adversarially reviewed SHIP-WITH-NOTES, never deployed).
+- Alchemy/QuickNode Base key → `RPC_URL`; fund the demo wallet (~$10 USDC + $2
+  ETH on Base) plus a second wallet for the two-seat escrow demo.
+- Ask Thetanuts for the current book endpoint (see above) and, optionally,
+  referrer whitelisting + `WALLETCONNECT_PROJECT_ID`.
+- Drop `src/assets/parlay-pick.mp3` (the hero-pick theme). Seam is live, silence
+  until then.
+
+### Next, in priority order
+
+1. **Wire what is already built — two edits, five §9 rows.** Highest value per
+   line in the repo, and both are plumbing over tested code:
+   (a) pass `qualifiedAssets()` into `CreateLobby` from `src/App.tsx:440` — closes
+   the asset gate, the greyed sector reason and the DEEP/THIN grade at once;
+   (b) drive `ParlayPick`'s cards off `cardsForSlice` / `multipleAt` instead of
+   `optionize.quoteFor` — puts `calculatePayout` behind the number a player reads
+   and finally makes a dead slot reachable.
+2. Chase the book endpoint (see above). Until then, demo on `--fixture`.
+3. Give the determinism boundary scan a comment stripper.
+4. `docs/plan6-audit.md` lists every §9 item with its evidence — work the FAIL
+   and PARTIAL rows from there rather than re-deriving them.
+
+### Operational facts a fresh session cannot see
+
+- Dev server: `bun run dev` → :3000, in the orchestrator's background. It dies
+  with the session; restart it.
+- Machine sleep is DISABLED (`powercfg` standby-timeout 0/0). Restore to 5/3
+  when the owner says done.
+- ⚙ **UI builders must see their own work.** Headless Chrome is installed;
+  `--screenshot` needs an ABSOLUTE WINDOWS path (a relative one dies with
+  "Access is denied") and `--virtual-time-budget` lets animations settle:
+  `"/c/Program Files/Google/Chrome/Application/chrome.exe" --headless=new
+  --disable-gpu --hide-scrollbars --virtual-time-budget=2500
+  --screenshot="C:\...\out.png" --window-size=700,560 "file:///C:\...\harness.html"`
+  The builder then READS the PNG and looks at it. Every UI wave before this was
+  built blind, which is why the card ornament and the wallet sticker each needed
+  2–4 owner rejections. Brief every UI builder with it, and tell them not to
+  report done on anything they have not looked at.
+- ⚙ Owner's standing rule: **an extra task given mid-work gets its own parallel
+  agent immediately**, never queued. Only file-set disjointness constrains it; if
+  it collides with a running builder's files, send it to THAT builder via
+  SendMessage instead.
+- ⚠ A model switch mid-wave KILLS in-process subagents silently. Check
+  `git status` before trusting any report that arrived around one.
+- ⚠ Do NOT diagnose a `test/secrets.test.ts` bundle-scan failure without checking
+  WHICH bundle — `bun build` used not to clean `dist/`, and a past session blamed
+  vendor code for an already-fixed leak.
+
+## Older gates (history)
+
+### Post-P6 gate (branch `zq`, HEAD 281f843) — superseded by plan 6 on `new`
+
+> Kept because the P0–P6 phase notes below are still the best account of how the
+> Thetanuts layer got built. Its claim that "README's live table is current" is
+> **no longer true** — plan 6 rewrote what the product is, and the README's
+> Thetanuts section was rewritten with it on 2026-09-05.
 
 - HEAD at this update: 281f843. Full suite **791 pass / 0 fail, 24 files**,
   typecheck clean, working tree clean apart from the untracked reference
@@ -121,7 +263,7 @@
   cross-session pipe (it stood down; the tree is the active session's);
   the shareable status artifact URL is in "Local-only artifacts" below.
 
-## Older gates (history)
+### Earlier gates
 
 - Tests at the P2+P5b gate: 530 pass / 0 fail, 18 files. Typecheck clean.
 - SHIPPED (all pushed on zq; main has everything through 051889b):
@@ -168,33 +310,53 @@
 
 ## Ground truth documents (in-repo, read before building)
 
-- docs/plans/plan5-thetanuts.md — the approved integration plan (phases,
-  fit/won't-fit, security, do-not-touch pins).
+- **`plan6-real-parlay.md`** (repo root) — the CURRENT plan. §9 is its
+  Definition of Done; §10 is what to say in the room.
+- **`docs/plan6-audit.md`** — every §9 checkbox against the actual tree, with
+  evidence. Read it before you believe a checkbox.
+- **`docs/asset-gate.md`** — the committed probe output, the four gate
+  conditions, and the book-endpoint 404 write-up.
+- docs/plans/plan5-thetanuts.md — the integration plan plan 6 builds on
+  (phases, fit/won't-fit, security, do-not-touch pins).
 - tnuts-test/FINDINGS.md — SDK ground truth incl. the "0.3.0 delta" section
   (RANGER supported; isRanger discriminator trap; ensureAllowance null=SUCCESS;
   previewFillOrder SYNCHRONOUS 10 fields; referrer split 0 bps un-whitelisted).
 - docs/plans/BUILD-ORDER.md + plan1..4 — the shipped game's architecture.
-- README.md — current and accurate for everything shipped.
+- README.md — rewritten 2026-09-05 for plan 6. Its "Thetanuts — what is actually
+  live" section now carries an explicit **"Not true yet"** block; keep that block
+  honest, it is the thing a reviewer will check first.
 
 ## Hard invariants (breaking these = broken replays or burned money)
 
-- test/determinism.test.ts: LIVE_NEWS_RE + LIVE_MARKET_RE source scans;
-  4 absolute price locks (NVDA 118.4 series values); engineFiles >= 6 floor
-  (exactly 6 after P2 moves payoff.ts — budget spent); spin deal locks.
+- test/determinism.test.ts: LIVE_NEWS_RE + LIVE_MARKET_RE + ASSET_GATE_RE source
+  scans; the price locks; the engineFiles floor; spin deal locks. **Plan 6 moved
+  the market seam, it did not open it** — market data is an injected argument to
+  `spinSlice` / `cardsForSlice`, never an import. Engine modules also may not
+  import `data/qualify`: a reel that computes its own universe is one refactor
+  from a reel that computes its own prices.
+- One quantity, one term. `test/detail.test.ts` greps the card surfaces for
+  "moneyness" and a spelled-out "implied volatility" and fails on either.
+  Max loss is not a detail level — it is on the face at SIMPLE and never leaves,
+  above the upside figure.
+- The odds are not the house's: `TIERS` is deleted and must not return. A tier is
+  a `|delta|` band (`TIER_BANDS`) and its price is `1 / probability`. A card with
+  no qualifying quote is **not dealt** — that dead slot is a feature, and a card
+  that always exists is the tell that the odds are set.
 - Pinned UI numbers: ×47.52, the /desk headings "Combined payoff at expiry" +
-  "MM pricing", OPP_READY_MS/TAPE_STEP imports, universe.ts all 18 rows,
-  stakePointsFor ×1000.
+  "MM pricing", OPP_READY_MS/TAPE_STEP imports, stakePointsFor ×1000. (The
+  "universe.ts all 18 rows" pin is being retired with the universe — §B3.)
 - Money rules: features stake/trade are opt-IN env flags; approve exact
-  amounts never MaxUint256; server never signs a client-supplied winner;
+  amounts never MaxUint256; the `$2` `MAX_FILL_USDC` cap is checked against each
+  leg **and** the slip sum; server never signs a client-supplied winner;
   ATTESTOR/DEPLOYER keys never under src/ or in any Response; secrets test
   scans dist/.
 
 ## Owner still owes (can't be done by agents)
 
-Alchemy/QuickNode Base key → RPC_URL; fund demo wallet (~$10 USDC + $2 ETH on
-Base) + a second wallet for the two-seat escrow demo; personally review +
-deploy + BaseScan-verify DuelEscrow; optional WALLETCONNECT_PROJECT_ID and
-Thetanuts referrer whitelisting.
+See **"Owner still owes"** in the current state block at the top — it is the
+live list. Summarised: two end-to-end Base fills (one on a non-ETH/BTC
+underlying) with Basescan links, deploy + verify `DuelEscrow`, an RPC key, funded
+wallets, and the book-endpoint question for the protocol team.
 
 ## Local-only artifacts a fresh clone will miss
 

@@ -18,10 +18,15 @@ bun run typecheck
 bun run build    # → dist/
 ```
 
-Everything runs on mock data. No wallet is needed and nothing is written to a
-chain; the connect button is a toggle. The one live edge is the news wire, and
-it wants no key, no account and no `.env` — four public RSS feeds, fetched
-server-side. `THETADUEL_NEWS=off` ships a build on the seeded wire alone.
+**Out of the box nothing is written to a chain.** The seeded game — the board,
+the tape, the duel, the PTS ledger — needs no wallet, no key and no `.env`, and a
+mock wallet stands in for a real one. Two live edges are on by default and want
+nothing from you: the news wire (four public RSS feeds, fetched server-side;
+`THETADUEL_NEWS=off` for the seeded wire alone) and the Thetanuts market read
+(`THETADUEL_MARKET` to opt out). **Everything that can spend money is opt-IN and
+off** — `THETADUEL_TRADE=on` for the real fill, `THETADUEL_STAKE=on` plus a
+deployed escrow for the side bet. See *Thetanuts — what is actually live* for
+what each flag reaches and, just as importantly, what has never run.
 
 ## The flow
 
@@ -81,8 +86,8 @@ lobby.mode → MODE_SALT   → studySalt / fightSalt → series() → the tape
           └→ pickSeconds → the parlay clock
 ```
 
-`bookForSectors` filters `UNIVERSE` and never iterates the sector keys, so
-`["MEME","TECH"]` and `["TECH","MEME"]` are the same book in the same order —
+`bookForSectors` filters the board and never iterates the sector keys, so
+`["MEME","MAJORS"]` and `["MAJORS","MEME"]` are the same book in the same order —
 the spin depends on both. The pick clock is the one wall clock anywhere near a
 duel, and it only decides *when* a slip locks, never what it locks: an unpicked
 ticker keeps the deterministic EVEN/bullish preview it was already showing.
@@ -91,11 +96,26 @@ That is what makes a spin demoable, and it is the seam a VRF or commit-reveal
 output slots into later: replace `newSeed()` and nothing downstream changes.
 
 The live wire and the sound are presentation only. Nothing under `src/engine/`
-and nothing in `src/state/match.ts` may reach for `data/news`, `data/wire` or
-`/api/news` — `test/determinism.test.ts` scans those sources and fails the build
-if one does, and locks the seeded functions' outputs beside it. A duel settles
-the same whether the network is up, down or serving yesterday's headlines, and
-whether the sound is on or muted.
+and nothing in `src/state/match.ts` may reach for `data/news`, `data/wire`,
+`/api/news`, a live market source or `data/qualify` — `test/determinism.test.ts`
+scans those sources and fails the build if one does, and locks the seeded
+functions' outputs beside it. A duel settles the same whether the network is up,
+down or serving yesterday's headlines, and whether the sound is on or muted.
+
+**Plan 6 moved that seam; it did not open it.** Market data reaches the engine as
+an *injected argument* and never as an import: `spinSlice(book, qualified, seed)`
+takes the book and the qualified asset list from its caller, and
+`cardsForSlice(rows, slice, deps)` takes the protocol's own `calculatePayout`
+the same way. The engine may not decide which assets exist — that is a fact about
+the book, and a reel that computes its own universe is one refactor from a reel
+that computes its own prices, with no test between here and there. The property
+the tests assert is the whole design in one line: **same seed + same book ⇒ same
+slice; same seed + different book ⇒ same slice shape, different prices.**
+
+Note the scanner is a raw text match with no comment stripping, so a docblock in
+an engine module that *names* `src/server/thetanuts.ts` trips it exactly as an
+import would. That is a false positive worth knowing about before you go hunting
+for a dependency that is not there.
 
 ## Lobbies
 
@@ -113,28 +133,34 @@ Both paths lead to the spin, because both mean the two seats are taken.
 
 ## Sectors
 
-`src/data/sectors.ts`. The 18 assets carry 12 raw sectors; the host composes a
-book from six groups over them.
+`src/data/sectors.ts`. The host composes a book from named groups over the
+assets, and the book is the union of the picked groups, in board order.
 
-| Group | Label | Tickers |
-|---|---|---|
-| SEMIS | SEMIS | NVDA, AMD |
-| TECH | BIG TECH | AAPL, META, COIN |
-| MACRO | OLD WORLD | TSLA, XOM, JPM, GLD |
-| MAJORS | MAJORS | BTC, ETH, SOL |
-| DEFI | DEFI | ARB, LINK, UNI, AAVE |
-| MEME | MEME | DOGE, PEPE |
+> **⚠ Mid-refactor as of 2026-09-05 — this section is the one place in the file
+> that is deliberately not pinned to a table.** Plan 6 §B3 retires the invented
+> equity universe: nine stocks with hand-written SEMIS / BIG TECH / OLD WORLD
+> sectors, on a protocol that has never had a market in any of them. **Sectors
+> themselves stay** — they were the right idea over the wrong list. The target
+> is four groups drawn over assets that clear the liquidity gate: `MAJORS`
+> (ETH, BTC), `L1S` (SOL, BNB, AVAX), `MEME` (DOGE), `PAYMENTS` (XRP). Retired
+> keys are kept as tombstones rather than deleted, so a stored lobby naming one
+> resolves instead of throwing. Read `src/data/sectors.ts` for what is actually
+> in `SECTOR_ORDER` today; do not trust a table here until this note is gone.
 
-SEMIS + TECH + MACRO are the nine stocks and MAJORS + DEFI + MEME the nine
-crypto, so the builder's three presets — ALL STOCKS, ALL CRYPTO, FULL BOARD —
-are only the common combinations of the same six chips. `marketOf(sectors)`
-derives the card's label from the assets' own market, so a hand-rolled book
-cannot mislabel itself. `COIN` sits in BIG TECH rather than MAJORS because it
-is a listed stock: with the L1s it would make a MAJORS-only lobby read MIXED.
+Two properties hold across the refactor and are asserted:
 
-The book is the union, in board order. Pick fewer names than legs and Publish
-goes dark with the reason under it — MEME alone is two names, and a three-leg
-duel needs three.
+- `bookForSectors` **filters, never iterates the sector keys**, so `["MEME","L1S"]`
+  and `["L1S","MEME"]` are the same book in the same order. The spin depends on
+  both, so this is a determinism invariant and not a tidiness one.
+- **A group with no qualified members is greyed with its reason — `no live book
+  today` — never hidden.** A host who picks MEME and gets an empty lobby learns
+  nothing; a host who sees MEME greyed learns the shape of the market they were
+  about to trade in. Grades ride alongside: DEEP means market makers quote both
+  sides, THIN means resting orders only — a harder round, not a broken one.
+
+`marketOf(sectors)` derives the card's label from the assets' own market, so a
+hand-rolled book cannot mislabel itself. Pick fewer names than legs and Publish
+goes dark with the reason under it.
 
 ## Game modes
 
@@ -223,19 +249,49 @@ the view never sounds like news arriving.
 ## The parlay cards
 
 `src/engine/parlay.ts`. Each dealt ticker gets its own pick — a card that is a
-tier and a stance — and the parlay is the combination:
+tier and a stance — and the parlay is the combination.
 
-| Tier | Implied hit | Multiplier | Line |
+**A tier is not a constant any more.** It used to be: a `TIERS` table stated a
+multiplier and a hit rate per tier, and nothing anywhere had to make either
+true. `TIERS` is deleted. What replaces it is `TIER_BANDS` — four half-open
+`|delta|` brackets — plus one derivation rule, `1 / probability`, so nothing
+sets a payout by hand:
+
+| Tier | Delta band | Fair odds | Line (seeded tape) |
 |---|---|---|---|
-| SAFE | ~70% | ×1.2 | 0.35× the asset's base move |
-| EVEN | ~50% | ×1.9 | the base move |
-| SHARP | ~25% | ×3.6 | 1.8× |
-| DEGEN | ~8% | ×11 | 3.2× |
+| SAFE | 0.65 – 0.85 | ×1.33 | 0.35× the asset's base move |
+| EVEN | 0.45 – 0.65 | ×1.82 | the base move |
+| SHARP | 0.25 – 0.45 | ×2.86 | 1.8× |
+| DEGEN | 0.05 – 0.25 | ×6.67 | 3.2× |
 
-Bullish puts that leg *over* its line, bearish *under*. The odds on the slip
-are the product of the leg multipliers, times the mode's payout boost; the
-chance is the product of the hit rates. Higher tiers pay more and land less
-often, and the lock waits until every ticker has a pick.
+Delta is the desk's approximation of the risk-neutral chance an option finishes
+in the money, so it is both the game's "chance to land" and the trader's greek —
+one quantity, one word, which is why the card never needs two. The bands tile
+without overlap and both ends are excluded on purpose: below 0.05 the spread is
+wider than the premium, above 0.85 you are paying intrinsic value. **Fair odds
+are the reciprocal of the band midpoint** — no house edge and no invented
+ladder; the old table's `SHARP ×3.6 at 25%` was a 44% overround dressed as
+generosity. The *lines* in the last column are tape geometry, not odds: the
+seeded walk needs a distance and delta does not supply one without a volatility
+model.
+
+Bullish puts that leg *over* its line, bearish *under*. The lock waits until
+every ticker has a pick.
+
+The slip's two numbers are now separated, because the old one conflated them.
+`degeneracyScore` is the product of `1 / prob` across the legs — a **game**
+figure that sizes the escrow stake and drives the loud-card styling, never
+rendered beside a currency symbol. `basketPayoff` is what a basket of real
+options actually pays: the **sum** of the leg payoffs minus the total premium,
+which is the number that reaches a wallet. Multiplying leg multipliers and
+calling the product a payout is arithmetically false — three legs at ×3 is ×27
+as a product and ×3 as a basket — so the parlay drama moved to where it is true.
+All-or-nothing now describes who takes the escrow pot, which genuinely is.
+
+Every card face carries **max loss** above the upside figure, unconditionally: a
+bought option's downside is the premium and nothing more, and that is the single
+most valuable habit this product can build. It is also the honest reason DEGEN
+is survivable — it is cheap, so the bounded loss is small.
 
 The duel itself is decided by legs landed, tie broken on conviction — the
 `settle()` in `src/engine/match.ts`. The parlay decides what the winner banks:
@@ -337,8 +393,6 @@ src/
     hash.ts           string → seed
     sound/            the engine (the only file that touches AudioContext), the
                       61-event map, the voices, the anti-overload budget, hooks
-  server/
-    news.ts           the live wire: four feeds, one frozen snapshot per match
   state/
     match.ts          the board, one match, the tape clock, matchmaking, the
                       mode's derived salts / settle print / targets / odds
@@ -347,25 +401,42 @@ src/
     rank.ts           the rank moment's input, derived from the ledger
     ledger.ts         points, XP, streak, history — the chain seam
   engine/
-    spin.ts           seeded reel: plan, deal, reject duplicates
-    parlay.ts         tiers, cards, multiplier, conditions
+    spin.ts           seeded reel: plan, deal, reject duplicates; and
+                      spinSlice — the market slice, off an injected book
+    parlay.ts         TIER_BANDS, the seeded leg, cardsForSlice / multipleAt /
+                      basketPayoff — the live cards, off an injected book
+    score.ts          duelScore: Σ Δmark × contracts ÷ Σ premium. Pure
     match.ts          leg settlement and the two-player verdict + coach reads
     rank.ts           the ladder maths and the rank moment's timeline
     tape.ts           seeded random walk, sparkline geometry, price formatting
     chart.ts          one sparkline's view data
+  desk/
     payoff.ts         expiry payoff for the ETH vol box + its chart geometry
+    optionize.ts      a seeded card re-denominated against a real listed quote
+    fill.ts           the real fillOrder: the $2 code cap, the ladder, and
+                      runParlayFill — N sequential legs with declared degradation
+    rfq.ts            the patient sealed-bid auction. Out of the duel loop
+    escrow.ts         the DuelEscrow client: stake, lock, claim, refund
   data/
     lobbies.ts        the board, opponents, a lobby's book
-    sectors.ts        the six groups, the presets, market identity
+    sectors.ts        the groups, the presets, market identity, the greyed reason
+    qualify.ts        the asset gate: four conditions, DEEP/THIN, pure
     modes.ts          BLITZ / QUICK / NORMAL and their four knobs
     briefs.ts         the news lines and desk chatter, by seed
     wire.ts           the seeded terminal feed
     news.ts           the NewsSource seam: seeded and live
-    universe.ts       the 18 assets on the board
-    rewards.ts        season tiers, missions, the copy fee, the player
+    universe.ts       the seeded board's assets (mid-retirement — see Sectors)
+    spot.ts           live spot annotations + the book-delta advisory
+    rewards.ts        the MINNOW→WHALE rank ladder, missions, copy fee, player
     leaderboard.ts    the ladder's personas, one seeded skill scalar each
     fixtures.ts       static content (payoffs, the desk slip)
     market.ts         MarketSource interface + the mock implementation
+  server/
+    news.ts           the live wire: four feeds, one frozen snapshot per match
+    thetanuts.ts      /api/market: the live book, MM pricing, greeks, stale-on-fail
+    attest.ts         /api/lock + /api/attest: the referee, one frozen snapshot
+    seats.ts          reads a duel's seats out of the escrow's own storage
+    rooms.ts          the Live arena's process-local invite rooms
   assets/             optional operator-supplied mp3s, gitignored
   components/         MatchSpin, NewsWire, RankUpSequence, RankBadge, CardArt,
                       DitherReveal, StarfieldButton, Sparkline
@@ -385,18 +456,77 @@ rather than forking from it. `src/lib/sx.ts` is the whole mechanism.
 
 Market data sits behind one interface, `MarketSource` in `src/data/market.ts`;
 the app still ships `mockMarketSource` and every live feature degrades to it.
-As of the P7 gate:
 
-| Surface | Live? | Behind |
+### What the product is, today
+
+Four sentences, and each one is checkable in the tree:
+
+1. **A parlay card is priced off the live book by delta band.** A tier is a
+   `|delta|` bracket queried against resting orders, not a constant. A card
+   exists only when an order backs it — `cardsForSlice` filters to rows with a
+   delta *and* a fillable `order`, takes the lowest ask among survivors, and
+   returns `null` when nothing in the book falls in that band. A missing DEGEN
+   BULLISH is a true statement about the market.
+2. **Two clocks, measuring different things.** The duel resolves in minutes on
+   mark-to-market — `duelScore` is `Σ (mark_now − mark_entry) × contracts ÷
+   Σ premium`, return on premium so a duel is not a size contest — and pays the
+   escrow pot. The option itself settles at expiry on chain and pays whoever
+   holds it, regardless of who took the pot. Neither clock simulates the other.
+3. **The asset gate is a runtime probe, not a list.** `qualifiedUnderlyings`
+   measures four conditions against a snapshot — readable spot, ≥6 fillable
+   resting orders, ≥4 of them carrying a usable delta, ≥$50 of summed depth —
+   and grades what passes DEEP (market makers quote both sides) or THIN (resting
+   orders only). `bun run scripts/probe-assets.ts` runs the same gate and prints
+   the table; the output is committed at `docs/asset-gate.md`, because a
+   measurement anyone can re-run beats a claim.
+4. **Staking and the real fill are opt-in and unproven on chain.** See the two
+   warnings below.
+
+### The surfaces, and what each one actually reaches
+
+| Surface | State | Behind |
 |---|---|---|
-| `/api/market` — Base order book + MM pricing + greeks | LIVE (30s poll, stale-on-failure) | `THETADUEL_MARKET` opt-out |
-| `/desk` book, MM chain, payoff spot label, $1 previews | LIVE | same |
-| Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it (~7 of 18 names); the other names render exactly the seeded app | same |
-| "Launch attack" → real `fillOrder`, $2 hard cap, ~$0.01 target | REAL, mainnet | `THETADUEL_TRADE=on` opt-IN, default off |
-| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** — deploy is gated on the owner's own read | owner |
-| Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`) | `ATTESTOR_PRIVATE_KEY` |
+| `/api/market` — Base order book + MM pricing + greeks | CODE LIVE, **book route currently 404** — see the outage below. `/api/market` answers from its last good snapshot and labels itself `stale` | `THETADUEL_MARKET` opt-out |
+| `/desk` book, MM chain, payoff spot label, $1 previews | LIVE, on whatever the market route last held | same |
+| Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it; every other name renders exactly the seeded app | same |
+| Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed **live** run says `BOOK UNREACHABLE` and exits 1, the committed **table** is the frozen capture. Not yet wired into the lobby — `CreateLobby` accepts a qualified list and nothing passes one | — |
+| Parlay fill — N sequential vanilla fills, one tx per leg, $2 cap on the leg **and** the slip sum | CODE COMPLETE, **never executed on Base**. Preview-all-first, exact approvals, stale legs dropped before the first signature, keep-what-landed on a failure, and the policy on screen before you sign | `THETADUEL_TRADE=on` opt-IN, default off |
+| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** | owner |
+| Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`); the verdict is re-derived from committed picks and one snapshot the server reads itself, frozen onto the lock so a re-attest cannot re-roll it | `ATTESTOR_PRIVATE_KEY` |
 | USDC staking UI — the side bet, its six states, the claim | BUILT (`src/state/stake.ts`, `src/desk/escrow.ts`); inert until an escrow is deployed, and never on the mock wallet | `THETADUEL_STAKE=on` opt-IN + `THETADUEL_ESCROW` |
+| Card detail levels (SIMPLE / STANDARD / FULL) | LIVE on the pick screen. Rank picks the opening default and **never gates** — the toggle is a visible three-way switch, reversible in both directions, and the choice persists | — |
 | The seeded board, tape, duel and PTS ledger | SEEDED, permanently and by design — settlement never reads a live number | — |
+
+### ⚠ Not true yet — say it out loud before anyone asks
+
+- **No fill has ever executed on Base from this repo.** Not one, not for a cent.
+  Every path up to the RPC boundary is tested against injected fakes; the money
+  half is unproven. There is no Basescan link in this file for the same reason:
+  there is nothing to link to. The same goes for the escrow — compiled,
+  reviewed, and never deployed.
+- **~~The live book endpoint is 404ing.~~ RETRACTED — the book is healthy.**
+  `fetchOrders()` never requests `indexerApiUrl`; it issues a relative `get("/")`
+  against the axios instance built on `apiBaseUrl`, a Cloudflare Worker origin
+  that has been serving ~382 greeked orders throughout. `indexerApiUrl` is a path
+  *prefix* every other SDK caller appends a subpath to, so requesting it bare
+  404s by design and always did. A real transport failure (local TLS
+  interception, since cleared) printed the wrong field in the probe's error
+  banner; someone curled that URL, got the expected 404, and two unrelated facts
+  fused into "the venue moved its book". Live probe now: ETH $1.18M and BTC
+  $1.41M depth (DEEP), SOL/XRP/BNB/AVAX qualified (THIN) — six underlyings. Do
+  NOT ask the protocol team about this. Full teardown: `docs/book-endpoint.md`.
+
+
+- **Plan 6's engine is ahead of its UI.** `cardsForSlice`, `multipleAt`,
+  `spinSlice` and `qualifiedUnderlyings` are built, pure and unit-tested — and
+  none of them has a production call site yet. So: the pick screen still deals
+  eight seeded cards priced by `desk/optionize.ts` rather than by the protocol's
+  own `calculatePayout`; **no screen renders a dead slot**, so a card always
+  exists; and the DEEP/THIN grade falls back to `THIN` for every symbol because
+  nothing has measured the book. Two edits close all of that, and both are
+  plumbing over code that already exists. Do not read a green suite as a wired
+  product. Every claim in this section is measured item by item, with a
+  `file:line` for each, in [`docs/plan6-audit.md`](docs/plan6-audit.md).
 
 The seeded game never depends on any of it: kill every flag and the app is
 byte-for-byte the offline build. **Residual trust, stated plainly:** the attest

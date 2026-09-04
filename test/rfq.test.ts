@@ -1011,3 +1011,89 @@ describe("the panel is inert without a wallet", () => {
     expect(globalThis.localStorage?.length ?? 0).toBe(before);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The underlying is the protocol's eight, not our two
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * plan6 §9: *"No hardcoded `"ETH" | "BTC"` union survives anywhere in the tree."*
+ *
+ * `RfqInput.underlying` was one of the two live sites when plan 6's Definition of
+ * Done was audited. It read `"ETH" | "BTC"`, justified as "nothing else has a
+ * Thetanuts options market" — which is false, and is exactly the conflation §7
+ * was written to kill: MM *streaming* pricing is two assets, the price feeds are
+ * eight, and the resting book sits in between. The SDK's own `RFQUnderlying` is
+ * the eight, so our narrower type was us deciding what the venue sells.
+ *
+ * These tests are the tripwire on the widening — the union must stay equal to the
+ * SDK's, and no code path in `rfq.ts` may start branching on which of the eight
+ * it was handed.
+ */
+describe("RfqUnderlying — the SDK's eight, threaded verbatim", () => {
+  const EIGHT = ["ETH", "BTC", "SOL", "DOGE", "XRP", "BNB", "PAXG", "AVAX"] as const;
+
+  test("the union mirrors the SDK's own RFQUnderlying, member for member", async () => {
+    // Read the declaration rather than trusting a memory of it: an SDK bump that
+    // adds or drops an asset must fail HERE, in a test that names the file, and
+    // not silently in a request the makers cannot price.
+    const dts = await Bun.file(
+      new URL(
+        "../node_modules/@thetanuts-finance/thetanuts-client/dist/index.d.ts",
+        import.meta.url,
+      ),
+    ).text();
+    const decl = dts.match(/type RFQUnderlying = ([^;]+);/);
+    expect(decl).not.toBeNull();
+    const sdk = [...decl![1]!.matchAll(/'([A-Z]+)'/g)].map((m) => m[1]!);
+    expect(sdk).toEqual([...EIGHT]);
+  });
+
+  test("every one of the eight is assignable, and reaches the SDK builder unchanged", async () => {
+    for (const underlying of EIGHT) {
+      const seen: string[] = [];
+      // `satisfies RfqInput` is the compile-time half of the assertion: this
+      // block does not typecheck if the union ever narrows back to two.
+      const input = { ...INPUT, underlying } satisfies RfqInput;
+      const s = spy({
+        buildRequest: (given: RfqInput) => {
+          seen.push(given.underlying);
+          return makeRequest();
+        },
+      });
+      const outcome = await runRfq(input, s.deps, FAST);
+      expect({ underlying, status: outcome.status }).toEqual({ underlying, status: "settled" });
+      // Threaded, not translated, not defaulted, not refused.
+      expect(seen).toEqual([underlying]);
+    }
+  });
+
+  test("a non-ETH/BTC request is not special-cased anywhere in the flow", async () => {
+    // AVAX is the asset the old union excluded and the live board already
+    // carries (bid-only). Same call sequence, same statuses, same breadcrumb
+    // shape as ETH — if any branch ever grows an ETH/BTC test, this diverges.
+    const eth = spy();
+    await runRfq(INPUT, eth.deps, FAST);
+    const avax = spy();
+    await runRfq({ ...INPUT, underlying: "AVAX" }, avax.deps, FAST);
+
+    expect(avax.calls).toEqual(eth.calls);
+    expect(avax.storage.writes.length).toBe(eth.storage.writes.length);
+    const crumb = JSON.parse(avax.storage.writes[0]![1]!) as { underlying: string };
+    expect(crumb.underlying).toBe("AVAX");
+  });
+
+  test("widening the type did not widen the panel — TRADABLE stays a subset", async () => {
+    // The panel offers two because that is where a bid is likeliest, which is a
+    // PRODUCT decision and not a claim about the venue. It must stay inside the
+    // union, so a chip can never build a request the type would refuse.
+    const panel = await Bun.file(
+      new URL("../src/ui/RfqPanel.tsx", import.meta.url),
+    ).text();
+    const decl = panel.match(/const TRADABLE = \[([^\]]+)\]/);
+    expect(decl).not.toBeNull();
+    const offered = [...decl![1]!.matchAll(/"([A-Z]+)"/g)].map((m) => m[1]!);
+    expect(offered.length).toBeGreaterThan(0);
+    for (const sym of offered) expect(EIGHT).toContain(sym as (typeof EIGHT)[number]);
+  });
+});

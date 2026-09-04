@@ -248,12 +248,60 @@ export interface RfqRequest {
   requesterPublicKey: string;
 }
 
+/**
+ * The assets an RFQ may name.
+ *
+ * **This is the SDK's own `RFQUnderlying`**, mirrored structurally rather than
+ * imported (nothing else in this file imports an SDK type; the whole dep seam is
+ * structural, so that a fixture is assignable without the package present).
+ * Verify it against `node_modules/@thetanuts-finance/thetanuts-client/dist/index.d.ts`
+ * — `type RFQUnderlying` — after any SDK bump.
+ *
+ * ## Why this is eight and not two
+ *
+ * This field used to read `"ETH" | "BTC"`, justified as *"nothing else has a
+ * Thetanuts options market"*. **That justification was wrong**, and plan 6 §7 is
+ * the correction: there are three asset sets and they are three different sizes.
+ * Eight assets have a Chainlink price feed on Base; seven have a readable spot;
+ * only **two** — ETH and BTC — have market makers *streaming* two-sided quotes
+ * through `getPricingArray` (FINDINGS §3, §5.5). The old comment collapsed the
+ * third set onto the first and mistook one quote source for the whole market.
+ * AVAX is on the resting board today, bid-only, and it was that same conflation
+ * that once made it the broken default asset.
+ *
+ * So the union widens to the protocol's own eight. Narrowing our type below a
+ * type the SDK accepts is us deciding what the venue sells.
+ *
+ * ## What the widening does NOT claim
+ *
+ * That an RFQ on DOGE will get a bid. It very likely will not: RFQ is a
+ * sealed-bid auction, market makers owe us nothing, and the two assets they
+ * stream quotes on are the two they are most likely to answer for. **But that
+ * outcome is already a first-class state in this file** — `awaitOffers` returns
+ * `unanswered`, not an error, precisely because "nobody bid" is the protocol
+ * working (see the module docblock, phase 2). A type that refuses the request
+ * ahead of time is not protecting anyone; it is pre-answering a question only
+ * the makers can answer, and answering it wrong for six assets.
+ *
+ * Widening the type is not widening the panel: `RfqPanel.tsx` offers ETH and BTC
+ * from its own `TRADABLE` list, which is a **product** decision about where the
+ * demo's odds of a fill are best, and it stays a subset of this union. Nothing
+ * in this module branches on the value — it is threaded to the SDK's builder and
+ * written into a public breadcrumb — so no code path here has an opinion about
+ * which of the eight it is holding.
+ *
+ * @see plan6-real-parlay.md §7 — the three asset sets, and why MM pricing grades
+ *      rather than gates.
+ */
+export type RfqUnderlying = "ETH" | "BTC" | "SOL" | "DOGE" | "XRP" | "BNB" | "PAXG" | "AVAX";
+
 /** What the panel asks for, in human units, before the SDK's builder runs. */
 export interface RfqInput {
   /** The connected wallet. */
   requester: string;
-  /** ETH or BTC. Nothing else has a Thetanuts options market (FINDINGS §3). */
-  underlying: "ETH" | "BTC";
+  /** One of the protocol's eight. See {@link RfqUnderlying} for why it is eight
+   *  and not the two this field used to allow. */
+  underlying: RfqUnderlying;
   optionType: "CALL" | "PUT";
   /** Human-readable, e.g. `4400` for $4,400. */
   strike: number;
