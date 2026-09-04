@@ -75,6 +75,46 @@ const server = Bun.serve({
         { projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "" },
         { headers: { "cache-control": "no-store" } },
       ),
+
+    /**
+     * The whole client-visible boot configuration, of which the wallet id is
+     * now one field. `/api/wallet-config` above stays byte-identical as the
+     * alias `src/wallet/config.ts` already fetches — this route supersets it
+     * rather than replacing it, so the wallet layer needs no edit and the
+     * rollback story ("flags off → today's app") stays exact.
+     *
+     * Everything here is public by construction: a WalletConnect id, a chain
+     * id, two on-chain addresses and three booleans. The secrets that make
+     * these useful — `RPC_URL`, `ATTESTOR_PRIVATE_KEY` — are read only on the
+     * server and never appear in this envelope (`test/secrets.test.ts` holds
+     * that line for the bundle).
+     *
+     * Feature flags, and why they default the way they do:
+     *   - `market` is OPT-OUT (`THETADUEL_MARKET=off` is the kill switch): live
+     *     market data is read-only and display-only, so the safe default is on
+     *     and a dead API degrades to the mock rather than to a broken page.
+     *   - `stake` and `trade` are OPT-IN (`=on` exactly): both move real money
+     *     on Base mainnet. Anything that can spend USDC is off until an
+     *     operator says otherwise, in this process, on purpose.
+     *
+     * `no-store`, like the alias: flipping a kill switch must take effect on
+     * the next reload, not after a cache expires.
+     */
+    "/api/config": () =>
+      Response.json(
+        {
+          projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "",
+          chainId: 8453,
+          referrer: Bun.env.THETADUEL_REFERRER ?? "",
+          escrow: Bun.env.THETADUEL_ESCROW ?? "",
+          features: {
+            market: Bun.env.THETADUEL_MARKET !== "off",
+            stake: Bun.env.THETADUEL_STAKE === "on",
+            trade: Bun.env.THETADUEL_TRADE === "on",
+          },
+        },
+        { headers: { "cache-control": "no-store" } },
+      ),
     ...ASSETS,
     "/*": index,
   },

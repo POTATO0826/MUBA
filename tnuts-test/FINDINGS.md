@@ -263,3 +263,240 @@ Alchemy key rather than retrying.
 
 Steps 5 and 6 make no network calls at all — `chainConfig` is bundled static config and
 `utils.calculatePayout` is local math. Both completed in 2ms.
+
+---
+
+## 0.3.0 delta (verified from the installed .d.ts, 2026-09-04)
+
+Everything above was captured against `@thetanuts-finance/thetanuts-client@0.2.5`, which
+`tnuts-test/package.json` still pins — that pin is the provenance of this document and is
+deliberately **not** bumped. The main app now depends on `^0.3.0` (root `package.json`,
+resolved `0.3.0`, `sha512-+HFZVP8U69Om...`). This section records what changed, read
+directly out of the shipped types rather than the docs.
+
+Source of every quote below (identical bytes; the ESM twin is `index.d.mts`):
+`node_modules/@thetanuts-finance/thetanuts-client/dist/index.d.ts` (14,833 lines, 494,767 bytes).
+Runtime confirmations are from `dist/index.js`.
+Package: MIT, `main dist/index.js`, `types dist/index.d.ts`, hard deps
+`axios ^1.16.1`, `ethers ^6.0.0` (also a required peer), `viem ^2.47.0`.
+
+### RANGER is supported — the P2 gate resolves to the SUPPORTED branch
+
+`PayoutType` (`index.d.ts:6500`) is a ten-member union and it names `ranger` explicitly:
+
+```ts
+type PayoutType = 'call' | 'put' | 'call_spread' | 'put_spread' | 'call_fly' | 'put_fly'
+                | 'call_condor' | 'put_condor' | 'iron_condor' | 'ranger';
+```
+
+The doc comment above it (`:6480-6499`) carries the strike conventions as a table. The two
+that matter for us:
+
+| type | count | order | invariant |
+|---|---|---|---|
+| `iron_condor` | 4 | `[putLower, putUpper, callLower, callUpper]` ASCENDING | `putUpper <= callLower` (non-overlapping) |
+| `ranger` | 4 | `[callLower, callUpper, putLower, putUpper]` ASCENDING | `callUpper - callLower === putUpper - putLower` AND `callUpper < putLower` |
+
+This is not just a type-level claim: `dist/index.js:10966` (payout) and `:11117`
+(collateral) both contain a real `case "ranger":` implementing the zone-bound math and
+throwing `INVALID_PARAMS` on each invariant — `"Ranger requires exactly four strikes"`,
+`"Ranger requires callLower < callUpper"`, `"Ranger spread widths must be equal
+(callUpper-callLower === putUpper-putLower)"`, `"Ranger requires callUpper < putLower
+(zone gap)"`. The 0.2.5 limitation this file recorded is fixed. Multi-leg off-chain payout
+math works.
+
+**Two namespaces, do not conflate them** — this is the "one map, no guessing" the plan asks for:
+
+- `PayoutType` (lowercase, payout/collateral math): `'ranger'`, `'iron_condor'`, `'call_fly'`, ...
+- `ProductName` (`:14681`, UPPER_SNAKE, registry/implementation names):
+  `'INVERSE_CALL' | 'PUT' | 'LINEAR_CALL' | 'CALL_SPREAD' | 'INVERSE_CALL_SPREAD' | 'PUT_SPREAD' | 'CALL_FLY' | 'PUT_FLY' | 'CALL_CONDOR' | 'PUT_CONDOR' | 'IRON_CONDOR' | 'RANGER' | 'PHYSICAL_CALL' | 'PHYSICAL_PUT'`
+  — the same keys as `ImplementationAddresses` (`:186`ff, which has a `RANGER` field).
+- A third, unrelated union also exists and must not be mistaken for either:
+  `OptionStructure` (`:14541`) `= 'call' | 'put' | 'call_spread' | 'put_spread' | 'butterfly' | 'iron_condor' | 'straddle' | 'strangle'` — no `ranger`, and it has `straddle`/`strangle` that `PayoutType` does not.
+- `ProductType` (`:14537`) `= 'spread' | 'butterfly' | 'condor'` is the coarse bucket returned by `utils.getProductType()`.
+
+Payout entry points (`UtilsModule`):
+
+```ts
+calculatePayout(params: PayoutParams): bigint;            // :6655  — sync, local math
+calculateCollateral(params: CollateralParams): bigint;    // (same block)
+calculateMaxPayout(order: { optionType: number; strikes?: bigint[];
+                            isIronCondor?: boolean; isRanger?: boolean },
+                   numContracts: bigint): bigint;         // :6866
+calculatePayoutAtPrice(order: { optionType: number; strikes?: bigint[];
+                                isIronCondor?: boolean; isRanger?: boolean },
+                       numContracts: bigint, settlementPrice: bigint): bigint;  // :6889
+getProductType(order: { optionType: number; strikes?: bigint[] }):
+  'vanilla' | 'spread' | 'butterfly' | 'condor';          // :6924
+```
+
+`PayoutParams` (`:6504`) = `{ type: PayoutType; strikes: bigint[]; settlementPrice: bigint;
+numContracts: bigint; priceDecimals?: number /* 8 */; sizeDecimals?: number /* 18 */;
+collateralDecimals?: number /* 6 */ }`. `CollateralParams` (`:6523`) is the same minus
+`settlementPrice`.
+
+WARNING — **the 4-strike discriminator trap.** `calculateMaxPayout` / `calculatePayoutAtPrice`
+take the *order* shape, which does not carry a payout type — the SDK derives one via the
+private `getPayoutTypeFromOptionType` (`:7002`), whose own doc says: *"4-strike orders
+default to call_condor / put_condor. Callers that know the order is an iron condor or ranger
+must pass the appropriate flag in `opts`."* So a ranger read off the book and fed to
+`calculatePayoutAtPrice` **silently prices as a condor** unless we set `isRanger: true`.
+Our `classify()` heuristic (equal wing widths + zone gap = RANGER) is what sets that flag;
+`validateRanger(strikes: number[]): ValidationResult` (`:14727`) is the SDK's own checker
+and is exported, so the heuristic can be cross-checked rather than trusted.
+
+### `previewFillOrder` — 10 fields, and it is SYNCHRONOUS
+
+The docs' two-field description is wrong; the richer shape wins, as the design assumed —
+and there is a further correction the design did not have: **it does not return a Promise.**
+
+```ts
+// index.d.ts:1991
+previewFillOrder(orderWithSig: OrderWithSignature, usdcAmount?: bigint, referrer?: string): {
+    numContracts: bigint;
+    maxContracts: bigint;
+    collateralToken: string;
+    pricePerContract: bigint;
+    totalCollateral: bigint;
+    referrer: string;
+    maker: string;
+    expiry: bigint;
+    isCall: boolean;
+    strikes: bigint[];
+};
+```
+
+Ten fields, not eleven and not two. `await`ing it is harmless but misleading; the honest
+call site is a plain call. `usdcAmount` is optional — omitted means "max available" — and
+the doc comment adds *"Amount of collateral to spend (6 decimals)"*. The book-depth guard
+the plan specifies (`numContracts === 0n` then grey out, "no fill available") reads a field
+that is present here, so it needs no defensive shape check; the surrounding preview object
+is fully typed and stable.
+
+Companion, same module, also sync: `calculateMaxContracts(orderWithSig: OrderWithSignature): bigint`
+(`:1973`) — "*For PUT options: maxContracts = maxCollateral / strike. For CALL options:
+INVERSE_CALL maxContracts = maxCollateral / decimal_adjustment; LINEAR_CALL maxContracts =
+maxCollateral / strike (same as PUT). For SPREADs: maxContracts = maxCollateral /
+spreadWidth*", returning 6 decimals for USDC collateral. Its `@param` says the order must
+carry `rawApiData` — which is doc contradiction #10 again: `rawApiData` is real and load-bearing.
+
+### `fillOrder` — arity 3, two optional
+
+```ts
+// index.d.ts:2025
+fillOrder(orderWithSig: OrderWithSignature, usdcAmount?: bigint, referrer?: string): Promise<TransactionReceipt>;
+```
+
+Declared throws: `ORDER_EXPIRED`, `INVALID_ORDER`, `SIGNER_REQUIRED`. Note the return is a
+raw ethers `TransactionReceipt`, **not** the exported `FillOrderResult` type — that type
+exists in the export list but is not what this method hands back. Do not annotate against it.
+
+Related, for a wallet that is not the SDK's signer:
+`encodeFillOrder(...)` returning `{ to: string; data: string }`, and
+`swapAndFillOrder(orderWithSig, swapRouter, swapSrcToken, swapSrcAmount, swapData, referrer?)`.
+
+### `ensureAllowance` — arity 3, returns a nullable receipt
+
+```ts
+// index.d.ts:577  (ERC20Module)
+ensureAllowance(token: string, spender: string, amount: bigint): Promise<TransactionReceipt | null>;
+```
+
+Three arguments, no options bag, no fourth `owner`. **`null` is the success case for "no
+approval was needed"** — the doc comment spells it out: *"Transaction receipt if approval
+was needed, null otherwise"*. Code that treats a falsy return as failure will report a
+phantom error on every fill after the first.
+
+WARNING — there is an exported `EnsureAllowanceResult` interface (`:14492`),
+`{ approvalNeeded: boolean; receipt: TransactionReceipt | null; currentAllowance: bigint }`,
+that looks like this method's return type and **is not**. It is dead weight from the
+caller's perspective in 0.3.0. Same trap as `FillOrderResult`. Also present:
+`getAllowance(token, owner, spender): Promise<bigint>` (`:551`) if we want to show the
+current allowance before approving.
+
+Exact-amount approval (never `MaxUint256`) is unaffected: pass `preview.totalCollateral`.
+
+### Referrer-fee methods — all four names exist, on `client.optionBook`
+
+The digest's C1/N5 correction is confirmed and then some — the 0.3.0 surface is larger than
+"claimFees / claimAllFees":
+
+```ts
+getFees(token: string, referrer: string): Promise<bigint>;                 // :2070
+getAllClaimableFees(address: string): Promise<ClaimableFee[]>;             // :2089
+claimFees(token: string): Promise<TransactionReceipt>;                     // :2103
+claimAllFees(address?: string): Promise<ClaimFeeResult[]>;                 // :2132
+getReferrerFeeSplit(referrer: string): Promise<bigint>;                    // :2181
+setReferrerFeeSplit(referrer: string, feeBps: bigint): Promise<TransactionReceipt>;  // admin only, reverts for us
+sweepProtocolFees(token: string): Promise<TransactionReceipt>;             // admin only
+```
+
+- `ClaimableFee` (`:1674`) = `{ token: string; symbol: string; decimals: number; amount: bigint }`.
+  `getAllClaimableFees` fans out over every collateral token in the chain config with
+  `Promise.allSettled` and returns only the non-zero balances.
+- `ClaimFeeResult` (`:1691`) = `{ symbol: string; amount: bigint; receipt?: TransactionReceipt; error?: Error }`
+  — per-token, partial failure is normal and the caller is expected to read both fields.
+  `claimAllFees` claims sequentially (each write must mine before the next gas estimate).
+- `claimAllFees(address?)` defaults `address` to the signer's — but our referrer address is
+  not necessarily the connected wallet, so pass it explicitly.
+- `getReferrerFeeSplit` returns **basis points as a bigint**. `0n` for an un-whitelisted
+  referrer, which is our expected reading: the `/desk` footer says `SPLIT 0 bps — not yet
+  whitelisted` and calls it attribution, never revenue.
+
+### `ThetanutsClientConfig` — `referrer` and `logger` are both first-class
+
+```ts
+// index.d.ts:136
+interface ThetanutsClientConfig {
+    chainId: SupportedChainId;      // 8453 | 1  (:112) — a literal union, so Number(env) will not typecheck
+    provider: Provider;             // ethers v6, REQUIRED
+    signer?: Signer;                // optional — omit for the read-only server client
+    referrer?: string;              // "Referrer address for fee sharing (optional)"
+    apiBaseUrl?: string;
+    indexerApiUrl?: string;
+    pricingApiUrl?: string;         // defaults to pricing.thetanuts.finance
+    wsUrl?: string;
+    stateApiUrl?: string;
+    env?: Environment;              // 'dev' | 'prod', default 'prod'
+    logger?: ThetanutsLogger;
+    keyStorageProvider?: KeyStorageProvider;  // auto-detects: localStorage in browser, file storage in Node
+    rfqKeyPrefix?: string;          // default 'thetanuts_rfq_key'
+}
+```
+
+So P1's "client ctor gains `referrer` + `logger`" needs no wrapper — both are native
+fields. `ThetanutsLogger` (`:8`) is four **optional** methods,
+`debug/info/warn/error(msg: string, meta?: unknown): void`, so a partial logger is legal;
+`consoleLogger` and `noopLogger` are exported if we want neither. `SupportedChainId` being
+the literal union `8453 | 1` means our config plumbing must narrow, not just parse.
+
+WARNING — `keyStorageProvider` auto-detecting `localStorage` in a browser is the
+plaintext-ECDH-key hazard the plan's P7 stretch flags. Server-side (our reads) it never engages.
+
+### Doc contradictions #9 / #10 — both now resolved by the shipped types
+
+- **#9 `previewFillOrder`**: resolved in favour of the rich shape, above. Additional
+  correction: it is synchronous.
+- **#10 `rawApiData`**: confirmed. `calculateMaxContracts`'s `@param` reads
+  *"Order with signature containing rawApiData"* — the field the docs describe under an
+  `OrderWithSignature` heading is genuinely `rawApiData`, and hansen's
+  `entry.rawApiData.priceFeed` read is correct. Comment-protect it at the call site.
+- **Fee cap, 3e-4 vs 4e-4** — the earlier FINDINGS reading holds in 0.3.0.
+  `applyFeeAdjustment(bid, ask, markPrice?, isWhitelisted?): [number, number]` (`:7465`)
+  documents its own formula as *"min(0.0004, price * 0.125) - matches v4-webapp"*. That is
+  **4e-4**, not the docs page's 3e-4. Read `feeAdjustedBid`/`feeAdjustedAsk` off the API
+  rather than recomputing, and if we ever must recompute, use this exported helper.
+
+### Consequences for the phases
+
+- **P2 RANGER: take the supported branch.** Build the `PAYOUT_TYPE` map over the lowercase
+  `PayoutType` namespace, keep `ProductName`/`ImplementationAddresses` (`RANGER`) strictly
+  separate, and always pass `isRanger`/`isIronCondor` on the order-shaped calls or 4-strike
+  structures price as condors. The `PAYOFF UNAVAILABLE — ranger math is on-chain only`
+  fallback copy is not needed.
+- **P3 fill sequence**: `previewFillOrder` is sync (no await needed, no loading state for
+  it), `ensureAllowance` is `(token, spender, amount)` and returns `null` on the happy
+  no-approval path, `fillOrder` is `(order, usdcAmount, referrer)` returning an ethers
+  receipt. `preview.totalCollateral` is the exact-approval amount and the number the user
+  clicks.
+- **P1 client construction**: `{ chainId: 8453, provider, referrer, logger }` — all native.
