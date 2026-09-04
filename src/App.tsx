@@ -11,6 +11,7 @@ import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
 import { useMatch } from "./state/match.ts";
+import { useRankProgress } from "./state/rank.ts";
 import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
@@ -27,6 +28,9 @@ import { Study } from "./views/Study.tsx";
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
   "radial-gradient(900px 500px at 8% 0%, rgba(99,102,241,.08), transparent 55%),#09090b";
+
+/** Wave 7 replaces this with `actions.go("ranks")`. */
+const noop = (): void => {};
 
 const MATCH_STAGES = new Set(["room", "spin", "study", "parlay", "duel", "result"]);
 
@@ -57,6 +61,10 @@ export function App({ source, newsSource = mockNewsSource, route }: {
 
   const { state, derived, actions } = useMatch(route ?? currentRoute());
   const ledger = useLedger();
+  // The rank moment's whole input. Derived from the ledger, so by the time
+  // `Result` mounts (App settles on duel → result) `history[0]` is the match
+  // that just finished and `rank.gain` is exactly what it paid.
+  const rank = useRankProgress(ledger);
 
   // The news terminal's feed. Seeded synchronously off the match's own salt, so
   // the wire is populated on the first paint; the live source swaps under it if
@@ -110,10 +118,25 @@ export function App({ source, newsSource = mockNewsSource, route }: {
         stake: derived.stakePoints,
         points: v.meWins ? derived.pointsIfWon : 0,
         won: v.meWins,
+        mode: derived.lobby.mode,
+        // A sweep is a win with every leg cashed — the ledger doubles its XP.
+        sweep: v.meWins && v.myScore === derived.myLegs.length,
+        // The tickers the spin DEALT, by raw sector: how this player plays.
+        sectors: derived.arena.map((s) => meta(s).sector),
       });
     }
     actions.settle();
-  }, [actions, derived.lobby, derived.verdict, derived.stakePoints, derived.pointsIfWon, ledger, state.seed]);
+  }, [
+    actions,
+    derived.lobby,
+    derived.verdict,
+    derived.stakePoints,
+    derived.pointsIfWon,
+    derived.myLegs,
+    derived.arena,
+    ledger,
+    state.seed,
+  ]);
 
   const lobby = derived.lobby;
   const opp = derived.opponent;
@@ -261,8 +284,16 @@ export function App({ source, newsSource = mockNewsSource, route }: {
           mode={derived.mode}
           sectors={lobby.sectors}
           prizeLabel={derived.prizeLabel}
+          xpGain={rank.gain}
+          xpBefore={rank.xpBefore}
+          xpAfter={rank.xpAfter}
+          streak={rank.streak}
+          posBefore={rank.posBefore}
+          posAfter={rank.posAfter}
           onBackToBattles={actions.backToBattles}
           onRematch={actions.go("create")}
+          // Wave 7 routes `/ranks`; until then the ladder link is inert.
+          onOpenLadder={noop}
         />
       )}
 

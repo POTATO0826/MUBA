@@ -9,9 +9,10 @@ import { MODES, MODE_SALT } from "../src/data/modes.ts";
 import { bookForSectors } from "../src/data/sectors.ts";
 import { edgeOf, scoreOf, settle } from "../src/engine/match.ts";
 import { buildLeg } from "../src/engine/parlay.ts";
+import { xpForMatch } from "../src/engine/rank.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
-import { OPP_READY_MS } from "../src/state/match.ts";
+import { OPP_READY_MS, TAPE_STEP } from "../src/state/match.ts";
 import type { Mode, SectorKey } from "../src/types.ts";
 
 let container: HTMLDivElement;
@@ -86,6 +87,12 @@ async function readyBoth() {
 async function acceptAndSkip() {
   acceptLobby();
   await readyBoth();
+  click("Skip ↦");
+}
+
+/** Past the rank gate: open the sequence, park it synchronously. */
+function throughRank() {
+  click("Next → your rank");
   click("Skip ↦");
 }
 
@@ -788,13 +795,157 @@ describe("the result", () => {
     expect(text()).toContain("LESSON FOR NEXT DUEL");
     expect(text()).toMatch(/PTS/);
 
+    throughRank();
     click("Back to battles");
     expect(text()).toContain("Open battles");
   });
 
   test("rematch opens the lobby builder", () => {
     mount("/match/kz-semis/result?seed=424242");
+    throughRank();
     click("Rematch · new lobby");
     expect(text()).toContain("Create lobby");
   });
+});
+
+describe("the rank moment", () => {
+  /** The same settled result the debrief tests read — a NORMAL, 3-leg lobby. */
+  const RESULT = "/match/kz-semis/result?seed=424242";
+  const labels = () => buttons().map((b) => (b.textContent ?? "").trim());
+  const sequence = () => container.querySelector<HTMLElement>("[data-rank-sequence]");
+  const copyPanel = () => container.querySelector<HTMLElement>("[data-rank-copy]")?.textContent ?? "";
+  const nextSub = () => container.querySelector<HTMLElement>("[data-next-sub]")?.textContent ?? "";
+
+  test("the exits are sealed until the rank moment has played", () => {
+    mount(RESULT);
+    // One way out of the debrief, and it is not a way off the screen.
+    expect(labels()).toContain("Next → your rank");
+    expect(labels()).not.toContain("Back to battles");
+    expect(labels()).not.toContain("Rematch · new lobby");
+    expect(labels()).not.toContain("View the full ladder →");
+    expect(sequence()).toBeNull();
+    expect(container.querySelector("[data-rank-exits]")).toBeNull();
+
+    throughRank();
+
+    expect(sequence()).not.toBeNull();
+    expect(container.querySelector("[data-rank-exits]")).not.toBeNull();
+    expect(labels()).toContain("Back to battles");
+    expect(labels()).toContain("Rematch · new lobby");
+    expect(labels()).toContain("View the full ladder →");
+    // …and the bar that opened the moment is spent, sub-line and all.
+    expect(labels()).not.toContain("Next → your rank");
+    expect(container.querySelector("[data-next-sub]")).toBeNull();
+  });
+
+  test("the debrief dims through the gate, and is never unmounted", () => {
+    mount(RESULT);
+    const debrief = container.querySelector<HTMLElement>("[data-debrief]")!;
+    expect(Number(debrief.style.opacity)).toBe(1);
+
+    click("Next → your rank");
+    // The same node, restyled — React never tore the debrief down.
+    expect(container.querySelector("[data-debrief]")).toBe(debrief);
+    expect(Number(debrief.style.opacity)).toBeGreaterThan(0);
+    expect(Number(debrief.style.opacity)).toBeLessThan(1);
+    expect(text()).toMatch(/takes? the pool/);
+    expect(text()).toContain("WHAT DECIDED IT");
+    expect(text()).toContain("Coach · match summary");
+    expect(container.querySelector('[data-summary="You"]')).not.toBeNull();
+
+    click("Skip ↦");
+    expect(container.querySelector("[data-debrief]")).toBe(debrief);
+    expect(Number(debrief.style.opacity)).toBe(1); // lit again, still reading
+    expect(text()).toMatch(/takes? the pool/);
+    expect(text()).toContain("WHAT DECIDED IT");
+  });
+
+  test("the moment names the band, counts the XP and slides the ladder position", () => {
+    mount(RESULT);
+    throughRank();
+
+    const seq = sequence()!;
+    const label = seq.dataset.rank ?? "";
+    // A tier and a division numeral: "SHARK II".
+    expect(label).toMatch(/^(MINNOW|FISH|SHARK|ORCA|WHALE) (I|II|III)$/);
+    expect(seq.textContent).toContain(label);
+    expect(seq.textContent).toContain("XP");
+    expect(seq.textContent).toContain("LADDER POSITION");
+
+    // The bar and the numeral both parked on their end state.
+    expect(container.querySelector("[data-rank-bar]")).not.toBeNull();
+    expect(Number(container.querySelector<HTMLElement>("[data-rank-xp]")?.dataset.rankXp)).toBeGreaterThan(0);
+    expect(container.querySelector<HTMLElement>("[data-rank-ladder]")?.textContent).toMatch(/#\d+\s*→\s*#\d+/);
+  });
+
+  test("the copy-trade panel prices the fee and takes exactly one of its two states", () => {
+    mount(RESULT);
+    throughRank();
+
+    const copy = copyPanel();
+    expect(copy).toContain("3.5% PER COPIED TRANSACTION");
+    expect(copy).toContain("COPIERS");
+    // Unlocked or still climbing — one of the two, never both, never neither.
+    const states = ["COPY-TRADE ACTIVE", "UNLOCK COPY-TRADE"].filter((s) => copy.includes(s));
+    expect(states).toHaveLength(1);
+  });
+
+  test("the same result path plays the same rank moment twice", () => {
+    mount(RESULT);
+    throughRank();
+    const first = copyPanel();
+    const label = sequence()!.dataset.rank;
+    expect(first.length).toBeGreaterThan(0);
+
+    remount(RESULT);
+    throughRank();
+    expect(copyPanel()).toBe(first);
+    expect(sequence()!.dataset.rank).toBe(label);
+  });
+
+  test(
+    "the pending line is the XP the settled match actually paid",
+    async () => {
+      // A result opened by its address is a replay: nothing went through the
+      // ledger, so there is a season line but nothing pending on it.
+      mount(RESULT);
+      expect(nextSub()).toContain("XP PENDING");
+      expect(nextSub()).toContain("+0 XP");
+
+      // Played for real, the line is `xpForMatch` on the lobby's own mode.
+      // lx-degen is the BLITZ fixture — 56 prints of tape rather than 200,
+      // which is the only window that settles inside a test's patience.
+      remount("/match/lx-degen/parlay?seed=424242");
+      const realNow = Date.now;
+      try {
+        // Past the 20-second pick clock: every leg auto-locks at EVEN ↑.
+        Date.now = () => realNow.call(Date) + 60_000;
+        await act(async () => {
+          await sleep(150);
+        });
+      } finally {
+        Date.now = realNow;
+      }
+      expect(window.location.pathname).toBe("/match/lx-degen/duel");
+
+      // The tape runs TAPE_STEP prints per 120ms tick, from zero.
+      await act(async () => {
+        await sleep((MODES.BLITZ.settleAt / TAPE_STEP) * 120 + 600);
+      });
+      click("Settle → result");
+
+      // What the ledger banked, read off the screen rather than re-derived:
+      // the header names the winner and prints the leg count either way.
+      const won = text().includes("You take the pool");
+      const myScore = Number(text().match(/(\d+) legs? vs \d+/)?.[1]);
+      expect(Number.isFinite(myScore)).toBe(true);
+      const expected = xpForMatch("BLITZ", won && myScore === 3, won);
+
+      expect(nextSub()).toContain(`+${expected} XP PENDING`);
+      // …and the moment counts out that same figure.
+      throughRank();
+      expect(sequence()!.textContent).toContain(`+${expected} XP`);
+    },
+    15_000,
+  );
 });

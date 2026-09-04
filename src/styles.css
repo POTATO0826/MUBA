@@ -117,8 +117,130 @@ button {
   to { stroke-dashoffset: 0; }
 }
 
+/* ---- The rank moment (plan 4 §4). Seven of these are the stage effects of
+ * the rank sequence, in stage order; vcPodiumRise belongs to the ladder page.
+ * Every one of them is switched off wholesale by the reduced-motion block
+ * below, which is why no rank surface may depend on a keyframe for its
+ * final resting state — the keyframes decorate, they never position. ---- */
+
+/* Stage 1 · shutter — the rank panel unrolls from its top edge. */
+@keyframes vcRankPanel {
+  from {
+    opacity: 0;
+    transform: scaleY(0.62);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+/* Stage 1 · shutter — an accent scan-line runs down the panel as it opens.
+ * vcSweep's vertical cousin; the fade at both ends keeps it from clipping. */
+@keyframes vcRankSweep {
+  0% {
+    opacity: 0;
+    transform: translateY(-140%);
+  }
+  18% { opacity: 1; }
+  82% { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform: translateY(420%);
+  }
+}
+
+/* Stage 2 · badge — the sigil drops in and overshoots once before settling. */
+@keyframes vcBadgeDrop {
+  0% {
+    opacity: 0;
+    transform: translateY(-20px) scale(1.22);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(3px) scale(0.96);
+  }
+  82% { transform: translateY(-1px) scale(1.02); }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Stage 2 · badge — the progress ring draws itself to the tier's fill.
+ * RankBadge publishes --vc-ring-len (the circumference) and --vc-ring-off
+ * (the resting offset for `pct`) on the ring, so a parent needs only
+ * `animation:vcRingDraw …` and the ring lands exactly where it already was. */
+@keyframes vcRingDraw {
+  from { stroke-dashoffset: var(--vc-ring-len, 999); }
+  to { stroke-dashoffset: var(--vc-ring-off, 0); }
+}
+
+/* Stage 3 · xpCount — a sheen crossing the XP bar while it fills. Drives a
+ * background-position, so it composes with the bar's own width transition. */
+@keyframes vcXpShimmer {
+  from { background-position: -160% 0; }
+  to { background-position: 260% 0; }
+}
+
+/* Stage 4 · flourish — the tier word lands: big and wide, then tight. */
+@keyframes vcRankSlam {
+  from {
+    opacity: 0;
+    letter-spacing: 0.34em;
+    transform: scale(1.55);
+  }
+  60% { opacity: 1; }
+  to {
+    opacity: 1;
+    letter-spacing: 0.12em;
+    transform: scale(1);
+  }
+}
+
+/* Stage 6 · copy — each copy-trade row steps up into place, staggered by an
+ * animation-delay the component sets per row. */
+@keyframes vcRowIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Stage 6 · copy — the panel's left edge glows in and out while the
+ * projection counts. currentColor, so the tier tint carries through. */
+@keyframes vcHeat {
+  0%,
+  100% {
+    opacity: 0.45;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 14px 1px currentColor;
+  }
+}
+
+/* The ladder podium (plan 4 §5): each plinth rises as the filter re-sorts. */
+@keyframes vcPodiumRise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scaleY(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  [data-art] * {
+  [data-art] *,
+  [data-rank] *,
+  [data-ladder] * {
     animation: none !important;
   }
 }
