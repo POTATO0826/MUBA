@@ -37,6 +37,7 @@ import {
   AbiCoder,
   Signature,
   TypedDataEncoder,
+  Interface,
   Wallet,
   concat,
   getAddress,
@@ -53,6 +54,12 @@ import { MODES, MODE_SALT } from "../src/data/modes.ts";
 import { settle } from "../src/engine/match.ts";
 import { PARLAY_CARDS, cardById, legForCard, type ParlayCard } from "../src/engine/parlay.ts";
 import { seededRandom, spinCase } from "../src/engine/spin.ts";
+import {
+  SEAT_STATUSES,
+  createSeatReader,
+  type SeatProvider,
+  type SeatReader,
+} from "../src/server/seats.ts";
 import {
   BASE_CHAIN_ID,
   DEADLINE_SECONDS,
@@ -173,8 +180,15 @@ interface Harness {
   advance(ms: number): void;
 }
 
-/** A service on the throwaway key, a fake clock and a fake escrow address. */
-function harness(at = T0): Harness {
+/**
+ * A service on the throwaway key, a fake clock and a fake escrow address.
+ *
+ * `seats` is the second argument rather than a second harness because every
+ * property in this file — first-write-wins, the signature, the digest, the
+ * derivation — has to hold identically with and without a chain behind it.
+ * Defaulting it to `null` is what keeps the whole suite above chain-free.
+ */
+function harness(at = T0, seats: SeatReader | null = null): Harness {
   let clock = at;
   const signed: SignedCall[] = [];
 
@@ -191,7 +205,13 @@ function harness(at = T0): Harness {
   };
 
   return {
-    svc: createAttestService({ signer, escrow: ESCROW, now: () => clock }),
+    // Passing `seats` EXPLICITLY — `null` by default — says out loud that this
+    // service does no chain read. It is not decoration: omitting the field
+    // entirely would have the service build a seat reader from the environment,
+    // and `bun test` runs with `.env` loaded, so a developer with a real
+    // `RPC_URL` and `THETADUEL_ESCROW` exported would silently be running this
+    // suite against Base.
+    svc: createAttestService({ signer, escrow: ESCROW, seats, now: () => clock }),
     signed,
     advance: (ms: number) => {
       clock += ms;
@@ -238,8 +258,12 @@ function lockBody(
 }
 
 /** A committed duel, ready to attest. Seat `a` signs its own lock. */
-function locked(h: Harness, picks: Record<string, string> = WINNING_SLIP, b: string | null = B): LockOk {
-  return okLock(h.svc.lock(lockBody(SEAT_A, { picks, b })));
+async function locked(
+  h: Harness,
+  picks: Record<string, string> = WINNING_SLIP,
+  b: string | null = B,
+): Promise<LockOk> {
+  return okLock(await h.svc.lock(lockBody(SEAT_A, { picks, b })));
 }
 
 const post = (body: unknown): Request =>
@@ -328,8 +352,8 @@ describe("the fixture duel is the one the rest of the repo pins", () => {
 });
 
 describe("lock commits a slip, first write wins", () => {
-  test("a first lock returns the duel id, the commit and no note", () => {
-    const res = locked(harness());
+  test("a first lock returns the duel id, the commit and no note", async () => {
+    const res = await locked(harness());
     expect(res.duelId).toBe(id(MATCH_KEY));
     expect(res.duelId).toBe(keccak256(toUtf8Bytes(MATCH_KEY)));
     expect(res.matchKey).toBe(MATCH_KEY);
@@ -337,16 +361,16 @@ describe("lock commits a slip, first write wins", () => {
     expect(res.note).toBeUndefined();
   });
 
-  test("a second lock on the same match returns the FIRST payload and says so", () => {
+  test("a second lock on the same match returns the FIRST payload and says so", async () => {
     const h = harness();
-    const first = locked(h, WINNING_SLIP);
+    const first = await locked(h, WINNING_SLIP);
 
     // Different picks, different seats, later in time, and PROPERLY SIGNED by
     // the seat it claims — the whole point is that none of it can touch what is
     // already committed. Authentication (X-1) and idempotency are separate
     // defences and this asserts the second one on its own.
     h.advance(60_000);
-    const second = okLock(h.svc.lock(lockBody(SEAT_S, { picks: LOSING_SLIP, b: A })));
+    const second = okLock(await h.svc.lock(lockBody(SEAT_S, { picks: LOSING_SLIP, b: A })));
 
     expect(second.commit).toBe(first.commit);
     expect(second.duelId).toBe(first.duelId);
@@ -359,108 +383,108 @@ describe("lock commits a slip, first write wins", () => {
     // A player who watched the tape decide against them re-locks the winning
     // slip under their own address, and the verdict does not move.
     const h = harness();
-    locked(h, LOSING_SLIP);
-    h.svc.lock(lockBody(SEAT_S, { picks: WINNING_SLIP, b: A }));
+    await locked(h, LOSING_SLIP);
+    await h.svc.lock(lockBody(SEAT_S, { picks: WINNING_SLIP, b: A }));
 
     const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
     expect(res.winner).toBe(expectedWinner(LOSING_SLIP));
     expect(res.winner).toBe(B);
   });
 
-  test("a malformed second lock cannot evict the first either", () => {
+  test("a malformed second lock cannot evict the first either", async () => {
     const h = harness();
-    const first = locked(h);
-    h.svc.lock({ matchKey: MATCH_KEY, picks: { NOPE: "safe-bull" }, a: STRANGER });
-    h.svc.lock({ matchKey: MATCH_KEY });
-    expect(okLock(h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP }))).commit).toBe(first.commit);
+    const first = await locked(h);
+    await h.svc.lock({ matchKey: MATCH_KEY, picks: { NOPE: "safe-bull" }, a: STRANGER });
+    await h.svc.lock({ matchKey: MATCH_KEY });
+    expect(okLock(await h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP }))).commit).toBe(first.commit);
   });
 
-  test("the commit is canonical: key order in the request cannot change it", () => {
-    const forwards = locked(harness(), { TSLA: "safe-bear", AMD: "safe-bull", META: "safe-bull" });
-    const backwards = locked(harness(), { META: "safe-bull", AMD: "safe-bull", TSLA: "safe-bear" });
+  test("the commit is canonical: key order in the request cannot change it", async () => {
+    const forwards = await locked(harness(), { TSLA: "safe-bear", AMD: "safe-bull", META: "safe-bull" });
+    const backwards = await locked(harness(), { META: "safe-bull", AMD: "safe-bull", TSLA: "safe-bear" });
     expect(backwards.commit).toBe(forwards.commit);
     // …but a different slip is a different commit.
-    expect(locked(harness(), LOSING_SLIP).commit).not.toBe(forwards.commit);
+    expect((await locked(harness(), LOSING_SLIP)).commit).not.toBe(forwards.commit);
   });
 });
 
 describe("lock refuses everything it cannot re-derive", () => {
-  const fails = (body: unknown): string => {
-    const res = harness().svc.lock(body);
+  const fails = async (body: unknown): Promise<string> => {
+    const res = await harness().svc.lock(body);
     if (res.ok) throw new Error(`expected a refusal, got ${JSON.stringify(res)}`);
     return res.reason;
   };
 
-  test("an unknown lobby — a room published in someone's own browser is unsettleable", () => {
+  test("an unknown lobby — a room published in someone's own browser is unsettleable", async () => {
     // `mine-1` exists in exactly one tab (state/match.ts:298). The server cannot
     // re-derive its book, its legs or its mode, so it must not sign for it.
-    expect(fails({ matchKey: `mine-1:${SEED}`, picks: WINNING_SLIP, a: A, b: B })).toContain(
+    expect(await fails({ matchKey: `mine-1:${SEED}`, picks: WINNING_SLIP, a: A, b: B })).toContain(
       "unknown lobby",
     );
-    expect(fails({ matchKey: `not-a-lobby:${SEED}`, picks: WINNING_SLIP, a: A, b: B })).toContain(
+    expect(await fails({ matchKey: `not-a-lobby:${SEED}`, picks: WINNING_SLIP, a: A, b: B })).toContain(
       "unknown lobby",
     );
   });
 
-  test("a seed outside the range the game can deal", () => {
+  test("a seed outside the range the game can deal", async () => {
     // `newSeed` mints 100000..999999 (engine/spin.ts:52-54). `parseRoute` would
     // read `?seed=7` out of a hand-typed URL; a duel with USDC behind it is not
     // where that gets accepted.
     for (const seed of [7, 99_999, 1_000_000, 424_242_424]) {
-      expect(fails({ matchKey: `${LOBBY_ID}:${seed}`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
+      expect(await fails({ matchKey: `${LOBBY_ID}:${seed}`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
     }
-    expect(fails({ matchKey: `${LOBBY_ID}:-424242`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
-    expect(fails({ matchKey: `${LOBBY_ID}:4242.42`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
+    expect(await fails({ matchKey: `${LOBBY_ID}:-424242`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
+    expect(await fails({ matchKey: `${LOBBY_ID}:4242.42`, picks: WINNING_SLIP, a: A, b: B })).toBe("bad seed");
   });
 
-  test("a pick id that is not one of the eight cards", () => {
+  test("a pick id that is not one of the eight cards", async () => {
     for (const bad of ["safe-bulll", "SAFE-BULL", "", "godmode"]) {
       const picks = { ...WINNING_SLIP, TSLA: bad };
-      expect(fails({ matchKey: MATCH_KEY, picks, a: A, b: B })).toContain("unknown card");
+      expect(await fails({ matchKey: MATCH_KEY, picks, a: A, b: B })).toContain("unknown card");
     }
     // Every real card id passes the same gate.
     for (const card of PARLAY_CARDS) {
-      const res = harness().svc.lock(lockBody(SEAT_A, { picks: { ...WINNING_SLIP, TSLA: card.id } }));
+      const res = await harness().svc.lock(lockBody(SEAT_A, { picks: { ...WINNING_SLIP, TSLA: card.id } }));
       expect(res.ok).toBe(true);
     }
   });
 
-  test("keys that are not exactly the symbols this seed dealt", () => {
+  test("keys that are not exactly the symbols this seed dealt", async () => {
     const want = "picks must cover exactly";
     // A leg short: the client would have previewed it at EVEN/over — a preview
     // is not a position and a partial slip is not settleable.
-    expect(fails({ matchKey: MATCH_KEY, picks: { TSLA: "safe-bull", AMD: "safe-bull" }, a: A, b: B })).toContain(want);
+    expect(await fails({ matchKey: MATCH_KEY, picks: { TSLA: "safe-bull", AMD: "safe-bull" }, a: A, b: B })).toContain(want);
     // One leg too many: a caller widening the commit past the arena.
     expect(
-      fails({ matchKey: MATCH_KEY, picks: { ...WINNING_SLIP, NVDA: "safe-bull" }, a: A, b: B }),
+      await fails({ matchKey: MATCH_KEY, picks: { ...WINNING_SLIP, NVDA: "safe-bull" }, a: A, b: B }),
     ).toContain(want);
     // The right count, the wrong tickers.
     expect(
-      fails({ matchKey: MATCH_KEY, picks: { NVDA: "safe-bull", AAPL: "safe-bull", MSFT: "safe-bull" }, a: A, b: B }),
+      await fails({ matchKey: MATCH_KEY, picks: { NVDA: "safe-bull", AAPL: "safe-bull", MSFT: "safe-bull" }, a: A, b: B }),
     ).toContain(want);
     // And the arena of a DIFFERENT seed in the same lobby.
     const other = spinCase(bookOf(LOBBY), LOBBY.legs, 424243).syms;
     if (JSON.stringify([...other].sort()) !== JSON.stringify([...ARENA].sort())) {
       const picks = Object.fromEntries(other.map((s) => [s, "safe-bull"]));
-      expect(fails({ matchKey: MATCH_KEY, picks, a: A, b: B })).toContain(want);
+      expect(await fails({ matchKey: MATCH_KEY, picks, a: A, b: B })).toContain(want);
     }
   });
 
-  test("a missing or unparseable committing address", () => {
-    expect(fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP })).toBe("missing a");
-    expect(fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: "0xnope" })).toBe("bad a");
-    expect(fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: "0xnope" })).toBe("bad b");
+  test("a missing or unparseable committing address", async () => {
+    expect(await fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP })).toBe("missing a");
+    expect(await fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: "0xnope" })).toBe("bad a");
+    expect(await fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: "0xnope" })).toBe("bad b");
     // The zero address is never a seat that can be paid.
-    expect(fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: `0x${"0".repeat(40)}` })).toBe("bad a");
+    expect(await fails({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: `0x${"0".repeat(40)}` })).toBe("bad a");
   });
 
-  test("a match key that is not one", () => {
-    expect(fails({ picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
-    expect(fails({ matchKey: "   ", picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
-    expect(fails({ matchKey: 424242, picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
-    expect(fails({ matchKey: `${LOBBY_ID}:${SEED}<script>`, picks: WINNING_SLIP, a: A })).toBe("bad matchKey");
-    expect(fails({ matchKey: `${"x".repeat(200)}:${SEED}`, picks: WINNING_SLIP, a: A })).toBe("matchKey too long");
-    expect(fails({ matchKey: LOBBY_ID, picks: WINNING_SLIP, a: A })).toBe("bad matchKey");
+  test("a match key that is not one", async () => {
+    expect(await fails({ picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
+    expect(await fails({ matchKey: "   ", picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
+    expect(await fails({ matchKey: 424242, picks: WINNING_SLIP, a: A })).toBe("missing matchKey");
+    expect(await fails({ matchKey: `${LOBBY_ID}:${SEED}<script>`, picks: WINNING_SLIP, a: A })).toBe("bad matchKey");
+    expect(await fails({ matchKey: `${"x".repeat(200)}:${SEED}`, picks: WINNING_SLIP, a: A })).toBe("matchKey too long");
+    expect(await fails({ matchKey: LOBBY_ID, picks: WINNING_SLIP, a: A })).toBe("bad matchKey");
   });
 
   test("addresses come back checksummed, whatever case they arrived in", async () => {
@@ -469,7 +493,7 @@ describe("lock refuses everything it cannot re-derive", () => {
     // canonical message normalises, so one signature covers both spellings and
     // a client is not forced to reproduce EIP-55 casing to be believed.
     okLock(
-      h.svc.lock({
+      await h.svc.lock({
         ...lockBody(SEAT_A, { picks: LOSING_SLIP }),
         a: A.toLowerCase(),
         b: B.toLowerCase(),
@@ -495,13 +519,13 @@ describe("lock refuses everything it cannot re-derive", () => {
  * Each test below is one step of that exploit, refused.
  */
 describe("the lock is authenticated — X-1", () => {
-  const refused = (body: unknown): string => {
-    const res = harness().svc.lock(body);
+  const refused = async (body: unknown): Promise<string> => {
+    const res = await harness().svc.lock(body);
     if (res.ok) throw new Error(`expected a refusal, got ${JSON.stringify(res)}`);
     return res.reason;
   };
 
-  test("a lock signed by `a` is accepted, over the exact message a client can rebuild", () => {
+  test("a lock signed by `a` is accepted, over the exact message a client can rebuild", async () => {
     // The five-line layout, written out here from the docstring rather than
     // imported, so a change to `lockMessage` that a client could not follow
     // fails right here instead of on a live duel.
@@ -523,117 +547,117 @@ describe("the lock is authenticated — X-1", () => {
 
     const body = lockBody(SEAT_A);
     expect(verifyMessage(expected, body["sig"] as string)).toBe(A);
-    expect(okLock(harness().svc.lock(body)).commit).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(okLock(await harness().svc.lock(body)).commit).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
-  test("no signature at all is refused — this is the whole of X-1", () => {
+  test("no signature at all is refused — this is the whole of X-1", async () => {
     for (const sig of [undefined, null, ""]) {
-      expect(refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig })).toBe(
+      expect(await refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig })).toBe(
         "missing signature",
       );
     }
     // And the exploit body verbatim: B searches for a winning slip and names
     // themselves `a`, with nothing to prove it.
-    expect(refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: B, b: A })).toBe("missing signature");
+    expect(await refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: B, b: A })).toBe("missing signature");
   });
 
-  test("a signature that is not 65 bytes of hex is refused before it reaches ethers", () => {
+  test("a signature that is not 65 bytes of hex is refused before it reaches ethers", async () => {
     for (const sig of ["0x", "0xdeadbeef", `0x${"ab".repeat(64)}`, `0x${"ab".repeat(66)}`, `0x${"zz".repeat(65)}`, 42, {}, []]) {
-      expect(refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig })).toBe("bad signature");
+      expect(await refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig })).toBe("bad signature");
     }
   });
 
-  test("well-shaped 65 bytes that recover to nobody are a bad signature, not a crash", () => {
+  test("well-shaped 65 bytes that recover to nobody are a bad signature, not a crash", async () => {
     // `r = s = 0`, `v = 27`: the right length and the right `v`, but no point
     // on the curve. ethers throws; the route must not.
-    expect(refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig: `0x${"00".repeat(64)}1b` })).toBe(
+    expect(await refused({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig: `0x${"00".repeat(64)}1b` })).toBe(
       "bad signature",
     );
   });
 
-  test("a signature by the wrong key is refused", () => {
+  test("a signature by the wrong key is refused", async () => {
     // B signs, but the body claims A. This is the impersonation the finding is
     // about, and it is the one thing a signature can prove is false.
     const forged = { ...lockBody(SEAT_B, { b: A }), a: A, b: B };
-    expect(refused(forged)).toBe("signature is not a's");
+    expect(await refused(forged)).toBe("signature is not a's");
     // The attestor's own key does not get a pass either.
-    expect(refused({ ...lockBody(SEAT_A), sig: ATTESTOR.signMessageSync(lockMessage(MATCH_KEY, A, B, WINNING_SLIP)) })).toBe(
+    expect(await refused({ ...lockBody(SEAT_A), sig: ATTESTOR.signMessageSync(lockMessage(MATCH_KEY, A, B, WINNING_SLIP)) })).toBe(
       "signature is not a's",
     );
   });
 
-  test("picks tampered with after signing are refused", () => {
+  test("picks tampered with after signing are refused", async () => {
     // The attacker's real position: a valid signature over the slip they were
     // willing to sign, pointed at the winning slip they found offline.
     const body = lockBody(SEAT_A, { picks: LOSING_SLIP });
-    expect(refused({ ...body, picks: WINNING_SLIP })).toBe("signature is not a's");
+    expect(await refused({ ...body, picks: WINNING_SLIP })).toBe("signature is not a's");
     // Even a single leg moved — the picks are bound whole, canonically.
-    expect(refused({ ...body, picks: { ...LOSING_SLIP, TSLA: "safe-bear" } })).toBe("signature is not a's");
+    expect(await refused({ ...body, picks: { ...LOSING_SLIP, TSLA: "safe-bear" } })).toBe("signature is not a's");
   });
 
-  test("the match key cannot be swapped after signing", () => {
+  test("the match key cannot be swapped after signing", async () => {
     const other = `${LOBBY_ID}:424243`;
     const body = lockBody(SEAT_A, { picks: WINNING_SLIP });
     // A signature harvested from one duel replayed onto another. The arena of
     // seed 424243 may differ, so drive the refusal past the picks gate by
     // signing for the OTHER key and posting it at this one.
     const forSeedTwo = lockBody(SEAT_A, { matchKey: other, picks: WINNING_SLIP });
-    expect(refused({ ...forSeedTwo, matchKey: MATCH_KEY })).toBe("signature is not a's");
-    expect(okLock(harness().svc.lock(body)).duelId).toBe(id(MATCH_KEY));
+    expect(await refused({ ...forSeedTwo, matchKey: MATCH_KEY })).toBe("signature is not a's");
+    expect(okLock(await harness().svc.lock(body)).duelId).toBe(id(MATCH_KEY));
   });
 
-  test("the opponent seat cannot be swapped after signing", () => {
+  test("the opponent seat cannot be swapped after signing", async () => {
     // `b` is who gets paid when the slip loses, so it is money and it is bound.
     const body = lockBody(SEAT_A, { b: B });
-    expect(refused({ ...body, b: STRANGER })).toBe("signature is not a's");
+    expect(await refused({ ...body, b: STRANGER })).toBe("signature is not a's");
     // Including dropping it entirely: a lock signed for a taken seat is not a
     // lock for an open one.
     const { b: _dropped, ...withoutB } = body;
-    expect(refused(withoutB)).toBe("signature is not a's");
+    expect(await refused(withoutB)).toBe("signature is not a's");
     // And the reverse — signed open, posted taken.
-    expect(refused({ ...lockBody(SEAT_A, { b: null }), b: B })).toBe("signature is not a's");
+    expect(await refused({ ...lockBody(SEAT_A, { b: null }), b: B })).toBe("signature is not a's");
   });
 
-  test("an open second seat is signed as the zero address, and `\"\"` or `null` mean the same", () => {
+  test("an open second seat is signed as the zero address, and `\"\"` or `null` mean the same", async () => {
     const open = lockBody(SEAT_A, { b: null });
     expect(lockMessage(MATCH_KEY, A, null, WINNING_SLIP)).toContain(`b:0x${"0".repeat(40)}`);
     for (const b of [undefined, null, "", `0x${"0".repeat(40)}`]) {
       const h = harness();
-      const res = h.svc.lock(b === undefined ? open : { ...open, b });
+      const res = await h.svc.lock(b === undefined ? open : { ...open, b });
       expect(res.ok).toBe(true);
     }
   });
 
-  test("a refused lock does not consume first-write-wins", () => {
+  test("a refused lock does not consume first-write-wins", async () => {
     // The property that keeps the fix from becoming its own denial of service:
     // an attacker spraying unsigned or forged locks must not be able to burn
     // the seat, or to evict a commit once one is stored.
     const h = harness();
-    h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B }); // unsigned
-    h.svc.lock({ ...lockBody(SEAT_B, { b: A }), a: A }); // forged
-    h.svc.lock({ ...lockBody(SEAT_A), sig: `0x${"11".repeat(65)}` }); // junk
+    await h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B }); // unsigned
+    await h.svc.lock({ ...lockBody(SEAT_B, { b: A }), a: A }); // forged
+    await h.svc.lock({ ...lockBody(SEAT_A), sig: `0x${"11".repeat(65)}` }); // junk
     expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(false);
 
     // The seat is still free, and the honest lock takes it — note-free, which
     // is how a FIRST write is spelled.
-    const good = okLock(h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP })));
+    const good = okLock(await h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP })));
     expect(good.note).toBeUndefined();
     expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(true);
     // …and what is stored is the honest payload, not any of the three above.
-    const probe = okLock(h.svc.lock(lockBody(SEAT_S, { picks: WINNING_SLIP, b: A })));
+    const probe = okLock(await h.svc.lock(lockBody(SEAT_S, { picks: WINNING_SLIP, b: A })));
     expect(probe.note).toBe("already locked");
     expect(probe.commit).toBe(good.commit);
   });
 
   test("nothing is ever signed for a duel whose lock was refused", async () => {
     const h = harness();
-    h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B });
+    await h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B });
     expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({ ok: false, reason: "not locked" });
     expect(h.signed).toEqual([]);
     expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(false);
   });
 
-  test("the signed message is order-independent in exactly the way the commit is", () => {
+  test("the signed message is order-independent in exactly the way the commit is", async () => {
     // A client that builds its picks object in arena order and a server that
     // sorts must still agree on one string, or every honest lock fails.
     const forwards = lockMessage(MATCH_KEY, A, B, { TSLA: "safe-bull", AMD: "safe-bear", META: "safe-bull" });
@@ -641,7 +665,7 @@ describe("the lock is authenticated — X-1", () => {
     expect(backwards).toBe(forwards);
     // A signature made over one ordering authorises the other ordering's body.
     const sig = SEAT_A.signMessageSync(forwards);
-    const res = harness().svc.lock({
+    const res = await harness().svc.lock({
       matchKey: MATCH_KEY,
       picks: { META: "safe-bull", AMD: "safe-bear", TSLA: "safe-bull" },
       a: A,
@@ -674,35 +698,35 @@ describe("a match key may carry a per-room nonce — 6-1", () => {
 
   test("a nonced key locks and settles exactly like the bare one", async () => {
     const h = harness();
-    const res = okLock(h.svc.lock(lockBody(SEAT_A, { matchKey: NONCE_KEY })));
+    const res = okLock(await h.svc.lock(lockBody(SEAT_A, { matchKey: NONCE_KEY })));
     expect(res.matchKey).toBe(NONCE_KEY);
     // The duel id is keccak over the WHOLE key, so a nonced room is a different
     // duel on chain — which is the entire point.
     expect(res.duelId).toBe(id(NONCE_KEY));
     expect(res.duelId).not.toBe(id(MATCH_KEY));
     // …and the nonce touches nothing else: same seed, same arena, same winner.
-    expect(res.commit).toBe(okLock(harness().svc.lock(lockBody(SEAT_A))).commit);
+    expect(res.commit).toBe(okLock(await harness().svc.lock(lockBody(SEAT_A))).commit);
     const verdict = okAttest(await h.svc.attest({ matchKey: NONCE_KEY }));
     expect(verdict.winner).toBe(expectedWinner(WINNING_SLIP));
   });
 
-  test("two rooms on one seed are two independent duels", () => {
+  test("two rooms on one seed are two independent duels", async () => {
     const h = harness();
-    okLock(h.svc.lock(lockBody(SEAT_A, { matchKey: `${MATCH_KEY}:roomAlpha` })));
+    okLock(await h.svc.lock(lockBody(SEAT_A, { matchKey: `${MATCH_KEY}:roomAlpha` })));
     // A second room, same lobby and seed: first-write-wins does not collide,
     // because the nonce is in the key.
-    const second = okLock(h.svc.lock(lockBody(SEAT_A, { matchKey: `${MATCH_KEY}:roomBravo`, picks: LOSING_SLIP })));
+    const second = okLock(await h.svc.lock(lockBody(SEAT_A, { matchKey: `${MATCH_KEY}:roomBravo`, picks: LOSING_SLIP })));
     expect(second.note).toBeUndefined();
     expect(okStatus(h.svc.status(id(`${MATCH_KEY}:roomAlpha`))).locked).toBe(true);
     expect(okStatus(h.svc.status(id(`${MATCH_KEY}:roomBravo`))).locked).toBe(true);
   });
 
-  test("the nonce must begin with a letter, so a seed is never read as one", () => {
+  test("the nonce must begin with a letter, so a seed is never read as one", async () => {
     // A trailing all-digit segment is the SEED, always — which is what keeps
     // every key the app mints today parsing exactly as it did before.
     const h = harness();
     for (const bad of [`${MATCH_KEY}:123456`, `${MATCH_KEY}:ab`, `${MATCH_KEY}:-nonce`, `${MATCH_KEY}:9lives`]) {
-      const res = h.svc.lock(lockBody(SEAT_A, { matchKey: bad }));
+      const res = await h.svc.lock(lockBody(SEAT_A, { matchKey: bad }));
       // Fail-closed: the whole `lobby:seed` head is then read as a lobby id,
       // and there is no such lobby.
       expect(res.ok).toBe(false);
@@ -710,19 +734,19 @@ describe("a match key may carry a per-room nonce — 6-1", () => {
     }
   });
 
-  test("a two-segment key is never mistaken for lobby-plus-nonce", () => {
+  test("a two-segment key is never mistaken for lobby-plus-nonce", async () => {
     // `kz-semis:abcd` has a nonce-shaped tail and no seed. It must stay a bad
     // seed, not become a lobby with a nonce and no seed at all.
-    const res = harness().svc.lock(lockBody(SEAT_A, { matchKey: `${LOBBY_ID}:abcd` }));
+    const res = await harness().svc.lock(lockBody(SEAT_A, { matchKey: `${LOBBY_ID}:abcd` }));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad seed");
   });
 
-  test("the nonce is inside the signed message, like every other field", () => {
+  test("the nonce is inside the signed message, like every other field", async () => {
     const body = lockBody(SEAT_A, { matchKey: NONCE_KEY });
     // Stripping the nonce from a signed body is a different room and a
     // different duel id, and the signature does not follow it there.
-    const res = harness().svc.lock({ ...body, matchKey: MATCH_KEY });
+    const res = await harness().svc.lock({ ...body, matchKey: MATCH_KEY });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("signature is not a's");
   });
@@ -765,7 +789,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
    */
   test("the service's signature recovers the attestor over a hand-built EIP-712 digest", async () => {
     const h = harness();
-    locked(h, WINNING_SLIP);
+    await locked(h, WINNING_SLIP);
     const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
 
     // 1. Transcribed from the Solidity, line for line.
@@ -804,7 +828,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
 
   test("verifyTypedData recovers the attestor from the returned signature", async () => {
     const h = harness();
-    locked(h, WINNING_SLIP);
+    await locked(h, WINNING_SLIP);
     const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
 
     const recovered = verifyTypedData(
@@ -819,7 +843,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
 
   test("the signature is bound to this duel, this winner and this deadline", async () => {
     const h = harness();
-    locked(h, WINNING_SLIP);
+    await locked(h, WINNING_SLIP);
     const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
 
     const recoverWith = (value: Record<string, unknown>) =>
@@ -846,7 +870,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
     // asserts that rather than assuming it, because each one is a rejection
     // that would arrive with both stakes already locked.
     const h = harness();
-    locked(h);
+    await locked(h);
     const { signature } = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
 
     const sig = Signature.from(signature);
@@ -859,7 +883,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
 
   test("the deadline is thirty minutes out, in whole seconds", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
     expect(DEADLINE_SECONDS).toBe(1_800);
     expect(res.deadline).toBe(Math.floor(T0 / 1000) + 1_800);
@@ -868,7 +892,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
 
   test("the escrow address the service signs against is the domain it was given", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     await h.svc.attest({ matchKey: MATCH_KEY });
     expect(h.signed).toHaveLength(1);
     expect(h.signed[0]!.domain).toEqual({
@@ -890,11 +914,11 @@ describe("the winner is derived, never read", () => {
     // only ever hold one slip. Same seed, same seats, same clock — the slip is
     // the only variable, and it moves the money.
     const win = harness();
-    locked(win, WINNING_SLIP);
+    await locked(win, WINNING_SLIP);
     const winRes = okAttest(await win.svc.attest({ matchKey: MATCH_KEY }));
 
     const lose = harness();
-    locked(lose, LOSING_SLIP);
+    await locked(lose, LOSING_SLIP);
     const loseRes = okAttest(await lose.svc.attest({ matchKey: MATCH_KEY }));
 
     expect(winRes.winner).toBe(A);
@@ -910,7 +934,7 @@ describe("the winner is derived, never read", () => {
 
   test("a winner in the request body is ignored", async () => {
     const h = harness();
-    locked(h, LOSING_SLIP); // derives to B
+    await locked(h, LOSING_SLIP); // derives to B
     for (const claimed of [A, STRANGER, ATTESTOR.address, `0x${"0".repeat(40)}`]) {
       const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY, winner: claimed }));
       expect(res.winner).toBe(B);
@@ -934,7 +958,7 @@ describe("the winner is derived, never read", () => {
 
   test("nothing is signed for a duel with an empty second seat", async () => {
     const h = harness();
-    locked(h, WINNING_SLIP, null);
+    await locked(h, WINNING_SLIP, null);
     const res = await h.svc.attest({ matchKey: MATCH_KEY });
     expect(res).toEqual({ ok: false, reason: "duel has no opponent seat" });
     expect(h.signed).toEqual([]);
@@ -942,7 +966,7 @@ describe("the winner is derived, never read", () => {
 
   test("attest re-validates the match key it is handed", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     for (const body of [{}, { matchKey: "" }, { matchKey: `mine-1:${SEED}` }, { matchKey: `${LOBBY_ID}:7` }]) {
       const res = await h.svc.attest(body);
       expect(res.ok).toBe(false);
@@ -952,7 +976,7 @@ describe("the winner is derived, never read", () => {
 
   test("two calls in the same instant return the identical signature", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     const first = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
     const second = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
     expect(second).toEqual(first);
@@ -963,7 +987,7 @@ describe("the winner is derived, never read", () => {
     // The winner is a pure derivation and can never move; the deadline is wall
     // clock and a stale one is a signature the relay may not land in time.
     const h = harness();
-    locked(h);
+    await locked(h);
     const first = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
 
     h.advance(29 * 60_000); // 60s of validity left, under the refresh floor
@@ -984,7 +1008,7 @@ describe("the winner is derived, never read", () => {
 
   test("a lock older than its TTL is no longer settleable", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     h.advance(86_400_001);
     expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({ ok: false, reason: "not locked" });
   });
@@ -998,7 +1022,7 @@ describe("status reports only what this process knows", () => {
     const before = okStatus(h.svc.status(duelId));
     expect(before).toEqual({ ok: true, duelId, locked: false, attested: false });
 
-    locked(h, LOSING_SLIP);
+    await locked(h, LOSING_SLIP);
     expect(okStatus(h.svc.status(duelId))).toEqual({ ok: true, duelId, locked: true, attested: false });
 
     await h.svc.attest({ matchKey: MATCH_KEY });
@@ -1018,9 +1042,9 @@ describe("status reports only what this process knows", () => {
     }
   });
 
-  test("the id is read case-insensitively, as a hash spelling and not a value", () => {
+  test("the id is read case-insensitively, as a hash spelling and not a value", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     expect(okStatus(h.svc.status(id(MATCH_KEY).toUpperCase())).locked).toBe(true);
   });
 });
@@ -1073,7 +1097,7 @@ describe("every route answers HTTP 200 with a typed envelope", () => {
 
   test("status answers from the query string, missing id included", async () => {
     const h = harness();
-    locked(h);
+    await locked(h);
     const good = await bodyOf(h.svc.handleStatus(new URL(`http://localhost/api/duel-status?duelId=${id(MATCH_KEY)}`)));
     expect(good).toEqual({ ok: true, duelId: id(MATCH_KEY), locked: true, attested: false });
 
@@ -1119,14 +1143,17 @@ describe("an unconfigured server degrades instead of crashing", () => {
     // Every call is made inside the one window, because the service resolves
     // its signer once, on first use, and caches the answer.
     const res = withoutKey(() => {
-      const svc = createAttestService({ escrow: ESCROW, now: () => T0 });
+      const svc = createAttestService({ escrow: ESCROW, seats: null, now: () => T0 });
       return {
         lock: svc.lock(lockBody(SEAT_A)),
         status: svc.status(id(MATCH_KEY)),
         attest: svc.attest({ matchKey: MATCH_KEY }),
       };
     });
-    expect(res.lock).toEqual(NOT_CONFIGURED);
+    // The two promises are STARTED inside the window and awaited outside it —
+    // both refuse before their first `await`, so the key is genuinely absent at
+    // the only moment either of them looks for it.
+    expect(await res.lock).toEqual(NOT_CONFIGURED);
     expect(res.status).toEqual(NOT_CONFIGURED);
     expect(await res.attest).toEqual(NOT_CONFIGURED);
   });
@@ -1151,12 +1178,269 @@ describe("an unconfigured server degrades instead of crashing", () => {
     const svc = createAttestService({
       signer: ATTESTOR,
       escrow: "",
+      seats: null,
       now: () => T0,
     });
-    okLock(svc.lock(lockBody(SEAT_A)));
+    okLock(await svc.lock(lockBody(SEAT_A)));
     expect(await svc.attest({ matchKey: MATCH_KEY })).toEqual({
       ok: false,
       reason: "escrow not configured",
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * FINDING X-1, THE RESIDUAL — the seats are read from the chain.
+ *
+ * The signature above proves the caller controls the address they name. It
+ * cannot prove that address is *playing this duel*, and the person best placed
+ * to exploit that is the opponent: `b` was handed the room link, so `b` knows
+ * the match key, can search the ≤ 4 096 reachable slips offline for one that
+ * wins, and can sign a perfectly valid lock naming **themselves** in the `a`
+ * seat. Every check in the previous section passes. First-write-wins then pins
+ * it, `/api/attest` honestly derives a verdict from those picks, and the escrow
+ * pays it — because `b` really is a player and `winner ∈ {a, b}` really does
+ * hold.
+ *
+ * `src/server/seats.ts` reads the two seats out of the escrow's own `duels`
+ * getter, where they were written by transactions that cost real USDC, and
+ * `lock()` compares instead of believing. Every test below is one row of the
+ * disposition table in `attest.ts`'s docstring, and the chain is a four-line
+ * fake — the escrow is not deployed, and none of this needs it to be.
+ */
+describe("the seats are bound to the chain — X-1's residual", () => {
+  const DUEL_ID = id(MATCH_KEY);
+
+  /** The committed artifact's own interface, so the fake chain answers exactly
+   *  what a real node would and the reader's transcribed signature is under
+   *  test rather than assumed. */
+  const ESCROW_ABI = new Interface(
+    (
+      JSON.parse(
+        readFileSync(join(import.meta.dir, "..", "contracts", "out", "DuelEscrow.json"), "utf8"),
+      ) as { abi: ConstructorParameters<typeof Interface>[0] }
+    ).abi,
+  );
+
+  const ZERO = `0x${"0".repeat(40)}`;
+
+  /** One `duels(duelId)` answer. `status` is named, and its ordinal comes from
+   *  the reader's own list, which `test/seats.test.ts` pins to the enum in
+   *  `DuelEscrow.sol`. */
+  const duelsResult = (a: string, b: string, status: (typeof SEAT_STATUSES)[number]): string =>
+    ESCROW_ABI.encodeFunctionResult("duels", [
+      a,
+      b,
+      ZERO,
+      100_000n,
+      1_756_000_000,
+      SEAT_STATUSES.indexOf(status),
+      false,
+      false,
+    ]);
+
+  interface FakeChain {
+    seats: SeatReader;
+    /** One entry per `eth_call`. Assertions that this is EMPTY are half the
+     *  point: they are what proves a refusal happened before the network, and
+     *  what proves the unconfigured path never reaches for a chain at all. */
+    calls: string[];
+  }
+
+  function chainAnswers(answer: () => Promise<string>, escrowAddress = ESCROW): FakeChain {
+    const calls: string[] = [];
+    const provider: SeatProvider = {
+      call: (tx) => {
+        calls.push(tx.data);
+        return answer();
+      },
+    };
+    return {
+      calls,
+      seats: createSeatReader({ provider, escrow: escrowAddress, rpcUrl: "", now: () => T0 }),
+    };
+  }
+
+  /** A chain that always answers with one duel row. */
+  function chainSays(a: string, b: string, status: (typeof SEAT_STATUSES)[number] = "FULL"): FakeChain {
+    return chainAnswers(() => Promise.resolve(duelsResult(a, b, status)));
+  }
+
+  /** A service whose seat reader is that fake chain. */
+  const on = (chain: FakeChain): Harness => harness(T0, chain.seats);
+
+  const refusal = (e: LockEnvelope): string => {
+    if (e.ok) throw new Error(`expected a refusal, got ${JSON.stringify(e)}`);
+    return e.reason;
+  };
+
+  test("a lock whose seats are the chain's seats is accepted, and reads the chain once", async () => {
+    const chain = chainSays(A, B);
+    const h = on(chain);
+
+    const res = okLock(await h.svc.lock(lockBody(SEAT_A, { b: B })));
+    expect(res.note).toBeUndefined();
+    expect(chain.calls).toEqual([ESCROW_ABI.encodeFunctionData("duels", [DUEL_ID])]);
+
+    // …and the duel settles exactly as it does with no chain in the picture.
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(expectedWinner(WINNING_SLIP));
+  });
+
+  test("THE EXPLOIT: the joiner cannot lock as the opener", async () => {
+    // The whole of X-1's residual, executed. The chain says A opened and B
+    // joined. B — who controls B, knows the match key, and has searched the
+    // slips offline — signs a flawless lock naming themselves `a`.
+    const chain = chainSays(A, B);
+    const h = on(chain);
+    const exploit = lockBody(SEAT_B, { picks: WINNING_SLIP, b: A });
+
+    // Everything about that body is honest except the seat it claims.
+    expect(verifyMessage(lockMessage(MATCH_KEY, B, A, WINNING_SLIP), exploit["sig"] as string)).toBe(B);
+    expect(refusal(await h.svc.lock(exploit))).toBe("not a seat in this duel");
+
+    // Nothing was stored, nothing was signed, and the seat is still A's.
+    expect(okStatus(h.svc.status(DUEL_ID)).locked).toBe(false);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({ ok: false, reason: "not locked" });
+    expect(h.signed).toEqual([]);
+
+    // A locks their own slip afterwards and is paid on it.
+    const good = okLock(await h.svc.lock(lockBody(SEAT_A, { picks: WINNING_SLIP, b: B })));
+    expect(good.note).toBeUndefined();
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(A);
+  });
+
+  test("the seats are matched IN ORDER — an unordered comparison would close nothing", async () => {
+    // The design decision, asserted rather than commented. `{b, a}` and `{a, b}`
+    // are the same set, so a membership test would bless the exploit above
+    // verbatim. The escrow's own semantics are ordered — `open` writes `d.a`,
+    // `join` writes `d.b` — and so is the game: `a` is the seat whose picks were
+    // committed and which plays the seeded opponent. The room's opener locks.
+    const swapped = lockBody(SEAT_B, { b: A });
+    expect(new Set([B, A])).toEqual(new Set([A, B]));
+    expect(refusal(await on(chainSays(A, B)).svc.lock(swapped))).toBe("not a seat in this duel");
+    // …and the same body IS accepted by the chain that actually says so.
+    expect((await on(chainSays(B, A)).svc.lock(swapped)).ok).toBe(true);
+  });
+
+  test("a stranger who genuinely controls their address is still not a player", async () => {
+    const chain = chainSays(A, B);
+    expect(refusal(await on(chain).svc.lock(lockBody(SEAT_S, { b: B })))).toBe("not a seat in this duel");
+  });
+
+  test("the opponent seat must be the on-chain joiner too", async () => {
+    // `b` is who gets paid when the committed slip loses, so a lock naming the
+    // wrong one would have the server sign a verdict the escrow refuses
+    // (`winner not a player`) and strand the duel until the six-hour refund.
+    const chain = chainSays(A, B);
+    expect(refusal(await on(chain).svc.lock(lockBody(SEAT_A, { b: STRANGER })))).toBe(
+      "opponent is not the on-chain seat",
+    );
+    // Including omitting it: the chain says there are two seats.
+    expect(refusal(await on(chain).svc.lock(lockBody(SEAT_A, { b: null })))).toBe(
+      "opponent is not the on-chain seat",
+    );
+  });
+
+  test("a duel nobody has opened on chain has no seats to bind to", async () => {
+    const chain = chainAnswers(() => Promise.resolve(`0x${"0".repeat(64 * 8)}`));
+    expect(refusal(await on(chain).svc.lock(lockBody(SEAT_A, { b: B })))).toBe("seats not on chain");
+  });
+
+  test("a duel still waiting for its opponent is refused, not pinned", async () => {
+    // Storing this would fix `b: null` under first-write-wins and make the duel
+    // permanently unsettleable — `/api/attest` has nobody to pay. A refusal
+    // costs the client a retry once its `join` has landed.
+    const open = chainSays(A, ZERO, "OPEN");
+    expect(refusal(await on(open).svc.lock(lockBody(SEAT_A, { b: B })))).toBe(
+      "opponent has not joined on chain",
+    );
+    expect(refusal(await on(open).svc.lock(lockBody(SEAT_A, { b: null })))).toBe(
+      "opponent has not joined on chain",
+    );
+  });
+
+  test("a duel that is already over is refused", async () => {
+    // A duel leaves FULL exactly once, so no verdict signed from here could
+    // ever be paid.
+    for (const status of ["SETTLED", "REFUNDED"] as const) {
+      expect(refusal(await on(chainSays(A, B, status)).svc.lock(lockBody(SEAT_A, { b: B })))).toBe(
+        "duel is closed on chain",
+      );
+    }
+  });
+
+  test("an unreachable chain FAILS CLOSED — it never falls back to the body", async () => {
+    // The most important row of the table. If a refusal here degraded into
+    // "trust the request", an attacker who can make one RPC call time out —
+    // a burst against a throttled endpoint will do — would restore the whole
+    // exploit, precisely when nobody is watching.
+    const down = chainAnswers(() => Promise.reject(new Error("ECONNREFUSED")));
+    const h = on(down);
+    // The body that a live chain accepts…
+    expect(refusal(await h.svc.lock(lockBody(SEAT_A, { b: B })))).toBe("chain unreachable");
+    // …and the exploit body. Both refused; neither is stored.
+    expect(refusal(await h.svc.lock(lockBody(SEAT_B, { b: A })))).toBe("chain unreachable");
+    expect(okStatus(h.svc.status(DUEL_ID)).locked).toBe(false);
+    expect(h.signed).toEqual([]);
+
+    // Anything that is not a duel row is the same answer, for the same reason.
+    for (const junk of ["0x", `0x${"11".repeat(31)}`]) {
+      const bad = chainAnswers(() => Promise.resolve(junk));
+      expect(refusal(await on(bad).svc.lock(lockBody(SEAT_A, { b: B })))).toBe("bad chain response");
+    }
+  });
+
+  test("a refused seat check does not consume first-write-wins", async () => {
+    // The property that keeps the fix from becoming its own denial of service —
+    // the same one the signature section asserts, now for the chain half.
+    const chain = chainSays(A, B);
+    const h = on(chain);
+    await h.svc.lock(lockBody(SEAT_B, { picks: WINNING_SLIP, b: A })); // the exploit
+    await h.svc.lock(lockBody(SEAT_S, { b: B })); // a stranger
+    await h.svc.lock(lockBody(SEAT_A, { b: STRANGER })); // the wrong opponent
+    expect(okStatus(h.svc.status(DUEL_ID)).locked).toBe(false);
+
+    const good = okLock(await h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP, b: B })));
+    expect(good.note).toBeUndefined();
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(expectedWinner(LOSING_SLIP));
+  });
+
+  test("the chain is consulted last, and only for a lock that could otherwise be stored", async () => {
+    // Recovery is local and free; an `eth_call` is neither. Nothing an
+    // unauthenticated stranger sends may make this process talk to an RPC.
+    const chain = chainSays(A, B);
+    const h = on(chain);
+    await h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B }); // unsigned
+    await h.svc.lock({ ...lockBody(SEAT_B, { b: A }), a: A }); // forged
+    await h.svc.lock({ matchKey: `nope:${SEED}`, picks: WINNING_SLIP, a: A, b: B }); // no such lobby
+    expect(chain.calls).toEqual([]);
+
+    // A real lock reads once…
+    okLock(await h.svc.lock(lockBody(SEAT_A, { b: B })));
+    expect(chain.calls).toHaveLength(1);
+    // …and a repeat lock is answered from the commit store, not the chain.
+    const again = okLock(await h.svc.lock(lockBody(SEAT_A, { picks: LOSING_SLIP, b: B })));
+    expect(again.note).toBe("already locked");
+    expect(chain.calls).toHaveLength(1);
+  });
+
+  test("with no escrow configured, nothing is read and the old behaviour is exact", async () => {
+    // The demo-without-staking path, asserted explicitly so that a later edit
+    // cannot quietly make a chain mandatory. The reader here is REAL — it just
+    // has no escrow address, so it reports itself unconfigured and the service
+    // skips it entirely rather than refusing every lock.
+    const chain = chainAnswers(() => Promise.resolve(duelsResult(A, B, "FULL")), "");
+    expect(chain.seats.configured).toBe(false);
+    const h = on(chain);
+
+    // The exploit body itself is accepted here — which is exactly the residual
+    // this whole section closes, and exactly why staking requires the escrow.
+    const res = okLock(await h.svc.lock(lockBody(SEAT_B, { picks: WINNING_SLIP, b: A })));
+    expect(res.note).toBeUndefined();
+    expect(res.duelId).toBe(DUEL_ID);
+    expect(chain.calls).toEqual([]);
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
   });
 });

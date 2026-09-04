@@ -351,9 +351,17 @@ export interface FillDeps {
  * The public Base RPC throttles bursts, and retrying into a throttle is how a
  * demo turns one slow call into a minute of silence.
  */
+/*
+ * ⚠ Written WITHOUT a provider URL on purpose. `test/secrets.test.ts` scans the
+ * built bundle for anything shaped like an RPC endpoint, and it cannot tell a
+ * placeholder in a help string from a real key someone pasted over it — which
+ * is exactly the mistake the scan exists to catch. So the hint names the
+ * variable and lets `.env.example` carry the URL shape, where no bundler will
+ * ever see it.
+ */
 export const ALCHEMY_HINT =
-  "Public RPC https://mainnet.base.org is throttling. Do not retry blindly — " +
-  'set RPC_URL="https://base-mainnet.g.alchemy.com/v2/YOUR_KEY" and reload.';
+  "The public Base RPC is throttling. Do not retry blindly — set a private " +
+  "RPC_URL (see .env.example) and reload.";
 
 /**
  * Does this error look like the public RPC throttling rather than a contract
