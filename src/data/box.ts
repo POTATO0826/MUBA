@@ -150,6 +150,24 @@ export interface LadderSnapshot {
   chainConfig?: {
     /** 10 keys over 8 assets: `ETH/USD` and `ETH` are the *same address*. */
     priceFeeds?: Record<string, string> | null;
+    /**
+     * Implementation address → product, keyed by **lowercase** address — the
+     * chain's own registry, 46 entries on Base, carried verbatim.
+     *
+     * The ladder never reads it. {@link file://./ranger.ts} does, and it is the
+     * only thing on a snapshot that can say what a four-strike order *is*:
+     * `validateCondor` and `validateRanger` accept the identical arrays
+     * (`dist/index.js:16838`, `:16871`), so the strikes decide nothing. The
+     * same registry is what `classifyOrder` in `src/server/thetanuts.ts` looks
+     * an order up in, and this is that map travelling rather than a second copy
+     * of it.
+     *
+     * Optional because the frozen capture in `test/fixtures/orders.json`
+     * predates our reading it, and absent is answered honestly: a snapshot with
+     * no registry yields **no** listed zones, rather than a guess from the
+     * strike shape.
+     */
+    optionImplementations?: Record<string, { name?: string | null } | null | undefined> | null;
   } | null;
 }
 
@@ -174,6 +192,29 @@ export interface LadderOrder {
     strikes?: readonly string[] | null;
     /** The signature's own expiry. A stale order reverts `Signer Not Authorized`. */
     orderExpiryTimestamp?: number;
+    /**
+     * The deployed option-implementation contract this order is an instance of
+     * — **the field that says what the product actually is**, looked up in
+     * `chainConfig.optionImplementations`. Read only by
+     * {@link file://./ranger.ts}; the ladder is an axis and does not care what
+     * product quoted a rung.
+     */
+    implementation?: string | null;
+    /**
+     * Which side the *maker* is on, as the API ships it.
+     *
+     * `false` means the maker is not the buyer, so the taker is — the side
+     * plan7 §5 permits. Measured rather than assumed: over 9,766 settled
+     * four-strike zone positions the maker is recorded on the other side
+     * 5,635 times and on this one never (`docs/plan7-measurements.md` §3.2).
+     *
+     * The SDK derives `order.isBuyer` as the complement of this
+     * (`dist/index.js:3360`); this file reads the raw field rather than the
+     * derived one, because the measurements flag a suspected polarity inversion
+     * in a consumer of `isBuyer` and there is no reason to inherit that
+     * question here.
+     */
+    isLong?: boolean | null;
   } | null;
 }
 
@@ -227,6 +268,39 @@ function toSeconds(raw: string | bigint | number | null | undefined): number | n
 }
 
 /**
+ * The option expiry of an order that is **live at `at`**, or `null`.
+ *
+ * The whole of the liveness rule, in one place: remaining size, a readable
+ * option expiry, that expiry still ahead of the clock, and a signature that has
+ * not gone stale. It is exported because {@link file://./ranger.ts} must apply
+ * the *same* rule — a listed zone the ladder has already dropped as dead would
+ * be a fill the arena offers on an axis it is not drawing, and two copies of
+ * this test would eventually disagree about which.
+ *
+ * @param at Wall clock in **milliseconds**. Omitted means "do not judge
+ *           expiry", which keeps the function total and keeps a frozen fixture
+ *           from ageing out of its own tests.
+ */
+export function liveExpiryOf(
+  entry: LadderOrder | null | undefined,
+  at?: number,
+): number | null {
+  if (!entry?.rawApiData) return null;
+  if (!hasSize(entry.availableAmount)) return null;
+
+  const expiry = toSeconds(entry.order?.expiry);
+  if (expiry === null) return null;
+
+  const now = typeof at === "number" && Number.isFinite(at) ? at / 1000 : null;
+  if (now !== null) {
+    if (expiry <= now) return null;
+    const signature = entry.rawApiData.orderExpiryTimestamp;
+    if (typeof signature === "number" && Number.isFinite(signature) && signature <= now) return null;
+  }
+  return expiry;
+}
+
+/**
  * Every `(underlying, expiry)` ladder the book supports, ascending by
  * underlying then expiry.
  *
@@ -267,7 +341,6 @@ export function deriveLadders(
   const feeds = feedIndex(snap?.chainConfig?.priceFeeds);
   if (feeds.size === 0) return [];
 
-  const now = typeof at === "number" && Number.isFinite(at) ? at / 1000 : null;
   const orders = Array.isArray(snap?.orders) ? snap.orders : [];
 
   /** `underlying   expiry` → the distinct strikes quoted there. */
@@ -283,16 +356,10 @@ export function deriveLadders(
     if (!underlying) continue;
 
     if (!Array.isArray(api.strikes) || api.strikes.length === 0) continue;
-    if (!hasSize(entry.availableAmount)) continue;
-
-    const expiry = toSeconds(entry.order?.expiry);
+    // Size, expiry and signature staleness, all through the one rule
+    // `src/data/ranger.ts` also applies — see {@link liveExpiryOf}.
+    const expiry = liveExpiryOf(entry, at);
     if (expiry === null) continue;
-
-    if (now !== null) {
-      if (expiry <= now) continue;
-      const signature = api.orderExpiryTimestamp;
-      if (typeof signature === "number" && Number.isFinite(signature) && signature <= now) continue;
-    }
 
     const key = `${underlying} ${expiry}`;
     let rungs = buckets.get(key);
@@ -511,10 +578,17 @@ export const WING_ZONE_DIVISOR = 4n;
  * width on an irregular ladder — there is no constant tick to round to.
  *
  * A candidate that appears at **both** ends puts all four strikes on the
- * ladder, which is the shape the OptionBook can fill outright (plan7 §3.1); one
- * that appears at only one end still satisfies the equal-wing invariant exactly
- * and is priced through RFQ, where any strike is reachable (§3.2).
- * {@link wingLandsOnLadder} tells the execution layer which it is holding.
+ * ladder; one that appears at only one end still satisfies the equal-wing
+ * invariant exactly. Either is priced on demand by a maker, where any strike is
+ * reachable (plan7 §3.2).
+ *
+ * **Four listed strikes are not a listed structure**, and this used to be read
+ * as though they were. The OptionBook has never carried a single condor — not
+ * one, in 15,740 positions (`docs/plan7-measurements.md` §3.3) — so a box whose
+ * four corners each sit on a rung is still an instrument nobody has created.
+ * The only question that answers "can this fill off the book" is whether a
+ * matching order is resting there, which is `matchListedZone` in
+ * {@link file://./ranger.ts} and not anything in this file.
  */
 export function wingCandidates(
   ladder: StrikeLadder,
@@ -533,7 +607,16 @@ export function wingCandidates(
   return [...widths].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(formatStrike);
 }
 
-/** True when both outer strikes land on rungs — i.e. the whole condor is listed. */
+/**
+ * True when both outer strikes land on rungs.
+ *
+ * A statement about the *ladder*, and only that: it says every one of the four
+ * strikes is a level the venue quotes somewhere. It does **not** say the
+ * structure is listed, and it must not be rendered as though it did — see
+ * {@link wingCandidates}. It survives because it is a genuinely useful tie-break
+ * for {@link snapWing}: a wing the ladder can express at both ends is the one a
+ * maker is most likely to price.
+ */
 export function wingLandsOnLadder(
   ladder: StrikeLadder,
   floor: string | bigint | null | undefined,
@@ -584,9 +667,10 @@ export function defaultWing(
  * Snap a wing width to one the ladder can express.
  *
  * Nearest {@link wingCandidates} entry to `target`. Ties break toward a
- * candidate that puts both outer strikes on the ladder — the fully-listed
- * condor is the one the OptionBook can fill — and then toward the narrower
- * wing, so the tie-break is deterministic rather than insertion-ordered.
+ * candidate that puts both outer strikes on the ladder — every strike a level
+ * the venue already quotes is the wing a maker is likeliest to price — and then
+ * toward the narrower wing, so the tie-break is deterministic rather than
+ * insertion-ordered.
  *
  * When the ladder offers no candidate at all (the zone spans the whole ladder,
  * so there is no rung outside it) the zone width itself is used. It is still a

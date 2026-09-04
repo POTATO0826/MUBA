@@ -27,7 +27,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { validateCondor } from "@thetanuts-finance/thetanuts-client";
+import { validateCondor, validateRanger } from "@thetanuts-finance/thetanuts-client";
 import {
   MIN_LADDER_STRIKES,
   boxProblem,
@@ -67,6 +67,28 @@ import {
   wingUsd,
   type CondorSpec,
 } from "../src/data/condor.ts";
+import {
+  RANGER_PAYOUT_TYPE,
+  RANGER_PRODUCT,
+  isListedRanger,
+  isTakerBuyable,
+  listedZones,
+  matchListedZone,
+  matchListedZones,
+  productOf,
+  rangerStrikeNumbers,
+  validateRangerSpec,
+  zoneBox,
+  zoneCoversSpot,
+  zoneEconomics,
+  zonePayoff,
+  zoneStrikes,
+  zoneToRanger,
+  zoneWingUsd,
+  zonesFor,
+  type ListedZone,
+  type RangerSpec,
+} from "../src/data/ranger.ts";
 import type { FillableOrder } from "../src/types.ts";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
@@ -606,6 +628,9 @@ const SOURCES = {
   "src/data/condor.ts": await Bun.file(
     join(import.meta.dir, "..", "src", "data", "condor.ts"),
   ).text(),
+  "src/data/ranger.ts": await Bun.file(
+    join(import.meta.dir, "..", "src", "data", "ranger.ts"),
+  ).text(),
 } as const;
 
 /** Comments stripped, so prose about a rule cannot be mistaken for the rule. */
@@ -810,5 +835,435 @@ describe("purity", () => {
     }
     expect(CONDOR_UNDERLYINGS).toEqual(["ETH", "BTC"]);
     expect(isCondorUnderlying("SUI")).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. The listed zone — plan7 §3.1, with the instrument that actually exists
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The chain's own implementation registry, restricted to the seven addresses
+ * this fixture uses.
+ *
+ * **Why it is here and not in the fixture.** `chainConfig.optionImplementations`
+ * is 46 lowercase-keyed entries on the live client, and the frozen capture
+ * predates our reading it (`test/fixtures/orders.json` carries `priceFeeds`,
+ * `contracts` and `tokens` only). The names below are the chain's, recorded in
+ * `docs/plan7-measurements.md` §"Addresses this document refers to" and in
+ * `tnuts-test/FINDINGS.md`: `RANGER` is `0x9980ec85…`, `CALL_CONDOR` is
+ * `0x14476CF2…`.
+ *
+ * Keys are lowercase because that is how the SDK ships the map — `productOf`
+ * lowercases what it is given, and a registry keyed the other way resolves
+ * nothing.
+ */
+const REGISTRY = {
+  "0x9980ec85bc6fe07340adb36c76fa093bb6d4fcbc": { name: "RANGER" },
+  "0x051791df68223ae173fade5217c48875e36eef61": { name: "PUT" },
+  "0x7355eb92dfb0503db558a70c10843618932ab290": { name: "PUT" },
+  "0x8c56100cae246f7daa4bc1ec4d1477d71178c563": { name: "PHYSICAL_CALL" },
+  "0x6ad53dd058bea004829ccf58a282c21a7df02dca": { name: "PHYSICAL_PUT" },
+  "0xfaed63f7040e65b79cf0ae29706fdc423ee249a9": { name: "CALL_SPREAD" },
+  "0xa1d5f6b16a2e7f298f8d2cdf78f7779b4a20c4c2": { name: "CALL_FLY" },
+} as const;
+
+/** `CALL_CONDOR` on Base — used only to prove the *label* decides, not the strikes. */
+const CONDOR_IMPL = "0x14476CF2ea9F7C448100F061670E390f17c78817";
+/** The address the two four-strike orders in the fixture actually name. */
+const RANGER_IMPL = "0x9980ec85bc6fE07340adb36c76FA093bb6D4FcBc";
+
+/** The fixture, plus the registry it was captured without. */
+function booked(
+  registry: Record<string, { name?: string | null }> | undefined = REGISTRY,
+): LadderSnapshot {
+  const snap = clone();
+  return { ...snap, chainConfig: { ...snap.chainConfig, optionImplementations: registry } };
+}
+
+/** The fixture's four-strike orders — both are BTC RANGERs. */
+const rangerRows = (snap: LadderSnapshot): LadderOrder[] =>
+  (snap.orders ?? []).filter((o) => (o?.rawApiData?.strikes ?? []).length === 4) as LadderOrder[];
+
+// One 08:00Z expiry, both assets — the book's own dates, named once each.
+const BTC_5SEP = ETH_5SEP;
+const BTC_6SEP = ETH_6SEP;
+
+/** The box that lands exactly on the fixture's listed zone. */
+const onZone = (expiry = BTC_5SEP): Box => ({
+  underlying: "BTC",
+  floor: priceToStrike(80_000) as string,
+  ceiling: priceToStrike(81_000) as string,
+  wing: priceToStrike(500) as string,
+  expiry,
+});
+
+describe("resolving the product", () => {
+  test("comes from the implementation address, never from the strikes", () => {
+    const snap = booked();
+    const [first] = rangerRows(snap);
+    expect(first?.rawApiData?.implementation?.toLowerCase()).toBe(RANGER_IMPL.toLowerCase());
+    expect(productOf(first?.rawApiData?.implementation, REGISTRY)).toBe(RANGER_PRODUCT);
+    expect(isListedRanger(first, REGISTRY)).toBe(true);
+  });
+
+  test("the strikes cannot tell the two apart — the SDK's own checkers agree", () => {
+    // This is the whole reason the registry exists. `validateCondor` and
+    // `validateRanger` are both real named exports of the shipped 0.3.0, and on
+    // the fixture's four strikes they return the identical answer. A heuristic
+    // over these numbers is our own arithmetic read back to us
+    // (`docs/reviews/mcp-crosscheck.md` §BUG-2).
+    const strikes = (rangerRows(booked())[0]?.rawApiData?.strikes ?? []).map(
+      (s) => strikeUsd(s) as number,
+    );
+    expect(strikes).toEqual([79_500, 80_000, 81_000, 81_500]);
+    expect(validateRanger(strikes).valid).toBe(true);
+    expect(validateCondor(strikes).valid).toBe(true);
+  });
+
+  test("relabelling the same order a condor empties the listed book", () => {
+    // Byte for byte the same strikes, the same size, the same expiry. Only the
+    // implementation address moves, and the listed path goes with it.
+    const snap = booked();
+    for (const row of rangerRows(snap)) {
+      if (row.rawApiData) row.rawApiData.implementation = CONDOR_IMPL;
+    }
+    const relabelled = {
+      ...snap,
+      chainConfig: {
+        ...snap.chainConfig,
+        optionImplementations: {
+          ...REGISTRY,
+          [CONDOR_IMPL.toLowerCase()]: { name: "CALL_CONDOR" },
+        },
+      },
+    };
+    expect(listedZones(relabelled).length).toBe(0);
+    expect(matchListedZone(onZone(), relabelled)).toBeNull();
+  });
+
+  test("a label alone is not enough — the ranger invariants still run", () => {
+    // The three-strike CALL_FLY, relabelled `RANGER`. The registry now says the
+    // right word and the order is still not a zone, because four strikes with
+    // equal wings and a gap between them is what a zone *is*.
+    const snap = booked({
+      ...REGISTRY,
+      "0xa1d5f6b16a2e7f298f8d2cdf78f7779b4a20c4c2": { name: "RANGER" },
+    });
+    expect(listedZones(snap).length).toBe(2); // the two real ones, and no fly
+    expect(listedZones(snap).every((z) => z.strikes.length === 4)).toBe(true);
+  });
+
+  test("no registry means no listed zones — never a guess", () => {
+    // The shipped fixture, exactly as captured. Every one of these orders is
+    // real and two of them are genuinely RANGERs; with nothing authoritative to
+    // ask, the honest answer is that we cannot tell.
+    expect(FIXTURE.chainConfig?.optionImplementations).toBeUndefined();
+    expect(listedZones(FIXTURE).length).toBe(0);
+    expect(matchListedZone(onZone(), FIXTURE)).toBeNull();
+  });
+
+  test("the zero address and an unknown deployment both answer null", () => {
+    expect(productOf("0x0000000000000000000000000000000000000000", REGISTRY)).toBeNull();
+    expect(productOf("", REGISTRY)).toBeNull();
+    expect(productOf(undefined, REGISTRY)).toBeNull();
+    // A deployment newer than the map we were handed. This will happen.
+    expect(productOf("0xdead000000000000000000000000000000000000", REGISTRY)).toBeNull();
+  });
+});
+
+describe("the listed zones on the book", () => {
+  test("are the two real RANGERs, read straight off the capture", () => {
+    const zones = listedZones(booked());
+    expect(zones.length).toBe(2);
+    for (const z of zones) {
+      expect(z.underlying).toBe("BTC");
+      expect(strikeUsd(z.floor)).toBe(80_000);
+      expect(strikeUsd(z.ceiling)).toBe(81_000);
+      expect(zoneWingUsd(z)).toBe(500);
+      // $10,000 of depth per order — 5,000x `MAX_FILL_USDC`. Depth is never the
+      // constraint on this path; the ladder is.
+      expect(z.availableAmount).toBe("10000000000");
+    }
+    expect(zones.map((z) => z.expiry)).toEqual([BTC_5SEP, BTC_6SEP]);
+  });
+
+  test("carry the caller's own order row, so the arena can quote and fill it", () => {
+    // Identity, not a copy: `previewFillOrder` and `fillOrder` take the row.
+    const snap = booked();
+    const zone = listedZones(snap)[0] as ListedZone;
+    expect(zone.order).toBe((snap.orders ?? [])[zone.index] as LadderOrder);
+  });
+
+  test("publish no greeks, and nothing here invents one", () => {
+    // 0 of 38 listed zones on the live book carried greeks
+    // (`docs/plan7-measurements.md` §3.2), so plan7 §2.4's `TIER_BANDS` delta
+    // shading has nothing to read. The absence is structural: there is no field
+    // on the object to hang a fabricated delta on.
+    const zone = listedZones(booked())[0] as ListedZone;
+    for (const key of Object.keys(zone)) {
+      expect(key, key).not.toMatch(/delta|gamma|vega|theta|greek/i);
+    }
+    // …and no line of the module names one either.
+    const body = code(SOURCES["src/data/ranger.ts"]);
+    expect(body).not.toMatch(/\b(delta|gamma|vega|theta|greeks)\b/i);
+    expect(body).not.toMatch(/\bTIER_BANDS\b/);
+  });
+
+  test("only the side the player can buy is offered", () => {
+    // plan7 §5. `isLong === false` is the maker on the other side, so the taker
+    // is the buyer — measured over 9,766 settled zone positions, never once the
+    // other way (`docs/plan7-measurements.md` §3.2).
+    const snap = booked();
+    expect(rangerRows(snap).every((r) => isTakerBuyable(r))).toBe(true);
+    for (const row of rangerRows(snap)) {
+      if (row.rawApiData) row.rawApiData.isLong = true;
+    }
+    expect(rangerRows(snap).some((r) => isTakerBuyable(r))).toBe(false);
+    expect(listedZones(snap).length).toBe(0);
+  });
+
+  test("an order with no size left is not a zone", () => {
+    const snap = booked();
+    for (const row of rangerRows(snap)) row.availableAmount = "0";
+    expect(listedZones(snap).length).toBe(0);
+  });
+
+  test("liveness is judged by the ladder's own rule, so the two cannot disagree", () => {
+    // The capture's signatures go stale at 1788514414. Past that instant the
+    // ladder empties, and the listed zones must empty with it: a fill offered
+    // on a column the chart is not drawing is worse than no fill at all.
+    const after = 1_788_514_415_000;
+    expect(deriveLadders(booked(), after).length).toBe(0);
+    expect(listedZones(booked(), after).length).toBe(0);
+  });
+
+  test("zonesFor is the column the arena renders — and it is nearly always empty", () => {
+    const snap = booked();
+    expect(zonesFor(snap, "BTC", BTC_5SEP).length).toBe(1);
+    expect(zonesFor(snap, "BTC", BTC_6SEP).length).toBe(1);
+    // Every other column the fixture quotes lists nothing at all.
+    expect(deriveLadders(snap).length).toBe(9);
+    const covered = deriveLadders(snap).filter(
+      (l) => zonesFor(snap, l.underlying, l.expiry).length > 0,
+    );
+    expect(covered.length).toBe(2);
+    // ETH is the one that stings: the arena's default asset lists no zone at
+    // all on this capture, so every ETH box has to be priced on demand.
+    expect(zonesFor(snap, "ETH", ETH_5SEP).length).toBe(0);
+  });
+});
+
+describe("matching a drawn box", () => {
+  test("a box that lands on a listed zone finds it", () => {
+    const snap = booked();
+    const hit = matchListedZone(onZone(), snap);
+    expect(hit).not.toBeNull();
+    expect(hit?.expiry).toBe(BTC_5SEP);
+    expect(hit?.order).toBe((snap.orders ?? [])[hit?.index as number] as LadderOrder);
+  });
+
+  test("a box that does not returns nothing, so the arena knows to ask a maker", () => {
+    const snap = booked();
+    const l = ladder("BTC", BTC_5SEP);
+    // 79000–80000 is a perfectly good box: both edges are rungs of the live
+    // ladder, one increment of the local grid apart. Nobody has listed it.
+    const drawn = snapBox(
+      {
+        underlying: "BTC",
+        floor: priceToStrike(79_000) as string,
+        ceiling: priceToStrike(80_000) as string,
+        wing: "",
+        expiry: BTC_5SEP,
+      },
+      l,
+    );
+    expect(isPlayable(drawn, l)).toBe(true);
+    expect(matchListedZone(drawn, snap)).toBeNull();
+  });
+
+  test("the match is exact on both edges — never nearest", () => {
+    const snap = booked();
+    const off = (floor: number, ceiling: number): Box => ({
+      ...onZone(),
+      floor: priceToStrike(floor) as string,
+      ceiling: priceToStrike(ceiling) as string,
+    });
+    // One rung out at either end. On a $1,000 BTC grid "close enough" is a
+    // thousand dollars of band, and a different instrument.
+    expect(matchListedZone(off(79_500, 81_000), snap)).toBeNull();
+    expect(matchListedZone(off(80_000, 81_500), snap)).toBeNull();
+    expect(matchListedZone(off(80_000, 81_000), snap)).not.toBeNull();
+  });
+
+  test("the same band on another expiry or another asset is another instrument", () => {
+    const snap = booked();
+    expect(matchListedZone({ ...onZone(), expiry: ETH_11SEP }, snap)).toBeNull();
+    expect(matchListedZone({ ...onZone(), underlying: "ETH" }, snap)).toBeNull();
+    expect(matchListedZone({ ...onZone(), expiry: BTC_6SEP }, snap)?.expiry).toBe(BTC_6SEP);
+  });
+
+  test("the wing does not filter — it orders, because it is the maker's", () => {
+    // The live book lists ETH 2400–2500 at two wing widths on one expiry. Here
+    // the same shape: a second order on the same band, wings twice as wide.
+    const snap = booked();
+    const wide = structuredClone(rangerRows(snap)[0]) as LadderOrder;
+    if (wide.rawApiData) {
+      wide.rawApiData.strikes = [
+        "7900000000000",
+        "8000000000000",
+        "8100000000000",
+        "8200000000000",
+      ];
+    }
+    const both = { ...snap, orders: [...(snap.orders ?? []), wide] };
+
+    expect(matchListedZones(onZone(), both).length).toBe(2);
+    // Ask with the narrow wing and the narrow zone comes first; ask with the
+    // wide one and the wide zone does. A caller taking `[0]` is deterministic.
+    expect(zoneWingUsd(matchListedZone(onZone(), both) as ListedZone)).toBe(500);
+    const wider: Box = { ...onZone(), wing: priceToStrike(1_000) as string };
+    expect(zoneWingUsd(matchListedZone(wider, both) as ListedZone)).toBe(1_000);
+  });
+
+  test("degrades to nothing rather than throwing", () => {
+    expect(matchListedZone(null, booked())).toBeNull();
+    expect(matchListedZone(onZone(), null)).toBeNull();
+    expect(matchListedZone({ ...onZone(), floor: "junk" }, booked())).toBeNull();
+    expect(listedZones(undefined).length).toBe(0);
+    expect(listedZones({ orders: null, chainConfig: null }).length).toBe(0);
+  });
+
+  test("the coarse ladder, counted — most drawable boxes match nothing", () => {
+    // plan7 §3.1 reads as "draw a box and it fills". On the real book it is
+    // "pick one of about three", and this is that sentence as a number.
+    const snap = booked();
+    let bands = 0;
+    let matched = 0;
+    for (const l of deriveLadders(snap)) {
+      for (let fi = 0; fi < l.strikes.length; fi++) {
+        for (let ci = fi + 1; ci < l.strikes.length; ci++) {
+          const b = snapBox(
+            {
+              underlying: l.underlying,
+              floor: l.strikes[fi] as string,
+              ceiling: l.strikes[ci] as string,
+              wing: "",
+              expiry: l.expiry,
+            },
+            l,
+          );
+          if (!isPlayable(b, l)) continue;
+          bands++;
+          if (matchListedZone(b, snap)) matched++;
+        }
+      }
+    }
+    // 82 bands are drawable across the capture's nine columns. Two of them
+    // exist on the book — the same band, on two consecutive expiries.
+    expect(bands).toBe(82);
+    expect(matched).toBe(2);
+    expect(matched / bands).toBeLessThan(0.05);
+  });
+
+  test("a listed zone is itself always drawable, and always matches", () => {
+    // The chips in the arena are `zoneBox(zone)`, so this is the round trip
+    // that keeps a chip from drawing a box it cannot fill.
+    const snap = booked();
+    for (const z of listedZones(snap)) {
+      const l = deriveLadder(snap, z.underlying, z.expiry) as StrikeLadder;
+      const b = zoneBox(z);
+      expect(isPlayable(b, l)).toBe(true);
+      expect(ladderIndex(l, b.floor)).toBeGreaterThanOrEqual(0);
+      expect(ladderIndex(l, b.ceiling)).toBeGreaterThanOrEqual(0);
+      // Snapping it again changes nothing: it is already the book's own shape.
+      expect(snapBox(b, l)).toEqual(b);
+      expect(matchListedZone(b, snap)?.index).toBe(z.index);
+    }
+  });
+});
+
+describe("the listed instrument", () => {
+  const zone = (): ListedZone => listedZones(booked())[0] as ListedZone;
+
+  test("is a RANGER and says so, with the flag the SDK needs", () => {
+    const spec = zoneToRanger(zone());
+    expect(spec.product).toBe(RANGER_PRODUCT);
+    // The lowercase `PayoutType`, carried on the spec rather than re-derived at
+    // the boundary. `calculatePayoutAtPrice` prices four-strike orders as a
+    // condor unless it is handed `isRanger: true` (FINDINGS, "the 4-strike
+    // discriminator trap"), and this is the field that stops that happening.
+    expect(spec.payoutType).toBe(RANGER_PAYOUT_TYPE);
+    expect(spec.payoutType).toBe("ranger");
+    expect(spec.isLong).toBe(true);
+    expect(spec.underlying).toBe("BTC");
+  });
+
+  test("cannot be spelled with a sell side", () => {
+    const spec = zoneToRanger(zone());
+    // @ts-expect-error plan7 §5, at compile time: a RangerSpec is long
+    const other: RangerSpec = { ...spec, isLong: false };
+    void other;
+  });
+
+  test("passes the SDK's own checker at the boundary", () => {
+    const spec = zoneToRanger(zone());
+    const strikes = rangerStrikeNumbers(spec);
+    expect(strikes).toEqual([79_500, 80_000, 81_000, 81_500]);
+    expect(validateRanger(strikes).valid).toBe(true);
+    expect(validateRangerSpec(spec).valid).toBe(true);
+  });
+
+  test("the invariants are checked in integers, and reject what they should", () => {
+    expect(zoneStrikes(["1", "2", "3"])).toBeNull(); // not four
+    expect(zoneStrikes(["100", "200", "300", "500"])).toBeNull(); // unequal wings
+    expect(zoneStrikes(["200", "100", "300", "400"])).toBeNull(); // not ascending
+    expect(zoneStrikes(["0", "100", "200", "300"])).toBeNull(); // not positive
+    expect(zoneStrikes(["100", "200", "300", "400"])).not.toBeNull();
+  });
+});
+
+describe("a listed zone's economics", () => {
+  const zone = (): ListedZone => listedZones(booked())[0] as ListedZone;
+
+  test("the ceiling is the wing, and the risk is the premium", () => {
+    const econ = zoneEconomics(zone(), 20, 1);
+    expect(econ.wing).toBe(500);
+    expect(econ.maxPayout).toBe(500);
+    expect(econ.maxLoss).toBe(20);
+    expect(econ.zone).toEqual({ floor: 80_000, ceiling: 81_000 });
+  });
+
+  test("the multiple is that division and nothing else, and is absent until quoted", () => {
+    // 500 over 20 is 25. The premium must be `previewFillOrder`'s number, and
+    // this is the same `economics` the condor path uses — one division in the
+    // repo, and no second place for an invented rate to appear.
+    expect(zoneEconomics(zone(), 20, 1).payoutMultiple).toBe(25);
+    expect(zoneEconomics(zone(), 10, 1).payoutMultiple).toBe(50);
+    expect(zoneEconomics(zone(), 0, 1).payoutMultiple).toBeNull();
+    expect(zoneEconomics(zone(), Number.NaN, 1).payoutMultiple).toBeNull();
+  });
+
+  test("the payoff is flat across the band and zero outside the wings", () => {
+    const z = zone(); // 79500 / 80000 / 81000 / 81500
+    expect(zonePayoff(z, 80_000)).toBe(500);
+    expect(zonePayoff(z, 80_500)).toBe(500);
+    expect(zonePayoff(z, 81_000)).toBe(500);
+    expect(zonePayoff(z, 79_750)).toBeCloseTo(250, 8);
+    expect(zonePayoff(z, 81_250)).toBeCloseTo(250, 8);
+    expect(zonePayoff(z, 79_500)).toBe(0);
+    expect(zonePayoff(z, 81_500)).toBe(0);
+    expect(zonePayoff(z, 1)).toBe(0);
+  });
+
+  test("spot is a fact about the zone, and it can be outside it", () => {
+    // BTC spot on the capture is 81004.04 — just above this band's ceiling. On
+    // the live book, ETH's two nearest expiries are the same story, and the
+    // arena has to be able to say so rather than snap somewhere absurd.
+    const z = zone();
+    expect(FIXTURE.prices.BTC).toBeCloseTo(81_004.04, 2);
+    expect(zoneCoversSpot(z, FIXTURE.prices.BTC as number)).toBe(false);
+    expect(zoneCoversSpot(z, 80_500)).toBe(true);
+    expect(zoneCoversSpot(z, null)).toBe(false);
   });
 });

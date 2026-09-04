@@ -10,7 +10,6 @@ import {
   priceToStrike,
   snapBox,
   strikeUsd,
-  wingLandsOnLadder,
   type Box,
   type LadderSnapshot,
 } from "../data/box.ts";
@@ -22,6 +21,15 @@ import {
   validateSpec,
   type CondorSpec,
 } from "../data/condor.ts";
+import {
+  matchListedZone,
+  zoneBox,
+  zoneCoversSpot,
+  zoneToRanger,
+  zonesFor,
+  type ListedZone,
+  type RangerSpec,
+} from "../data/ranger.ts";
 import {
   PRICE_SOURCE,
   SETTLEMENT_NOTE,
@@ -142,6 +150,48 @@ export const NOW_COPY =
 /** §4.3 and plan6 §A7 — the sentence that sits above every upside figure. */
 export const MAX_LOSS_COPY = "The premium you pay, all of it. There is nothing else at risk.";
 
+// ── The listed path, said honestly ──────────────────────────────────────────
+//
+// plan7 §3.1 wanted snap-to-listed to be the day-one default. It is, but not
+// with the instrument the plan named: the OptionBook has never listed a single
+// condor, and the zone product it *does* list — 62% of every position it has
+// ever traded — is `RANGER` (`docs/plan7-measurements.md` §3). These five lines
+// are the three ways that instrument differs from the one §3.1 imagined,
+// surfaced rather than smoothed over.
+
+/** A box that landed on something a maker has already created. */
+export const LISTED_COPY =
+  "This lands on a zone the market maker has already listed, so it fills straight off the book — no waiting on anyone.";
+
+/** §4.2 — the wing is the upside, and on a listed zone it is not the player's. */
+export const LISTED_WING_COPY =
+  "Its wings are the maker's, not yours. A listed zone comes as it is: you pick one, you do not size it.";
+
+/**
+ * §2.4 asks for the strike axis to be shaded by `TIER_BANDS`, which is a delta
+ * bracket. Not one of the 38 listed zones on the live book published a delta,
+ * so there is nothing to shade a listed zone with — and inventing one to fill
+ * the gap would be a number this repo made up about a real position.
+ */
+export const LISTED_NO_GREEKS_COPY =
+  "The book publishes no greeks for a listed zone, so this box is not shaded by delta. That figure is not hidden — it does not exist for this instrument.";
+
+/** The common case, and not a failure. */
+export const UNLISTED_COPY =
+  "No listed zone matches this box, so a maker would have to price it on demand.";
+
+/** The coarse ladder, said as a count rather than implied by an empty list. */
+export const NO_ZONES_COPY = "The book lists no zone at all on this expiry.";
+
+/**
+ * On the live book, ETH's two nearest expiries each list exactly one zone and
+ * spot is outside it. A player drawing around today's price for tomorrow has
+ * nothing to land on, and being told that is better than being snapped
+ * somewhere absurd.
+ */
+export const SPOT_OUTSIDE_COPY =
+  "None of the listed zones on this expiry contains the current price.";
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
@@ -259,6 +309,43 @@ export function segments(
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A box that landed on a zone the book already carries — plan7 §3.1's
+ * day-one path, with the instrument that actually exists there.
+ *
+ * Both halves are carried because both are needed and neither implies the
+ * other: `zone.order` is the row `previewFillOrder` and `fillOrder` take, and
+ * `spec` is what the position *is*. `spec.payoutType` is `"ranger"`, and the
+ * SDK's own payout helpers price a four-strike order as a **condor** unless
+ * they are told otherwise — so the flag travels with the fill rather than
+ * being re-derived at the boundary.
+ */
+export interface ListedFill {
+  zone: ListedZone;
+  spec: RangerSpec;
+}
+
+/**
+ * Which of §3's two execution paths one box takes.
+ *
+ * Exported so a caller can ask the same question the screen asks, and get the
+ * same answer, without re-deriving the match: a second implementation of "does
+ * this box exist on the book" would eventually answer differently from the
+ * sentence the player just read.
+ *
+ * `null` is ordinary. The listed ladder is about three zones per expiry on two
+ * assets, so most boxes a player can draw match nothing — see
+ * `docs/plan7-measurements.md` §3.3.
+ */
+export function listedFill(
+  box: Box | null | undefined,
+  snapshot: LadderSnapshot | null | undefined,
+  at: number,
+): ListedFill | null {
+  const zone = matchListedZone(box, snapshot, at);
+  return zone === null ? null : { zone, spec: zoneToRanger(zone) };
+}
+
 export interface BoxBuilderProps {
   /**
    * One raw `fetchOrders()` capture plus the bundled chain config — the ladder's
@@ -313,14 +400,38 @@ export interface BoxBuilderProps {
    * `condorStrikeNumbers(spec)` — the human-readable array the SDK's
    * `validateCondor` and `buildCondorRFQ` both take, handed over so the SDK
    * check runs at the execution boundary where the SDK actually lives.
+   *
+   * The third argument is **which of plan7 §3's two execution paths this box
+   * takes**, and it is the whole of the listed path's interface:
+   *
+   *  - a {@link ListedFill} means the box landed on a zone resting on the
+   *    OptionBook. Quote it with `previewFillOrder(match.zone.order, …)` and
+   *    fill it with `fillOrder` — instant, and with no maker round trip at all.
+   *    The instrument is `match.spec`, a `RANGER`, and it is **not** the
+   *    `CondorSpec` in the first argument.
+   *  - `null` means nothing on the book matches, which is the ordinary case on
+   *    a ladder this coarse. That box is the condor in the first argument, and
+   *    it has to be priced on demand.
    */
-  onQuote?: (spec: CondorSpec, strikes: [number, number, number, number]) => void;
+  onQuote?: (
+    spec: CondorSpec,
+    strikes: [number, number, number, number],
+    match: ListedFill | null,
+  ) => void;
   /**
    * The confirm step's action. Reached only with `features.trade` on; absent
    * leaves the confirm screen readable and inert, which is the state a build
    * without the flag ships in.
+   *
+   * Same third argument, and for the same reason: the thing that gets signed is
+   * a fill against `match.zone.order` when there is a match, and a request for
+   * a price when there is not.
    */
-  onConfirm?: (spec: CondorSpec, strikes: [number, number, number, number]) => void;
+  onConfirm?: (
+    spec: CondorSpec,
+    strikes: [number, number, number, number],
+    match: ListedFill | null,
+  ) => void;
   /**
    * Override the `/api/config` read. `undefined` asks the server once at mount;
    * `false` keeps the screen inert with no network call at all.
@@ -552,6 +663,29 @@ export function BoxBuilder({
    * is plan 7 §1's — playable, then the instrument, then the strikes the SDK
    * boundary validates.
    */
+  const commitBox = useCallback(
+    (candidate: Box) => {
+      if (!ladder) return;
+      setBox(candidate);
+      setStage("draw");
+
+      if (!onQuote || !isPlayable(candidate, ladder)) return;
+      let spec: CondorSpec;
+      try {
+        spec = boxToCondor(candidate);
+      } catch {
+        // `isPlayable` said yes and the constructor disagreed. That is a bug in
+        // this file's ordering, not a player error, and it must not reach a
+        // price call.
+        return;
+      }
+      const strikes = condorStrikeNumbers(spec);
+      if (!validateSpec(spec).valid) return;
+      onQuote(spec, strikes, listedFill(candidate, snapshot, nowMs));
+    },
+    [ladder, onQuote, snapshot, nowMs],
+  );
+
   const commit = useCallback(
     (a: number, b: number) => {
       if (!ladder || chosen === null) return;
@@ -561,34 +695,20 @@ export function BoxBuilder({
       const rawCeiling = priceToStrike(hi);
       if (rawFloor === null || rawCeiling === null) return;
 
-      const snapped = snapBox(
-        {
-          underlying,
-          floor: rawFloor,
-          ceiling: rawCeiling,
-          wing: "",
-          expiry: chosen,
-        },
-        ladder,
+      commitBox(
+        snapBox(
+          {
+            underlying,
+            floor: rawFloor,
+            ceiling: rawCeiling,
+            wing: "",
+            expiry: chosen,
+          },
+          ladder,
+        ),
       );
-      setBox(snapped);
-      setStage("draw");
-
-      if (!onQuote || !isPlayable(snapped, ladder)) return;
-      let spec: CondorSpec;
-      try {
-        spec = boxToCondor(snapped);
-      } catch {
-        // `isPlayable` said yes and the constructor disagreed. That is a bug in
-        // this file's ordering, not a player error, and it must not reach a
-        // price call.
-        return;
-      }
-      const strikes = condorStrikeNumbers(spec);
-      if (!validateSpec(spec).valid) return;
-      onQuote(spec, strikes);
     },
-    [ladder, chosen, underlying, onQuote],
+    [ladder, chosen, underlying, commitBox],
   );
 
   /** Pointer y → a price on the one scale. */
@@ -643,8 +763,25 @@ export function BoxBuilder({
   const quoted = typeof premium === "number" && premium > 0;
   /** `max payout ÷ premium paid`, or nothing at all. Never a placeholder. */
   const multiple = quoted && econ ? econ.payoutMultiple : null;
-  const listed =
-    box && ladder ? wingLandsOnLadder(ladder, box.floor, box.ceiling, box.wing) : false;
+
+  /**
+   * 7. The listed path (§3.1) — the zones this column actually carries, and
+   * whether the drawn box lands on one.
+   *
+   * This replaces a claim that was wrong and quiet: the panel used to say "all
+   * four strikes are listed — this one fills straight off the book" whenever
+   * `wingLandsOnLadder` was true. Four listed *strikes* are not a listed
+   * *structure*. The book has never carried a single condor, and a box whose
+   * corners each sit on a rung is still an instrument nobody has created.
+   * Nothing but a resting order can answer this, so a resting order is what is
+   * asked — resolved by implementation address, never by strike shape.
+   */
+  const zones = useMemo(
+    () => (chosen === null ? [] : zonesFor(snapshot, underlying, chosen, nowMs)),
+    [snapshot, underlying, chosen, nowMs],
+  );
+  const match = useMemo(() => listedFill(box, snapshot, nowMs), [box, snapshot, nowMs]);
+  const spotListed = zones.some((z) => zoneCoversSpot(z, spotPrice));
 
   const minHere = ladder
     ? strikeUsd(minBoxHeight(ladder, box?.floor ?? pendingFloor ?? ladder.strikes[0] ?? null))
@@ -976,6 +1113,69 @@ export function BoxBuilder({
               </span>
             </div>
 
+            {/*
+              The listed zones on this column — §3.1's day-one path, drawn as
+              what it is.
+
+              This strip is deliberately short, and its shortness is the honest
+              part. The book carries one to three zones per (asset, expiry) and
+              nothing else can be filled without a maker, so a player who wants
+              an instant fill is choosing from *these*, not from anywhere on the
+              chart. Rendering them as a list rather than as an invisible
+              snapping rule is what stops "snap to listed" from reading like
+              "draw anything".
+
+              Each chip is `zoneBox(zone)` — the same four numbers the order
+              carries — so the box a chip draws and the order it fills cannot
+              drift apart.
+            */}
+            {zones.length > 0 && (
+              <div
+                data-role="listed-zones"
+                style={sx("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}
+              >
+                <span style={sx(LABEL)}>ON THE BOOK</span>
+                {zones.map((z) => {
+                  const zBox = zoneBox(z);
+                  const lo = strikeUsd(z.floor) ?? 0;
+                  const hi = strikeUsd(z.ceiling) ?? 0;
+                  const on =
+                    box !== null && box.floor === z.floor && box.ceiling === z.ceiling;
+                  return (
+                    <button
+                      key={`${z.floor}-${z.ceiling}-${z.wing}`}
+                      data-zone={`${z.floor}-${z.ceiling}`}
+                      aria-pressed={on}
+                      onClick={() => {
+                        setPendingFloor(null);
+                        setDrag(null);
+                        commitBox(zBox);
+                      }}
+                      style={sx(
+                        `padding:4px 9px;border-radius:6px;cursor:pointer;white-space:nowrap;` +
+                          `font:${on ? "700" : "500"} 10.5px/1 ${MONO};` +
+                          (on
+                            ? `color:${C.bg};background:${C.green};border:1px solid ${C.green}`
+                            : `color:${C.dim};background:transparent;border:1px solid ${C.border}`),
+                      )}
+                    >
+                      {usd(lo)} – {usd(hi)}
+                    </button>
+                  );
+                })}
+                <span style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>
+                  {zones.length === 1
+                    ? "the one zone a maker has listed here — anything else is priced on demand"
+                    : `the ${zones.length} zones a maker has listed here — anything else is priced on demand`}
+                </span>
+                {spotPrice !== null && !spotListed && (
+                  <span style={sx(`font:400 10px/1 ${MONO};color:${C.amber}`)}>
+                    {SPOT_OUTSIDE_COPY}
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* Provenance, and the two things about the line that are easy to
                 misread: the blank right edge, and anything that ran off the
                 ladder. Both are said only when there is a line to say them
@@ -998,13 +1198,14 @@ export function BoxBuilder({
             {stage === "review" && spec ? (
               <Review
                 spec={spec}
+                match={match}
                 econ={econ}
                 quoted={quoted}
                 contracts={contracts}
                 trade={trade}
                 canSign={Boolean(onConfirm)}
                 onBack={() => setStage("draw")}
-                onConfirm={() => onConfirm?.(spec, condorStrikeNumbers(spec))}
+                onConfirm={() => onConfirm?.(spec, condorStrikeNumbers(spec), match)}
               />
             ) : (
               <>
@@ -1093,11 +1294,17 @@ export function BoxBuilder({
                 )}
 
                 {box && !problem && (
-                  <span style={sx(NOTE)}>
-                    {listed
-                      ? "All four strikes are listed — this one fills straight off the book."
-                      : "The outer strikes are not listed — a maker prices this one on demand."}
-                  </span>
+                  <div data-role="listed" style={sx("display:grid;gap:5px")}>
+                    <span style={sx(NOTE)}>{match ? LISTED_COPY : UNLISTED_COPY}</span>
+                    {match && <span style={sx(NOTE)}>{LISTED_WING_COPY}</span>}
+                    {/* §2.4's delta shading cannot reach a listed zone, and the
+                        reason is worth one sentence rather than a blank space
+                        where a figure would be. */}
+                    {match && <span style={sx(NOTE)}>{LISTED_NO_GREEKS_COPY}</span>}
+                    {!match && zones.length === 0 && (
+                      <span style={sx(NOTE)}>{NO_ZONES_COPY}</span>
+                    )}
+                  </div>
                 )}
 
                 <button
@@ -1130,6 +1337,7 @@ export function BoxBuilder({
 
 function Review({
   spec,
+  match,
   econ,
   quoted,
   contracts,
@@ -1139,6 +1347,8 @@ function Review({
   onConfirm,
 }: {
   spec: CondorSpec;
+  /** The listed zone this box fills, when it fills one. */
+  match: ListedFill | null;
   econ: ReturnType<typeof condorEconomics> | null;
   quoted: boolean;
   contracts: number;
@@ -1155,12 +1365,25 @@ function Review({
         <span style={sx(VALUE)}>
           {econ ? `${usd(econ.zone.floor)} – ${usd(econ.zone.ceiling)}` : "—"}
         </span>
-        <span style={sx(`font:500 11px/1 ${MONO};color:${C.muted}`)}>
-          {spec.underlying} · long call condor · by {expiryLabel(spec.expiry)}
+        {/*
+          What the player is about to hold, named correctly.
+
+          A matched box is filled as the maker's `RANGER`, not as the
+          `CALL_CONDOR` this screen builds for the other path. The two carry the
+          same four strikes and the same payoff shape, which is precisely why
+          the label has to come from the match and not from the shape: the SDK
+          itself prices a four-strike order as a condor unless it is told
+          otherwise, and a screen that made the same slip would be the last
+          place anyone looked.
+        */}
+        <span data-role="instrument" style={sx(`font:500 11px/1 ${MONO};color:${C.muted}`)}>
+          {spec.underlying} · {match ? "listed zone" : "long call condor"} · by{" "}
+          {expiryLabel(spec.expiry)}
         </span>
         <span style={sx(`font:400 10.5px/1.5 ${MONO};color:${C.faint}`)}>
           {strikes.map((s) => usd(s)).join(" · ")}
         </span>
+        {match && <span style={sx(NOTE)}>{LISTED_COPY}</span>}
       </div>
 
       <div style={sx(`height:1px;background:${C.line}`)} />

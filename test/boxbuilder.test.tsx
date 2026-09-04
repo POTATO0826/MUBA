@@ -27,7 +27,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { liveExpiries, type LadderSnapshot } from "../src/data/box.ts";
 import type { CondorSpec } from "../src/data/condor.ts";
 import { emptyHistory, type PriceHistory } from "../src/data/history.ts";
-import { BoxBuilder, expiryLabel, segments, shortAge } from "../src/views/BoxBuilder.tsx";
+import {
+  BoxBuilder,
+  expiryLabel,
+  segments,
+  shortAge,
+  type ListedFill,
+} from "../src/views/BoxBuilder.tsx";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
   LadderSnapshot & { prices: Record<string, number> };
@@ -376,5 +382,182 @@ describe("BoxBuilder", () => {
     const lastPrint = container.querySelector('[data-role="last-print"]') as HTMLElement;
     const pct = (el: HTMLElement) => Number.parseFloat(el.style.left);
     expect(pct(lastPrint)).toBeLessThan(pct(divider));
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The listed path — plan7 §3.1, on screen
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The chain's implementation registry for the two four-strike orders in the
+ * capture, which the capture itself does not carry.
+ *
+ * `0x9980ec85…` is `RANGER` on Base (`docs/plan7-measurements.md`, and
+ * `tnuts-test/FINDINGS.md`). Lowercase, because that is how the SDK ships the
+ * map. Without it the screen resolves no product and offers no listed fill —
+ * which is itself one of the assertions below.
+ */
+const REGISTRY = {
+  "0x9980ec85bc6fe07340adb36c76fa093bb6d4fcbc": { name: "RANGER" },
+} as const;
+
+const BOOKED: LadderSnapshot = {
+  ...FIXTURE,
+  chainConfig: { ...FIXTURE.chainConfig, optionImplementations: REGISTRY },
+};
+
+/** The screen, on the one column of the fixture that has a zone: BTC, 5 Sep. */
+function mountOnBtc(props: Partial<React.ComponentProps<typeof BoxBuilder>> = {}) {
+  mount(<BoxBuilder {...BASE} snapshot={BOOKED} {...props} />);
+  click(container.querySelector('[data-asset="BTC"]') as Element);
+}
+
+describe("the listed zone, on screen", () => {
+  test("the column's zones are drawn as a short list, not as an invisible rule", () => {
+    // §3.1 promised snap-to-listed as the default. What the book actually
+    // carries is one zone on this column, so the strip shows one chip — and the
+    // shortness of it is the honest part.
+    mountOnBtc();
+    const chips = all("[data-zone]");
+    expect(chips.length).toBe(1);
+    expect(chips[0]?.textContent).toBe("$80,000 – $81,000");
+    expect(text()).toContain("the one zone a maker has listed here");
+  });
+
+  test("no registry means no strip at all — the product cannot be resolved", () => {
+    // The same orders, byte for byte. Without the implementation registry there
+    // is nothing authoritative to ask what they are, and the screen claims
+    // nothing rather than reading the strike shape.
+    mount(<BoxBuilder {...BASE} />);
+    click(container.querySelector('[data-asset="BTC"]') as Element);
+    expect(container.querySelector('[data-role="listed-zones"]')).toBeNull();
+  });
+
+  test("clicking a zone fires one quote, and it is a RANGER off the book", () => {
+    const quotes: { spec: CondorSpec; match: ListedFill | null }[] = [];
+    mountOnBtc({ onQuote: (spec, _strikes, match) => quotes.push({ spec, match }) });
+
+    click(all("[data-zone]")[0] as Element);
+    expect(quotes.length).toBe(1);
+
+    const [only] = quotes;
+    expect(only?.match).not.toBeNull();
+    // The instrument is the maker's zone, not the condor this screen builds for
+    // the other path — and it carries the payout flag the SDK needs, or it
+    // would be priced as a condor (FINDINGS, "the 4-strike discriminator trap").
+    expect(only?.match?.spec.product).toBe("RANGER");
+    expect(only?.match?.spec.payoutType).toBe("ranger");
+    expect(only?.match?.spec.isLong).toBe(true);
+    // The row itself travels, so the caller can hand it to `previewFillOrder`.
+    expect(only?.match?.zone.order).toBe(
+      (BOOKED.orders ?? [])[only?.match?.zone.index as number] as object,
+    );
+    expect(only?.match?.zone.expiry).toBe(only?.spec.expiry);
+  });
+
+  test("the chip draws the zone's own band and the maker's own wing", () => {
+    mountOnBtc();
+    click(all("[data-zone]")[0] as Element);
+    expect(text()).toContain("$80,000 – $81,000");
+    // $500 is `callUpper − callLower` on the resting order. It is also the most
+    // this can pay, which is why it is on screen (§4.2).
+    expect(text()).toContain("$500");
+    expect(container.querySelector('[data-role="max-payout"]')?.textContent).toBe(
+      "$500.00 per contract",
+    );
+  });
+
+  test("says it fills off the book, that the wings are the maker's, and that there are no greeks", () => {
+    mountOnBtc();
+    click(all("[data-zone]")[0] as Element);
+    const body = text();
+    expect(body).toContain("fills straight off the book");
+    expect(body).toContain("wings are the maker's");
+    // §2.4's delta shading cannot apply to a listed zone, and the screen says
+    // why rather than leaving a gap where a figure would be.
+    expect(body).toContain("no greeks for a listed zone");
+    expect(body).not.toContain("No listed zone matches this box");
+    // §7 — the word is still nowhere on the screen.
+    expect(body).not.toMatch(/\bRFQ\b/);
+  });
+
+  test("a box that matches nothing says so, and hands the caller no fill", () => {
+    const quotes: (ListedFill | null)[] = [];
+    mountOnBtc({ onQuote: (_spec, _strikes, match) => quotes.push(match) });
+
+    // 78500 → 79000. Both edges are rungs of the live ladder, one increment
+    // apart. Nobody has listed it, which is the ordinary case on a ladder this
+    // coarse — 2 of 82 drawable bands exist on the book.
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[1] as Element);
+
+    expect(quotes).toEqual([null]);
+    expect(text()).toContain("No listed zone matches this box");
+    expect(text()).not.toContain("fills straight off the book");
+  });
+
+  test("an expiry with nothing listed says that too, rather than showing an empty strip", () => {
+    mountOnBtc();
+    // 11 Sep carries orders but no zone. Draw on it and the panel is explicit.
+    const later = all("[data-expiry]").at(2);
+    click(later as Element);
+    expect(container.querySelector('[data-role="listed-zones"]')).toBeNull();
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[1] as Element);
+    expect(text()).toContain("The book lists no zone at all on this expiry");
+  });
+
+  test("a listed zone that does not contain the current price says so", () => {
+    // BTC spot on the capture is 81004.04 and the only listed band tops out at
+    // 81000. On the live book ETH's two nearest expiries are the same story,
+    // and a player drawing around today's price has nothing to land on.
+    mountOnBtc({ spot: () => FIXTURE.prices.BTC as number });
+    expect(text()).toContain("None of the listed zones on this expiry contains the current price");
+  });
+
+  test("a zone containing spot makes no such claim", () => {
+    mountOnBtc({ spot: () => 80_500 });
+    expect(text()).not.toContain("None of the listed zones");
+  });
+
+  test("the confirm step names the instrument the fill will actually be", () => {
+    mountOnBtc({ premium: 20 });
+    click(all("[data-zone]")[0] as Element);
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+
+    const instrument = container.querySelector('[data-role="instrument"]')?.textContent ?? "";
+    expect(instrument).toContain("listed zone");
+    // The same four strikes are a condor's too. Calling it one here is the slip
+    // the SDK itself makes, and the last place anyone would look for it.
+    expect(instrument).not.toContain("condor");
+    // $500 ÷ $20 = 25.00, off a real premium and the maker's own wing.
+    expect(container.querySelector('[data-role="payout-multiple"]')?.textContent).toBe(
+      "25.00× the premium",
+    );
+  });
+
+  test("an unmatched box still confirms as the condor it would have to be", () => {
+    mountOnBtc({ premium: 20 });
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[1] as Element);
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    expect(container.querySelector('[data-role="instrument"]')?.textContent).toContain(
+      "long call condor",
+    );
+  });
+
+  test("confirming a listed box hands the fill through, not just the condor", () => {
+    const seen: (ListedFill | null)[] = [];
+    mountOnBtc({ premium: 20, tradeEnabled: true, onConfirm: (_s, _k, m) => seen.push(m) });
+    click(all("[data-zone]")[0] as Element);
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    click(all("button").find((b) => b.textContent === "Buy this box") as Element);
+    expect(seen.length).toBe(1);
+    expect(seen[0]?.spec.product).toBe("RANGER");
   });
 });

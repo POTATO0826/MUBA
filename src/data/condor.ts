@@ -20,14 +20,26 @@
  * | price ceiling | `s3` |
  * | wing width    | `s2 − s1` and `s4 − s3`, equal, enforced |
  *
- * ## Not RANGER, and not for the reason you would guess
+ * ## Not RANGER **here** — and the word "here" is doing real work
  *
  * `RANGER` has the same payoff shape and Thetanuts calls it unique to them, so
- * it is the obvious choice. It is unreachable: `client.ranger` exposes only
+ * it is the obvious choice. It cannot be *minted*: `client.ranger` exposes only
  * `payout`, `close`, `split`, `transfer`, `reclaimCollateral` and
  * `returnExcessCollateral` — **there is no create method anywhere in SDK 0.3.0**,
- * and no `buildRangerRFQ` either. A RangerOption can be managed, never minted.
- * `CALL_CONDOR` is reachable through both execution paths (plan7 §1).
+ * and no `buildRangerRFQ` either. A RangerOption can be managed, never created.
+ * So on the RFQ path, which mints, `CALL_CONDOR` is the only instrument.
+ *
+ * plan7 §1 states that as *"do not use RANGER"* without qualification, and that
+ * is too strong by exactly one venue. On the **OptionBook** you do not create an
+ * option, you fill an order a maker already created — and a zone is the only
+ * thing there is to fill. The census settles it: zero condors have ever been
+ * listed, 9,766 zone positions have traded, ~39 a day
+ * (`docs/plan7-measurements.md` §3). `src/data/ranger.ts` owns that path.
+ *
+ * The two files are deliberately not one. Their four strikes look identical and
+ * the SDK will price one as the other given half a chance
+ * (`isRanger: true`, or a condor's payout on a zone), so the type that says
+ * which is which is the guard.
  *
  * ## Long only, at the type level
  *
@@ -263,9 +275,25 @@ export function payoutMultiple(
   premiumPaid: number,
   numContracts: number,
 ): number | null {
+  return multipleOf(maxPayout(spec, numContracts), premiumPaid);
+}
+
+/**
+ * The division itself, over two dollar figures — the one implementation of
+ * `max payout ÷ premium paid` in the repo.
+ *
+ * Split out of {@link payoutMultiple} so the listed-zone path
+ * (`src/data/ranger.ts`) can answer the same question about an instrument that
+ * is *not* a condor without a second copy of the arithmetic. A second copy is
+ * exactly how an invented rate gets in: one of them acquires a floor, or a cap,
+ * or a difficulty argument, and nobody notices which.
+ *
+ * `null` whenever the answer would be a placeholder rather than a fact — no
+ * premium yet, or nothing to win.
+ */
+export function multipleOf(ceiling: number, premiumPaid: number): number | null {
   if (!Number.isFinite(premiumPaid) || premiumPaid <= 0) return null;
-  const ceiling = maxPayout(spec, numContracts);
-  if (ceiling <= 0) return null;
+  if (!Number.isFinite(ceiling) || ceiling <= 0) return null;
   return ceiling / premiumPaid;
 }
 
@@ -297,12 +325,37 @@ export function condorEconomics(
   premiumPaid: number,
   numContracts: number,
 ): CondorEconomics {
+  return economics(wingUsd(spec), zoneUsd(spec), premiumPaid, numContracts);
+}
+
+/**
+ * The same panel, for any zone-bound long structure — the condor above, or a
+ * listed `RANGER` off the OptionBook (`src/data/ranger.ts`).
+ *
+ * Both instruments answer the money questions from the identical two facts: the
+ * wing is the maximum per contract, and the premium is the whole of the risk.
+ * What differs between them is what you may *say* about them — a listed zone's
+ * wing is the maker's rather than the player's, and it publishes no greeks —
+ * and that difference belongs in the copy, not in the arithmetic.
+ *
+ * @param wing        Wing width in dollars. The maximum per contract.
+ * @param zone        The inner band, in dollars, for the `$2,600 – $2,750` line.
+ * @param premiumPaid The **actual** premium — never a mid, never an estimate.
+ */
+export function economics(
+  wing: number,
+  zone: { floor: number; ceiling: number },
+  premiumPaid: number,
+  numContracts: number,
+): CondorEconomics {
   const paid = Number.isFinite(premiumPaid) && premiumPaid > 0 ? premiumPaid : 0;
+  const contracts = Number.isFinite(numContracts) && numContracts > 0 ? numContracts : 0;
+  const ceiling = Number.isFinite(wing) && wing > 0 ? wing * contracts : 0;
   return {
     maxLoss: paid,
-    maxPayout: maxPayout(spec, numContracts),
-    payoutMultiple: payoutMultiple(spec, paid, numContracts),
-    wing: wingUsd(spec),
-    zone: zoneUsd(spec),
+    maxPayout: ceiling,
+    payoutMultiple: multipleOf(ceiling, paid),
+    wing: Number.isFinite(wing) ? wing : 0,
+    zone,
   };
 }
