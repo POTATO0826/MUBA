@@ -12,10 +12,10 @@ import type { InjectedWallet } from "../wallet/injected.ts";
  * its prompt.
  *
  * One cat lives at the top of this dialog. It springs in when the dialog opens,
- * stays for as long as the dialog is up, and *recolours* to whichever wallet
- * the pointer is over — see `CatSeat` for the seat and the choreography, the
- * brand section for where a wallet's colour comes from, and `styles.css` for
- * the two loops it uses.
+ * breathes and leans for as long as the dialog is up, and on every wallet the
+ * pointer arrives at it pops — recolouring to that wallet as it does. See
+ * `CatSeat` for the seat and the choreography, the brand section for where a
+ * wallet's colour comes from, and `styles.css` for the four keyframes.
  *
  * That is a deliberate replacement for what was here before: a sticker per row,
  * each springing out of its own row's corner. Six cats taking turns read as six
@@ -33,9 +33,25 @@ import type { InjectedWallet } from "../wallet/injected.ts";
  *  is derived from this one. */
 const CAT = 124;
 
-/** The settled tilt. `vcStickerWobble` adds ±3° on top of it for as long as the
- *  dialog is open, so -13° is the worst case — the widest the tile's box ever
- *  gets, and the angle every clearance in `CAT_SEAT` is measured at. */
+/**
+ * The settled tilt, and the widest the tile ever gets.
+ *
+ * Three things move this tile after it lands, and the clearances in `CAT_SEAT`
+ * are measured against all three at once:
+ *
+ * - `vcCatLean` runs the tilt from -10° *up* to -4°, never past -10°.
+ * - `vcCatBreathe` runs the scale from 1 *down* to 0.965, never past 1.
+ * - `vcCatPopA` runs the scale up to 1.14 on every hover — and past it, since
+ *   `cubic-bezier(.34,1.56,.64,1)` overshoots between keyframes. That is why
+ *   the swept peak lands at ~80ms rather than at the 34% keyframe.
+ *
+ * Both loops are deliberately one-sided so the pop owns the whole budget on its
+ * own: the worst case is a pop at full breathe and full lean, which is the
+ * sweep `CAT_SEAT` reports, and it is that box — not the resting one — the
+ * close button and the first row are measured against. Had the lean and the
+ * breathe been symmetric they would have compounded with the pop into a box
+ * ~30px wider, which puts a popping cat into row one.
+ */
 const CAT_TILT = -10;
 
 /** The tile's corner radius, at the same 27% of its edge the 88px sticker
@@ -48,12 +64,11 @@ const CAT_RADIUS = 34;
  *
  * Arithmetic, not taste, and taken from measured `getBoundingClientRect`s
  * rather than done on paper — a tilted tile's *bounding box* is what can
- * collide with chrome, and it is fatter than the tile's own rotated outline. At
- * -13° (settled -10 plus the wobble's far end) a 124px tile measures 148.7px
- * each way.
+ * collide with chrome, and it is fatter than the tile's own rotated outline.
+ * Paper got this wrong twice, in ways worth recording.
  *
- * The one thing paper gets wrong here, and did: the seat rotates about
- * `transform-origin:100% 100%`, not about its centre. The origin belongs to the
+ * The first: the seat rotates about `transform-origin:100% 100%`, not about its
+ * centre. The origin belongs to the
  * launch — it is what makes the cat grow *out of* the panel's corner — but it
  * also means the tile pivots on its own bottom-right corner, which stays put
  * while everything else swings up and to the left. A seat computed for a
@@ -61,31 +76,56 @@ const CAT_RADIUS = 34;
  * actually lands, and the first draft of these numbers duly had the cat's
  * bottom-left corner 4px into the first row.
  *
- * Measured, in the panel's 360px border-box (1px border, 20px padding → a 318px
- * content column at x 21…339), at the worst-case -13°:
+ * The second: `getBoundingClientRect` on the seat
+ * measures the seat's *own* 124px box, and the pop and the breathe live on
+ * descendants, whose overflow does not touch it. Every number below is read off
+ * the innermost painting element, whose rect accumulates the whole nested
+ * stack.
  *
- * - Box `[216.3,-51.8 → 365.0,96.9]`.
- * - `right:-6` hangs the pivot corner 5px past the panel's right border. The
- *   panel's `max-width:calc(100vw - 32px)` keeps 16px either side of it on the
- *   narrowest viewport, so 5px of overhang cannot push the page sideways.
- * - `top:-56` lifts 51.8px of the tile clear of the panel into the backdrop and
- *   leaves the rest lying over the header band, straddling the corner the way
- *   the reference's mascot straddles its card's.
- * - The close button ends at x=47 and the title's text at x=129.2, against the
- *   cat's left edge at x=216.3: 169.3px and 87.0px of clearance. That margin is
- *   why the close button could stay a real, full-size, fully visible button
- *   rather than being shrunk or shoved somewhere odd.
- * - The first row's top is y=108.8 when it is hovered — its -1.5° lean raises
- *   it from 113 — against the cat's bottom at y=96.9: 12.0px, so the cat never
- *   reaches a row's `INSTALLED` chip. That gap is the ceiling on all of this.
- *   Every extra pixel of tile costs 1.2px of it, and `HEADER_GAP` is what has
- *   been buying it back.
+ * And the whole thing is swept rather than reasoned about, because the pop's
+ * curve overshoots between keyframes and its true peak is not where the
+ * keyframe says. The rig pins every loop with `animation-play-state:paused` and
+ * a negative `animation-delay` — a clock-free way to render an exact phase —
+ * and walks the pop from 0 to 420ms with the breathe at its largest (scale 1)
+ * and the lean at its most tilted (-10°), which is the worst combination
+ * available. In the panel's 360px border-box (1px border, 20px padding → a
+ * 318px content column at x 21…339):
  *
- * Checked on the cases that differ — resting, a hovered first row, a hovered
- * last row, and a two-row picker — since the first row is the only one the cat
- * can reach and a short list is the only case where the panel itself is short.
+ * |  pop t | tile box                        | → close | → row 1 | past panel |
+ * |-------:|---------------------------------|--------:|--------:|-----------:|
+ * |    0ms | `[217.4,-55.1 → 361.0, 88.5]`   |  170.4  |  24.5   |     1.0    |
+ * |   40ms | `[212.2,-60.3 → 366.2, 93.7]`   |  165.2  |  19.3   |     6.2    |
+ * |   80ms | `[211.0,-61.5 → 367.4, 94.9]`   |  164.0  |  18.1   |     7.4    |
+ * |  143ms | `[211.5,-60.9 → 366.8, 94.4]`   |  164.5  |  18.6   |     6.8    |
+ * |  230ms | `[216.8,-55.6 → 361.5, 89.1]`   |  169.8  |  23.9   |     1.5    |
+ * |  419ms | `[217.4,-55.1 → 361.0, 88.5]`   |  170.4  |  24.5   |     1.0    |
+ *
+ * The tile's box runs 143.6 → 156.4 → 143.6px across a pop, and 143.6 → 128.7px
+ * across the idle breathe. What that costs:
+ *
+ * - `right:-2` hangs the pivot corner 1px past the panel's right border at rest
+ *   and 7.4px at the peak. The panel's `max-width:calc(100vw - 32px)` keeps
+ *   16px either side of it on the narrowest viewport, so even a popping cat
+ *   cannot push the page sideways. The idle breathe pulls it back *inside* the
+ *   panel entirely (-6.5px at its smallest).
+ * - `top:-58` lifts 55.1px of the tile clear of the panel into the backdrop at
+ *   rest and 61.5px at the peak, leaving the rest over the header band —
+ *   straddling the corner the way the reference's mascot straddles its card's.
+ * - The close button ends at x=47 and the title's text at x=129.2: **164.0px
+ *   and 82.3px of clearance at the worst frame**. That margin is why the close
+ *   button could stay a real, full-size, fully visible button rather than being
+ *   shrunk or shoved somewhere odd.
+ * - Row one's top is y=113, or y=108.8 when it is itself the hovered row — its
+ *   -1.5° lean raises it — against the cat's bottom at y=94.9 at the worst
+ *   frame: **18.1px, or 13.9px if row one is the row being popped at**. That
+ *   gap is the ceiling on all of this, and `HEADER_GAP` is what buys it.
+ *
+ * Swept across the whole pop and the whole idle cycle, and checked on the cases
+ * that differ — resting, a hovered first row, a hovered last row, and a two-row
+ * picker — since the first row is the only one the cat can reach and a short
+ * list is the only case where the panel itself is short.
  */
-const CAT_SEAT = `top:-56px;right:-6px;width:${CAT}px;height:${CAT}px`;
+const CAT_SEAT = `top:-58px;right:-2px;width:${CAT}px;height:${CAT}px`;
 
 /**
  * The header's two gaps, which are the price of the cat's size.
@@ -108,30 +148,62 @@ const TITLE_GAP = 14;
  * Sparkles, clustered around the one cat at three sizes and staggered so they
  * twinkle on three different clocks rather than pulsing as one.
  *
- * Positioned against the panel, not the cat, because the cat wobbles and
- * sparkles that wobbled with it would read as glued on. The largest is flung
- * well up and to the left, clear of the panel's top edge entirely — the
- * reference's confetti leaves its card, and a sparkle that stays inside the
- * panel reads as decoration on the panel rather than as something the cat
- * knocked loose. All three are checked against the tile, the close button, the
- * title and the first row in the same measurement pass as the seat.
+ * Positioned against the panel, not the cat, because the cat leans, breathes
+ * and pops, and sparkles that did all that with it would read as glued on. They
+ * fan down the cat's left flank — the largest flung well up and clear of the
+ * panel's top edge entirely, since the reference's confetti leaves its card and
+ * a sparkle that stays inside the panel reads as decoration on the panel rather
+ * than as something the cat knocked loose.
+ *
+ * The left flank rather than a ring around the tile because the tile's box is
+ * 156.4px across at the pop's peak against 143.6px at rest: the two obvious
+ * seats, above the tile's top-left corner and under its chin, are both inside
+ * the swollen one. All three positions are measured against the tile *at peak*,
+ * the close button, the title and the first row in the same pass as the seat.
+ *
+ * Two delays each. `entry` is the opening burst, timed off the landing;
+ * `burst` is the much tighter stagger used on every hover afterwards, when the
+ * cluster is re-keyed and has to land with the pop rather than a beat behind it.
  */
-const SPARKS: { at: string; size: number; delay: number }[] = [
-  { at: "top:-72px;right:138px", size: 16, delay: 620 },
-  { at: "top:-8px;right:152px", size: 11, delay: 800 },
-  { at: "top:96px;right:34px", size: 9, delay: 940 },
+const SPARKS: { at: string; size: number; entry: number; burst: number }[] = [
+  { at: "top:-86px;right:132px", size: 16, entry: 620, burst: 60 },
+  { at: "top:-14px;right:160px", size: 11, entry: 800, burst: 190 },
+  { at: "top:46px;right:172px", size: 9, entry: 940, burst: 320 },
 ];
 
 /**
  * The entrance, in ms.
  *
- * The cat launches once, on open, instead of once per hover. `LAUNCH` is the
- * spring; the wobble picks up as it lands, and the sparkles start a beat after
- * that so they read as thrown by the landing rather than as arriving with it.
- * `CatMascot` winks on its own 640ms clock, which falls in the same window.
+ * `LAUNCH` is the opening spring; the lean and the breathe pick up as it lands,
+ * and the sparkles start a beat after that so they read as thrown by the
+ * landing rather than as arriving with it. `CatMascot` winks on its own 640ms
+ * clock, which falls in the same window.
  */
 const LAUNCH = 520;
-const WOBBLE_IN = LAUNCH + 40;
+const IDLE_IN = LAUNCH + 40;
+
+/**
+ * The hover pop: the beat that was missing.
+ *
+ * The first cut of this redesign gave the cat one entrance on open and nothing
+ * afterwards but colour — which meant the only motion in the whole dialog
+ * played before anyone was looking at it, and hovering wallets, the thing
+ * people actually spend time doing here, was a silent recolour. The pop puts
+ * the spring back where it can be seen: once per arrival on a wallet, on the
+ * same overshoot curve as the entrance.
+ *
+ * 420ms because the pop has to finish inside the time it takes to slide from
+ * one row to the next; a slower one gets cut off mid-swell by its own
+ * replacement and reads as a stutter.
+ */
+const POP = 420;
+
+/**
+ * Two names for one animation. See `vcCatPopA` in `styles.css`: re-applying an
+ * animation name an element already carries does nothing, so the pop alternates
+ * between these on every hover and the name always changes.
+ */
+const POP_NAMES = ["vcCatPopA", "vcCatPopB"] as const;
 
 /* ------------------------------------------------------------------ *
  *  Brand colour
@@ -511,11 +583,15 @@ function Spark({
   );
 }
 
+/** Every animated element in the stack is a bare full-size block; only the
+ *  innermost one paints anything. */
+const LAYER = "display:block;width:100%;height:100%;";
+
 /**
  * The one cat, and its seat at the top of the dialog.
  *
- * The geometry is `CAT_SEAT`'s. What lives here is the choreography, and there
- * are two clocks in it that must not be confused:
+ * The geometry is `CAT_SEAT`'s. What lives here is the choreography — four
+ * transforms and a colour, on four clocks that must not be confused:
  *
  * - **The entrance runs once, on open.** `landed` flips on the frame after
  *   mount, which turns a resting transform into the seated one and lets a
@@ -524,18 +600,34 @@ function Spark({
  *   at -10°. `transform-origin:100% 100%` is what makes it grow *out of* that
  *   corner rather than swelling in place. The picker unmounts when it closes, so
  *   the next open replays this from scratch with no reset to manage.
- * - **The colour runs on the pointer.** `brand` changes as the pointer crosses
- *   rows and every coloured surface here transitions over 220ms — the cat's fur
- *   (a `fill` transition inside `CatMascot`), the tile's warm cast, its ring,
- *   the sparkles. Nothing moves when it does. That separation is the point of
- *   the redesign: the cat is a fixture, and the wallet under the pointer is the
- *   only variable.
+ * - **The pop runs on every arrival.** `pops` counts hovers; each one swaps the
+ *   animation name and the browser restarts it — the swap is the whole trick,
+ *   see `POP_NAMES`. This is the beat the first cut of the redesign was missing:
+ *   with the entrance as the only motion, everything animated happened before
+ *   the dialog had been looked at.
+ * - **The breathe and the lean run the whole time.** Slow, small, and on
+ *   separate elements from each other and from everything above, because CSS
+ *   gives one element one `transform` and a running animation beats a
+ *   transition outright.
+ * - **The colour runs on the pointer, and moves nothing.** Every coloured
+ *   surface transitions over 220ms — the cat's fur (a `fill` transition inside
+ *   `CatMascot`), the tile's warm cast, its ring, the sparkles.
  *
- * The wobble is a third element inside the tile, because a keyframe and a
- * transition cannot share a `transform`; it picks up as the launch lands and
- * drifts ±3° for as long as the dialog is open.
+ * Nesting order is outermost-first: seat (launch) → pop → breathe → lean →
+ * tile. Scale before rotate, so the pop and the breathe stay square to the
+ * screen and the lean turns the finished object; reversing them makes the pop
+ * scale along the tilted axis and the tile visibly skews.
  */
-function CatSeat({ brand, still }: { brand: string | null; still: boolean }) {
+function CatSeat({
+  brand,
+  hot,
+  still,
+}: {
+  brand: string | null;
+  /** The hovered wallet's `rdns`, which is what the pop keys off. */
+  hot: string | null;
+  still: boolean;
+}) {
   /**
    * `false` for exactly one frame after mount, which is what gives the
    * transition two different values to interpolate between. A `useEffect` that
@@ -555,6 +647,19 @@ function CatSeat({ brand, still }: { brand: string | null; still: boolean }) {
       cancelAnimationFrame(inner);
     };
   }, [still]);
+
+  /**
+   * How many wallets the pointer has arrived on. Only arrivals count: leaving
+   * the list for the panel's dead space is not an event the cat should react
+   * to, and popping on the way *out* of every row would make crossing the list
+   * a stutter. Zero means the cat has only ever been entered — no pop yet, and
+   * the entrance owns the motion.
+   */
+  const [pops, setPops] = useState(0);
+  useEffect(() => {
+    if (!hot || still) return;
+    setPops((n) => n + 1);
+  }, [hot, still]);
 
   /** The mascot is read against the near-white tile, so it is banded for a
    *  light ground; with no wallet hovered it takes the resting cream. */
@@ -586,37 +691,81 @@ function CatSeat({ brand, still }: { brand: string | null; still: boolean }) {
         )}
       >
         <span
-          // The wobble's own element, and the tile proper.
-          //
-          // Near-white, because that is what makes a sticker read as stuck *on*
-          // the dialog rather than cut out of it: the reference's tile is white
-          // against a pale page, and the equivalent move on a near-black panel
-          // is the same white, not another dark surface. A faint wash of the
-          // wallet's colour warms it; the shadow underneath is what sells the
-          // height.
-          //
-          // `overflow:hidden` is load-bearing — it is what crops the cat's head
-          // against the corner radius and gives the art its framing.
+          // The pop. Nothing here until the pointer has reached a wallet, and
+          // then a different animation name on every arrival — see `POP_NAMES`
+          // for why the alternation is load-bearing rather than decorative.
           style={sx(
-            `display:block;width:100%;height:100%;overflow:hidden;border-radius:${CAT_RADIUS}px;` +
-              `background:linear-gradient(170deg,${tileTop},${tileBottom});` +
-              `box-shadow:0 0 0 1px ${ring},0 30px 54px rgba(0,0,0,.72),` +
-              "0 12px 24px rgba(0,0,0,.5);" +
-              "transition:background 220ms ease,box-shadow 220ms ease;" +
-              (still
+            LAYER +
+              (pops === 0 || still
                 ? ""
-                : `animation:vcStickerWobble 2400ms ease-in-out ${WOBBLE_IN}ms infinite alternate`),
+                : `animation:${POP_NAMES[pops % 2]} ${POP}ms cubic-bezier(.34,1.56,.64,1)`),
           )}
         >
-          <CatMascot color={fur} wink={!still} />
+          <span
+            // The breathe. Deliberately not in step with the lean below it —
+            // 2800 against 2400 — so the two never settle into one visible
+            // pulse.
+            style={sx(
+              LAYER +
+                (still
+                  ? ""
+                  : `animation:vcCatBreathe 2800ms ease-in-out ${IDLE_IN}ms infinite alternate`),
+            )}
+          >
+            <span
+              // The lean.
+              style={sx(
+                LAYER +
+                  (still
+                    ? ""
+                    : `animation:vcCatLean 2400ms ease-in-out ${IDLE_IN}ms infinite alternate`),
+              )}
+            >
+              <span
+                // The tile proper, and the only element here that paints.
+                //
+                // Near-white, because that is what makes a sticker read as
+                // stuck *on* the dialog rather than cut out of it: the
+                // reference's tile is white against a pale page, and the
+                // equivalent move on a near-black panel is the same white, not
+                // another dark surface. A faint wash of the wallet's colour
+                // warms it; the shadow underneath is what sells the height.
+                //
+                // `overflow:hidden` is load-bearing — it is what crops the
+                // cat's head against the corner radius and gives the art its
+                // framing.
+                style={sx(
+                  `${LAYER}overflow:hidden;border-radius:${CAT_RADIUS}px;` +
+                    `background:linear-gradient(170deg,${tileTop},${tileBottom});` +
+                    `box-shadow:0 0 0 1px ${ring},0 30px 54px rgba(0,0,0,.72),` +
+                    "0 12px 24px rgba(0,0,0,.5);" +
+                    "transition:background 220ms ease,box-shadow 220ms ease",
+                )}
+              >
+                <CatMascot color={fur} wink={!still} />
+              </span>
+            </span>
+          </span>
         </span>
       </span>
 
-      {/* Pure twinkle, so a reduced-motion reader gets none of them — there is
-          no static state of a sparkle worth keeping. */}
+      {/* Re-keyed on `pops`, which remounts them and restarts their clocks: the
+          cluster bursts again with each pop instead of twinkling obliviously
+          through it. Remounting is safe here in a way it would not be one level
+          in — a sparkle is at `opacity:0` for its whole delay, so it has no
+          visible colour to transition and nothing to lose by starting over.
+
+          Pure twinkle, so a reduced-motion reader gets none of them: there is no
+          static state of a sparkle worth keeping. */}
       {!still &&
         SPARKS.map((s) => (
-          <Spark key={s.at} at={s.at} size={s.size} delay={s.delay} color={spark} />
+          <Spark
+            key={`${pops}:${s.at}`}
+            at={s.at}
+            size={s.size}
+            delay={pops === 0 ? s.entry : s.burst}
+            color={spark}
+          />
         ))}
     </>
   );
@@ -809,17 +958,18 @@ export function WalletPicker({
           "width:360px;max-width:calc(100vw - 32px);border:1px solid #27272a;border-radius:16px;" +
             "background:linear-gradient(180deg,#101012,#0b0b0d);padding:20px;" +
             // `overflow:visible` is load-bearing, not the default falling
-            // through: the cat hangs 51.8px above this box and 5px past its
-            // right edge, and anything that clipped here would behead it.
+            // through: the cat hangs up to 61.5px above this box and 7.4px past
+            // its right edge at the pop's peak, and anything that clipped
+            // here would behead it.
             "overflow:visible;position:relative;" +
             "box-shadow:0 24px 64px rgba(0,0,0,.6)",
         )}
       >
-        <CatSeat brand={hotBrand} still={still} />
+        <CatSeat brand={hotBrand} hot={hotRdns} still={still} />
 
         {/* The close button leads on its own line: the top-right corner, where
             it used to sit opposite the title, is the cat's seat now. Measured
-            clear of the cat's widest box by 169.3px — see `CAT_SEAT` — so this
+            clear of the cat's widest box by 164.0px — see `CAT_SEAT` — so this
             is composition rather than a dodge, and the button keeps its full
             26px target. */}
         <div style={sx(`margin-bottom:${HEADER_GAP}px`)}>
