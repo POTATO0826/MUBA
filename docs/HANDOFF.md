@@ -304,6 +304,40 @@ on a board that is deliberately changing; re-pin them, never delete them.
   WHICH bundle — `bun build` used not to clean `dist/`, and a past session blamed
   vendor code for an already-fixed leak.
 
+### The triple-check, owed once plan 6 and plan 7 are both built
+
+The owner asked for the whole project to be checked three times over
+after both plans land. Three DIFFERENT passes, not the same pass run
+three times — a repeated pass mostly re-confirms its own blind spot.
+
+**Pass 1 — does it agree with itself?**
+`bunx tsc --noEmit` clean and the FULL `bun test` green in one run on a
+quiet tree (no agents writing). Then `bun run build` and confirm
+`test/secrets.test.ts` scans a bundle it made this run — that gate was
+silently scanning stale build output for weeks, so "green" there means
+nothing unless the bundle is fresh.
+
+**Pass 2 — does it agree with the plans?**
+Re-run the §9 checklists of BOTH plans against the code, not against
+commit messages. `docs/plan6-audit.md` is the template and the precedent:
+it found 12 PASS / 5 PARTIAL / 1 FAIL where the commits implied done, and
+the single root cause was four engine modules with zero call sites. Plan 7
+has never been audited at all. **Do not accept a commit message as
+evidence** — grep the tree.
+
+**Pass 3 — does it agree with reality?**
+The parts no test can reach: `bun run scripts/probe-assets.ts` against the
+live book; the app open in a browser at several viewport widths with
+screenshots read, not just captured; and the owner-only chain items
+(the two Base fills, the escrow deploy and BaseScan verification). Every
+"only a live X can confirm" line the builders recorded belongs here —
+they are collected in the per-agent reports and in the audit.
+
+**Standing rules while this runs:** commit and push each landed piece
+rather than batching; keep the fleet full on disjoint file sets; Sonnet
+for mechanical work, Opus for anything whose failure mode is *wrong*
+rather than merely *incomplete*.
+
 ## Older gates (history)
 
 ### Post-P6 gate (branch `zq`, HEAD 281f843) — superseded by plan 6 on `new`
