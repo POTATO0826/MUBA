@@ -16,12 +16,17 @@ import {
   PARLAY_CARDS,
   buildLeg,
   cardById,
+  cardsForTicker,
   legForCard,
+  legFromLiveCard,
+  slotFor,
   summarize,
+  vanillaPayout,
+  type LiveCard,
   type ParlayCard,
   type ParlayLeg,
 } from "../engine/parlay.ts";
-import { optionize, type OptionBook } from "../desk/optionize.ts";
+import type { OptionBook } from "../desk/optionize.ts";
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
 import { sfx } from "../lib/sound/index.ts";
 import type { Route } from "../lib/route.ts";
@@ -191,8 +196,9 @@ export interface MatchOptions {
    * somebody else already read, handed in from `App` exactly the way
    * `liveSeats` is, and frozen below the moment a match is dealt.
    *
-   * With it absent, `optionize` returns every leg by identity and this file
-   * behaves — line for line, byte for byte — as it did before options existed.
+   * With it absent, the book deals no cards, `priced` returns every leg by
+   * identity and this file behaves — line for line, byte for byte — as it did
+   * before options existed.
    */
   book?: OptionBook;
 }
@@ -469,15 +475,52 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
     const allPicked = arena.length > 0 && arena.every((sym) => sym in myPicks);
 
     /**
-     * A dealt leg, re-denominated in the option that stands for it — or handed
-     * straight back when there is no book, which is the default and is fourteen
-     * of the eighteen board names even when there is one.
+     * The cards this match's frozen book deals, per ticker — the same
+     * `cardsForTicker` call the pick screen's grid is drawn from, on the same
+     * frozen object.
      *
-     * `optionize` swaps five numbers on the leg (`t`, `mult`, `prob`, `px`,
-     * `strike`) and touches nothing else: the ticker, the direction and the tier
-     * are still whatever the seed and the pick decided. So the leg that reaches
-     * `settle`, `summarize` and the tape is the same *shape* either way, and
-     * both paths run the same `legState`.
+     * **This is where the legs are priced, and it is why.** The slip, the
+     * result screen, the tape and the escrow all read a leg; the pick screen
+     * reads a card. Pricing the leg anywhere but off the card it came from left
+     * exactly one surface right and every other surface printing the retired
+     * clamped ratio (`desk/optionize.multiplierFor`) for the same bet. So the
+     * card is dealt once, here, and the leg is derived from it — plan 6 §9 item
+     * 2 ("every rendered multiplier traces to a live ask or to
+     * `calculatePayout`") holds at the source rather than per screen.
+     *
+     * A ticker enters the map only when its book deals at least one card. No
+     * book, no chain, no fillable order, or a chain whose every delta falls
+     * outside all four bands all leave it out — and a ticker that is out keeps
+     * the seeded leg it has always had.
+     *
+     * Nothing here can fetch: `book` is a plain value `App` already read and
+     * this hook already froze, and `vanillaPayout` is local arithmetic. The
+     * determinism scan is untouched.
+     */
+    const dealt = new Map<string, readonly (LiveCard | null)[]>();
+    if (book) {
+      for (const sym of arena) {
+        const cards = cardsForTicker(
+          sym,
+          book.chain[sym] ?? [],
+          book.spot[sym] ?? 0,
+          vanillaPayout,
+        );
+        if (cards) dealt.set(sym, cards);
+      }
+    }
+
+    /**
+     * A dealt leg, re-denominated in the option that stands for it — or handed
+     * straight back when the book deals no card for that tier on that side,
+     * which is the default and is fourteen of the eighteen board names even when
+     * there is a book.
+     *
+     * `legFromLiveCard` swaps five numbers on the leg (`t`, `mult`, `prob`,
+     * `px`, `strike`) and touches nothing else: the ticker, the direction and
+     * the tier are still whatever the seed and the pick decided. So the leg that
+     * reaches `settle`, `summarize` and the tape is the same *shape* either way,
+     * and both paths run the same `legState`.
      *
      * The mode's `targetScale` is deliberately not applied on the market path.
      * It shrinks a *seeded* target so a shorter window has a reachable line; a
@@ -485,7 +528,10 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
      * the card that no venue quotes. The window premium still rides on the odds
      * (`spec.oddsBoost`, inside `summarize`) exactly as before.
      */
-    const priced = (leg: ParlayLeg) => optionize(leg, book);
+    const priced = (leg: ParlayLeg): ParlayLeg => {
+      const card = slotFor(dealt.get(leg.sym), leg.tier, leg.dir === "over" ? "bull" : "bear");
+      return card ? legFromLiveCard(leg, card, book?.spot[leg.sym] ?? 0) : leg;
+    };
 
     // A ticker without a pick shows at EVEN, bullish — a preview, not a position.
     const myLegs: readonly ParlayLeg[] = arena.map((sym) =>

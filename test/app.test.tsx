@@ -2,17 +2,30 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
-import { bookFor } from "../src/data/lobbies.ts";
+import { LOBBIES, bookFor, bookOf } from "../src/data/lobbies.ts";
 import { mockMarketSource, type MarketSource } from "../src/data/market.ts";
 import type { NewsSource, WireItem } from "../src/data/news.ts";
 import { MODES, MODE_SALT } from "../src/data/modes.ts";
-import { SECTOR_ORDER, bookForSectors } from "../src/data/sectors.ts";
+import type { Grade, QualifiedAsset } from "../src/data/qualify.ts";
+import { GRADE_BLURB, SECTOR_ORDER, bookForSectors } from "../src/data/sectors.ts";
+import { CreateLobby } from "../src/views/CreateLobby.tsx";
+import { MULT_MIN, multiplierFor, type OptionBook } from "../src/desk/optionize.ts";
 import { edgeOf, scoreOf, settle } from "../src/engine/match.ts";
-import { buildLeg } from "../src/engine/parlay.ts";
+import {
+  PARLAY_CARDS,
+  PRICE_DECIMALS,
+  REFERENCE_MOVE,
+  buildLeg,
+  multipleAt,
+  tierOdds,
+  tierProb,
+  vanillaPayout,
+  type LiveCard,
+} from "../src/engine/parlay.ts";
 import { xpForMatch } from "../src/engine/rank.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
-import { OPP_READY_MS, TAPE_STEP } from "../src/state/match.ts";
+import { OPP_READY_MS, TAPE_STEP, useMatch, type LobbyForm } from "../src/state/match.ts";
 import type { Mode, PricingRow, SectorKey } from "../src/types.ts";
 
 let container: HTMLDivElement;
@@ -1763,5 +1776,290 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     expect(testid("pointer-spot")).toBeNull();
     expect(d.textContent).not.toContain("live");
     expect(d.textContent).not.toContain("seeded");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// plan6 §9 item 2, AT THE SOURCE — where a leg's multiplier comes from
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The failure this block exists to catch is precise, and it is not a rendering
+ * bug: **one surface looking right while every other surface does not.**
+ *
+ * `useMatch` is where a leg is priced. The pick screen, the slip, the duel, the
+ * result screen, `summarize`, `settle` and the escrow all read that leg — so a
+ * multiplier that is only correct because one component re-read the dealt card
+ * and printed *that* is correct on exactly one screen. Every assertion here
+ * therefore reads `derived.myLegs` off the hook and never the DOM: the pick
+ * screen is not mounted at all.
+ *
+ * The book is injected the way `App` injects it — a plain frozen value, one
+ * argument wide. Nothing in this block reaches a network and nothing in
+ * `src/state/match.ts` could.
+ */
+describe("a market-priced leg carries the dealt card's number — at the source", () => {
+  const SPOT = 2000;
+  const EXPIRY = 1_788_595_200;
+
+  /** One fillable live row, the shape the market builder produces. */
+  function liveRow(o: {
+    type: "CALL" | "PUT";
+    strike: number;
+    delta: number;
+    ask: number;
+  }): PricingRow {
+    return {
+      type: o.type,
+      strike: o.strike.toLocaleString("en-US"),
+      expiry: "12 SEP",
+      bid: (o.ask * 0.98).toFixed(4),
+      ask: o.ask.toFixed(4),
+      iv: "58.2%",
+      delta: o.delta.toFixed(2),
+      depth: 40,
+      size: "10.0k",
+      structure: o.type,
+      order: {
+        order: { price: "1", isBuyer: false, expiry: String(EXPIRY) },
+        rawApiData: {
+          strikes: [String(Math.round(o.strike * 10 ** PRICE_DECIMALS))],
+          isCall: o.type === "CALL",
+        },
+      },
+    };
+  }
+
+  /**
+   * SAFE bull, SHARP bull and DEGEN bear are backed; EVEN is backed on neither
+   * side. That hole is load-bearing below: a tier the book does not back must
+   * keep its seeded leg rather than borrow the nearest listed delta, which is
+   * what the retired `optionizeTier` path did.
+   */
+  const CHAIN = [
+    liveRow({ type: "CALL", strike: 1900, delta: 0.7, ask: 60 }),
+    liveRow({ type: "CALL", strike: 2100, delta: 0.3, ask: 20 }),
+    liveRow({ type: "PUT", strike: 1850, delta: -0.2, ask: 15 }),
+  ];
+
+  const BOOK: OptionBook = {
+    at: 1_788_500_000_000,
+    source: "live",
+    spot: { ETH: SPOT },
+    chain: { ETH: CHAIN },
+  };
+
+  /** A NORMAL, three-leg MAJORS lobby, and the first seed whose spin deals ETH
+   *  into its arena — searched rather than pinned, so this test does not add a
+   *  second replay contract beside `test/determinism.test.ts`'s. */
+  const LOBBY = LOBBIES.find((l) => l.id === "kz-semis")!;
+  const SEED = (() => {
+    for (let s = 1; s < 5000; s++) {
+      if (spinCase(bookOf(LOBBY), LOBBY.legs, s).syms.includes("ETH")) return s;
+    }
+    throw new Error("no seed in 1..5000 deals ETH — the MAJORS book must have changed");
+  })();
+
+  /** The hook under test, rendered by nothing. `container`/`root` are the
+   *  module's own, so the shared `afterEach` tears this down. */
+  let match: ReturnType<typeof useMatch> | null = null;
+  function Probe({ book }: { book?: OptionBook }) {
+    match = useMatch({ tab: "parlay", lobbyId: LOBBY.id, seed: SEED }, { book });
+    return null;
+  }
+  function mountProbe(book?: OptionBook) {
+    match = null;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(<Probe book={book} />);
+    });
+  }
+  /** Pick a card for ETH and hand back the leg the hook priced. */
+  function legAfterPicking(cardId: string) {
+    act(() => match!.actions.pick("ETH", cardId));
+    return match!.derived.myLegs.find((l) => l.sym === "ETH")!;
+  }
+
+  /** The card the fixture book deals for SHARP BULLISH, built here from the
+   *  same row the hook was handed — so the expectation is the engine's answer
+   *  and not a literal that could only pin today's arithmetic. */
+  const SHARP_CARD: LiveCard = {
+    ...PARLAY_CARDS.find((c) => c.id === "sharp-bull")!,
+    underlying: "ETH",
+    strike: "2,100",
+    strikeAt: 2100,
+    expiry: "12 SEP",
+    expiryAt: EXPIRY,
+    prob: 0.3,
+    premium: 20,
+    mult: 0,
+    mark: null,
+    row: CHAIN[1]!,
+  };
+
+  test("`derived.myLegs` carries `multipleAt`, not the retired clamped ratio and not the seeded odds", () => {
+    mountProbe(BOOK);
+    const leg = legAfterPicking("sharp-bull");
+
+    const expected = multipleAt(SHARP_CARD, SPOT, REFERENCE_MOVE, vanillaPayout);
+    // Worked by hand too: ETH 2,000 +25% settles at 2,500; a 2,100 call is worth
+    // 400 there; at a premium of 20 that is ×20.
+    expect(expected).toBeCloseTo(20, 8);
+    expect(leg.mult).toBeCloseTo(expected, 10);
+
+    // …and it is neither of the two numbers it used to be. `multiplierFor` reads
+    // 0.25 × 2100/2000 ÷ 20 = 0.013 and clamps up to MULT_MIN — the hand-rolled
+    // ratio plan 6 §9.2 retired, and what `optionize()` put on this leg until
+    // now. `tierOdds("SHARP")` = 1/0.35 = ×2.86 is the seeded fallback.
+    expect(multiplierFor(2100, 20, SPOT)).toBeCloseTo(MULT_MIN, 10);
+    expect(leg.mult).not.toBeCloseTo(MULT_MIN, 2);
+    expect(leg.mult).not.toBeCloseTo(tierOdds("SHARP"), 2);
+  });
+
+  test("the other four numbers move with it — delta, listed strike, live spot, and the tape threshold", () => {
+    mountProbe(BOOK);
+    const leg = legAfterPicking("sharp-bull");
+
+    // The option's own |delta|, not the band midpoint. This is the number
+    // `summarize` and `degeneracyScore` read, so it reaches every surface that
+    // prints combined odds.
+    expect(leg.prob).toBeCloseTo(0.3, 10);
+    expect(leg.prob).not.toBeCloseTo(tierProb("SHARP"), 3);
+    // A strike the venue lists, on the live scale, and the spot it was quoted
+    // against.
+    expect(leg.strike).toBeCloseTo(2100, 10);
+    expect(leg.px).toBeCloseTo(SPOT, 10);
+    // The hinge: the strike written as the percentage move `legState` already
+    // understands. 2,100 over a 2,000 spot is +5%.
+    expect(leg.t).toBeCloseTo(5, 10);
+    // Same bet, same ticker, same direction — the seed's decisions are untouched.
+    expect(leg.tier).toBe("SHARP");
+    expect(leg.dir).toBe("over");
+  });
+
+  test("a tier the book does not back keeps its seeded leg — no nearest-delta substitute", () => {
+    mountProbe(BOOK);
+    // Nothing in CHAIN falls in EVEN's [0.45, 0.65) band on either side. The old
+    // path took the nearest listed delta anyway and flagged the miss; the card
+    // path does not deal that card at all, and the leg stays what the seed made.
+    const leg = legAfterPicking("even-bull");
+    expect(leg.mult).toBeCloseTo(tierOdds("EVEN"), 10);
+    expect(leg.prob).toBeCloseTo(tierProb("EVEN"), 10);
+    expect(leg.strike).toBeCloseTo(buildLeg("ETH", "over", "EVEN").strike, 10);
+  });
+
+  test("with no book every leg is the seeded leg, byte for byte", () => {
+    mountProbe();
+    const leg = legAfterPicking("sharp-bull");
+    expect(leg).toEqual(buildLeg("ETH", "over", "SHARP"));
+  });
+
+  test("a ticker the book has never heard of stays seeded even while ETH is priced", () => {
+    mountProbe(BOOK);
+    act(() => match!.actions.pick("ETH", "sharp-bull"));
+    for (const leg of match!.derived.myLegs) {
+      if (leg.sym === "ETH") continue;
+      // Unpicked tickers preview at EVEN bullish, and no chain backs them.
+      expect(leg.mult).toBeCloseTo(tierOdds(leg.tier), 10);
+      expect(leg.prob).toBeCloseTo(tierProb(leg.tier), 10);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The grade nobody measured
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THIN is a **verdict**: resting orders and greeks, no market-maker feed. It is
+ * amber, it has a blurb about spreads and missing sides, and it is a true and
+ * useful thing to tell a host. Printing it for an asset that was never measured
+ * would be a measurement nobody made — the same class of claim as an invented
+ * multiplier, one screen over.
+ *
+ * The builder's live-book row used to default every miss to THIN. It cannot miss
+ * on the happy path — the chips are filtered from the same qualified list the
+ * grades are built from — so the branch is reached only when the two disagree,
+ * and the realistic way they disagree is a payload from `/api/market` that
+ * carries an underlying with no `grade` field on it. `QualifiedAsset.grade` is
+ * typed, and the wire is not.
+ */
+describe("the lobby builder's live book grades only what was graded", () => {
+  const FORM: LobbyForm = {
+    name: "T",
+    sectors: ["MAJORS"],
+    market: "MIXED",
+    mode: "NORMAL",
+    legs: 2,
+    prize: 5,
+    prizeText: "5.00",
+  };
+
+  const asset = (underlying: string, grade: Grade | undefined): QualifiedAsset => ({
+    underlying,
+    // The hole this test is about: a wire row that named no grade.
+    grade: grade as Grade,
+    spot: 2000,
+    orders: 12,
+    greeked: 12,
+    depthUsd: 5000,
+  });
+
+  function mountBuilder(live: readonly QualifiedAsset[]) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const noop = () => {};
+    act(() => {
+      root.render(
+        <CreateLobby
+          form={FORM}
+          entryLabel="2.50 ETH"
+          prizeLabel="5.00 ETH"
+          onName={noop}
+          onMarket={noop}
+          onToggleSector={noop}
+          onMode={noop}
+          onLegsUp={noop}
+          onLegsDown={noop}
+          onPrizeInput={noop}
+          onPrizeBlur={noop}
+          onPrizeUp={noop}
+          onPrizeDown={noop}
+          onPublish={noop}
+          onBack={noop}
+          live={live}
+        />,
+      );
+    });
+  }
+
+  test("an ungraded asset reads NOT GRADED, and its graded neighbour is unaffected", () => {
+    mountBuilder([asset("ETH", undefined), asset("BTC", "DEEP")]);
+
+    const eth = container.querySelector<HTMLElement>('[data-live-asset="ETH"]')!;
+    expect(eth.dataset.grade).toBe("none");
+    expect(eth.textContent).toContain("NOT GRADED");
+    // The whole point: not a fabricated verdict, and not THIN's blurb either.
+    expect(eth.textContent).not.toContain("THIN");
+    expect(eth.title).toContain("not graded");
+    expect(eth.title).not.toContain("resting orders only");
+
+    const btc = container.querySelector<HTMLElement>('[data-live-asset="BTC"]')!;
+    expect(btc.dataset.grade).toBe("DEEP");
+    expect(btc.textContent).toContain("DEEP");
+    expect(btc.title).toContain(GRADE_BLURB.DEEP);
+  });
+
+  test("a real THIN is still printed as THIN — the verdict survives", () => {
+    // The honest render must not have deleted the grade it exists to protect.
+    mountBuilder([asset("ETH", "THIN")]);
+    const eth = container.querySelector<HTMLElement>('[data-live-asset="ETH"]')!;
+    expect(eth.dataset.grade).toBe("THIN");
+    expect(eth.textContent).toContain("THIN");
+    expect(eth.textContent).not.toContain("NOT GRADED");
+    expect(eth.title).toContain(GRADE_BLURB.THIN);
   });
 });

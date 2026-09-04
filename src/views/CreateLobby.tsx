@@ -214,6 +214,21 @@ function StakeField({ stake }: { stake: DuelStake | undefined }) {
 const LIVE_ROW = "display:flex;gap:6px;margin-top:10px;flex-wrap:wrap";
 
 /**
+ * What an asset with no measurement behind it says, in the three places the
+ * chip says anything: the visible token, the tooltip, and the data attribute a
+ * test reads.
+ *
+ * It is deliberately NOT a third grade. `Grade` has two members and both are
+ * verdicts about depth; this is the absence of a verdict, so it is written in
+ * `C.faint` rather than in a grade colour and it carries no blurb about spreads
+ * or cards, because nobody looked.
+ */
+const UNGRADED_LABEL = "NOT GRADED";
+const UNGRADED_ATTR = "none";
+const UNGRADED_BLURB =
+  "not graded — this asset is not in today's measured set, so nothing is known about its depth";
+
+/**
  * Four states on two axes, because they are two different facts and a chip that
  * conflated them would lie in one direction or the other:
  *
@@ -293,19 +308,46 @@ function LiveSector({
       </span>
       {status.open ? (
         <span style={sx(`display:flex;align-items:center;gap:6px;min-width:0`)}>
-          {status.playable.map((sym) => (
-            <span
-              key={sym}
-              data-live-asset={sym}
-              title={`${sym} — ${GRADE_BLURB[grades[sym] ?? "THIN"]}`}
-              style={sx(`font:500 10px/1 ${MONO};color:${C.textSoft};white-space:nowrap`)}
-            >
-              {sym}{" "}
-              <span style={sx(`color:${GRADE_COLOR[grades[sym] ?? "THIN"]}`)}>
-                {grades[sym] ?? "THIN"}
+          {status.playable.map((sym) => {
+            /**
+             * The grade, or the absence of one — and they are two different
+             * facts.
+             *
+             * `grades` holds ONLY assets the gate measured and qualified. A miss
+             * is therefore "not graded", never "graded THIN": THIN is a real
+             * verdict meaning *resting orders and greeks, no market-maker feed*,
+             * and printing it for an asset nobody measured would be a
+             * measurement nobody made — the exact class of claim this screen
+             * exists to delete.
+             *
+             * In practice the lookup hits, because `status.playable` is filtered
+             * from the same qualified list `grades` is built from. The `null`
+             * branch is what keeps that a **consequence** rather than an
+             * assumption: a caller that ever passes a `grades` map from one
+             * snapshot and a `playable` list from another gets an honest blank
+             * instead of a fabricated amber THIN.
+             *
+             * `MatchSpin` makes the same choice at the slice reveal for the same
+             * reason (`gradeIndex(...)[underlying] ?? null`), and `LobbyCard`
+             * sidesteps it by rendering only the entries a grades map actually
+             * has.
+             */
+            const grade = grades[sym] ?? null;
+            return (
+              <span
+                key={sym}
+                data-live-asset={sym}
+                data-grade={grade ?? UNGRADED_ATTR}
+                title={`${sym} — ${grade ? GRADE_BLURB[grade] : UNGRADED_BLURB}`}
+                style={sx(`font:500 10px/1 ${MONO};color:${C.textSoft};white-space:nowrap`)}
+              >
+                {sym}{" "}
+                <span style={sx(`color:${grade ? GRADE_COLOR[grade] : C.faint}`)}>
+                  {grade ?? UNGRADED_LABEL}
+                </span>
               </span>
-            </span>
-          ))}
+            );
+          })}
         </span>
       ) : (
         <span

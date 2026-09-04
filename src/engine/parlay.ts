@@ -389,6 +389,61 @@ export function fromUnits(value: bigint, decimals: number): number {
 }
 
 /**
+ * The protocol's vanilla payout arithmetic, restated — the calculator every
+ * caller in this tree passes to {@link multipleAt} and {@link cardsForSlice}.
+ *
+ * ## What it is
+ *
+ * `client.utils.calculatePayout` is, per `tnuts-test/FINDINGS.md` §"0.3.0
+ * delta", **sync local math** — no RPC, no chain read. For a long vanilla it is
+ * `max(0, settlement − strike) × contracts` (and the mirror for a put), in
+ * collateral decimals. That is what is below, against the identical
+ * {@link PayoutQuery} contract: lowercase type, 8dp strikes and settlement, 18dp
+ * contracts, collateral out.
+ *
+ * ## Why it lives here, and why it is still an ARGUMENT everywhere
+ *
+ * It is defined in the engine because two surfaces need the same one and they
+ * must not each write their own: the pick screen deals cards off the frozen
+ * book, and `src/state/match.ts` prices the legs off that same book. Two
+ * restatements of this function would be exactly the drift this file exists to
+ * delete — one screen's ×N disagreeing with another's for the same bet.
+ *
+ * It changes nothing about the seam. `multipleAt`, `cardsForSlice`,
+ * `cardsForTicker` and `basketPayoff` all still take a {@link PayoutCalculator}
+ * as a parameter, a frozen stub drives every test, and the day the payout comes
+ * off the wire beside the rows — or the SDK ships a bundle-safe subpath — this
+ * constant is the one thing that changes. The determinism guard is untouched:
+ * nothing here names the SDK, imports a package, or reads anything.
+ *
+ * The reason it is not the SDK's own function *yet*: the package ships one entry
+ * point and it pulls `axios`, `ethers` and `viem` behind it. Importing it to
+ * reach a pure arithmetic helper would put an HTTP client and two chain
+ * libraries in the browser bundle and make the pick screen unmountable in a DOM
+ * test. The SDK is confined to this app's server side for exactly that reason —
+ * and this file may not so much as name that module, which is the determinism
+ * guard doing its job rather than an inconvenience.
+ *
+ * The two spread types are refused rather than guessed. {@link assertStrikes}
+ * and {@link STRIKE_COUNT} already make a spread unreachable from a card — one
+ * strike or it is not dealt — and a wrong spread convention would not throw, it
+ * would quietly print a wrong multiplier, which is the failure mode this whole
+ * path exists to remove.
+ */
+export const vanillaPayout: PayoutCalculator = (q: PayoutQuery) => {
+  if (q.type !== "call" && q.type !== "put") {
+    throw new Error(`vanillaPayout prices 'call' and 'put' only, not '${q.type}'`);
+  }
+  const strike = fromUnits(q.strikes[0] ?? 0n, q.priceDecimals ?? PRICE_DECIMALS);
+  const settlement = fromUnits(q.settlementPrice, q.priceDecimals ?? PRICE_DECIMALS);
+  const contracts = fromUnits(q.numContracts, q.sizeDecimals ?? CONTRACT_DECIMALS);
+  const intrinsic =
+    q.type === "call" ? Math.max(0, settlement - strike) : Math.max(0, strike - settlement);
+  const collateral = q.collateralDecimals ?? COLLATERAL_DECIMALS;
+  return BigInt(Math.round(intrinsic * contracts * 10 ** collateral));
+};
+
+/**
  * How far past spot the payout multiple is read.
  *
  * A long option's payoff is unbounded, so "what does this pay" is not a number
@@ -689,6 +744,108 @@ export function multipleAt(
   const paid = fromUnits(payout, COLLATERAL_DECIMALS);
   const raw = paid / card.premium;
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+/**
+ * Every card one ticker's own book deals, or `null` when it deals none.
+ *
+ * The whole live path for a single underlying, in one call — the identity
+ * window off {@link fullLadderSlice}, then {@link cardsForSlice} over it. It
+ * exists so the two surfaces that need those cards run the *same* function
+ * rather than two copies of the same four lines: `src/state/match.ts` prices a
+ * match's legs with it at deal time, and `src/views/ParlayPick.tsx` draws the
+ * grid with it. A card and the leg it produced cannot then disagree, because
+ * they are the same object read twice.
+ *
+ * `null` — and not eight dead slots — for every degenerate case: no rows, no
+ * live spot, no dealable row in the chain, or a chain whose every delta falls
+ * outside all four bands. That ticker is **seeded**, exactly as it was before
+ * options existed, and both callers treat `null` that way. Eight dead slots
+ * would delete a playable ticker from a duel that still has to settle, and a
+ * dead slot only carries information beside a live sibling.
+ *
+ * Pure, and market data arrives as arguments: rows, a spot, and the payout
+ * function. The determinism guard is untouched.
+ */
+export function cardsForTicker(
+  sym: string,
+  rows: readonly PricingRow[],
+  spot: number,
+  calculatePayout: PayoutCalculator,
+  movePct: number = REFERENCE_MOVE,
+): readonly (LiveCard | null)[] | null {
+  if (rows.length === 0 || !(spot > 0)) return null;
+  const slice = fullLadderSlice(sym, rows);
+  if (slice === null) return null;
+  const dealt = cardsForSlice(rows, slice, { calculatePayout, spot, movePct });
+  return dealt.some((c) => c !== null) ? dealt : null;
+}
+
+/**
+ * The dealt slot for one tier on one side, or `null`.
+ *
+ * {@link cardsForSlice} returns a slot per {@link PARLAY_CARDS} entry,
+ * index-aligned, so the (tier, stance) lookup is a position lookup. `null` is
+ * two ordinary things at once — this ticker dealt nothing, or no resting order
+ * backs this tier on this side — and every caller wants the same answer for
+ * both: fall back to the seeded card.
+ */
+export function slotFor(
+  slots: readonly (LiveCard | null)[] | null | undefined,
+  tier: Tier,
+  stance: Stance,
+): LiveCard | null {
+  if (!slots) return null;
+  const i = PARLAY_CARDS.findIndex((c) => c.tier === tier && c.stance === stance);
+  return i < 0 ? null : (slots[i] ?? null);
+}
+
+/**
+ * One seeded leg, re-denominated against the card the book actually dealt.
+ *
+ * **This is where a market-priced leg gets its numbers, and it is the only
+ * place.** Five fields move and five stay. The multiple is the dealt card's
+ * `mult` — `multipleAt(card, spot, REFERENCE_MOVE, calculatePayout)`, the
+ * protocol's payout arithmetic over the ask a buyer actually pays — so the ×N
+ * on the slip, on the card, and on every other surface that reads a leg is one
+ * number with one provenance. The probability is the option's own `|delta|`;
+ * the strike is one the venue lists; the reference price is the live spot the
+ * strike is quoted against.
+ *
+ * `t` is the hinge, and it is the same arithmetic `desk/optionize.thresholdFor`
+ * has always done: the strike written as the percentage move `legState` already
+ * understands, **in the leg's own direction**, so a market-priced leg needs no
+ * new settlement path. A call struck below spot yields `t < 0`, and `pct >= t`
+ * then reads "wins unless the tape falls that far" — which is what an ITM option
+ * is. What crosses the seam is the *ratio* and never the price: the seeded tape
+ * opens somewhere else entirely.
+ *
+ * What does not move: `sym`, `dir`, `sector`, `tier`, `baseT`. It is the same
+ * bet on the same ticker in the same direction, dealt by the same seed, so
+ * `summarize`, `legState`, `scoreOf`, `edgeOf`, `conditionText` and the tape are
+ * untouched and unaware.
+ *
+ * The mode's `targetScale` is deliberately not re-applied. It shrinks a
+ * *seeded* target so a shorter window has a reachable line; a listed strike is
+ * not ours to shrink, and scaling one would put a number on the card that no
+ * venue quotes.
+ *
+ * Total: a non-positive spot hands the leg straight back, because a leg with a
+ * fabricated reference price is worse than a seeded one.
+ */
+export function legFromLiveCard(leg: ParlayLeg, card: LiveCard, spot: number): ParlayLeg {
+  if (!(spot > 0) || !(card.strikeAt > 0)) return leg;
+  const move = leg.dir === "over" ? (card.strikeAt - spot) / spot : (spot - card.strikeAt) / spot;
+  return {
+    ...leg,
+    // 2dp, matching `buildLeg`'s own `+(...).toFixed(2)`, so a market-derived
+    // `t` and a seeded one are the same kind of number.
+    t: +(move * 100).toFixed(2),
+    mult: card.mult,
+    prob: card.prob,
+    px: spot,
+    strike: card.strikeAt,
+  };
 }
 
 /**

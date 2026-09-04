@@ -17,23 +17,18 @@ import {
 import { meta } from "../data/universe.ts";
 import { OPTIONS_CHIP, SETTLEMENT_NOTE, type OptionBook } from "../desk/optionize.ts";
 import {
-  COLLATERAL_DECIMALS,
-  CONTRACT_DECIMALS,
   PARLAY_CARDS,
-  PRICE_DECIMALS,
   REFERENCE_MOVE,
-  cardsForSlice,
+  cardsForTicker,
   conditionText,
-  fromUnits,
-  fullLadderSlice,
   legForCard,
   slipLabel,
+  slotFor,
+  vanillaPayout,
   type LiveCard,
   type ParlayCard,
   type ParlayLeg,
   type ParlaySummary,
-  type PayoutCalculator,
-  type PayoutQuery,
   type Stance,
   type Tier,
 } from "../engine/parlay.ts";
@@ -68,54 +63,20 @@ export const TIER_COLOR: Record<Tier, string> = {
 };
 
 /**
- * The payout math the engine is handed, and the reason it is handed anything.
+ * The payout math the engine is handed, re-exported from where it now lives.
  *
- * `src/engine/parlay.ts` prices a live card as `calculatePayout ÷ premium paid`
- * (`multipleAt`) and takes the payout function as an **argument** — the
- * determinism guard forbids the engine from naming the SDK, and it is right to.
- * So a caller has to supply one, and this is the pick screen's.
+ * It used to be declared here, because this screen was the only caller. It is
+ * not any more: `src/state/match.ts` prices a match's legs off the same frozen
+ * book with the same calculator, and two restatements of one arithmetic is
+ * precisely the drift that left the pick screen printing one ×N and every other
+ * surface printing another. So it moved to `src/engine/parlay.ts` beside the
+ * functions that take it — see the docblock there for what it is, why it is not
+ * the SDK's own function yet, and why every engine entry point still takes a
+ * `PayoutCalculator` as an argument rather than reaching for this.
  *
- * ## What it is: the protocol's vanilla arithmetic, restated
- *
- * `client.utils.calculatePayout` is, per `tnuts-test/FINDINGS.md` §"0.3.0
- * delta", **sync local math** — no RPC, no chain read. For a long vanilla it is
- * `max(0, settlement − strike) × contracts` (and the mirror for a put), in
- * collateral decimals. That is what is below, against the identical
- * `PayoutQuery` contract: lowercase type, 8dp strikes and settlement, 18dp
- * contracts, collateral out.
- *
- * ## Why it is not the SDK's own function *yet*
- *
- * The package ships one entry point, and it pulls `axios`, `ethers` and `viem`
- * behind it. Importing it here to reach a pure arithmetic helper would put a
- * whole HTTP client and two chain libraries in the browser bundle, and would
- * make this screen unmountable in a DOM test. The SDK lives on the server side
- * of this app for exactly that reason (`src/server/thetanuts.ts`).
- *
- * **This constant is the one line that changes** the day the payout comes off
- * the wire beside the rows, or the SDK ships a bundle-safe subpath: the seam
- * stays, the engine stays untouched, and every multiplier on this screen moves
- * with it. `test/parlay.test.ts` makes the same choice for the same reason and
- * says so at its `calc`.
- *
- * The two spread types are refused rather than guessed. `assertStrikes` and
- * `STRIKE_COUNT` already make a spread unreachable from this screen — a card is
- * one strike or it is not dealt — and a wrong spread convention would not throw,
- * it would quietly print a wrong multiplier, which is the failure mode this
- * whole file exists to remove.
+ * Re-exported so callers and tests that already name it here keep working.
  */
-export const vanillaPayout: PayoutCalculator = (q: PayoutQuery) => {
-  if (q.type !== "call" && q.type !== "put") {
-    throw new Error(`vanillaPayout prices 'call' and 'put' only, not '${q.type}'`);
-  }
-  const strike = fromUnits(q.strikes[0] ?? 0n, q.priceDecimals ?? PRICE_DECIMALS);
-  const settlement = fromUnits(q.settlementPrice, q.priceDecimals ?? PRICE_DECIMALS);
-  const contracts = fromUnits(q.numContracts, q.sizeDecimals ?? CONTRACT_DECIMALS);
-  const intrinsic =
-    q.type === "call" ? Math.max(0, settlement - strike) : Math.max(0, strike - settlement);
-  const collateral = q.collateralDecimals ?? COLLATERAL_DECIMALS;
-  return BigInt(Math.round(intrinsic * contracts * 10 ** collateral));
-};
+export { vanillaPayout };
 
 /**
  * `"58.2%"` → `0.582`; anything else → `null`.
@@ -293,10 +254,15 @@ export function ParlayPick(p: ParlayPickProps) {
    * `PARLAY_CARDS`, `null` where the book backs no order in that tier's band.
    *
    * This is the pick screen's whole live path, and it is one call:
-   * `cardsForSlice(rows, fullLadderSlice(sym, rows), { calculatePayout, spot })`.
-   * Every number on a card built here is the venue's or is derived from it by
-   * the protocol's own payout arithmetic — there is no clamp, no table and no
-   * invented reference in the chain any more.
+   * `cardsForTicker(sym, rows, spot, vanillaPayout)` — the identity window off
+   * `fullLadderSlice`, then `cardsForSlice` over it. Every number on a card
+   * built here is the venue's or is derived from it by the protocol's own payout
+   * arithmetic — there is no clamp, no table and no invented reference in the
+   * chain any more.
+   *
+   * It is the **same call** `src/state/match.ts` makes on the **same frozen
+   * book** to price `p.myLegs`, which is what makes the card and the leg two
+   * reads of one computation rather than two computations that have to agree.
    *
    * **A ticker enters the map only when its book deals at least one card.** The
    * degenerate cases — no book, a chain with no fillable orders, a chain whose
@@ -315,13 +281,13 @@ export function ParlayPick(p: ParlayPickProps) {
     const out = new Map<string, readonly (LiveCard | null)[]>();
     if (!p.book) return out;
     for (const sym of p.arena) {
-      const rows = p.book.chain[sym] ?? [];
-      const spot = p.book.spot[sym] ?? 0;
-      if (rows.length === 0 || !(spot > 0)) continue;
-      const slice = fullLadderSlice(sym, rows);
-      if (slice === null) continue;
-      const dealt = cardsForSlice(rows, slice, { calculatePayout: vanillaPayout, spot });
-      if (dealt.some((c) => c !== null)) out.set(sym, dealt);
+      const dealt = cardsForTicker(
+        sym,
+        p.book.chain[sym] ?? [],
+        p.book.spot[sym] ?? 0,
+        vanillaPayout,
+      );
+      if (dealt) out.set(sym, dealt);
     }
     return out;
   }, [p.arena, p.book]);
@@ -451,7 +417,7 @@ export function ParlayPick(p: ParlayPickProps) {
              * them would be the chip lying about the grid it labels.
              */
             const priced = dealt !== null;
-            const pickedCard = picked ? cardAt(dealt, picked.id) : null;
+            const pickedCard = picked ? slotFor(dealt, picked.tier, picked.stance) : null;
             return (
               <section
                 key={sym}
@@ -649,26 +615,22 @@ export function ParlayPick(p: ParlayPickProps) {
 
             <div style={sx("display:flex;flex-direction:column;gap:8px;padding:12px")}>
               {p.myLegs.map((l) => {
-                const pick = p.picks[l.sym] ?? null;
-                const has = Boolean(pick);
+                const has = Boolean(p.picks[l.sym]);
                 /**
-                 * The multiple the slip prints for this leg.
+                 * The multiple the slip prints for this leg is **the leg's
+                 * own**, with no second opinion.
                  *
-                 * Read off the dealt card wherever the book dealt one, so the
-                 * row and the card the player pressed cannot print two
-                 * different numbers for the same bet. `l.mult` is the seeded
-                 * leg's fair odds on its band, which is the right number on
-                 * every seeded ticker and is what this falls back to.
-                 *
-                 * Upstream, `optionize()` in `src/state/match.ts` still prices
-                 * `l.mult` off `desk/optionize.multiplierFor` on a
-                 * market-priced leg — the clamped ratio plan 6 retired. Fixing
-                 * that at the source is the durable form of this line and it is
-                 * outside this screen; until then the screen reads the number
-                 * it can defend.
+                 * This row used to re-read the dealt card and print that
+                 * instead, because `src/state/match.ts` priced `l.mult` off
+                 * `desk/optionize.multiplierFor` — the clamped ratio plan 6
+                 * retired — and the card was the only number on screen that
+                 * could be defended. That override is gone: the match now
+                 * derives every leg from the card the book dealt
+                 * (`legFromLiveCard`), so `l.mult` IS `multipleAt(card, spot,
+                 * REFERENCE_MOVE, vanillaPayout)` on a market-priced leg and
+                 * `tierOdds(tier)` on a seeded one. Reading it twice could only
+                 * ever hide a disagreement rather than prevent one.
                  */
-                const dealtCard = pick ? cardAt(liveCards.get(l.sym) ?? null, pick.id) : null;
-                const mult = dealtCard ? dealtCard.mult : l.mult;
                 return (
                   <div
                     key={l.sym}
@@ -678,7 +640,7 @@ export function ParlayPick(p: ParlayPickProps) {
                     <div style={sx("display:flex;align-items:center;justify-content:space-between")}>
                       <span style={sx(`font:700 12px/1 ${MONO}`)}>{l.sym}</span>
                       <span style={sx(`font:700 11px/1 ${MONO};color:${has ? TIER_COLOR[l.tier] : C.faint}`)}>
-                        {has ? `${l.tier} ×${mult.toFixed(1)}` : "—"}
+                        {has ? `${l.tier} ×${l.mult.toFixed(1)}` : "—"}
                       </span>
                     </div>
                     <div style={sx(`margin-top:7px;font:400 10px/1.4 ${MONO};color:${has ? C.textSoft : C.faint}`)}>
@@ -826,18 +788,6 @@ function faceValues(
     theta: null,
     iv: card ? ivOf(card.row) : null,
   };
-}
-
-/** The dealt card with this id, or `null` — for a ticker that dealt nothing,
- *  and for a slot that came back dead. Index-aligned to `PARLAY_CARDS`, so the
- *  id lookup is the position lookup. */
-function cardAt(
-  slots: readonly (LiveCard | null)[] | null,
-  id: string,
-): LiveCard | null {
-  if (!slots) return null;
-  const i = PARLAY_CARDS.findIndex((c) => c.id === id);
-  return i < 0 ? null : (slots[i] ?? null);
 }
 
 /**
