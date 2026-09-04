@@ -159,111 +159,97 @@ describe("the board", () => {
     expect(kz.textContent).toContain("Accept match · 2.40 Ξ");
   });
 
+  // The card's background art is `CardArt` again — the generative dot/line
+  // patterns, seeded by the lobby id. A wave of this board replaced them with a
+  // chrome candlestick ornament; the owner asked for the background back and
+  // for the chrome to move onto the label chips, so `ChromeRally.tsx` is gone
+  // and these assertions describe the patterns that are actually drawn.
   test("every card carries its own animated artwork, seeded by the lobby", () => {
     mount("/battles");
     const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
     expect(art).toHaveLength(6);
     expect(new Set(art.map((a) => a.dataset.art)).size).toBe(6);
     for (const a of art) {
-      // A real drawing, not an empty frame… (`rect` since the ornament became
-      // ChromeCandles: capsules are rounded rects, not paths.)
-      expect(a.querySelectorAll("path, circle, polygon, rect").length).toBeGreaterThanOrEqual(9);
+      // A real drawing, not an empty frame…
+      expect(a.querySelectorAll("path, circle, polygon").length).toBeGreaterThanOrEqual(9);
       // …and it moves: SMIL on the shapes, or a CSS flow on the strokes.
       const smil = a.querySelectorAll("animate, animateTransform").length;
-      const css = Array.from(a.querySelectorAll<SVGElement>("path")).filter((p) => (p.getAttribute("style") ?? "").includes("vcFlow")).length;
+      const css = Array.from(a.querySelectorAll<SVGElement>("path")).filter((p) =>
+        (p.getAttribute("style") ?? "").includes("vcFlow"),
+      ).length;
       expect(smil + css).toBeGreaterThan(0);
       expect(a.dataset.pattern).toBeTruthy();
+      // Decoration only.
+      expect(a.getAttribute("aria-hidden")).not.toBeNull();
+      expect(a.style.pointerEvents).toBe("none");
     }
     // Same lobby, same picture — the art is a function of the id.
     const kz = () => container.querySelector('[data-art="kz-semis"] svg')?.innerHTML;
     const before = kz();
     remount("/battles");
     expect(kz()).toBe(before);
-    // No tilt on the cards any more; the picture moves, the card does not.
+    // No tilt on the cards; the picture moves, the card does not.
     expect(container.querySelector("[data-tilt]")).toBeNull();
   });
 
-  // The ornament is `ChromeRally`: one chrome instrument per card, revealed by
-  // a cold specular travelling along each capsule. It is decoration and nothing
-  // else, so what these guard is that it stays inert, stays deterministic, and
-  // never collides with the ornament on the card beside it.
-  test("the chrome rally draws on every card, on both surfaces, and stays inert", () => {
+  // The chrome material lives on the LABELS now: each chip is a near-black
+  // badge whose shape is a gradient rim and whose only bright thing is one
+  // narrow ice specular sliding along it. What these guard is that the shine is
+  // decoration — inert, out of the a11y tree, never sharing a gradient with the
+  // chip beside it — and that the label survives it.
+  test("every lobby chip is a chrome badge with its own gradient and its label intact", () => {
     mount("/battles");
-    const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
-    expect(art).toHaveLength(6);
-    for (const a of art) {
-      expect(a.dataset.pattern).toBe("chrome-rally");
-      // Never in the way of a click, never in the accessibility tree.
-      expect(a.getAttribute("aria-hidden")).not.toBeNull();
-      expect(a.style.pointerEvents).toBe("none");
-      // Per capsule: a body, a halo, a specular core and a rim, plus the
-      // hairlines, four ticks and the streak's two rects. The rally's six
-      // capsules are the thinner of the two objects and still clear this.
-      expect(a.querySelectorAll("rect").length).toBeGreaterThanOrEqual(28);
-      // One falling specular per capsule, plus the streak and its pool.
-      expect(a.querySelectorAll("animateTransform").length).toBeGreaterThanOrEqual(8);
+    const chips = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-lobby="kz-semis"] [data-chip]'),
+    );
+    // Mode, legs, market and at least one sector.
+    expect(chips.length).toBeGreaterThanOrEqual(4);
+
+    const ids: string[] = [];
+    for (const chip of chips) {
+      const shine = chip.querySelector<HTMLElement>("[aria-hidden]")!;
+      expect(shine).not.toBeNull();
+      expect(shine.style.pointerEvents).toBe("none");
+      // One travelling specular per chip, and it is drawn rather than declared.
+      expect(chip.querySelectorAll("animateTransform")).toHaveLength(1);
+      // The label is the point: the shine must never be the only thing in here.
+      expect(chip.textContent!.trim().length).toBeGreaterThan(0);
+      ids.push(...Array.from(chip.querySelectorAll<SVGElement>("defs [id]")).map((n) => n.id));
     }
-    // The board is no longer six copies of one picture: the object is chosen
-    // from the lobby's market (CRYPTO → candles, STOCK → tape, MIXED → a bit of
-    // its id's hash), so both objects are on screen at once.
-    const objects = new Set(art.map((a) => a.dataset.object));
-    expect(objects).toEqual(new Set(["candles", "tape"]));
-    expect(container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.dataset.object).toBe("candles");
-    expect(container.querySelector<HTMLElement>('[data-art="kz-semis"]')!.dataset.object).toBe("tape");
+    // Exactly one gradient each, and no two chips pointing at the same one.
+    expect(ids).toHaveLength(chips.length);
+    expect(new Set(ids).size).toBe(ids.length);
 
-    // The home board renders the same card, so it gets the same ornament.
-    remount("/");
-    const home = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
-    expect(home).toHaveLength(4);
-    expect(home.every((a) => a.dataset.pattern === "chrome-rally")).toBe(true);
-  });
-
-  test("two cards never share a gradient id, and neither redraws differently", () => {
-    mount("/battles");
-    const idsOf = (lobby: string) =>
-      Array.from(container.querySelectorAll<SVGElement>(`[data-art="${lobby}"] defs [id]`)).map((n) => n.id);
-
-    const a = idsOf("kz-semis");
-    const b = idsOf("mi-majors");
-    expect(a.length).toBeGreaterThanOrEqual(11); // 9 gradients + one clip per capsule
-    expect(new Set(a).size).toBe(a.length);
-    expect(a.some((id) => b.includes(id))).toBe(false);
-    // Each card points only at its own defs.
-    const markup = container.querySelector<HTMLElement>('[data-art="kz-semis"]')!.innerHTML;
-    expect(markup).toContain("url(#cc-kz-semis-body)");
-    expect(markup).not.toContain("url(#cc-mi-majors-");
-
-    // Two renders, identical DOM — no `useId`, no `Math.random`, no clock.
-    const before = container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.innerHTML;
-    remount("/battles");
-    expect(container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.innerHTML).toBe(before);
-
-    // …and the card it decorates still says everything it said before.
+    // The card still reads as it read.
     const kz = lobbyCards().find((c) => c.dataset.lobby === "kz-semis")!;
+    expect(kz.textContent).toContain("STOCKS");
+    expect(kz.textContent).toContain("3 LEGS");
     expect(kz.textContent).toContain("Semis sprint");
-    expect(kz.textContent).toContain("PRIZE POOL");
-    expect(kz.textContent).toContain("ENTRY");
-    expect(kz.textContent).toContain("Accept match · 2.40 Ξ");
+
+    // Same lobby, same markup — ids come from the lobby id, not from `useId()`,
+    // whose counter is module-global and climbs across roots.
+    const before = chips[0]!.outerHTML;
+    remount("/battles");
+    expect(
+      container.querySelector<HTMLElement>('[data-lobby="kz-semis"] [data-chip]')!.outerHTML,
+    ).toBe(before);
   });
 
-  test("under reduced motion the rally ships as one parked frame", () => {
+  test("under reduced motion a chip ships one parked lit frame", () => {
     const real = globalThis.matchMedia;
     try {
       globalThis.matchMedia = ((q: string) => ({ matches: true, media: q })) as unknown as typeof real;
       mount("/battles");
-      const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
-      expect(art).toHaveLength(6);
-      for (const a of art) {
-        // Nothing to still: the clocks were never rendered. (CSS cannot stop
+      const chips = Array.from(container.querySelectorAll<HTMLElement>("[data-chip]"));
+      expect(chips.length).toBeGreaterThanOrEqual(24);
+      for (const chip of chips) {
+        // Nothing to still: the clock was never rendered. (CSS cannot stop
         // SMIL, so the stylesheet's reduced-motion block is no help here.)
-        expect(a.querySelectorAll("animate, animateTransform")).toHaveLength(0);
-        // The light is parked at each capsule's waist rather than left at its
-        // head, so the still frame is the lit frame, not a dark one. (The
-        // halo and the core share one carrier group, hence `> g` and not
-        // `> rect`.) Six capsules for the rally, nine for the tape.
-        const parked = Array.from(a.querySelectorAll("g[clip-path] > g"));
-        expect(parked.length).toBeGreaterThanOrEqual(6);
-        expect(parked.every((r) => (r.getAttribute("transform") ?? "").startsWith("translate(0 "))).toBe(true);
+        expect(chip.querySelectorAll("animate, animateTransform")).toHaveLength(0);
+        // …and the smear is parked ON the chip, so the still frame is the lit
+        // one rather than an empty badge.
+        const parked = chip.querySelector<SVGElement>("svg > g")!;
+        expect(parked.getAttribute("transform")).toBe("translate(65 0)");
       }
     } finally {
       globalThis.matchMedia = real;
