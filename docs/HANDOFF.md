@@ -158,6 +158,12 @@ Thetanuts referrer whitelisting.
 
 ## Local-only artifacts a fresh clone will miss
 
+- Repo-root reference assets for the in-flight UI work (untracked on
+  purpose — same machine, so an account switch keeps them; a fresh CLONE
+  loses them and must ask the owner): chrome-capture-2026-09-04.gif +
+  " (1).gif" (the Daniluk hover reference) and "Cat Icon.zip" (the owner's
+  mascot: SVG + PNG + Idle/Wink gifs).
+
 - src/assets/*.mp3 are GITIGNORED on purpose (game-ripped audio): the owner
   has room-inspect.mp3 (Spectrum Guardian), parlay-pick.mp3 (hero-pick theme,
   the bed behind the parlay pick screen), exo-kill-1..4.mp3, case-tick.mp3 +
