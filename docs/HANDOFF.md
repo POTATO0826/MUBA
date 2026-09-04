@@ -17,18 +17,21 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
-## State at last update (post-P3+P4 gate — the account-switch handoff)
+## State at last update (post-P6 gate — every plan phase but P7 is shipped)
 
 > Written for a FRESH ACCOUNT picking this up cold after a rate-limit switch.
-> Everything below "Older gates" is history; this block + "IN FLIGHT" +
-> "Owner still owes" is what you act on. Protocol unchanged: Fable 5 MAIN
-> session orchestrates/briefs/gates/commits, Opus 5 subagents build,
-> parallel ONLY on disjoint file sets, every wave `bunx tsc --noEmit` clean
-> + full `bun test` green + commit on `zq` + push.
+> Everything below "Older gates" is history; this block + "NEXT" + "Owner
+> still owes" is what you act on. Protocol: the MAIN session
+> orchestrates/briefs/gates/commits, Opus 5 subagents build, parallel ONLY
+> on disjoint file sets, every wave `bunx tsc --noEmit` clean + full
+> `bun test` green + commit on `zq` + push. (This session ran as Fable 5,
+> then continued as Opus 5 after a model switch — the switch KILLED every
+> in-process subagent silently, so if you switch models mid-wave, assume
+> your builders are gone and check `git status` before trusting a report.)
 
-- Last commits: 4e47663 (P3 real fillOrder + P4 hybrid spot anchoring),
-  96a66d4 (chrome-candles card ornament v1). Targeted suites 278/0 at that
-  gate; run the full suite yourself before your first commit.
+- HEAD at this update: 281f843. Full suite **791 pass / 0 fail, 24 files**,
+  typecheck clean, working tree clean apart from the untracked reference
+  assets named below.
 - ALL Thetanuts SDK phases are now SHIPPED: P0 guard, P1 live book,
   P2 /desk live, P3 real fillOrder (THETADUEL_TRADE=on opt-in, $2 cap,
   $0.01 ladder, flag-off byte-identical — proven in test/fill.test.ts),
@@ -53,48 +56,65 @@
   own parallel agent immediately** — never queued behind the current one.
   Only file-set disjointness constrains it; if it collides with a running
   builder's files, send it to THAT builder via SendMessage instead.
-- IN FLIGHT (FOUR Opus builders; if they died mid-work, see the mid-flight
-  section at the bottom — briefs summarized here):
-  1) WALLET, SINGLE-CAT REWORK — src/ui/WalletPicker.tsx +
-     src/components/CatMascot.tsx + src/styles.css. Shipped so far
-     (6bd54aa→6368c9d→2f72112): per-row sticker launch, brand colours
-     (rdns map for 6 majors + canvas icon sampler + neutral fallback), the
-     owner's cat on an 88px light tile, 22% brand row wash, one wink.
-     NOW REWORKING to the owner's latest: **ONE cat at a single fixed seat
-     at the dialog's top** (delete the per-row stickers), the box may
-     expand so the cat can be bigger, and hovering a row only RETINTS the
-     cat to that wallet's colour; × must stay visible/clickable. Owner
-     steers to date: not a pixel copy of the reference — cat pop-up +
-     wallet colour driving cat AND buttons, animated; lime accents
-     rejected; sticker-under-× rejected; sticker-covers-INSTALLED-chip
-     accepted.
-  2) CHROME-CANDLES REWORK — src/components/ChromeCandles.tsx +
-     src/ui/LobbyCards.tsx ONLY (styles.css belongs to builder 1). v1
-     (committed, 9c46ca8) was rejected by the owner as "way off": capsules
-     too huge, sheens are flat milky bands, green-washed, beam too thick.
-     Required material (owner's watch-clip frames,
-     chrome-capture-2026-09-04.gif at repo root): ~85% darkness, hairline
-     1px rim speculars, a narrow feathered travelling sheen, cold ice-blue
-     light (#7dd3fc family) with the card accent only in the faint ambient
-     pool, a slender 1-1.5px trend-line. THEN per-card THEMED objects
-     (crypto = candle rally, stocks = a different chrome object) — owner:
-     "custom theme related object for each, please don't make them
-     identical; if not, focus on only 1 first."
-  3) ON-CHAIN SEAT BINDING (the P6 prerequisite) — NEW src/server/seats.ts
-     + src/server/attest.ts + tests. Escrow unconfigured ⇒ today's
-     signature-only path byte-identical; escrow configured ⇒ the lock's
-     a/b must match the chain's seats, failing CLOSED on RPC failure.
-  4) P6 STAKING UI — new escrow module + src/views/Room.tsx, Result.tsx,
-     CreateLobby.tsx, src/state/**, src/App.tsx, test/stake.test.ts.
-     Behind THETADUEL_STAKE=on AND escrow-configured; PTS ledger settles
-     first and unconditionally; every failure degrades to PTS-only; the
-     1100ms OPP_READY_MS timer stays for PTS-only play.
-- Owner asks pending beyond that: drop the Dota 2 hero-pick theme at
-  src/assets/parlay-pick.mp3 (seam is live, silence until then); eyeball
-  the wallet sticker covering the INSTALLED chip while hovered and the
-  36px dialog header gap (accepted for now unless the owner objects).
-- NEXT once the four land: P7 truth pass (README table exists; still
-  owed: consistent LIVE/SEEDED/STALE/PARTIAL chip vocabulary sweep).
+- ALL FIVE of the last wave's builders LANDED and are pushed (see below).
+  NOTHING is in flight as of this update — the tree is clean and green.
+- SHIPPED this wave (791 pass / 0 fail, 24 files, typecheck clean):
+  * da3307e ChromeRally — the card ornament REBUILT after the owner
+    rejected v1 as "way off". Slender bars (11u on a 34u pitch), bodies 5%
+    above black, hairline rim, specular running ALONG the bar, ice-blue
+    light with the card accent only in a faint pool. TWO objects now:
+    crypto = candle rally, stocks = "the tape" (chrome line chart), MIXED
+    picks by hash. ChromeCandles.tsx is DELETED; component is
+    src/components/ChromeRally.tsx.
+  * 460b3a8 Wallet single cat — per-row stickers deleted; ONE 124px cat
+    tile at the dialog's top-right, arriving once on open; hovering a row
+    only RETINTS cat+tile+ring+sparkles to that wallet's brand (220ms)
+    alongside the row's 22% brand wash. No hover = warm cream #d8d0bd
+    (grey read as a disabled cat). The × moved TOP-LEFT and the title
+    dropped to the header band's foot — that is deliberate, it gives the
+    × a 169px moat so the cat can never block it again.
+  * 2236e08 On-chain seat binding — X-1's last residual CLOSED. With an
+    escrow configured, a lock's claimed seats must match the chain's
+    `duels` getter, compared ORDERED (a set compare would bless the
+    exploit). RPC failure fails closed. Escrow unconfigured = today's
+    signature-only path, byte-identical and asserted.
+  * 25fe9c1 P6 staking UI — src/desk/escrow.ts + src/state/stake.ts, the
+    6-state machine, 17 typed codes all landing in PTS-only fallback,
+    ledger settles first and unconditionally, CLAIM panel with the
+    "claim within 6 hours" warning (review finding 4-1), stake amount in
+    CreateLobby (min $0.10, >$20 warning). Gated on features.stake AND a
+    configured escrow AND a non-mock wallet. The 1100ms OPP_READY_MS
+    timer is untouched for PTS-only play (one boolean removes it only
+    when real seats are watched). The lock is posted ONLY by the on-chain
+    opener, ONLY after join lands, ordered opener→a joiner→b.
+  * 281f843 test/secrets.test.ts hardened — it had been scanning the
+    UNION OF ALL BUILD HISTORY: `bun build` never cleaned dist/ and its
+    chunk hash is not content-stable, so every build since P0 left another
+    6.5MB bundle behind. Now the build script clears dist/ and the suite
+    wipes+rebuilds unconditionally, with 18 controls (11 planting real
+    secret shapes) through one exported `scanBundle`. ⚠ Do NOT diagnose a
+    bundle-scan failure without checking WHICH bundle — this session got
+    that wrong and blamed vendor code for an already-fixed leak.
+- Owner asks pending: drop the Dota 2 hero-pick theme at
+  src/assets/parlay-pick.mp3 (seam is live, silence until then). The owner
+  has NOT yet eyeballed the single-cat wallet or the reworked card
+  ornament in a browser — expect feedback on both; their pattern is short
+  visual critiques ("way off", "too empty", "no colour changes"), so read
+  the commit history for what has already been rejected before changing
+  either.
+- NEXT, in priority order:
+  1. **P7 truth pass** — the last plan phase. README's "what is actually
+     live" table exists and is current; still owed is the consistent
+     LIVE / SEEDED / STALE / PARTIAL chip vocabulary sweep across views.
+  2. Whatever the owner asks for after seeing the two UI reworks.
+  3. Optional hardening surfaced by the wave: mint a per-room nonce into
+     `matchKey` (review 6-1; `parseMatchKey` already accepts a third
+     segment, nothing mints one yet — it lives wherever a room is minted,
+     src/state/match.ts).
+- ⚠ NOTHING on chain is verified. The escrow is compiled, adversarially
+  reviewed (SHIP WITH NOTES) and NOT deployed; P3's fill and P6's staking
+  have never touched a chain. Everything up to the RPC boundary is tested
+  against fakes. Deploy remains the owner's call after their own read.
 - Session facts a fresh account cannot see: dev server runs `bun run dev`
   on :3000 in the orchestrator's background (restart it — it dies with the
   session); a passive standby session "mubahack-15" may message you via
