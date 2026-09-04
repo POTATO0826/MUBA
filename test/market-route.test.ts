@@ -10,6 +10,14 @@ import {
 import { sourceFrom, type Wire } from "../src/data/thetanuts.tsx";
 import { NO_LADDER, ladderOf, mockMarketSource } from "../src/data/market.ts";
 import { deriveLadder, deriveLadders, liveExpiries } from "../src/data/box.ts";
+import {
+  listedZones,
+  matchListedZone,
+  zoneBox,
+  zoneUsd,
+  zoneWingUsd,
+  zonesFor,
+} from "../src/data/ranger.ts";
 
 /**
  * The market service, offline.
@@ -714,6 +722,134 @@ describe("the ladder reaches the client", () => {
     const old = sourceFrom({ ok: true, at: AT, underlyings: ["ETH"] }, false);
     expect(ladderOf(old)).toBe(NO_LADDER);
     expect(deriveLadders(ladderOf(old), AT)).toEqual([]);
+  });
+
+  /**
+   * **Capture → envelope → `Response.json()` → source → `ladderOf` → a listed
+   * zone the arena can fill.**
+   *
+   * `src/data/ranger.ts` matches a drawn box to a listed `RANGER` and fills it
+   * straight off the book, with no market-maker round trip. It worked against
+   * the raw capture in `test/box.test.ts` and returned `[]` in the browser,
+   * because the narrowing dropped exactly the three fields it reads:
+   * `rawApiData.implementation`, `rawApiData.isLong` and
+   * `chainConfig.optionImplementations`.
+   *
+   * This is the test that proves the browser can now do what the module could.
+   * It runs `handle()` rather than `snapshot()` on purpose: `Response.json()`
+   * drops `undefined` and throws on a `bigint`, and the arena is downstream of
+   * it.
+   */
+  describe("and so does a listed zone", () => {
+    /** The two ranger orders in the frozen capture — BTC 79,500–81,500, one on
+     *  5 Sep and one on 6 Sep, both `isLong: false` so the taker is the buyer. */
+    const RANGER_IMPL = "0x9980ec85bc6fE07340adb36c76FA093bb6D4FcBc";
+
+    test("the capture really carries two of them, and only the address says so", () => {
+      const rangers = FIXTURE.orders.filter(
+        (o) =>
+          String(o.rawApiData?.implementation ?? "").toLowerCase() === RANGER_IMPL.toLowerCase(),
+      );
+      expect(rangers).toHaveLength(2);
+      // Four strikes each — which decides nothing on its own: `validateCondor`
+      // and `validateRanger` accept identical arrays.
+      for (const r of rangers) expect(r.rawApiData?.strikes).toHaveLength(4);
+      // Both taker-buyable, which is the second gate (plan 7 §5).
+      for (const r of rangers) expect(r.rawApiData?.isLong).toBe(false);
+      // Two different contracts, not one instrument quoted twice.
+      expect(rangers.map((r) => String(r.order.expiry))).toEqual(["1788595200", "1788681600"]);
+    });
+
+    test("`listedZones` finds both of them off the wire", async () => {
+      const { source } = await liveSource();
+      const book = ladderOf(source);
+
+      // The registry survived the wire — without it `listedZones` answers `[]`
+      // by design, because the strikes cannot decide.
+      expect(book.chainConfig.optionImplementations?.[RANGER_IMPL.toLowerCase()]).toEqual({
+        name: "RANGER",
+      });
+
+      const zones = listedZones(book, AT);
+      expect(zones).toHaveLength(2);
+      for (const zone of zones) {
+        expect(zone.underlying).toBe("BTC");
+        expect(zone.strikes).toEqual([
+          "7950000000000",
+          "8000000000000",
+          "8100000000000",
+          "8150000000000",
+        ]);
+        expect(zone.floor).toBe("8000000000000");
+        expect(zone.ceiling).toBe("8100000000000");
+        expect(zone.wing).toBe("50000000000");
+        expect(zone.availableAmount).toBe("10000000000");
+        // The row itself, so the arena can quote and fill it rather than a copy.
+        expect(zone.order).toBe(book.orders[zone.index]!);
+      }
+      // Ascending by expiry — the two live BTC columns the arena draws.
+      expect(zones.map((z) => z.expiry)).toEqual([1_788_595_200, 1_788_681_600]);
+    });
+
+    test("a box drawn on the arena's own ladder matches one of them exactly", async () => {
+      const { source } = await liveSource();
+      const book = ladderOf(source);
+
+      // The band's two edges are real rungs of the ladder the arena draws for
+      // this column, so the box is one a player can actually snap to.
+      const ladder = deriveLadder(book, "BTC", 1_788_595_200, AT);
+      expect(ladder?.strikes).toContain("8000000000000");
+      expect(ladder?.strikes).toContain("8100000000000");
+
+      const zone = zonesFor(book, "BTC", 1_788_595_200, AT)[0];
+      expect(zone).toBeDefined();
+      const matched = matchListedZone(zoneBox(zone!), book, AT);
+      expect(matched).toBeDefined();
+      expect(matched?.order).toBe(zone!.order);
+      expect(zoneUsd(matched!)).toEqual({ floor: 80_000, ceiling: 81_000 });
+      expect(zoneWingUsd(matched!)).toBe(500);
+
+      // And a box the book is not quoting matches nothing, which is the ordinary
+      // outcome and not a failure: the listed ladder is about three bands wide.
+      expect(
+        matchListedZone({ ...zoneBox(zone!), ceiling: "8150000000000" }, book, AT),
+      ).toBeNull();
+    });
+
+    test("strip either field from the wire and the zone path goes dark again", async () => {
+      const { wire } = await liveSource();
+      const book = ladderOf(sourceFrom(wire, false));
+      expect(listedZones(book, AT)).toHaveLength(2);
+
+      // No registry: "I cannot tell", which is the honest answer and the state
+      // the browser was actually in.
+      const noRegistry = {
+        ...book,
+        chainConfig: { priceFeeds: book.chainConfig.priceFeeds },
+      };
+      expect(listedZones(noRegistry, AT)).toEqual([]);
+
+      // No implementation on the orders: same answer, other end of the lookup.
+      const noAddress = {
+        ...book,
+        orders: book.orders.map((o) => ({
+          ...o,
+          rawApiData: { ...o.rawApiData, implementation: undefined },
+        })),
+      };
+      expect(listedZones(noAddress, AT)).toEqual([]);
+
+      // No side: `isTakerBuyable` refuses anything that is not literally
+      // `false`, because "we could not tell" is not a side a player may take.
+      const noSide = {
+        ...book,
+        orders: book.orders.map((o) => ({
+          ...o,
+          rawApiData: { ...o.rawApiData, isLong: undefined },
+        })),
+      };
+      expect(listedZones(noSide, AT)).toEqual([]);
+    });
   });
 });
 

@@ -76,12 +76,125 @@ describe("the fixture is one real response and still covers what it claims", () 
 
 // ─── grouping ────────────────────────────────────────────────────────────────
 
+/**
+ * **A level is one contract, and the key that says so was wrong.**
+ *
+ * It was `underlying|isCall|strikes|orderExpiryTimestamp` — the *signature
+ * deadline*, which says when an order stops being valid, not when the contract
+ * settles. On the frozen capture that field is the same number, 1788514414, on
+ * all thirty orders, because a maker signs a batch at one moment. So the key was
+ * effectively `underlying|isCall|strikes`: thirty orders became fifteen levels,
+ * and thirteen of those fifteen merged two or more genuinely different option
+ * expiries into one aggregated row.
+ *
+ * The tests below pin the corrected key on both sides — what still merges, and
+ * what no longer does.
+ */
 describe("grouping", () => {
-  test("orders collapse into levels keyed by underlying, type, strikes and expiry", () => {
-    // 30 orders, far fewer levels: several makers quote the same instrument.
+  test("a level is one contract: same instrument merges, different expiry does not", () => {
+    // Two orders on the *same* contract still make one level — that is what a
+    // best-bid is for.
+    const same = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({ strikes: ["250000000000"], expiry: 1_788_595_200, price: "100000000" }),
+          order({ strikes: ["250000000000"], expiry: 1_788_595_200, price: "150000000" }),
+        ],
+      },
+      AT,
+    );
+    expect(same.pricing.ETH).toHaveLength(1);
+
+    // Two orders on two contracts do not, and this is the defect: nothing about
+    // them differs except the settlement date, which is the whole of what a
+    // different option is.
+    const different = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({ strikes: ["250000000000"], expiry: 1_788_595_200, price: "100000000" }),
+          order({ strikes: ["250000000000"], expiry: 1_788_681_600, price: "150000000" }),
+        ],
+      },
+      AT,
+    );
+    expect(different.pricing.ETH).toHaveLength(2);
+    expect(different.pricing.ETH?.map((r) => r.expiry)).toEqual(["5 SEP", "6 SEP"]);
+  });
+
+  test("the signature deadline groups nothing — two deadlines on one contract are one level", () => {
+    // The other half of the correction, and it is not merely the inverse. Two
+    // orders signed at different moments against the *same* contract are the
+    // same instrument, and aggregating them is correct. The old key split them.
+    const a = order({ strikes: ["250000000000"], expiry: 1_788_595_200, price: "100000000" });
+    const b = order({ strikes: ["250000000000"], expiry: 1_788_595_200, price: "150000000" });
+    b.rawApiData!.orderExpiryTimestamp = 1_788_600_000;
+    const built = buildSnapshot({ ...FIXTURE, orders: [a, b] }, AT);
+    expect(built.pricing.ETH).toHaveLength(1);
+    expect(built.pricing.ETH?.[0]?.ask).toBe("1.0000");
+  });
+
+  test("the capture's thirty orders are thirty contracts, not fifteen", () => {
+    // Measured, not asserted: no two orders in this capture name the same
+    // (underlying, side, strikes, option expiry, implementation). The old key
+    // said fifteen, and every one of those fifteen that held more than one order
+    // was a merge of different settlement dates.
     const levels = rowsFor("ETH").length + rowsFor("BTC").length;
-    expect(levels).toBeGreaterThan(0);
-    expect(levels).toBeLessThan(FIXTURE.orders.length);
+    expect(levels).toBe(FIXTURE.orders.length);
+
+    const contracts = new Set(
+      FIXTURE.orders.map((o) =>
+        [
+          o.rawApiData?.priceFeed,
+          o.rawApiData?.isCall,
+          (o.rawApiData?.strikes ?? []).join("/"),
+          String(o.order.expiry),
+          String(o.rawApiData?.implementation ?? "").toLowerCase(),
+        ].join("|"),
+      ),
+    );
+    expect(contracts.size).toBe(FIXTURE.orders.length);
+
+    // And the signature deadline really is a constant here, which is why the old
+    // key degenerated so completely.
+    const deadlines = new Set(FIXTURE.orders.map((o) => o.rawApiData?.orderExpiryTimestamp));
+    expect([...deadlines]).toEqual([1_788_514_414]);
+  });
+
+  test("the implementation is part of the key — a ranger and a condor are not one level", () => {
+    // `validateCondor` and `validateRanger` accept identical arrays, so the
+    // strikes cannot separate these two and only the address can. Merging them
+    // would put one product's best ask on the other product's row.
+    const strikes = ["250000000000", "260000000000", "280000000000", "290000000000"];
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({ strikes, isCall: true, expiry: 1_788_595_200, implementation: RANGER_IMPL }),
+          order({ strikes, isCall: true, expiry: 1_788_595_200, implementation: CONDOR_IMPL }),
+        ],
+      },
+      AT,
+    );
+    const rows = built.pricing.ETH ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.structure).sort()).toEqual(["CONDOR", "RANGER"]);
+    expect(rows.map((r) => r.payout).sort()).toEqual(["call_condor", "ranger"]);
+  });
+
+  test("the same address in two casings is still one level", () => {
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({ expiry: 1_788_595_200, implementation: RANGER_IMPL.toLowerCase() }),
+          order({ expiry: 1_788_595_200, implementation: RANGER_IMPL.toUpperCase() }),
+        ],
+      },
+      AT,
+    );
+    expect(built.pricing.ETH).toHaveLength(1);
   });
 
   test("only underlyings with a book are listed — the feed map is longer", () => {
@@ -93,11 +206,42 @@ describe("grouping", () => {
   });
 
   test("rows are sorted by expiry, then by NUMERIC strike", () => {
-    // The bug this pins: "100,000" sorts before "9,000" as a string, so the
-    // sort has to run off the level's number, not the formatted cell.
+    // Two bugs pinned at once.
+    //
+    // The old one: "100,000" sorts before "9,000" as a string, so the sort has
+    // to run off the level's number and not the formatted cell.
+    //
+    // The new one: this test used to assert that strikes ascend across the
+    // *whole* chain, and it passed only because every level carried the same
+    // signature deadline, so the expiry term of the sort never fired. Now that a
+    // level is keyed on the option expiry there are five real expiries per
+    // underlying and the chain is grouped by them — which is what "nearest
+    // expiry first, then by strike" was always supposed to mean.
+    const CHRONOLOGICAL = ["5 SEP", "6 SEP", "11 SEP", "18 SEP", "25 SEP"];
+
     for (const u of snap.underlyings) {
-      const numeric = rowsFor(u).map((r) => Number(r.strike.split("–")[0]!.replaceAll(",", "")));
-      expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
+      const rows = rowsFor(u);
+      expect(rows.length).toBeGreaterThan(0);
+
+      // Expiry blocks are contiguous and in date order. `PricingRow.expiry` is a
+      // label with no year, so chronology is checked against the capture's own
+      // expiries rather than by parsing the cell.
+      const blocks = rows.map((r) => r.expiry).filter((e, i, all) => e !== all[i - 1]);
+      expect(new Set(blocks).size).toBe(blocks.length);
+      const positions = blocks.map((e) => CHRONOLOGICAL.indexOf(e));
+      expect(positions).not.toContain(-1);
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+      // Non-vacuity: this underlying really does span more than one expiry, so
+      // the check above is not passing on a single block.
+      expect(blocks.length).toBeGreaterThan(1);
+
+      // And within a block, ascending by number.
+      for (const block of blocks) {
+        const numeric = rows
+          .filter((r) => r.expiry === block)
+          .map((r) => Number(r.strike.split("–")[0]!.replaceAll(",", "")));
+        expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
+      }
     }
   });
 });
@@ -124,10 +268,53 @@ describe("best bid and best ask come off the right sides", () => {
   });
 
   test("a two-sided level gets a midpoint", () => {
-    const two = rowsFor("BTC").find((r) => r.bid !== "—" && r.ask !== "—");
+    // Two real orders on ONE contract, opposite sides. This is the only shape
+    // that earns a midpoint: `(bid + ask) / 2` is a statement about one
+    // instrument, and it means nothing across two.
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({ isBuyer: false, price: "100000000", expiry: 1_788_595_200 }),
+          order({ isBuyer: true, price: "200000000", expiry: 1_788_595_200 }),
+        ],
+      },
+      AT,
+    );
+    const two = built.pricing.ETH?.[0];
     expect(two).toBeDefined();
-    const mid = (Number(two!.bid) + Number(two!.ask)) / 2;
-    expect(two!.mid).toBe(mid.toFixed(4));
+    expect(two!.bid).toBe("1.0000");
+    expect(two!.ask).toBe("2.0000");
+    expect(two!.mid).toBe("1.5000");
+  });
+
+  test("the capture has no two-sided contract, and the midpoints it used to show were fiction", () => {
+    // **This expectation moved, and it moved toward the truth.** It used to read
+    // "find the first two-sided BTC row and check its midpoint", and it passed
+    // because levels were keyed on the signature deadline: the ETH 2650 CALL row
+    // took its bid from an 11 Sep PHYSICAL_CALL and its ask from a 5 Sep
+    // LINEAR_CALL and published a `mid` of 1.9874 between them. That number was
+    // never a spread on anything.
+    //
+    // Keyed on the contract, no level in this capture holds orders from both
+    // sides — nobody is quoting both sides of the same option — so no row has a
+    // midpoint, and the honest assertion is that one.
+    const all = [...rowsFor("ETH"), ...rowsFor("BTC")];
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.filter((r) => r.bid !== "—" && r.ask !== "—")).toEqual([]);
+    expect(all.filter((r) => r.mid !== undefined)).toEqual([]);
+
+    // The row that used to carry the fiction, now split into the three real
+    // contracts it was made of — each with one side, and no midpoint.
+    const merged = rowsFor("ETH").filter((r) => r.strike === "2,650" && r.type === "CALL");
+    expect(merged.map((r) => r.expiry)).toEqual(["5 SEP", "6 SEP", "11 SEP"]);
+    expect(merged.map((r) => r.ask)).toEqual(["3.9678", "5.4364", "—"]);
+    expect(merged.map((r) => r.bid)).toEqual(["—", "—", "0.0071"]);
+    expect(merged.map((r) => r.mid)).toEqual([undefined, undefined, undefined]);
+    // And the structures the merge was hiding: the 11 Sep leg is a different
+    // product from the two below it, which the old row could only call UNKNOWN.
+    expect(merged.map((r) => r.structure)).toEqual(["CALL", "CALL", "CALL"]);
+    expect(merged.map((r) => r.payout)).toEqual(["call", "call", "call"]);
   });
 
   test("a one-sided level renders '—' and has NO midpoint", () => {
@@ -186,11 +373,19 @@ describe("`isBuyer` is the taker's side, so `true` is the maker's ask", () => {
     // ETH CALL 2900: real orders, `isBuyer: false`, collateralised in aBasWETH
     // and priced at ~0.7× the MM's mark — a maker bidding. You cannot buy from
     // a bid, so the row prices and does not press.
-    const call = rowsFor("ETH").find((r) => r.strike === "2,900" && r.type === "CALL");
-    expect(call).toBeDefined();
-    expect(call?.ask).toBe("—");
-    expect(call?.bid).toBe("0.0046");
-    expect(call?.order).toBeUndefined();
+    //
+    // **`bid` moved from 0.0046 to 0.0012 on the 11 Sep row, and that is the
+    // correction.** The capture carries two of these orders, on the 11 Sep and
+    // the 18 Sep contract, at 0.0012 and 0.0046. Keyed on the signature deadline
+    // they merged, and `Math.max` published the 18 Sep bid on a row that also
+    // claimed the 11 Sep depth. Each contract now carries its own bid.
+    const calls = rowsFor("ETH").filter((r) => r.strike === "2,900" && r.type === "CALL");
+    expect(calls.map((r) => r.expiry)).toEqual(["11 SEP", "18 SEP"]);
+    expect(calls.map((r) => r.bid)).toEqual(["0.0012", "0.0046"]);
+    for (const call of calls) {
+      expect(call.ask).toBe("—");
+      expect(call.order).toBeUndefined();
+    }
   });
 
   test("the blotter's BUY/SELL label did not move — which is why this was invisible", () => {
@@ -602,18 +797,58 @@ describe("the snapshot labels its rows from the chain, not from the strikes", ()
     expect(unknown!.type).not.toBe("RANGER");
   });
 
-  test("two orders on one instrument naming two implementations forfeit the label", () => {
-    // A contradiction is not a tie to break.
+  test("two implementations on one contract are two labelled rows, not one unlabelled one", () => {
+    // **This expectation moved, and the old one rested on a false premise.** It
+    // read "the two ranger orders are the same instrument in the capture, so
+    // they group into one level — which now disagrees with itself", and asserted
+    // that the level forfeited its label. They were never the same instrument:
+    // the fixture's two ranger orders are BTC 79500–81500 on 5 Sep and on 6 Sep.
+    // Only the signature-deadline key made them look like one.
+    //
+    // With the implementation in the key a level cannot hold two addresses at
+    // all, so there is no contradiction left to forfeit a label over. Swapping
+    // one order's implementation now produces two correctly labelled rows, which
+    // is strictly more information than one `UNKNOWN` row: the products really
+    // are different, and a player pressing either gets the order that belongs to
+    // the row they read.
     const four = FIXTURE.orders.filter((o) => (o.rawApiData?.strikes ?? []).length === 4);
     expect(four.length).toBeGreaterThanOrEqual(2);
-    const conflicted = FIXTURE.orders.map((o) =>
+    expect(new Set(four.map((o) => String(o.order.expiry))).size).toBe(four.length);
+
+    const swapped = FIXTURE.orders.map((o) =>
       o === four[1] ? { ...o, rawApiData: { ...o.rawApiData, implementation: CONDOR_IMPL } } : o,
     );
-    const rows = buildSnapshot({ ...FIXTURE, orders: conflicted }, AT).pricing.BTC ?? [];
-    // The two ranger orders are the same instrument in the capture, so they
-    // group into one level — which now disagrees with itself.
-    expect(rows.some((r) => r.structure === "UNKNOWN")).toBe(true);
-    expect(rows.some((r) => r.structure === "RANGER")).toBe(false);
+    const rows = (buildSnapshot({ ...FIXTURE, orders: swapped }, AT).pricing.BTC ?? []).filter(
+      (r) => r.strike.includes("–"),
+    );
+    expect(rows.map((r) => r.structure).sort()).toEqual(["CONDOR", "RANGER"]);
+    expect(rows.some((r) => r.structure === "UNKNOWN")).toBe(false);
+    // Each row carries the payout type of the product it actually names — the
+    // thing BUG-2 was about, now decided per contract rather than per batch.
+    expect(rows.map((r) => r.payout).sort()).toEqual(["call_condor", "ranger"]);
+  });
+
+  test("a level still forfeits nothing when its own single address is unknown", () => {
+    // The `UNKNOWN` path is not gone, it is just reached honestly: an address
+    // neither table knows, on a four-strike order, is still a row that claims
+    // nothing.
+    const rows = buildSnapshot(
+      {
+        ...FIXTURE,
+        orders: [
+          order({
+            strikes: ["250000000000", "260000000000", "280000000000", "290000000000"],
+            isCall: true,
+            expiry: 1_788_595_200,
+            implementation: "0x000000000000000000000000000000000000dead",
+          }),
+        ],
+      },
+      AT,
+    ).pricing.ETH ?? [];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.structure).toBe("UNKNOWN");
+    expect(rows[0]?.payout).toBeUndefined();
   });
 
   test("structure is finer than type — a spread keeps its call/put colour", () => {
@@ -1261,6 +1496,13 @@ function order(over: {
    *  deadline). Absent by default, because most of this file's cases predate
    *  the join and a level with no option expiry is deliberately unjoinable. */
   expiry?: number;
+  /** The implementation address — part of the level key, since a RANGER and a
+   *  CALL_CONDOR are different products at identical strikes. Absent by default:
+   *  most cases here are about grouping, not about product. */
+  implementation?: string;
+  /** The maker's side as the API ships it, `isBuyer`'s complement. Read only by
+   *  the zone path; absent by default. */
+  isLong?: boolean;
 } = {}): RawOrderEntry {
   return {
     order: {
@@ -1275,6 +1517,8 @@ function order(over: {
       strikes: over.strikes ?? ["250000000000"],
       isCall: over.isCall ?? false,
       orderExpiryTimestamp: 1_788_514_414,
+      ...(over.implementation === undefined ? {} : { implementation: over.implementation }),
+      ...(over.isLong === undefined ? {} : { isLong: over.isLong }),
       optionBookAddress:
         "optionBookAddress" in over ? over.optionBookAddress : "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
       greeks: "greeks" in over ? over.greeks : { delta: -0.1, iv: 0.5, gamma: 0, theta: 0, vega: 0 },
@@ -1358,12 +1602,18 @@ describe("the ladder rides the wire, narrowed", () => {
     ]);
   });
 
-  test("it carries the five fields a ladder reads and NOT one field more", () => {
+  test("it carries the ladder's five fields plus the zone's two, and NOT one field more", () => {
     const first = wire.orders[0];
     expect(first).toBeDefined();
     expect(Object.keys(first!).sort()).toEqual(["availableAmount", "order", "rawApiData"]);
     expect(Object.keys(first!.order)).toEqual(["expiry"]);
+    // `implementation` and `isLong` were added for `listedZones` in
+    // `src/data/ranger.ts`, which returned `[]` in the browser without them —
+    // see `LadderBook`'s docblock for the byte accounting. Everything else the
+    // narrowing dropped is still dropped.
     expect(Object.keys(first!.rawApiData).sort()).toEqual([
+      "implementation",
+      "isLong",
       "orderExpiryTimestamp",
       "priceFeed",
       "strikes",
@@ -1382,15 +1632,56 @@ describe("the ladder rides the wire, narrowed", () => {
     expect((first!.order as unknown as Record<string, unknown>).price).toBeUndefined();
   });
 
-  test("only `priceFeeds` comes off the chain config", () => {
-    expect(Object.keys(wire.chainConfig)).toEqual(["priceFeeds"]);
+  test("`priceFeeds` and the cut registry come off the chain config, and nothing else", () => {
+    expect(Object.keys(wire.chainConfig).sort()).toEqual(["optionImplementations", "priceFeeds"]);
     expect(wire.chainConfig.priceFeeds).toEqual(FIXTURE.chainConfig.priceFeeds);
     // 10 keys over 8 assets, carried whole: the alias collapse in `feedIndex`
     // is by *address*, and `ETH/USD` and `ETH` hold the identical one.
     expect(Object.keys(wire.chainConfig.priceFeeds).length).toBeGreaterThan(8);
+    // `tokens` and `contracts` are still gone.
+    const cfg = wire.chainConfig as unknown as Record<string, unknown>;
+    expect(cfg.tokens).toBeUndefined();
+    expect(cfg.contracts).toBeUndefined();
   });
 
-  test("the narrowing pays for itself: 39,478 bytes of capture become 6,732", () => {
+  test("the registry is cut to the addresses the shipped orders actually name", () => {
+    const registry = wire.chainConfig.optionImplementations ?? {};
+    const named = new Set(
+      wire.orders
+        .map((o) => String(o.rawApiData.implementation ?? "").toLowerCase())
+        .filter((a) => a !== ""),
+    );
+    // Exactly the addresses present, no more — the chain's own table is 46
+    // entries over 15 products and shipping it whole would be ~3.9KB to answer a
+    // question about seven addresses.
+    expect(Object.keys(registry).sort()).toEqual([...named].sort());
+    expect(Object.keys(registry)).toHaveLength(7);
+    // Lowercase keys, which is the SDK's own convention and what `productOf`
+    // looks up by.
+    for (const key of Object.keys(registry)) expect(key).toBe(key.toLowerCase());
+    // `{ name }` and nothing else: `type` and `numStrikes` ride on the SDK's
+    // entries and no reader on either side of the wire touches them.
+    for (const entry of Object.values(registry)) expect(Object.keys(entry)).toEqual(["name"]);
+    // And it resolves the products this capture actually holds — including the
+    // one the whole feature is for.
+    expect(new Set(Object.values(registry).map((e) => e.name))).toEqual(
+      new Set(["LINEAR_CALL", "PHYSICAL_CALL", "PUT", "PHYSICAL_PUT", "RANGER", "CALL_SPREAD", "CALL_FLY"]),
+    );
+    expect(registry[RANGER_IMPL.toLowerCase()]).toEqual({ name: "RANGER" });
+  });
+
+  test("a capture naming no implementation carries no registry field at all", () => {
+    // Absent, not `{}` — `listedZones` reads a falsy registry as no listed
+    // zones, so the two already agree, and absent costs the wire nothing.
+    const bare = ladderBook({
+      ...FIXTURE,
+      orders: [order({ strikes: ["250000000000"], expiry: 1_788_595_200 })],
+    });
+    expect(bare.chainConfig.optionImplementations).toBeUndefined();
+    expect(Object.keys(bare.chainConfig)).toEqual(["priceFeeds"]);
+  });
+
+  test("the narrowing still pays for itself: 39,478 bytes of capture become 9,523", () => {
     const full = JSON.stringify({
       orders: FIXTURE.orders,
       prices: FIXTURE.prices,
@@ -1398,11 +1689,36 @@ describe("the ladder rides the wire, narrowed", () => {
     }).length;
     const narrow = JSON.stringify(wire).length;
     expect(full).toBe(39_478);
-    expect(narrow).toBe(6_732);
-    // ~83% off, and it scales: a live capture is ~426 orders where this one is
-    // 30. The assertion is exact rather than a ratio so that a field quietly
-    // added back to the wire fails here and has to be argued for.
-    expect(narrow / full).toBeLessThan(0.2);
+    expect(narrow).toBe(9_523);
+    // ~76% off, down from ~83%: the three zone fields cost 2,791 bytes on this
+    // capture. The assertion is exact rather than a ratio so that a field
+    // quietly added back to the wire fails here and has to be argued for — which
+    // is exactly what happened when these three were.
+    expect(narrow / full).toBeLessThan(0.25);
+  });
+
+  test("the three zone fields cost 2,791 bytes, and 490 of them are the registry", () => {
+    // The measurement `LadderBook`'s docblock quotes, run rather than trusted.
+    const withoutOrderFields = JSON.stringify({
+      orders: wire.orders.map((o) => {
+        const { implementation, isLong, ...rest } = o.rawApiData;
+        void implementation;
+        void isLong;
+        return { ...o, rawApiData: rest };
+      }),
+      chainConfig: { priceFeeds: wire.chainConfig.priceFeeds },
+    }).length;
+    expect(withoutOrderFields).toBe(6_732);
+    expect(JSON.stringify(wire).length - withoutOrderFields).toBe(2_791);
+
+    const registryBytes = JSON.stringify({
+      optionImplementations: wire.chainConfig.optionImplementations,
+    }).length;
+    expect(registryBytes).toBe(490);
+    // So ~77 bytes an order for the two fields, and one flat 490 for the
+    // registry — which is the shape that matters: the per-order half scales with
+    // the book and the registry half does not.
+    expect(Math.round((2_791 - registryBytes) / wire.orders.length)).toBe(77);
   });
 
   test("an order that could never be a rung is dropped whole", () => {

@@ -212,6 +212,37 @@ export interface LadderBookOrder {
     /** The *signature's* expiry. Absent when the capture carried none, which is
      *  a real state: `deriveLadders` then judges the option expiry alone. */
     orderExpiryTimestamp?: number;
+    /**
+     * The deployed option-implementation contract this order is an instance of.
+     *
+     * The ladder does not read it — an axis does not care what product quoted a
+     * rung — but `listedZones` in `src/data/ranger.ts` cannot answer without it,
+     * and it is the **only** field that can: `validateCondor` and
+     * `validateRanger` accept the identical strike arrays (`dist/index.js:16838`,
+     * `:16871`), so a four-strike order's shape decides nothing. Resolved
+     * through {@link LadderBook.chainConfig}'s `optionImplementations`, never
+     * here, and never against a hard-coded address.
+     *
+     * Absent when the capture carried none, which is a real state and an honest
+     * one: `productOf` answers `null` and the order is simply not a listed zone.
+     */
+    implementation?: string;
+    /**
+     * Which side the **maker** is on, as the API ships it.
+     *
+     * `false` means the taker is the buyer — the one side plan 7 §5 permits a
+     * player to take, and the gate `isTakerBuyable` in `src/data/ranger.ts`
+     * applies before it will offer a zone to fill.
+     *
+     * **This is not the side filter `deriveLadders` refuses.** That refusal is
+     * about where the *axis* has rungs, and it stands: 23 of the 30 orders in
+     * the frozen capture are maker bids and dropping them empties the ETH 5 Sep
+     * ladder entirely. This field is read by the *fill* path, which is the place
+     * `deriveLadders`' own docblock says the question belongs — and `order.
+     * isBuyer`, the field that would let someone filter the ladder by side, is
+     * still not carried.
+     */
+    isLong?: boolean;
   };
 }
 
@@ -232,7 +263,7 @@ export interface LadderBookOrder {
  * ## What was dropped, and why
  *
  * A live capture is ~426 orders and ~325KB; the frozen 30-order fixture is
- * 39,478 bytes and narrows to **6,732** (an 83% cut, ~206 bytes an order).
+ * 39,478 bytes and narrows to **9,523** (a 76% cut, ~300 bytes an order).
  * Everything below went, per order:
  *
  *  - `signature` — 132 hex characters, the single largest field on the object,
@@ -243,14 +274,45 @@ export interface LadderBookOrder {
  *    is an *axis*: it says where the venue quotes, not at what, to whom, or on
  *    which side. `deriveLadders`' docblock is explicit that filtering by side
  *    here would be wrong (it empties the most interesting ETH ladder), so the
- *    field that would let someone do it is not carried.
- *  - `rawApiData.greeks`/`isCall`/`isLong`/`collateral`/`implementation`/
- *    `optionBookAddress`/`extraOptionData`/`maxCollateralUsable` — the desk's
- *    inputs. `/desk` is served by `pricing`, already built, on the same
- *    envelope.
+ *    field that would let someone do it is not carried. **`order.isBuyer` is
+ *    still not carried after the zone fields below were added**, and the
+ *    distinction is exact: `rawApiData.isLong` reaches the *fill* path, which
+ *    is where `deriveLadders` says the side question belongs, and it does not
+ *    reach the ladder.
+ *  - `rawApiData.greeks`/`isCall`/`collateral`/`optionBookAddress`/
+ *    `extraOptionData`/`maxCollateralUsable` — the desk's inputs. `/desk` is
+ *    served by `pricing`, already built, on the same envelope. (A listed zone
+ *    publishes **no greeks at all** — 0 of 38 orders over 32 reads of the live
+ *    book — so the arena loses nothing by their absence, and `src/data/
+ *    ranger.ts` has no field to hang an invented delta on.)
  *  - the capture's `prices` and the rest of `chainConfig` (`tokens`,
- *    `contracts`, `optionImplementations`). Spot has its own envelope field;
- *    only `priceFeeds` is here, and only because the alias collapse needs it.
+ *    `contracts`). Spot has its own envelope field.
+ *
+ * ## What was added back, and what it cost
+ *
+ * Three fields, for one feature: `listedZones` in `src/data/ranger.ts` matches a
+ * drawn box against a **listed RANGER** and fills it straight off the book with
+ * no market-maker round trip. It worked in tests and returned `[]` in the
+ * browser, because the narrowing above dropped exactly what it reads.
+ *
+ * Measured on the frozen capture, `6,732 → 9,523` bytes:
+ *
+ *  - `rawApiData.implementation` — 2,301 bytes across 30 orders, with `isLong`
+ *    below. The registry key, and the **only** field that can say what a
+ *    four-strike order is: `validateCondor` and `validateRanger` accept the
+ *    identical arrays, so the strikes decide nothing (`docs/reviews/
+ *    mcp-crosscheck.md` §BUG-2).
+ *  - `rawApiData.isLong` — the taker-buyable gate, plan 7 §5. A zone the player
+ *    would be *writing* must never be offered, and this is the field that says.
+ *  - `chainConfig.optionImplementations` — **490 bytes**, seven entries, cut to
+ *    the addresses the shipped orders actually name. The chain's own table is
+ *    46 entries (~3.9KB) and shipping it whole would be paying six times over
+ *    for a question about seven addresses.
+ *
+ * Nothing else was widened. The rule the addition was made under is that a
+ * field crosses when a feature cannot work without it, at the size that feature
+ * needs, and the accounting is written down here so the next one has to be
+ * argued for the same way.
  *
  * Orders that could never contribute a rung under **any** clock are dropped
  * whole. Nothing is dropped for being *expired*: that is a judgement against a
@@ -265,16 +327,36 @@ export interface LadderBookOrder {
  */
 export interface LadderBook {
   orders: LadderBookOrder[];
-  /**
-   * `chainConfig.priceFeeds`, verbatim — 10 keys over 8 assets, ~522 bytes.
-   *
-   * Carried whole rather than pre-resolved because the collapse it feeds is
-   * *by address*: `ETH/USD` and `ETH` hold the identical address, and
-   * deduplicating by key instead would put ETH on the ladder twice. `feedIndex`
-   * in `src/data/qualify.ts` is the one place that collapse happens, and it
-   * wants the map.
-   */
-  chainConfig: { priceFeeds: Record<string, string> };
+  chainConfig: {
+    /**
+     * `chainConfig.priceFeeds`, verbatim — 10 keys over 8 assets, ~522 bytes.
+     *
+     * Carried whole rather than pre-resolved because the collapse it feeds is
+     * *by address*: `ETH/USD` and `ETH` hold the identical address, and
+     * deduplicating by key instead would put ETH on the ladder twice.
+     * `feedIndex` in `src/data/qualify.ts` is the one place that collapse
+     * happens, and it wants the map.
+     */
+    priceFeeds: Record<string, string>;
+    /**
+     * Implementation address → product name, keyed by **lowercase** address —
+     * and cut to the addresses the orders above actually name.
+     *
+     * The chain's own table is 46 entries over 15 products, ~3.9KB. Seven
+     * addresses appear in the frozen capture, so seven travel; a capture naming
+     * none carries no field at all. That is the whole of the concession: the
+     * registry rides because a feature needs it, at the size the book being
+     * shipped requires, and never at the size the chain happens to have.
+     *
+     * `{ name }` and nothing else — the SDK's entries also carry `type` and
+     * `numStrikes`, and no reader on either side of the wire reads either.
+     *
+     * Absent means *"this capture named no implementation we could resolve"*,
+     * and `listedZones` reads a falsy registry as no listed zones — the honest
+     * answer, since the strikes cannot decide.
+     */
+    optionImplementations?: Record<string, { name: string }>;
+  };
 }
 
 /**

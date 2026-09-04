@@ -184,11 +184,15 @@ export interface RawOrderEntry {
      *
      * Not the same field as `rawApiData.orderExpiryTimestamp`, which is when
      * the *signature* goes stale — the frozen capture has 1788595200 against
-     * 1788514414 on the same order. Levels are still grouped by the signature
-     * expiry, as they always were, because that is what `/desk` prints; but
-     * this is the one that names the contract, so it is the one a market slice
-     * and an MM mark are matched on. Conflating them would join a chain
-     * against a signature deadline and silently mark nothing.
+     * 1788514414 on the same order. **This is the one that names the contract**,
+     * so it is what a level is keyed on, what `/desk` prints, and what a market
+     * slice and an MM mark are matched against. Levels used to be grouped by the
+     * signature deadline; {@link Level} records what that merged and why it is
+     * no longer done.
+     *
+     * The signature deadline survives in exactly one place — `OrderRow`'s
+     * `instrument` and `time`, where it names the *order* and where
+     * `orderIdentity` in `src/desk/fill.ts` reads it back.
      */
     expiry?: string | bigint;
   };
@@ -225,6 +229,20 @@ export interface RawOrderEntry {
      * type is not deployed on this chain".
      */
     implementation?: string;
+    /**
+     * Which side the **maker** is on, as the API ships it — the raw field
+     * `order.isBuyer` is derived from (`dist/index.js:3360`, `isBuyer =
+     * !isLong`).
+     *
+     * `false` means the maker is not the buyer, so the taker is: the one side
+     * plan 7 §5 permits a player to take. It is read rather than recomputed
+     * because `src/data/ranger.ts` gates on it directly
+     * ({@link file://../data/ranger.ts} `isTakerBuyable`), and re-deriving it
+     * from `order.isBuyer` on this side of the wire would put a second copy of
+     * the polarity question — the one that took two independent measurements to
+     * settle above — in the browser.
+     */
+    isLong?: boolean;
     /** Undocumented. Shape-checked at the boundary, never trusted. */
     greeks?: unknown;
   };
@@ -402,6 +420,15 @@ export interface MarketSnapshot {
    * the rungs are) is made client-side by `deriveLadders(snap, at)`, against the
    * *browser's* clock, which is the only one that is current by the time an
    * arena is drawn.
+   *
+   * It also carries the three fields `listedZones` in `src/data/ranger.ts`
+   * needs to match a drawn box to a **listed RANGER** and fill it off the book
+   * with no maker round trip — `rawApiData.implementation`,
+   * `rawApiData.isLong`, and the cut `chainConfig.optionImplementations`. Those
+   * rode here rather than on a second envelope field for the same reason the
+   * rungs do: it is one narrowing of one capture, and a zone the arena can fill
+   * must be a zone on the axis the arena is drawing. `LadderBook`'s docblock
+   * carries the byte accounting.
    */
   ladder: LadderBook;
   /** Set when this snapshot is being served past its TTL because the refresh
@@ -1128,11 +1155,61 @@ export function buildMmQuotes(rows: readonly RawMmQuote[]): MmQuote[] {
  * `RawOrderEntry.order.isBuyer` for the measurement that settled it. Grouping
  * by instrument and keeping the best of each side is what turns a list of
  * orders into a bid/ask table.
+ *
+ * ## What "one instrument" means, and what it used to mean
+ *
+ * The key was `underlying|isCall|strikes|orderExpiryTimestamp` — the **signature
+ * deadline**, which is when an *order* stops being valid, not when the
+ * *contract* settles. Those are different fields with different values on every
+ * live row (the frozen capture has 1788595200 against 1788514414 on order 0),
+ * and keying on the wrong one merged genuinely different instruments.
+ *
+ * It was not a rare edge. Every order in the frozen capture carries the same
+ * `orderExpiryTimestamp`, 1788514414, because a maker signs a batch at one
+ * moment — so the field is a **constant** across the capture and the key was
+ * effectively `underlying|isCall|strikes`. Thirty orders collapsed into fifteen
+ * levels; thirteen of those fifteen merged two or more option expiries. The
+ * worst was ETH 2650 CALL, which merged three:
+ *
+ * | order | option expiry | implementation | side | price |
+ * |---|---|---|---|---|
+ * | 0 | 1788595200 (5 Sep) | `0x051791df…` LINEAR_CALL   | ask | 3.9678 |
+ * | 1 | 1788681600 (6 Sep) | `0x051791df…` LINEAR_CALL   | ask | 5.4364 |
+ * | 2 | 1789113600 (11 Sep)| `0x8c56100c…` PHYSICAL_CALL | bid | 0.0071 |
+ *
+ * One row came out of that: `bid 0.0071 / ask 3.9678`, a **`mid` of 1.9874**
+ * between a bid on an 11 Sep physical call and an ask on a 5 Sep linear call,
+ * depth summing a WETH-collateralised bid to two USDC-collateralised asks, and
+ * `structure: UNKNOWN` because the level's own orders "disagreed" about their
+ * implementation — which they did not; they were never one instrument.
+ *
+ * So the key is now the four things that actually name a contract: underlying,
+ * call/put, strikes, and the **option** expiry — plus the implementation
+ * address, because rangers and condors are different products at identical
+ * strikes (`validateCondor` and `validateRanger` accept the same arrays,
+ * `dist/index.js:16838`, `:16871`) and a best-ask that mixed them would be a
+ * price for one product on a row labelled the other.
+ *
+ * The signature deadline is not in the key at all, and that is the other half of
+ * the correction: two orders on the *same* contract with different signature
+ * deadlines are the same instrument, and aggregating them is exactly what a
+ * best-bid is for. It is still what `OrderRow.instrument` and `OrderRow.time`
+ * print, because `orderIdentity` in `src/desk/fill.ts` rebuilds that string from
+ * `rawApiData.orderExpiryTimestamp` and a fill matches only when the two agree.
  */
 interface Level {
   underlying: string;
   isCall: boolean;
   strikes: number[];
+  /**
+   * The **option's** expiry, unix seconds — when the contract settles. Part of
+   * the key, the column the chain is sorted by, the group a median IV is taken
+   * over, and what `PricingRow.expiry` prints.
+   *
+   * `0` only when the order named no readable option expiry, which is a
+   * malformed row rather than a state with a meaning; it is the same degradation
+   * the signature-keyed version had for a missing `orderExpiryTimestamp`.
+   */
   expiry: number;
   bestBid: number | null;
   bestAsk: number | null;
@@ -1148,17 +1225,22 @@ interface Level {
   delta: number | null;
   iv: number | null;
   /**
-   * The implementation address the orders in this level named, or `undefined`.
+   * The implementation address every order in this level named, or `undefined`
+   * when they named none.
    *
-   * A level is one instrument — same underlying, same call/put flag, same
-   * strikes, same expiry — so every order in it should name the same
-   * implementation. `conflicted` records the case where two did not, which is
-   * not a thing that should happen and is therefore not a thing to average out:
-   * a level whose own orders disagree about what product it is gets no product
-   * claim at all.
+   * **It cannot disagree with itself any more**, because it is part of the key:
+   * two orders on the same underlying, side, strikes and option expiry that name
+   * two different implementations now build two levels, each keeping its own
+   * product. There used to be a `conflicted` flag here that dropped the label
+   * from both, and that was the best available answer while the key could not
+   * tell the two apart. Two labelled rows are strictly better than one unlabelled
+   * one: the products really are different, and a player pressing either gets
+   * the order that belongs to the row they read.
+   *
+   * The key normalises the address to lowercase, so the same contract written in
+   * two casings is one level rather than two.
    */
   implementation: string | undefined;
-  conflicted: boolean;
   /**
    * The order behind `bestAsk` — the cheapest entry whose maker is *selling*.
    *
@@ -1168,8 +1250,14 @@ interface Level {
    * `bestAsk` so the order and the quoted price can never disagree.
    */
   askEntry: RawOrderEntry | undefined;
-  /** The **option** expiry, unix seconds, from the first order that named one.
-   *  Distinct from `expiry` above, which is the signature deadline. */
+  /**
+   * The option expiry again, as `number | null` — the shape the MM join needs.
+   *
+   * Not a second reading: it is the same value as {@link Level.expiry}, kept in
+   * its unresolved form because `markKey` must never be built from a `0`
+   * standing in for "the order did not say". `expiry` is what a row *prints*
+   * and is total; this is what a row is *joined* on and is honest about missing.
+   */
   optionExpiry: number | null;
 }
 
@@ -1268,7 +1356,15 @@ function markKey(underlying: string, isCall: boolean, strike: number, expiry: nu
   return `${underlying}|${isCall}|${Math.round(strike * 10 ** PRICE_DECIMALS)}|${expiry}`;
 }
 
-/** Signed distance from the group median IV, or `undefined` with no greeks. */
+/**
+ * Signed distance from the group median IV, or `undefined` with no greeks.
+ *
+ * The group is `(underlying, option expiry, call/put)` — one maturity's own
+ * smile. It used to be the signature deadline, which on the frozen capture is a
+ * single constant across the entire book, so "the median of this expiry" was in
+ * fact the median of every expiry at once and an outlier on the 5 Sep smile was
+ * being measured against 25 Sep quotes.
+ */
 function edgeOf(level: Level, medianIv: Map<string, number>): number | undefined {
   if (level.iv === null) return undefined;
   const median = medianIv.get(`${level.underlying}|${level.expiry}|${level.isCall}`);
@@ -1302,11 +1398,16 @@ function fillable(raw: string | bigint | number | null | undefined): boolean {
  *
  *  1. **Field-for-field, no reshaping.** The result is structurally assignable
  *     to `LadderSnapshot` in `src/data/box.ts` with no adapter, so the browser
- *     calls `deriveLadder(snapshot, …)` on what came off the wire directly.
- *     Interning the repeated 42-character feed addresses would shave ~20% more
- *     and would cost exactly that property — the client would need a
- *     rehydration step, and a second shape of the same data is how the two
- *     start disagreeing.
+ *     calls `deriveLadder(snapshot, …)` on what came off the wire directly, and
+ *     to `ZoneBook` in `src/data/ranger.ts` for the same reason and by the same
+ *     route. Interning the repeated 42-character feed and implementation
+ *     addresses would shave a further ~25% and would cost exactly that property
+ *     — the client would need a rehydration step, and a second shape of the same
+ *     data is how the two start disagreeing.
+ *  1b. **The registry is cut to what is present**, which is the one place this
+ *     function does not simply copy: see {@link implementationRegistry}. The
+ *     chain's table is 46 entries; a capture names about seven, and only those
+ *     travel.
  *  2. **Only structurally-empty orders are dropped.** No strikes, no fillable
  *     size, or a feed address `priceFeeds` does not name: none of the three can
  *     contribute a rung under any clock, so dropping them loses nothing and each
@@ -1328,6 +1429,10 @@ export function ladderBook(raw: RawMarket): LadderBook {
   );
 
   const orders: LadderBookOrder[] = [];
+  /** Lowercase implementation addresses the *shipped* orders name — the exact
+   *  set the registry below is cut to. Filled as the orders are narrowed, so an
+   *  order dropped for having no rung takes its address with it. */
+  const present = new Set<string>();
   for (const entry of raw.orders ?? []) {
     const api = entry?.rawApiData;
     if (!api) continue;
@@ -1341,6 +1446,8 @@ export function ladderBook(raw: RawMarket): LadderBook {
     if (expiry === null || expiry === undefined) continue;
 
     const signature = api.orderExpiryTimestamp;
+    const implementation = typeof api.implementation === "string" ? api.implementation : "";
+    if (implementation) present.add(implementation.toLowerCase());
     orders.push({
       order: { expiry: String(expiry) },
       availableAmount: String(entry.availableAmount),
@@ -1352,11 +1459,57 @@ export function ladderBook(raw: RawMarket): LadderBook {
         ...(typeof signature === "number" && Number.isFinite(signature)
           ? { orderExpiryTimestamp: signature }
           : {}),
+        // Verbatim, original casing. `productOf` lowercases before it looks up,
+        // so normalising here would be reshaping a field for no gain — and rule
+        // 1 above is that this object is the capture's own bytes, narrowed.
+        ...(implementation ? { implementation } : {}),
+        // Only a real boolean travels. `undefined` and `null` both mean "the
+        // capture did not say", and `isTakerBuyable` answers `false` to both —
+        // "we could not tell" is not a side.
+        ...(typeof api.isLong === "boolean" ? { isLong: api.isLong } : {}),
       },
     });
   }
 
-  return { orders, chainConfig: { priceFeeds } };
+  return { orders, chainConfig: { priceFeeds, ...implementationRegistry(present, raw.chainConfig) } };
+}
+
+/**
+ * The product registry, cut to the addresses this book actually carries.
+ *
+ * The registry is what makes `implementation` above mean anything: an address
+ * alone says nothing, and `src/data/ranger.ts` will not guess from the strikes.
+ * But the chain's own table is **46 entries over 15 products**, and shipping all
+ * of it would put ~3.9KB of addresses on every poll to answer a question about
+ * the seven that appear in a live capture. So only the addresses in `present`
+ * are resolved, and each resolves through {@link implementationInfo} — the same
+ * two-source lookup `classifyOrder` uses, so the browser and the server can
+ * never disagree about what an address is.
+ *
+ * `{ name }` and nothing else. `type` and `numStrikes` ride on the SDK's own
+ * entries and no reader on either side of the wire touches either; `productOf`
+ * reads `name`, and `RangerSpec` gets its strike count from the strikes.
+ *
+ * The key is **lowercased**, which is the SDK's own convention for this map and
+ * what `productOf` looks up by. That is the one place this narrowing reshapes
+ * rather than copies, and it is reshaping the *key* to the shape the registry is
+ * documented to have — not the value.
+ *
+ * An empty result yields **no** `optionImplementations` field at all rather than
+ * `{}`, and the distinction is load-bearing on the far side: `listedZones`
+ * returns `[]` for a falsy registry, so absent and empty already agree, and
+ * absent costs the wire nothing on a capture that names no implementations.
+ */
+function implementationRegistry(
+  present: ReadonlySet<string>,
+  chainConfig: RawChainConfig,
+): { optionImplementations?: Record<string, { name: string }> } {
+  const out: Record<string, { name: string }> = {};
+  for (const address of present) {
+    const info = implementationInfo(address, chainConfig);
+    if (info?.name) out[address] = { name: info.name };
+  }
+  return Object.keys(out).length === 0 ? {} : { optionImplementations: out };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1398,7 +1551,20 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     const strikes = (api.strikes ?? []).map((s) => fromUnits(s, STRIKE_DECIMALS));
     if (strikes.length === 0) continue;
 
-    const expiry = api.orderExpiryTimestamp ?? 0;
+    /**
+     * The **signature deadline**. It names the *order*, not the contract, so it
+     * is used for exactly the two things that are about the order: the blotter
+     * row's `instrument` string and its `time`. `orderIdentity` in
+     * `src/desk/fill.ts` rebuilds that string from this same field, and a fill
+     * matches only when the two agree byte for byte.
+     *
+     * It is deliberately **not** what a level is keyed or labelled by any more —
+     * see {@link Level}.
+     */
+    const signatureExpiry = api.orderExpiryTimestamp ?? 0;
+    /** The **option's** expiry — when the contract settles, and what names the
+     *  instrument the level below is one row of. */
+    const optionExpiry = optionExpiryOf(entry);
     const isCall = Boolean(api.isCall);
     const price = fromUnits(entry.order.price, PRICE_DECIMALS);
     const available = collateralUsd(entry.availableAmount, api.collateral, tokens);
@@ -1421,36 +1587,39 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     const greeks = greeksOf(api.greeks);
     if (greeks.delta !== null || greeks.iv !== null) greeksSeen += 1;
 
-    const key = `${underlying}|${isCall}|${strikes.join("/")}|${expiry}`;
+    /**
+     * **What names one instrument.** See {@link Level} for the collision this
+     * replaced and the thirteen levels in the frozen capture that had it.
+     *
+     * Five parts, and every one of them changes what the contract *is*:
+     * underlying, call/put, the strikes, the **option** expiry — the settlement
+     * date, never the signature deadline — and the implementation address,
+     * lowercased, because a RANGER and a CALL_CONDOR are different products at
+     * identical strikes and only the address can tell them apart.
+     */
+    const key = [
+      underlying,
+      isCall,
+      strikes.join("/"),
+      optionExpiry ?? "",
+      String(api.implementation ?? "").toLowerCase(),
+    ].join("|");
     const level = levels.get(key) ?? {
       underlying,
       isCall,
       strikes,
-      expiry,
+      // The option expiry is what a level is, so it is what a level prints and
+      // sorts by. `0` only for an order that named none — see `Level.expiry`.
+      expiry: optionExpiry ?? 0,
       bestBid: null,
       bestAsk: null,
       size: 0,
       delta: greeks.delta,
       iv: greeks.iv,
       implementation: api.implementation,
-      conflicted: false,
       askEntry: undefined,
-      optionExpiry: null,
+      optionExpiry,
     };
-    if (level.optionExpiry === null) level.optionExpiry = optionExpiryOf(entry);
-
-    // Two orders on the same instrument naming two different implementations
-    // is a contradiction, not a tie to break. The level keeps the first and
-    // remembers that it is no longer trustworthy.
-    if (api.implementation && level.implementation === undefined) {
-      level.implementation = api.implementation;
-    } else if (
-      api.implementation &&
-      level.implementation &&
-      api.implementation.toLowerCase() !== level.implementation.toLowerCase()
-    ) {
-      level.conflicted = true;
-    }
 
     // Best bid is the highest someone will pay; best ask the lowest anyone
     // will take. The ask side additionally keeps the *order* behind it: that is
@@ -1475,12 +1644,19 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       // line above was fixed and it is correct after, which is precisely why
       // the inversion was invisible on screen.
       side: takerBuys ? "BUY" : "SELL",
-      instrument: `${underlying}-${expiryLabel(expiry).replace(" ", "")}-${strikes[0]!.toFixed(0)}-${isCall ? "C" : "P"}`,
+      // `signatureExpiry`, NOT the option expiry, and this is the other half of
+      // the same handshake: `orderIdentity` stamps `rawApiData.
+      // orderExpiryTimestamp` into the date segment, `rowIdentity` parses it
+      // back out of this string, and a fill matches only when the two agree. The
+      // level above was re-keyed onto the option expiry and this line was
+      // deliberately left alone — an `OrderRow` names an *order*, a level names
+      // a *contract*, and they are different things with different dates.
+      instrument: `${underlying}-${expiryLabel(signatureExpiry).replace(" ", "")}-${strikes[0]!.toFixed(0)}-${isCall ? "C" : "P"}`,
       size: compact(available),
       px: price.toFixed(4),
       // Everything the API returns is a resting order; a filled one is gone.
       status: "OPEN",
-      time: expiryLabel(expiry),
+      time: expiryLabel(signatureExpiry),
     });
     rowEntries.push(entry);
   }
@@ -1533,14 +1709,10 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
         : undefined;
     const scale = maxByUnderlying.get(level.underlying) ?? 1;
     // Looked up from the implementation address, not inferred from the strikes
-    // — `docs/reviews/mcp-crosscheck.md` §BUG-2. A conflicted level passes no
-    // address at all, so it lands in the fallback like an unknown one.
-    const read = classifyOrder(
-      level.strikes,
-      level.isCall,
-      level.conflicted ? undefined : level.implementation,
-      raw.chainConfig,
-    );
+    // — `docs/reviews/mcp-crosscheck.md` §BUG-2. The address is unambiguous by
+    // construction now that it is part of the level's key: a level cannot hold
+    // two, so there is no contradiction left to forfeit a label over.
+    const read = classifyOrder(level.strikes, level.isCall, level.implementation, raw.chainConfig);
     const structure = read.structure;
     const payout = payoutTypeFor(structure, level.isCall, read.productName);
     const row: PricingRow = {
