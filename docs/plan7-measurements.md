@@ -317,8 +317,9 @@ acceptable offer.** Total expected wall clock 20–40 s. That fits a duel.
 - `client.api.fetchOrders()` against the real client construction
   (`chainId: 8453`, `JsonRpcProvider(https://mainnet.base.org)`), which requests
   `GET https://round-snowflake-9c31.devops-118.workers.dev/` per
-  `docs/book-endpoint.md`. **26 snapshots**, 2026-09-04T18:49:16Z →
-  19:04:14Z, roughly 40 s apart.
+  `docs/book-endpoint.md`. **26 polled snapshots** at ~40 s intervals,
+  2026-09-04T18:51:53Z → 19:09:36Z, plus six ad-hoc reads from 18:49:16Z —
+  **32 reads of the live book in all**.
 - Cross-checked against the repo's own frozen fixture
   `test/fixtures/orders.json`, captured **2026-09-04T09:31Z** — an independent
   read 9¼ hours earlier.
@@ -332,7 +333,7 @@ acceptable offer.** Total expected wall clock 20–40 s. That fits a duel.
 
 ## 3.2 Raw numbers — FACT
 
-**The live book, every one of 26 snapshots:**
+**The live book, every one of 32 reads:**
 
 ```
 orders           370–375
