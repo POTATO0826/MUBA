@@ -1,4 +1,4 @@
-import { TIERS, type ParlayLeg, type Stance, type Tier } from "../engine/parlay.ts";
+import { tierProb, type ParlayLeg, type Stance, type Tier } from "../engine/parlay.ts";
 import type { PricingRow } from "../types.ts";
 
 /**
@@ -7,11 +7,13 @@ import type { PricingRow } from "../types.ts";
  * ## The insight
  *
  * The game already has the shape of an option chain and did not know it. A
- * parlay card is a tier (`SAFE ~70% / EVEN ~50% / SHARP ~25% / DEGEN ~8%`)
- * crossed with a stance, and it renders as `above 252.95 · ~70%`. That number
+ * parlay card is a tier (`SAFE ~75% / EVEN ~55% / SHARP ~35% / DEGEN ~15%`)
+ * crossed with a stance, and it renders as `above 252.95 · ~75%`. That number
  * *is* a strike and that percentage *is* a probability of finishing in the
- * money. What was fake was only their provenance: both came out of the fixed
- * `TIERS` table multiplied against an asset's seeded base move.
+ * money. What was fake was only their provenance: both came out of a fixed
+ * payout table multiplied against an asset's seeded base move. That table is
+ * gone — the percentages above are `TIER_BANDS` midpoints now, i.e. the |delta|
+ * bracket each tier actually names.
  *
  * This module reads them off the live book instead:
  *
@@ -19,7 +21,7 @@ import type { PricingRow } from "../types.ts";
  *  - the **probability** is the option's own delta, which is to a very good
  *    first approximation the market's probability that it finishes ITM;
  *  - the **multiplier** is derived from the real premium and the option's real
- *    payoff profile (`multiplierFor` below), never from `TIERS`.
+ *    payoff profile (`multiplierFor` below), never from a table.
  *
  * And then nothing else changes. `thresholdFor` expresses the listed strike as
  * the percentage move from spot that `legState` has always understood, so a
@@ -73,8 +75,8 @@ export const MULT_MAX = 25;
  * before the card says so out loud.
  *
  * The book lists the strikes it lists. On a thin chain the nearest thing to
- * SHARP's `~25%` can genuinely be a `0.41` delta, and a card that printed
- * `~25%` over a `0.41` option would be the exact lie this whole module exists
+ * SHARP's `~35%` can genuinely be a `0.51` delta, and a card that printed
+ * `~35%` over a `0.51` option would be the exact lie this whole module exists
  * to remove. The card always prints the *real* delta; `offTarget` is what makes
  * it additionally say that the tier's target was missed.
  */
@@ -116,7 +118,7 @@ export interface OptionQuote {
   impliedProb: number;
   /** What a buyer pays, per contract, as the venue quotes it. */
   premium: number;
-  /** Derived — see `multiplierFor`. Never `TIERS`. */
+  /** Derived — see `multiplierFor`. Never a table lookup. */
   multiplier: number;
   /** `"12 SEP"`, as the row carries it. */
   expiry: string;
@@ -294,8 +296,13 @@ export function multiplierFor(strike: number, premium: number, spot: number): nu
  *
  * The pick is *nearest listed delta to the tier's implied probability*, on the
  * side the stance asks for — a call for a bull, a put for a bear. The tier's
- * target is read straight out of `TIERS[tier].prob`, so this file states no
- * probability of its own and cannot drift from the game's ladder.
+ * target is `tierProb(tier)`, the midpoint of that tier's `TIER_BANDS` bracket,
+ * so this file states no probability of its own and cannot drift from the
+ * ladder. (`cardsForSlice` is the stricter successor to this function: it takes
+ * only rows *inside* the band and refuses to deal a card when none exist,
+ * where this one takes the nearest listed delta and flags the miss with
+ * `offTarget`. Both are kept while the seeded arena still deals tickers the
+ * book has never heard of.)
  *
  * Ties break to **chain order**, which the live builder sorts nearest-expiry
  * first and then by strike: two strikes equidistant from the target resolve to
@@ -310,7 +317,7 @@ export function optionizeTier(
 ): OptionQuote | null {
   if (!Number.isFinite(spot) || spot <= 0) return null;
 
-  const target = TIERS[tier].prob;
+  const target = tierProb(tier);
   const side: OptionSide = stance === "bull" ? "CALL" : "PUT";
 
   let best: Candidate | null = null;

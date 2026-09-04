@@ -127,6 +127,20 @@ export interface RawOrderEntry {
     price: string | bigint;
     /** True when the *maker* is the buyer — i.e. this order is a bid. */
     isBuyer: boolean;
+    /** The order's identity on the book. */
+    nonce?: string | bigint;
+    /**
+     * The **option's** expiry, unix seconds.
+     *
+     * Not the same field as `rawApiData.orderExpiryTimestamp`, which is when
+     * the *signature* goes stale — the frozen capture has 1788595200 against
+     * 1788514414 on the same order. Levels are still grouped by the signature
+     * expiry, as they always were, because that is what `/desk` prints; but
+     * this is the one that names the contract, so it is the one a market slice
+     * and an MM mark are matched on. Conflating them would join a chain
+     * against a signature deadline and silently mark nothing.
+     */
+    expiry?: string | bigint;
   };
   /** Remaining fillable size, in collateral units (6dp for USDC). */
   availableAmount: string | bigint;
@@ -970,6 +984,66 @@ interface Level {
    */
   implementation: string | undefined;
   conflicted: boolean;
+  /**
+   * The order behind `bestAsk` — the cheapest entry whose maker is *selling*.
+   *
+   * This is what makes a row pressable. A player buying a card fills an ask; a
+   * level quoted by bids alone has a price on screen and nothing to fill, and
+   * `cardsForSlice` refuses it for exactly that reason. Kept in step with
+   * `bestAsk` so the order and the quoted price can never disagree.
+   */
+  askEntry: RawOrderEntry | undefined;
+  /** The **option** expiry, unix seconds, from the first order that named one.
+   *  Distinct from `expiry` above, which is the signature deadline. */
+  optionExpiry: number | null;
+}
+
+/** `entry.order.expiry` as a number, or `null`. */
+function optionExpiryOf(entry: RawOrderEntry): number | null {
+  const raw = entry.order?.expiry;
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * `underlying|isCall|strike|optionExpiry` → `markPrice`, verbatim.
+ *
+ * The join that gives an order-book level a mark. Both feeds name the same
+ * instrument and neither is a superset of the other: the MM chain has strikes
+ * nobody is resting an order on, the resting book covers underlyings the MM
+ * does not quote. Where they meet, the mark is the venue's own mid and the duel
+ * clock (Phase C) can score against it; where they do not, the row carries no
+ * mark and says so by absence.
+ *
+ * Keyed on the **option** expiry on both sides. `RawMmQuote.expiry` is an option
+ * expiry, so matching it against a signature deadline would produce a map that
+ * never hits — a silent, total failure that looks exactly like "the MM stopped
+ * quoting".
+ *
+ * The strike is keyed at its 8dp integer value rather than as a float, so
+ * `2650` off the chain and `2650.00000001` off a division cannot become two
+ * different keys.
+ */
+export function markIndex(
+  mmPricing: Record<string, readonly RawMmQuote[]> | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [underlying, rows] of Object.entries(mmPricing ?? {})) {
+    for (const row of rows ?? []) {
+      if (!Number.isFinite(row.strike) || !Number.isFinite(row.expiry)) continue;
+      if (!Number.isFinite(row.markPrice)) continue;
+      const key = markKey(underlying, row.isCall, row.strike, row.expiry);
+      // First writer wins: a duplicated (strike, expiry, side) row is the feed
+      // contradicting itself, and averaging two marks would invent a third.
+      if (!out.has(key)) out.set(key, row.markPrice.toFixed(4));
+    }
+  }
+  return out;
+}
+
+function markKey(underlying: string, isCall: boolean, strike: number, expiry: number): string {
+  return `${underlying}|${isCall}|${Math.round(strike * 10 ** PRICE_DECIMALS)}|${expiry}`;
 }
 
 /** Signed distance from the group median IV, or `undefined` with no greeks. */
@@ -1041,7 +1115,10 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       iv: greeks.iv,
       implementation: api.implementation,
       conflicted: false,
+      askEntry: undefined,
+      optionExpiry: null,
     };
+    if (level.optionExpiry === null) level.optionExpiry = optionExpiryOf(entry);
 
     // Two orders on the same instrument naming two different implementations
     // is a contradiction, not a tie to break. The level keeps the first and
@@ -1057,9 +1134,14 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     }
 
     // Best bid is the highest someone will pay; best ask the lowest anyone
-    // will take.
+    // will take. The ask side additionally keeps the *order* behind it: that is
+    // the thing a player fills, and a level that never sees an ask keeps
+    // `askEntry: undefined` and is display-only for the rest of its life.
     if (isBid) level.bestBid = level.bestBid === null ? price : Math.max(level.bestBid, price);
-    else level.bestAsk = level.bestAsk === null ? price : Math.min(level.bestAsk, price);
+    else if (level.bestAsk === null || price < level.bestAsk) {
+      level.bestAsk = price;
+      level.askEntry = entry;
+    }
 
     level.size += available;
     if (level.delta === null) level.delta = greeks.delta;
@@ -1105,6 +1187,10 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       Math.max(maxByUnderlying.get(level.underlying) ?? 1, level.size),
     );
   }
+
+  // Built once, outside the level loop: the join is O(levels) against a map
+  // rather than O(levels × quotes) against a list.
+  const marks = markIndex(raw.mmPricing);
 
   const pricing: Record<string, PricingRow[]> = {};
   const ordered = new Map<string, Level[]>();
@@ -1164,6 +1250,20 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       // "unpriceable", and a payout type nothing authoritative backs is the
       // exact failure BUG-2 was.
       payout: payout ?? undefined,
+      // `markPrice`, verbatim, where an MM quote names this exact instrument.
+      // A single-strike level only: a spread has no mark of its own on the MM
+      // chain, and joining on its first strike would attach a vanilla's mark to
+      // a two-leg product.
+      mark:
+        level.strikes.length === 1 && level.optionExpiry !== null
+          ? marks.get(
+              markKey(level.underlying, level.isCall, level.strikes[0]!, level.optionExpiry),
+            )
+          : undefined,
+      // The order behind the best ask — what pressing this row would fill. A
+      // level with no ask carries none, and `cardsForSlice` drops it: a card
+      // must be pressable or it must not be dealt.
+      order: level.askEntry,
     };
     rowOf.set(level, row);
     pricing[level.underlying] = [...(pricing[level.underlying] ?? []), row];

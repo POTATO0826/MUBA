@@ -529,7 +529,11 @@ describe("modes", () => {
     pick(syms[0]!, "sharp-bear");
     pick(syms[1]!, "safe-bull");
     pick(syms[2]!, "degen-bull");
-    expect(testid("combined-mult")?.textContent).toBe("×47.52");
+    // Plan 6 retired the invented odds table: a tier is now a |delta| band and a
+    // multiplier is 1/prob, so this slip reads (1/.35)(1/.75)(1/.15) = 25.40 where
+    // the fiction read 47.52. The seeded LINES are untouched — `TIER_MOVE` still
+    // places them — so the replay locks still hold; only the odds moved.
+    expect(testid("combined-mult")?.textContent).toBe("×25.40");
   });
 });
 
@@ -960,8 +964,10 @@ describe("the parlay picks", () => {
           expect(cards().some((c) => c.dataset.parlay === `${sym}:${tier}-${stance}`)).toBe(true);
         }
       }
-      expect(sec.textContent).toContain("×1.2");
-      expect(sec.textContent).toContain("×11.0");
+      // SAFE sits in the [0.65, 0.85) delta band, so 1/0.75 = ×1.33.
+      expect(sec.textContent).toContain("×1.33");
+      // DEGEN is the [0.05, 0.25) band; 1/0.15 = ×6.67.
+      expect(sec.textContent).toContain("×6.67");
       expect(sec.textContent).toContain("↑ BULL");
       expect(sec.textContent).toContain("↓ BEAR");
     }
@@ -989,15 +995,22 @@ describe("the parlay picks", () => {
     pick(syms[0]!, "sharp-bear"); // 3.6
     pick(syms[1]!, "safe-bull"); // 1.2
     pick(syms[2]!, "degen-bull"); // 11
-    expect(mult()).toBe("×47.52");
-    expect(prob()).toBe("1.4%"); // .25 × .7 × .08
+    // Plan 6 retired the invented odds table: a tier is now a |delta| band and a
+    // multiplier is 1/prob, so this slip reads (1/.35)(1/.75)(1/.15) = 25.40 where
+    // the fiction read 47.52. The seeded LINES are untouched — `TIER_MOVE` still
+    // places them — so the replay locks still hold; only the odds moved.
+    expect(mult()).toBe("×25.40");
+    expect(prob()).toBe("3.9%"); // .35 × .75 × .15, the band midpoints
     expect(text()).toContain("SHARP↓ SAFE↑ DEGEN↑");
     expect(text()).toContain("closes below");
     expect(text()).toContain("closes above");
 
-    pick(syms[2]!, "even-bull"); // 11 → 1.9
-    expect(mult()).toBe("×8.21");
-    expect(prob()).toBe("8.8%"); // .25 × .7 × .5, one decimal under the 10% line
+    pick(syms[2]!, "even-bull"); // swaps the DEGEN leg for an EVEN one
+    // (1/.35)(1/.75)(1/.55) = 6.93, and .35 × .75 × .55 = 14%. Swapping the
+    // long shot out lifts the slip back over the 10% loud line — the threshold
+    // itself is asserted in test/parlay.test.ts, on `summarize`.
+    expect(mult()).toBe("×6.93");
+    expect(prob()).toBe("14%");
   });
 
   test("the opponent's picks stay hidden until both lock", () => {
@@ -1487,8 +1500,11 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     expect(testid("spot-AMD")).toBeNull();
     // No dash, no placeholder, no "—": the old line, unchanged.
     expect(legPicker("NVDA")?.textContent).toContain("$118.40 · base ±4.0%");
-    expect(legPicker("NVDA")?.textContent).not.toContain("live");
-    expect(legPicker("NVDA")?.textContent).not.toContain("seeded");
+    // Scoped to the seeded·live SPOT pair rather than the bare words: the card
+    // face legitimately says "no live premium" about a different quantity, and a
+    // substring check would read that as a spot annotation.
+    expect(legPicker("NVDA")?.textContent).not.toContain("seeded ·");
+    expect(legPicker("NVDA")?.textContent).not.toMatch(/·\s*\$[\d,.]+\s*live/);
   });
 
   test("with nothing priced on the board the pick screen is byte-identical", () => {
@@ -1513,11 +1529,13 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     // ETH SHARP bull asks for +9%: 4,559.03 seeded, and the same +9% of the
     // live 2,522.13 is 2,749.12 — nearest live call is the 2,800 at Δ0.21.
     const card = container.querySelector<HTMLElement>('[data-parlay="ETH:sharp-bull"]')!;
-    expect(card.textContent).toContain("~25%");
+    // SHARP is the [0.25, 0.45) band; its midpoint reads ~35%.
+    expect(card.textContent).toContain("~35%");
     expect(card.textContent).toContain("book Δ 0.21 (second opinion)");
     // The tier's own multiplier is untouched — the advisory is a sibling line,
     // not an input.
-    expect(card.textContent).toContain("×3.6");
+    // SHARP's band midpoint: 1/0.35 = ×2.86.
+    expect(card.textContent).toContain("×2.86");
   });
 
   test("no book, no advisory — spot alone is not enough", () => {
@@ -1559,9 +1577,10 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
       container.remove();
       return out;
     };
-    // `×47.52` is the fixture the whole odds engine is pinned on.
-    expect(price()).toBe("×47.52");
-    expect(price(live())).toBe("×47.52");
+    // The pinned slip: the band model prices it identically with the book live
+    // and without it, which is the property this test exists for.
+    expect(price()).toBe("×25.40");
+    expect(price(live())).toBe("×25.40");
     // Remounted so `afterEach` has something to tear down.
     mount("/");
   });

@@ -109,6 +109,86 @@ export interface LobbyDef {
   createdAgo: string;
 }
 
+/**
+ * One resting signed order, as every layer of this app reads it.
+ *
+ * Declared here — the domain-type module nothing imports — rather than in
+ * `src/desk/fill.ts`, because a `PricingRow` now carries the order it would
+ * fill against and `src/engine/**` must be able to name that shape without
+ * reaching into the desk. `RawFillOrder` (desk) and `RawOrderEntry` (the market
+ * builder) are both structurally assignable to this; it is deliberately the
+ * *loosest* of the three, so it can be the shared vocabulary rather than a
+ * fourth opinion.
+ *
+ * Every `bigint` is widened to `string | bigint` for the same reason it is
+ * there: JSON has no bigint, and a checked-in fixture must be assignable.
+ */
+export interface FillableOrder {
+  order: {
+    /** Price per contract, 8dp. */
+    price: string | bigint;
+    /** True when the *maker* is the buyer — i.e. this order is a bid. A card
+     *  is a purchase, so only `false` rows are fillable by a player. */
+    isBuyer: boolean;
+    /** The order's identity on the book. */
+    nonce?: string | bigint;
+    /**
+     * The **option's** expiry, unix seconds.
+     *
+     * Distinct from `rawApiData.orderExpiryTimestamp`, which is when the
+     * *signature* goes stale. The two differ by hours on live data (the
+     * frozen capture has 1788595200 against 1788514414), and only this one
+     * names the contract a card is a claim on — so it is the one a market
+     * slice's expiry is matched against, and the one an MM mark is joined on.
+     */
+    expiry?: string | bigint;
+  };
+  /** Remaining fillable size, in collateral units. */
+  availableAmount?: string | bigint;
+  signature?: string;
+  makerAddress?: string;
+  rawApiData?: {
+    /** The order signature's expiry, seconds — the one that turns a fill into
+     *  `Signer Not Authorized` when it passes. */
+    orderExpiryTimestamp?: number;
+    /** 8dp decimal strings. */
+    strikes?: string[];
+    isCall?: boolean;
+    optionBookAddress?: string;
+    collateral?: string;
+    priceFeed?: string;
+    implementation?: string;
+    /** Undocumented upstream. Shape-checked at the boundary, never trusted. */
+    greeks?: unknown;
+  };
+}
+
+/**
+ * The arena one round is played in — what the spin deals.
+ *
+ * The reel picks the arena; the player picks the position. Nothing on this
+ * object can set anyone's odds: it names an underlying, an expiry and a strike
+ * window, and the book decides what those are worth. A multiplier, a
+ * probability or a payout on here would be the house setting the price again.
+ *
+ * Defined in this module rather than in `src/engine/spin.ts` because both the
+ * engine (which deals it) and the card builder (which filters the book with it)
+ * need the shape, and neither may import the other's module.
+ */
+export interface MarketSlice {
+  underlying: string;
+  /** Unix seconds. One of the live **option** expiries at deal time. */
+  expiry: number;
+  /** Inclusive strike window, 8dp decimal strings — the same encoding
+   *  `rawApiData.strikes` uses, so the comparison is exact integer work and
+   *  never a float round trip. */
+  strikeLo: string;
+  strikeHi: string;
+  /** Optional constraint that makes rounds feel different without touching
+   *  anyone's odds. */
+  constraint?: "CALLS_ONLY" | "PUTS_ONLY" | "MAX_3_LEGS" | "BUDGET_5";
+}
+
 export interface PricingRow {
   /** The colour/label bucket `/desk` renders. Three members on purpose — the
    *  finer reading lives in `structure`. */
@@ -157,6 +237,28 @@ export interface PricingRow {
    * holding. Live rows only; never set on the mock.
    */
   payout?: string;
+  /**
+   * `markPrice`, verbatim from the market-maker chain. **Never recomputed** —
+   * same rule as `bid`/`ask`, and for the same reason: the venue's own number
+   * is the one it will trade against.
+   *
+   * Present only where an MM quote joined this level on (underlying, call/put,
+   * strike, **option** expiry). MM pricing exists for two underlyings, so most
+   * live rows carry no mark and every mock row carries none. Absent is a
+   * first-class state: a row with no mark cannot be marked to market, which is
+   * a fact about the feed rather than a reason to invent a mid.
+   */
+  mark?: string;
+  /**
+   * The resting order this row would fill against — the **best ask**, i.e. the
+   * cheapest order whose maker is selling.
+   *
+   * Rows built from bids alone, or from MM pricing alone, have no fillable
+   * order: you cannot buy from a bid. Those rows are **display-only** and
+   * `cardsForSlice` filters them out, because a card that quotes a number it
+   * cannot fill is the exact failure this shape exists to delete.
+   */
+  order?: FillableOrder;
 }
 
 /**

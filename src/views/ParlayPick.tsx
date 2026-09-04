@@ -22,10 +22,10 @@ import {
 } from "../desk/optionize.ts";
 import {
   PARLAY_CARDS,
-  TIERS,
   conditionText,
   legForCard,
   slipLabel,
+  tierProb,
   type ParlayCard,
   type ParlayLeg,
   type ParlaySummary,
@@ -66,7 +66,7 @@ interface ParlayPickProps {
    *  1. a spot annotation beside each ticker's seeded reference price;
    *  2. the book's delta beside a tier's implied probability, as advice.
    *
-   * Nothing here reaches `myLegs`, `summary`, `TIERS` or the odds. The slip is
+   * Nothing here reaches `myLegs`, `summary` or the odds. The slip is
    * built from the seed and settles on the seeded tape; if that ever stopped
    * being true, `/match/:id/parlay?seed=N` would stop replaying and the
    * determinism locks would say so.
@@ -312,7 +312,7 @@ export function ParlayPick(p: ParlayPickProps) {
                       ? `${picked.label} · ×${
                           pickedQuote
                             ? pickedQuote.multiplier.toFixed(2)
-                            : TIERS[picked.tier].mult.toFixed(1)
+                            : legForCard(sym, picked).mult.toFixed(2)
                         }`
                       : "pick one"}
                   </span>
@@ -330,9 +330,8 @@ export function ParlayPick(p: ParlayPickProps) {
                      *
                      * The moneyness is `strike / px`, both taken off the leg the
                      * card would build, which is the leg the duel would settle.
-                     * The tier's `~n%` above it is untouched, and `TIERS` is not
-                     * imported for this — the advisory cannot move the odds
-                     * because it never sees them.
+                     * The tier's `~n%` above it is untouched — the advisory
+                     * cannot move the odds, because it never sees them.
                      */
                     /**
                      * This card, priced off the frozen book — or `null`, which
@@ -379,18 +378,39 @@ export function ParlayPick(p: ParlayPickProps) {
                             {bull ? "↑ BULL" : "↓ BEAR"}
                           </span>
                         </div>
-                        <div style={sx(`margin-top:10px;font:700 22px/1 ${MONO};letter-spacing:-.02em;color:${tc}`)}>
-                          ×{quote ? quote.multiplier.toFixed(2) : card && TIERS[card.tier].mult.toFixed(1)}
+                        {/* A7 — max loss, above the upside figure, on every
+                            card face, unconditionally and at every detail
+                            level. A bought option's downside is bounded and
+                            known, and that is the single most valuable habit
+                            this product can build; it is also the honest reason
+                            DEGEN is survivable, because it is cheap.
+
+                            On a market-priced card the number is the premium
+                            the venue is charging — the exact max loss. On a
+                            seeded card there is no premium, and the line says
+                            so rather than inventing one: a made-up dollar
+                            figure beside a real one is worse than a dash. */}
+                        <div
+                          data-testid={`max-loss-${sym}:${card.id}`}
+                          style={sx(`margin-top:9px;font:500 9.5px/1.3 ${MONO};letter-spacing:.04em;color:${C.dim}`)}
+                        >
+                          {quote
+                            ? `max loss $${quote.premium.toFixed(4)} · premium paid`
+                            : "max loss — · no live premium"}
+                        </div>
+                        <div style={sx(`margin-top:4px;font:700 22px/1 ${MONO};letter-spacing:-.02em;color:${tc}`)}>
+                          ×{quote ? quote.multiplier.toFixed(2) : leg.mult.toFixed(2)}
                         </div>
                         <div style={sx(`margin-top:6px;font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
                           {/* Same sentence, same shape, same place. On the
-                              seeded path both numbers come out of `TIERS` and
-                              the asset's base move; on the market path the
-                              strike is one the venue lists and the percentage
-                              is that option's own delta. The card never claims
-                              the tier's `~25%` over a Δ0.41 option — it prints
-                              the delta it actually found, and the line below
-                              says the tier's target was missed. */}
+                              seeded path the percentage is the tier's own
+                              `TIER_BANDS` midpoint and the line comes off the
+                              asset's base move; on the market path the strike
+                              is one the venue lists and the percentage is that
+                              option's own delta. The card never claims the
+                              tier's `~35%` over a Δ0.51 option — it prints the
+                              delta it actually found, and the line below says
+                              the tier's target was missed. */}
                           {bull ? "above" : "below"}{" "}
                           {fmtPx(quote ? quote.strike : leg.strike)} · ~
                           {Math.round((quote ? quote.impliedProb : leg.prob) * 100)}%
@@ -409,7 +429,7 @@ export function ParlayPick(p: ParlayPickProps) {
                             style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${C.amber}`)}
                           >
                             thin book · nearest strike misses {card.tier}’s ~
-                            {Math.round(TIERS[card.tier].prob * 100)}%
+                            {Math.round(tierProb(card.tier) * 100)}%
                           </div>
                         )}
                         {advisory && (

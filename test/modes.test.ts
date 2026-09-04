@@ -5,11 +5,11 @@ import { meta } from "../src/data/universe.ts";
 import { driftOf, edgeOf, legState, settle } from "../src/engine/match.ts";
 import {
   PARLAY_CARDS,
-  TIERS,
+  TIER_MOVE,
   buildLeg,
+  degeneracyScore,
   legForCard,
   legsForPicks,
-  parlayMultiplier,
   summarize,
 } from "../src/engine/parlay.ts";
 import { TAPE_LEN, pctAt } from "../src/engine/tape.ts";
@@ -121,7 +121,7 @@ describe("targetScale through the parlay", () => {
   test("buildLeg multiplies the tier line by the mode's scale", () => {
     for (const sym of ["NVDA", "BTC", "PEPE"]) {
       for (const tier of ["SAFE", "EVEN", "SHARP", "DEGEN"] as const) {
-        const base = meta(sym).t * TIERS[tier].scale;
+        const base = meta(sym).t * TIER_MOVE[tier];
         for (const scale of [1, 0.82, 0.62]) {
           expect(buildLeg(sym, "over", tier, scale).t).toBe(+(base * scale).toFixed(2));
         }
@@ -163,8 +163,8 @@ describe("oddsBoost through the slip", () => {
   test("the boost rides on mult, so it reaches the payout", () => {
     const base = summarize(legs, 100);
     const boosted = summarize(legs, 100, 1.35);
-    expect(base.mult).toBe(parlayMultiplier(legs));
-    expect(boosted.mult).toBeCloseTo(parlayMultiplier(legs) * 1.35, 10);
+    expect(base.mult).toBe(degeneracyScore(legs));
+    expect(boosted.mult).toBeCloseTo(degeneracyScore(legs) * 1.35, 10);
     expect(boosted.potentialPoints).toBe(Math.round(100 * boosted.mult));
     expect(boosted.potentialPoints).toBeGreaterThan(base.potentialPoints);
   });
