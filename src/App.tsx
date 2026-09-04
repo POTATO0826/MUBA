@@ -9,8 +9,10 @@ import {
   ladderOf,
   qualifiedAssetsOf,
   qualifiedNames,
+  sliceBookOf,
   type MarketSource,
 } from "./data/market.ts";
+import { spinSlice } from "./engine/spin.ts";
 import { createHistorySource, type PriceHistory } from "./data/history.ts";
 import { zoneQuote } from "./data/ranger.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
@@ -352,14 +354,42 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
     actions.go("arena")();
   }, [actions, arenaActions, roomState]);
 
-  // `lockArenaPick` — `(pick) => roomState.pick(pick)` — used to live here, and
-  // it is gone with the two screens that called it. Nothing in the box arena
-  // locks a room pick yet: that is plan 7 §8 **step 4** ("lock, duel, reveal,
-  // both boxes on one chart"), which `BoxBuilder` does not implement — it takes
-  // no room, no seat and no opponent. `onConfirm` is deliberately not wired to
-  // it either: that prop's button reads "Buy this box" and is the execution
-  // path, and firing a duel commit from it would be a mislabelled action rather
-  // than a missing one. `roomState.pick` is still there for step 4 to call.
+  /**
+   * plan 7 §8 **step 4** — lock, duel, reveal.
+   *
+   * `roomState.pick` is the room store's write-once submit, and it is what a
+   * locked box goes out on: the same transport `SpotDiff` used, unchanged, and
+   * still blind for the same reason — `view()` in `src/server/rooms.ts` returns
+   * `[null, null]` for `picks` until both seats are in.
+   *
+   * It is wired to `BoxBuilder`'s `onLock` and deliberately **not** to its
+   * `onConfirm`. That prop's button reads "Buy this box" and is plan 6's
+   * execution path; firing a duel commit from it would be a mislabelled action.
+   * The lock has its own button, on its own card, with its own label.
+   */
+  const lockArenaBox = useCallback(
+    (pick: string) => void roomState.pick(pick),
+    [roomState],
+  );
+
+  /**
+   * §6 — *"same underlying, same budget, dealt by `spinSlice`"*.
+   *
+   * Dealt here rather than in the view, because `spinSlice` takes a book and
+   * `BoxBuilder` is not allowed one: its only market input is the ladder
+   * snapshot it is handed. The room's `seed` is fixed at creation and is the
+   * same integer for both seats, so both deal the same asset without a message
+   * passing between them — the same property the seeded match flow relies on.
+   *
+   * `null` whenever nothing can be dealt (no room, no qualified asset, a dead
+   * indexer), and the arena then lets the player pick their own asset. The view
+   * checks the name is drawable before it honours it.
+   */
+  const roomSeed = roomState.room?.seed ?? null;
+  const dealtAsset = useMemo(() => {
+    if (roomSeed === null) return null;
+    return spinSlice(sliceBookOf(source), qualifiedNames(source), roomSeed)?.underlying ?? null;
+  }, [roomSeed, source]);
 
   // ── The box arena ───────────────────────────────────────────────────────
   //
@@ -520,6 +550,13 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           premium={boxPremium}
           onQuote={quoteBox}
           onBack={backToArenaHub}
+          // ── step 4 — the duel. Four props, all of them the room's, and the
+          // screen is the solo builder again without them.
+          room={roomState.room}
+          seat={roomState.seat}
+          locking={roomState.busy}
+          onLock={lockArenaBox}
+          dealt={dealtAsset}
         />
       )}
 

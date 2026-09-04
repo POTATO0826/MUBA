@@ -7,6 +7,7 @@ import {
   ladderIndex,
   liveExpiries,
   minBoxHeight,
+  parseStrike,
   priceToStrike,
   snapBox,
   strikeUsd,
@@ -39,6 +40,9 @@ import {
   type NowBoundary,
   type PriceHistory,
 } from "../data/history.ts";
+import type { RoomSeat, RoomView } from "../data/room.ts";
+import { poolOf, usdc } from "../data/stake.ts";
+import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 
@@ -191,6 +195,123 @@ export const NO_ZONES_COPY = "The book lists no zone at all on this expiry.";
  */
 export const SPOT_OUTSIDE_COPY =
   "None of the listed zones on this expiry contains the current price.";
+
+// ── The duel, said honestly ─────────────────────────────────────────────────
+//
+// plan7 §6 and §6.1. These four sentences are the whole of what step 4 claims,
+// and each one is checkable: the lock is not a purchase, the wire is blind, the
+// reveal is one chart, and nothing signs a verdict.
+
+/**
+ * §6 — what "lock" does, said on the button's own card.
+ *
+ * The distinction is load-bearing and it is why this is not `onConfirm`'s
+ * button: `onConfirm` reads "Buy this box" and is the execution path (plan 6's,
+ * behind `features.trade`). Locking commits the *drawing* to the duel and
+ * touches no chain at all. One label for both would be the mislabelled action
+ * the step-6 agent refused to ship.
+ */
+export const LOCK_COPY =
+  "Locking commits this box to the duel. It does not buy anything — nothing here signs, spends or asks a market maker for a price.";
+
+/**
+ * §6 — blind means blind, said where a player would otherwise wonder.
+ *
+ * The claim is about the *server*, not about this screen: `view()` in
+ * `src/server/rooms.ts` returns `[null, null]` for `picks` until both seats
+ * have submitted, so there is no wire response a client could read the other
+ * box out of. `test/rooms.test.ts` asserts that, and `test/boxduel.test.ts`
+ * asserts it again over an encoded box specifically.
+ */
+export const BLIND_COPY =
+  "Locked. Neither box is readable until both are in — the server returns nothing for either seat before that, so there is no answer to copy.";
+
+/** §6 — the moment the mode is for. */
+export const REVEAL_COPY =
+  "Both boxes, one chart: yours outlined, theirs filled. Where they overlap, you agreed.";
+
+/**
+ * §6.1, stated as the fact it currently is rather than as a rule for later.
+ *
+ * A duel is scored on Δ mark of the **filled** position (plan 6 §C, the duel
+ * clock in `src/engine/score.ts`). Nothing in this build fills a box — the
+ * listed path quotes but does not sign without `features.trade`, and the RFQ
+ * path is plan 7 §5 and is not built — so every duel that reaches this screen
+ * ends with both sides unfilled, which is exactly the case §6.1 legislates for.
+ * There is no tiebreak to write: `duelOutcome` reports `noVerdict` for an
+ * unfilled slate and the escrow's six-hour refund path returns both stakes.
+ */
+export const NO_FILL_COPY =
+  "Neither box was filled, so there is nothing to mark and no verdict is signed. DuelEscrow's six-hour refund returns both stakes, rake-free, with no signature from anyone. There is no tiebreak.";
+
+/** §6 — plan 6's two clocks, said once, where the duel is. */
+export const TWO_CLOCK_COPY =
+  "A duel resolves in minutes, on the change in mark of the filled position. The option itself settles at its own expiry regardless of who took the pot.";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A box, on the wire
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The pick encoding's version tag.
+ *
+ * Versioned because the transport is an opaque string the room store never
+ * looks inside (`pick: string`, 1–400 chars, write-once), which means a client
+ * on an older tab can post a shape a newer client would misread. A leading
+ * `b1|` makes that a decode failure — "their box could not be read" — rather
+ * than a box drawn at the wrong strikes.
+ */
+export const PICK_VERSION = "b1";
+
+/**
+ * A box → the string that goes on the room's existing lock/reveal transport.
+ *
+ * Pipe-separated rather than JSON for one reason worth writing down: strikes
+ * are 8dp **decimal strings** (`"265000000000"` is $2,650) and a JSON round
+ * trip through a number would quietly turn them into floats. Every field here
+ * stays text, and the only number is a unix second.
+ *
+ * Length is bounded well under the store's 400-character limit: three strike
+ * strings on the widest live ladder are 12 characters each, so a BTC box is
+ * about 60. That is asserted rather than assumed in `test/boxduel.test.ts`.
+ */
+export function encodeBoxPick(box: Box): string {
+  return [PICK_VERSION, box.underlying, box.floor, box.ceiling, box.wing, String(box.expiry)].join(
+    "|",
+  );
+}
+
+/**
+ * The wire string → a box, or `null`.
+ *
+ * `null` for anything that is not exactly this encoding, including a pick from
+ * a different mode entirely — the room store is mode-agnostic and a stale tab
+ * can still post one. A screen that guessed at a malformed pick would draw an
+ * opponent's box at strikes they never chose, which is worse than drawing
+ * nothing and saying so.
+ */
+export function decodeBoxPick(raw: string | null | undefined): Box | null {
+  if (typeof raw !== "string") return null;
+  const parts = raw.split("|");
+  if (parts.length !== 6) return null;
+  const [version, underlying, floor, ceiling, wing, expiry] = parts as [
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (version !== PICK_VERSION) return null;
+  if (!/^[A-Za-z0-9]{1,12}$/.test(underlying)) return null;
+  // Exact integer parses, the same ones the ladder uses. A strike that does not
+  // parse is not rounded into one.
+  if (parseStrike(floor) === null || parseStrike(ceiling) === null) return null;
+  if (parseStrike(wing) === null) return null;
+  const at = Number(expiry);
+  if (!Number.isInteger(at) || at <= 0) return null;
+  return { underlying, floor, ceiling, wing, expiry: at };
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -453,6 +574,57 @@ export interface BoxBuilderProps {
    */
   tradeEnabled?: boolean;
   onBack?: () => void;
+
+  // ── plan7 §6 — the duel ───────────────────────────────────────────────────
+  //
+  // Four props, and they are the same four `SpotDiff` took off the same
+  // transport before it was deleted (`git show 9d8f704^:src/views/SpotDiff.tsx`).
+  // Deliberately additive: with none of them this screen is exactly the solo
+  // builder it was, which is what "extend the contract" has to mean if the
+  // contract was working.
+
+  /**
+   * The duel this box is being drawn for, or `null` when the arena was opened
+   * on its own.
+   *
+   * The room's `picks` are the whole of the lock/reveal transport, and their
+   * blindness is the **server's** property rather than this screen's: `view()`
+   * in `src/server/rooms.ts` returns `[null, null]` until both seats have
+   * submitted, so a client that wanted to cheat has nothing to read. This view
+   * therefore does not have to hide anything — there is nothing here to hide.
+   */
+  room?: RoomView | null;
+  /** Which side of the table you are on. `null` is a bystander who opened the
+   *  link: they see the duel and cannot lock, and the server would refuse them
+   *  with `NOT_A_PLAYER` if they tried. */
+  seat?: RoomSeat | null;
+  /** The room transport is mid-flight, so the lock button must not fire twice. */
+  locking?: boolean;
+  /**
+   * Lock this seat's box into the room — `useRoom().pick`, with the box already
+   * encoded by {@link encodeBoxPick}.
+   *
+   * Write-once at the server. It is **not** {@link BoxBuilderProps.onConfirm}:
+   * that one buys, this one commits a drawing, and they have separate buttons
+   * with separate labels for exactly that reason.
+   */
+  onLock?: (pick: string) => void;
+  /**
+   * The underlying the room's seed dealt — §6's *"same underlying, same budget,
+   * dealt by `spinSlice`"*.
+   *
+   * A name, not a market: `spinSlice` runs in `App`, over the book it already
+   * holds and the room's own seed, so both seats deal the same asset from the
+   * same number. Passing the *name* rather than the slice keeps this screen's
+   * rule intact — the only market data it reads is
+   * {@link BoxBuilderProps.snapshot}.
+   *
+   * Honoured only when the dealt asset can actually carry the instrument and
+   * has live expiries on this snapshot; otherwise it is ignored and the player
+   * picks, because a duel pinned to an asset with no ladder is a duel with no
+   * screen. `null` (no room, or nothing dealt) leaves the chips as they were.
+   */
+  dealt?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,6 +718,11 @@ export function BoxBuilder({
   onConfirm,
   tradeEnabled,
   onBack,
+  room = null,
+  seat = null,
+  locking = false,
+  onLock,
+  dealt = null,
 }: BoxBuilderProps) {
   // Fixed at mount when the caller does not supply one, so every derived
   // expiry set and every "now" divider in one session agree with each other.
@@ -671,6 +848,99 @@ export function BoxBuilder({
     setStage("draw");
   }, []);
 
+  // ── The duel (§6) ─────────────────────────────────────────────────────────
+
+  /** `null` for a bystander who opened the link — they have no side of the
+   *  table, so neither pick is "theirs" and neither is "mine". */
+  const seatIndex: 0 | 1 | null = seat === "host" ? 0 : seat === "guest" ? 1 : null;
+  const revealed = room?.revealed ?? false;
+  /** The opponent's raw pick. `null` — always — until the server reveals. */
+  const theirPick = seatIndex === null ? null : (room?.picks[seatIndex === 0 ? 1 : 0] ?? null);
+  /** Mine, off the wire. Also `null` until the reveal: the store is blind in
+   *  both directions, so the client remembers its own submission below. */
+  const myPick = seatIndex === null ? null : (room?.picks[seatIndex] ?? null);
+
+  /**
+   * What this browser posted, remembered locally.
+   *
+   * The wire cannot answer "have I locked?" before the reveal, because the
+   * server hides *both* picks and hiding only the opponent's would need the
+   * reader's address on a GET that does not carry one. Rather than widen the
+   * transport for a fact the client already knows, the client keeps it. The
+   * cost is one honest failure: a refresh between locking and revealing forgets
+   * it, the button comes back, and the second submission is refused with
+   * "You already locked a pick for this duel." — the store's write-once rule
+   * doing exactly its job, in words a player can act on.
+   */
+  const [locked, setLocked] = useState<string | null>(null);
+  const roomId = room?.id ?? null;
+  useEffect(() => setLocked(null), [roomId]);
+
+  /** Locked or revealed, the drawing is finished — the box on screen must stop
+   *  being editable, or it would stop being the box that was committed. */
+  const frozen = locked !== null || revealed;
+
+  /** Their box, drawn on this chart. `null` before the reveal by construction:
+   *  `theirPick` is null, so there is nothing to decode. */
+  const theirBox = useMemo(() => decodeBoxPick(theirPick), [theirPick]);
+
+  /**
+   * §6 — the asset the room's seed dealt, honoured only when it is drawable.
+   *
+   * Both halves of the guard are refusals to strand a player: an asset with no
+   * condor market has no instrument, and an asset with no live expiry has no
+   * chart. Either way the duel falls back to the chips, which is a worse duel
+   * than §6 wants and a better one than a blank screen.
+   */
+  const dealtUnderlying = useMemo(() => {
+    if (!dealt || !isCondorUnderlying(dealt)) return null;
+    return liveExpiries(snapshot, dealt, nowMs).length > 0 ? dealt : null;
+  }, [dealt, snapshot, nowMs]);
+
+  useEffect(() => {
+    if (!dealtUnderlying || dealtUnderlying === underlying) return;
+    setUnderlying(dealtUnderlying);
+    setExpiry(null);
+    reset();
+    onUnderlying?.(dealtUnderlying);
+  }, [dealtUnderlying, underlying, onUnderlying, reset]);
+
+  /**
+   * At the reveal, the chart becomes the duel's chart.
+   *
+   * Both picks are on the wire now, so the authoritative version of *my* box is
+   * the one the server is holding rather than whatever is in local state — and
+   * after a refresh local state is empty while the wire is complete. Restoring
+   * from `myPick` makes both seats, and a reloaded tab, render the same two
+   * rectangles on the same axis, which is the entire claim of §6.
+   *
+   * Guarded by a ref rather than by comparing state, so it runs once per reveal
+   * and never fights the player for the selection afterwards.
+   */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!revealed) {
+      restoredRef.current = false;
+      return;
+    }
+    if (restoredRef.current) return;
+    const mine = decodeBoxPick(myPick);
+    if (!mine) return;
+    restoredRef.current = true;
+    if (mine.underlying !== underlying) {
+      setUnderlying(mine.underlying);
+      onUnderlying?.(mine.underlying);
+    }
+    setExpiry(mine.expiry);
+    setPendingFloor(null);
+    setDrag(null);
+    setStage("draw");
+    setBox(mine);
+    // `underlying` is read, not depended on: this effect fires on the reveal and
+    // must not re-fire when the value it just set lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealed, myPick, onUnderlying]);
+
   /**
    * A raw pair of prices → a snapped box, one quote, and nothing in between.
    *
@@ -745,6 +1015,10 @@ export function BoxBuilder({
   // validates and quotes on exactly the same path.
   const onRung = useCallback(
     (price: number) => {
+      // A committed box is not a draft. Once it is on the wire the drawing
+      // surface stops accepting input, or the rectangle on screen would stop
+      // being the rectangle the opponent is playing against.
+      if (frozen) return;
       if (pendingFloor === null) {
         const raw = priceToStrike(price);
         setPendingFloor(raw);
@@ -757,7 +1031,7 @@ export function BoxBuilder({
       if (floorUsd === null) return;
       commit(floorUsd, price);
     },
-    [pendingFloor, commit],
+    [frozen, pendingFloor, commit],
   );
 
   const spotPrice = spot?.(underlying) ?? null;
@@ -822,16 +1096,136 @@ export function BoxBuilder({
         <span style={sx(`${NOTE};max-width:60ch`)}>{REPLACES_COPY}</span>
       </div>
 
+      {/*
+        ── The duel (§6) ────────────────────────────────────────────────────
+
+        Absent entirely without a room, which is the solo builder steps 1–3
+        shipped. With one, this strip is the whole of the lock/reveal surface:
+        one button that commits the drawing, one line that says what state the
+        duel is in, and — at the reveal — the sentences §6.1 requires about a
+        verdict nobody may sign.
+      */}
+      {room && (
+        <div
+          data-role="duel"
+          style={sx(`${CARD};padding:14px 16px;display:grid;gap:10px`)}
+        >
+          <div style={sx("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
+            <span style={sx(LABEL)}>DUEL · {room.lobbyName.toUpperCase()}</span>
+            <span style={sx(`font:700 12px/1 ${MONO};color:${C.text}`)}>
+              {shortAddress(room.host)} vs {room.guest ? shortAddress(room.guest) : "—"}
+            </span>
+            <span style={sx(`font:500 10.5px/1 ${MONO};color:${C.dim}`)}>
+              {usdc(room.stakeUsdc)} each · winner takes {usdc(poolOf(room.stakeUsdc))} ·{" "}
+              {room.durationMinutes} min
+            </span>
+            <div style={sx("flex:1")} />
+            {seatIndex === null ? (
+              <span style={sx(`font:500 11.5px/1 ${MONO};color:${C.muted}`)}>
+                Watching, not playing
+              </span>
+            ) : revealed ? (
+              <span
+                data-role="duel-state"
+                style={sx(`font:700 11px/1 ${MONO};letter-spacing:.12em;color:${C.violet}`)}
+              >
+                BOTH BOXES IN
+              </span>
+            ) : locked !== null ? (
+              <span
+                data-role="duel-state"
+                style={sx(`font:700 11px/1 ${MONO};letter-spacing:.12em;color:${C.green}`)}
+              >
+                LOCKED · WAITING
+              </span>
+            ) : (
+              <button
+                data-role="lock"
+                onClick={() => {
+                  if (!spec || !box || locked !== null || locking) return;
+                  // The `Box` is what travels, not the `CondorSpec`: the spec is
+                  // derived from the box by `boxToCondor` and re-derived on the
+                  // other side from the same four fields, so sending it too
+                  // would be sending a second copy of one fact that could
+                  // disagree with the first.
+                  const pick = encodeBoxPick(box);
+                  setLocked(pick);
+                  onLock?.(pick);
+                }}
+                disabled={!spec || locking || !onLock}
+                style={sx(BTN(C.accent, true, !spec || locking || !onLock))}
+              >
+                {locking ? "Locking…" : spec ? "Lock this box" : "Draw a box to lock"}
+              </button>
+            )}
+          </div>
+
+          {seatIndex !== null && !revealed && (
+            <span style={sx(NOTE)}>{locked !== null ? BLIND_COPY : LOCK_COPY}</span>
+          )}
+
+          {seatIndex !== null && revealed && (
+            <div data-role="reveal" style={sx("display:grid;gap:6px")}>
+              <span style={sx(`font:500 12px/1.5 ${SANS};color:${C.textSoft}`)}>{REVEAL_COPY}</span>
+
+              {/* Every way the two boxes can fail to be comparable on one
+                  chart, said rather than drawn wrong. */}
+              {theirBox === null && (
+                <span style={sx(`font:500 11px/1.5 ${SANS};color:${C.amber}`)}>
+                  Their pick did not decode as a box, so there is nothing to draw for them. It is
+                  shown as nothing rather than as a guess.
+                </span>
+              )}
+              {theirBox !== null && theirBox.underlying !== underlying && (
+                <span style={sx(`font:500 11px/1.5 ${SANS};color:${C.amber}`)}>
+                  They drew on {theirBox.underlying} and this chart is {underlying}, so their box is
+                  not on it — the y-axis is {underlying}'s ladder and a box from another asset would
+                  sit at prices nobody drew.
+                </span>
+              )}
+              {theirBox !== null &&
+                theirBox.underlying === underlying &&
+                box !== null &&
+                theirBox.expiry !== box.expiry && (
+                  <span style={sx(`font:500 11px/1.5 ${SANS};color:${C.amber}`)}>
+                    They drew to {expiryLabel(theirBox.expiry)}; you drew to{" "}
+                    {expiryLabel(box.expiry)}. Both boxes start at now, so the right edges differ.
+                  </span>
+                )}
+
+              <span data-role="no-verdict" style={sx(NOTE)}>
+                {NO_FILL_COPY}
+              </span>
+              <span style={sx(NOTE)}>{TWO_CLOCK_COPY}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Assets. ETH and BTC play; everything else is greyed with why. ── */}
       <div style={sx("display:flex;gap:6px;flex-wrap:wrap;align-items:center")}>
         {assets.map((a) => {
-          const playable = isCondorUnderlying(a);
+          // Three separate reasons a chip can be dead, and each says its own:
+          // no condor market on that asset, the duel dealt a different one
+          // (§6), or the box is already committed.
+          const playable =
+            isCondorUnderlying(a) &&
+            (dealtUnderlying === null || a === dealtUnderlying) &&
+            !frozen;
           return (
             <button
               key={a}
               data-asset={a}
               disabled={!playable}
-              title={playable ? undefined : `${a} has no condor market — ETH and BTC only`}
+              title={
+                !isCondorUnderlying(a)
+                  ? `${a} has no condor market — ETH and BTC only`
+                  : dealtUnderlying !== null && a !== dealtUnderlying
+                    ? `This duel deals ${dealtUnderlying} — both seats draw on the same asset`
+                    : frozen
+                      ? "Your box is locked"
+                      : undefined
+              }
               onClick={() => {
                 if (!playable || a === underlying) return;
                 setUnderlying(a);
@@ -845,8 +1239,15 @@ export function BoxBuilder({
             </button>
           );
         })}
-        {assets.some((a) => !isCondorUnderlying(a)) && (
-          <span style={sx(NOTE)}>Greyed assets have a book, but no condor market.</span>
+        {dealtUnderlying !== null ? (
+          <span data-role="dealt" style={sx(NOTE)}>
+            The duel dealt {dealtUnderlying} from the room's own seed, so both seats draw on the same
+            asset and the same book.
+          </span>
+        ) : (
+          assets.some((a) => !isCondorUnderlying(a)) && (
+            <span style={sx(NOTE)}>Greyed assets have a book, but no condor market.</span>
+          )
         )}
         <div style={sx("flex:1")} />
         {spotPrice !== null && (
@@ -874,7 +1275,7 @@ export function BoxBuilder({
                 {ladder.strikes.length} rungs · {usd(band.lo)}–{usd(band.hi)}
               </span>
               <div style={sx("flex:1")} />
-              {box && (
+              {box && !frozen && (
                 <button onClick={reset} style={sx(`${CHIP(false)};height:26px`)}>
                   Clear box
                 </button>
@@ -891,6 +1292,7 @@ export function BoxBuilder({
                 ref={plotRef}
                 data-role="plot"
                 onPointerDown={(e) => {
+                  if (frozen) return;
                   const price = priceAtClientY(e.clientY);
                   if (price === null) return;
                   e.currentTarget.setPointerCapture(e.pointerId);
@@ -912,7 +1314,7 @@ export function BoxBuilder({
                 onPointerCancel={() => setDrag(null)}
                 style={sx(
                   `position:absolute;top:${PAD.top}px;right:${PAD.right}px;bottom:${PAD.bottom}px;` +
-                    `left:${PAD.left}px;cursor:crosshair;touch-action:none`,
+                    `left:${PAD.left}px;cursor:${frozen ? "default" : "crosshair"};touch-action:none`,
                 )}
               >
                 {/* The history line, behind everything, clipped to the ladder's
@@ -1022,8 +1424,60 @@ export function BoxBuilder({
                   />
                 )}
 
+                {/*
+                  §6 — the opponent's box, on this chart.
+
+                  Drawn BEFORE mine so mine's outline paints over its fill and
+                  the overlap reads as overlap rather than as one rectangle
+                  hiding another. Filled where mine is outlined, which is the
+                  whole visual grammar: two people looked at the same market and
+                  drew different rectangles.
+
+                  Only when it is the same underlying. The y-axis is *this*
+                  asset's ladder, so a BTC box on an ETH scale would be a
+                  rectangle at prices nobody drew — the same lie `fitToLadder`
+                  refuses to tell about a history point. The mismatch is said in
+                  words under the duel strip instead.
+
+                  The right edge is at *their* expiry, not the chosen one. If
+                  they drew further out than the axis reaches, `xPct` clamps to
+                  the plot edge and the strip says the two dates differ.
+                */}
+                {revealed &&
+                  theirBox &&
+                  theirBox.underlying === underlying &&
+                  (() => {
+                    const floorUsd = strikeUsd(theirBox.floor);
+                    const ceilingUsd = strikeUsd(theirBox.ceiling);
+                    if (floorUsd === null || ceilingUsd === null) return null;
+                    return (
+                      <div
+                        data-role="opponent-box"
+                        style={sx(
+                          `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
+                            `right:${100 - xPct(t0, t1, theirBox.expiry * 1000)}%;` +
+                            `top:${yPct(band, ceilingUsd)}%;bottom:${100 - yPct(band, floorUsd)}%;` +
+                            `border:1px solid ${C.violet};border-radius:3px;` +
+                            `background:${C.violet}3d;pointer-events:none`,
+                        )}
+                      >
+                        <span
+                          style={sx(
+                            `position:absolute;right:6px;bottom:-9px;padding:2px 5px;border-radius:4px;` +
+                              `white-space:nowrap;` +
+                              `font:700 9px/1 ${MONO};letter-spacing:.1em;color:${C.bg};background:${C.violet}`,
+                          )}
+                        >
+                          THEM {usd(floorUsd)} – {usd(ceilingUsd)}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
                 {/* The box. Left edge pinned to the divider, right edge on the
-                    chosen expiry column — the only edge that is real. */}
+                    chosen expiry column — the only edge that is real. At the
+                    reveal it loses its fill and keeps its outline (§6), so the
+                    opponent's fill underneath stays visible through it. */}
                 {box && !drag && (() => {
                   const floorUsd = strikeUsd(box.floor);
                   const ceilingUsd = strikeUsd(box.ceiling);
@@ -1035,8 +1489,9 @@ export function BoxBuilder({
                         `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
                           `right:${100 - xPct(t0, t1, (chosen ?? 0) * 1000)}%;` +
                           `top:${yPct(band, ceilingUsd)}%;bottom:${100 - yPct(band, floorUsd)}%;` +
-                          `border:1px solid ${C.accent};border-radius:3px;` +
-                          `background:${C.accent}1a;box-shadow:0 0 22px ${C.accent}22;pointer-events:none`,
+                          `border:${revealed ? 2 : 1}px solid ${C.accent};border-radius:3px;` +
+                          `background:${revealed ? "transparent" : `${C.accent}1a`};` +
+                          `box-shadow:0 0 22px ${C.accent}22;pointer-events:none`,
                       )}
                     >
                       <span
@@ -1046,6 +1501,7 @@ export function BoxBuilder({
                             `font:700 9px/1 ${MONO};letter-spacing:.1em;color:${C.bg};background:${C.accent}`,
                         )}
                       >
+                        {revealed ? "YOU " : ""}
                         {usd(floorUsd)} – {usd(ceilingUsd)}
                       </span>
                     </div>
@@ -1110,7 +1566,9 @@ export function BoxBuilder({
                   key={e}
                   data-expiry={e}
                   aria-pressed={e === chosen}
+                  disabled={frozen}
                   onClick={() => {
+                    if (frozen) return;
                     setExpiry(e);
                     reset();
                   }}
@@ -1163,7 +1621,9 @@ export function BoxBuilder({
                       key={`${z.floor}-${z.ceiling}-${z.wing}`}
                       data-zone={`${z.floor}-${z.ceiling}`}
                       aria-pressed={on}
+                      disabled={frozen}
                       onClick={() => {
+                        if (frozen) return;
                         setPendingFloor(null);
                         setDrag(null);
                         commitBox(zBox);

@@ -166,6 +166,95 @@ export const TARGET_RFQ_USDC = 10_000n;
 export const DEFAULT_OFFER_WINDOW_MIN = 10;
 
 /**
+ * The free-draw box auction's offer window, **in seconds**.
+ *
+ * Ten minutes is right for a desk tool somebody leaves open. It is wrong for a
+ * box drawn inside a duel, and the measurements say by how much
+ * (`docs/plan7-measurements.md` §2):
+ *
+ *  - there is **no contract-enforced floor** on the window. The SDK validates
+ *    only "in the future" and "before expiry"; the shortest window ever accepted
+ *    on chain is **8 s** (13 s on the deployment the SDK points at), and both
+ *    settled;
+ *  - makers answer condor requests in **2–12 s** on windows of 55 s or less, and
+ *    appear to pace themselves *against* the deadline — on the three ~355 s
+ *    windows the first offer took 58–66 s. Shorter costs latency, not answers;
+ *  - 154 requests across the two factories used windows ≤30 s; 118 got offers.
+ *
+ * 45 seconds sits in the middle of the plan's 30–60 s design band, comfortably
+ * above the 12 s worst measured condor latency, and short enough that an
+ * unanswered box is a shrug rather than a stall.
+ */
+export const BOX_OFFER_WINDOW_SEC = 45;
+
+/**
+ * The offer window quantum, in seconds — and this constant is a bug fix, not a
+ * preference.
+ *
+ * Every SDK builder computes `BigInt(now + offerDeadlineMinutes * 60)`, which
+ * throws `RangeError: Not an integer` the moment `minutes × 60` is not exactly
+ * integral in IEEE-754. `1/60` throws. `0.7` happens to survive. That is a
+ * landmine under any code that thinks in seconds and divides by 60.
+ *
+ * Fifteen seconds defuses it for good: for any whole `k`, `15k / 60 = k/4` is
+ * dyadic and therefore exact, and `k/4 × 60 = 15k` is exact too. Snapping the
+ * requested window to a multiple of 15 s makes the `RangeError` unreachable by
+ * construction rather than unlikely.
+ */
+export const OFFER_WINDOW_QUANTUM_SEC = 15;
+
+/**
+ * A requested window, in seconds, snapped to something the SDK's arithmetic can
+ * actually express. Never throws; never silently lengthens past one quantum.
+ *
+ * Snapping rather than throwing is deliberate. A window is a *policy* number
+ * chosen by a UI control, and the difference between 45 s and 44 s is nothing
+ * anybody can perceive — whereas a `RangeError` thrown from inside the SDK's
+ * builder, three frames below the code that picked 20, is a lost afternoon.
+ */
+export function offerWindowSeconds(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return BOX_OFFER_WINDOW_SEC;
+  const quanta = Math.max(1, Math.round(seconds / OFFER_WINDOW_QUANTUM_SEC));
+  return quanta * OFFER_WINDOW_QUANTUM_SEC;
+}
+
+/**
+ * Seconds → the `offerDeadlineMinutes` the SDK's builders take.
+ *
+ * The division is safe because {@link offerWindowSeconds} ran first. This is
+ * the only place in the repo that turns a window into that field, which is what
+ * makes the guarantee checkable.
+ */
+export function offerWindowMinutes(seconds: number): number {
+  return offerWindowSeconds(seconds) / 60;
+}
+
+/**
+ * How often the box auction asks the indexer, in ms.
+ *
+ * 3 s rather than the desk tool's 15 s, because the thing being waited for
+ * arrives at a **6-second median** and the whole auction is 45 seconds long. A
+ * 15-second cadence would spend a third of the window not knowing. Fifteen polls
+ * against a public read endpoint over three quarters of a minute is a rounding
+ * error next to what the chart behind it already does.
+ */
+export const BOX_POLL_MS = 3_000;
+
+/** Indexer lag allowance, so the wait ends when the auction does — not before. */
+export const BOX_PATIENCE_PAD_MS = 15_000;
+
+/**
+ * How long to wait on a box auction before reporting `unanswered`.
+ *
+ * Still not a timeout, and still not an error — see {@link RFQ_PATIENCE_MS}. It
+ * is the window plus indexer lag, so "nobody answered" means the auction closed
+ * without bids, which is a fact about the market rather than about our clock.
+ */
+export function boxPatienceMs(windowSec: number = BOX_OFFER_WINDOW_SEC): number {
+  return offerWindowSeconds(windowSec) * 1000 + BOX_PATIENCE_PAD_MS;
+}
+
+/**
  * How often we ask the state indexer whether anyone has bid.
  *
  * 15s, matching the market layer's server cache. Faster would be a burst against
@@ -303,8 +392,31 @@ export interface RfqInput {
    *  and not the two this field used to allow. */
   underlying: RfqUnderlying;
   optionType: "CALL" | "PUT";
-  /** Human-readable, e.g. `4400` for $4,400. */
+  /**
+   * Human-readable, e.g. `4400` for $4,400.
+   *
+   * On the four-strike box path this carries the **inner floor** (`s2`) — the
+   * bottom of the band the player drew. It is the breadcrumb's anchor and the
+   * panel's label; the instrument itself comes from {@link RfqInput.strikes}.
+   */
   strike: number;
+  /**
+   * Four human-readable strikes, ascending — present ⇒ this is a free-draw box.
+   *
+   * `[s1, s2, s3, s4]` straight out of `condorStrikeNumbers(boxToCondor(box))`.
+   * Present, the live adapter hands them to the SDK's builder as a `strikes`
+   * array, which resolves the implementation by count: four strikes and
+   * `optionType: "CALL"` is `CALL_CONDOR` (`index.js`,
+   * `getImplementationForStructure`, `case 4`). Absent, `strike` is used and the
+   * request is a vanilla single-leg one — the desk tool's original shape.
+   *
+   * This field is the whole of plan 7 step 5 at the type level: **RFQ is the
+   * only path that mints a condor.** Zero have ever been listed on the
+   * OptionBook, across its entire 15,740-position history
+   * (`docs/plan7-measurements.md` §3), so a box that matches no listed `RANGER`
+   * zone can be priced here or nowhere.
+   */
+  strikes?: readonly [number, number, number, number];
   /** Unix **seconds**. */
   expiry: number;
   /** True to buy (long). */
@@ -312,15 +424,33 @@ export interface RfqInput {
   /** Contracts, on-chain units (6dp against USDC collateral). */
   numContracts: string | bigint;
   /**
-   * The most premium we will pay, USDC 6dp — the auction's reserve.
+   * **The player's max bid**, USDC 6dp — the auction's reserve price.
    *
-   * Capped at `MAX_RFQ_USDC` before any dep is touched. The reserve is also what
+   * plan7 §3.2 is emphatic about what this is and is not: `reservePrice` is a
+   * **limit price the player names**, not a quote they receive. Bid low for a
+   * better fill and risk nobody taking it; bid high to get filled worse. The UI
+   * must render it as *"Your max bid"* with a suggested default, and never as
+   * "Est. Quote" — see `MAX_BID_LABEL` in `src/desk/boxauction.ts`.
+   *
+   * Capped at `MAX_RFQ_USDC` before any dep is touched. It is also what
    * `acceptOffer` refuses to exceed: a bid above the number the user set is not
-   * a bid we accept, whatever the indexer says.
+   * a bid we accept, whatever the indexer says. And it goes **on chain** — the
+   * live adapter converts it to the per-contract float the SDK's builder wants,
+   * so market makers see the limit rather than guessing at it.
    */
   reserveUsdc: bigint;
-  /** Minutes the offer window stays open. */
+  /** Minutes the offer window stays open. Ignored when `offerWindowSec` is set. */
   offerWindowMin?: number;
+  /**
+   * Seconds the offer window stays open — the box path's control, and the one to
+   * prefer.
+   *
+   * Snapped through {@link offerWindowSeconds} before it becomes
+   * `offerDeadlineMinutes`, which is what keeps `BigInt(now + minutes * 60)`
+   * from throwing `RangeError: Not an integer` on any window that is not a whole
+   * number of minutes.
+   */
+  offerWindowSec?: number;
 }
 
 /** One market maker's sealed bid, after we have decrypted it. */
@@ -1512,6 +1642,39 @@ export const UNANSWERED_COPY =
 // The live adapter — the only place the SDK is named
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The player's max bid, in the units the SDK's builder wants: **dollars per
+ * contract**, human-readable.
+ *
+ * We hold the reserve as a total in USDC 6dp because that is the number the cap
+ * bounds, the number `acceptOffer` compares an incoming bid against, and the
+ * number the panel prints. `RFQBuilderParams.reservePrice` is neither of those
+ * things — it is a float, per contract, which the SDK scales back up by the
+ * collateral's decimals and multiplies by `numContracts`
+ * (`OptionFactoryModule.calculateReservePrice`, `index.js:4702`). Round-tripping
+ * through here for one contract is exact; for other sizes it is exact to the
+ * cent, which is the resolution USDC has.
+ *
+ * `0` when the size is zero or unreadable — the SDK treats a non-positive
+ * `reservePrice` as "no reserve" and writes `0n`, which is the honest outcome
+ * for a request whose size we could not parse.
+ */
+export function reservePricePerContract(
+  reserveUsdc: bigint,
+  numContracts: string | bigint,
+): number {
+  let contracts: bigint;
+  try {
+    contracts = BigInt(numContracts);
+  } catch {
+    return 0;
+  }
+  if (contracts <= 0n || reserveUsdc <= 0n) return 0;
+  // Both sides are USDC-scaled (6dp), so the scales cancel and what is left is
+  // dollars per contract.
+  return Number(reserveUsdc) / Number(contracts);
+}
+
 /** Just the wallet seam the RFQ needs. Structurally satisfied by `WalletSource`. */
 export interface RfqWallet {
   readonly id: string;
@@ -1633,6 +1796,32 @@ export function createLiveRfqDeps(
 
     buildRequest(input, requesterPublicKey) {
       if (!client) throw new Error("SIGNER_REQUIRED");
+
+      // Seconds win when given; the minutes field stays for the desk tool.
+      // `offerWindowMinutes` snaps to a 15-second quantum first, which is what
+      // keeps `BigInt(now + minutes * 60)` inside the SDK from throwing
+      // `RangeError: Not an integer` — see OFFER_WINDOW_QUANTUM_SEC.
+      const offerDeadlineMinutes =
+        input.offerWindowSec === undefined
+          ? (input.offerWindowMin ?? DEFAULT_OFFER_WINDOW_MIN)
+          : offerWindowMinutes(input.offerWindowSec);
+
+      // Four strikes ⇒ the free-draw box. `buildCondorRFQ` is *literally*
+      // `buildRFQRequest` with `strikes: [s1,s2,s3,s4]` (`index.js:6104`), and
+      // `getImplementationForStructure` resolves `case 4` + CALL to
+      // `CALL_CONDOR`. Passing the array rather than calling the condor helper
+      // keeps one builder call site — and one place where a strike count could
+      // ever be wrong.
+      const legs = input.strikes
+        ? { strikes: [...input.strikes] }
+        : { strikes: input.strike };
+
+      // The player's limit price goes ON CHAIN. Without it the built request
+      // carries `reservePrice: 0n`, and a reserve of zero is not "no limit" to a
+      // market maker reading the request — it is the absence of the one number
+      // plan7 §3.2 says is the player's decision to make.
+      const reservePrice = reservePricePerContract(input.reserveUsdc, input.numContracts);
+
       // The SDK's own builder. `RFQBuilderParams` documents that the generated
       // params ALWAYS carry `collateralAmount = 0`; `assertZeroCollateral` checks
       // that claim rather than trusting it.
@@ -1640,13 +1829,14 @@ export function createLiveRfqDeps(
         requester: input.requester,
         underlying: input.underlying,
         optionType: input.optionType,
-        strikes: input.strike,
+        ...legs,
         expiry: input.expiry,
         numContracts: input.numContracts,
         isLong: input.isLong,
-        offerDeadlineMinutes: input.offerWindowMin ?? DEFAULT_OFFER_WINDOW_MIN,
+        offerDeadlineMinutes,
         collateralToken: "USDC",
         requesterPublicKey,
+        ...(reservePrice > 0 ? { reservePrice } : {}),
         ...(options.referralId === undefined ? {} : { referralId: options.referralId }),
       });
     },
