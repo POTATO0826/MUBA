@@ -263,39 +263,100 @@ button {
   animation-play-state: paused;
 }
 
-/* ---- The wallet-picker sticker (src/ui/WalletPicker.tsx). Hovering a wallet
- * row springs a big tile of that wallet's own icon out from behind the row's
- * top-right corner, with sparkles around it.
+/* ---- The wallet-picker mascot (src/ui/WalletPicker.tsx). One cat sits at the
+ * top-right of the dialog for as long as the dialog is open, overhanging its
+ * corner, with sparkles thrown around it. It launches once on open, breathes
+ * and leans the whole time it is up, and pops every time the pointer arrives on
+ * a different wallet — retinting to that wallet's colour as it goes.
  *
- * The launch itself is a *transition* on the row's sticker element, not a
- * keyframe, because it has to run backwards on mouse-leave. What lives here is
- * only the part that loops while the pointer stays: the idle wobble and the
- * sparkle twinkle. They sit on separate elements from the launch (an inner span
- * inside the sticker, and free-standing sparkle spans) so that the animation's
- * `transform` never fights the transition's `transform` — the browser lets an
- * animation win outright, and a launch that stopped halfway looked broken.
+ * FOUR transforms are live on that one tile at once, and CSS gives an element
+ * exactly one `transform`. So each gets its own nested element, outermost
+ * first: the launch (a transition, on the seat), the hover pop, the breathe,
+ * the lean. Anything sharing an element loses — the browser lets a running
+ * animation beat a transition outright, and the first draft that put the launch
+ * and the wobble on one span produced a launch that stopped halfway.
  *
- * Both keyframes are written symmetrically about their base value (rotate(0),
- * scale(0)/opacity 0), so removing the animation on mouse-leave — which is how
- * the component switches it off — never drops the element far from where it
- * already was. Each animated element also carries a short transition, so the
- * hand-back from animation to base value eases rather than snaps. ---- */
+ * The keyframes below are all written to *start and end at the identity*
+ * (scale(1), rotate(0), opacity 0), so an element that loses its animation —
+ * which is how the reduced-motion rule at the bottom switches them off, and how
+ * the pop hands back when it finishes — is never left stranded away from where
+ * its parent put it. ---- */
 
-/* Alive-while-hovered: the tile drifts a few degrees either side of its
- * settled tilt. The settled tilt itself is the launch transition's, on the
- * parent, so this stays centred on zero and the two compose.
+/* Alive-while-open, part one: the cat leans. This composes with the seat's -10°
+ * settled tilt on the element above, so the tile swings between -10° and -4°.
  *
- * ±3° is a clearance budget, not a taste call. `STICKER_SEAT` in
- * WalletPicker.tsx sizes the tile's gap to the panel edge and to the close
- * button from 8° of settled tilt plus this amplitude; widening it walks the
- * tile's corner into both. */
-@keyframes vcStickerWobble {
-  from { transform: rotate(-3deg); }
-  to { transform: rotate(3deg); }
+ * One-sided, from zero, and that is a clearance budget rather than a taste
+ * call. The seat rotates about its bottom-right corner, so *more* negative tilt
+ * swings the tile's bottom-left corner down toward the first wallet row —
+ * which, at 124px, is the tightest gap in the dialog. Running the lean from the
+ * settled tilt *upward* costs that gap nothing, and 6° of travel reads far
+ * better than the ±3° this started as: at 124px, ±3° was invisible, which is
+ * most of why the owner reported the animation missing. */
+@keyframes vcCatLean {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(6deg); }
+}
+
+/* Alive-while-open, part two: the breathe — the owner's "getting bigger and
+ * smaller". A 3.5% swing over 2.8s, which is small enough to read as breathing
+ * rather than as pulsing and large enough to see at 124px.
+ *
+ * It breathes *down* from the tile's full size rather than up past it, for the
+ * same reason the lean is one-sided: the pop below already spends the whole
+ * scale budget `CAT_SEAT`'s clearances were measured against, and a breathe
+ * that added to it would put a popping cat into the first row. Shrinking is
+ * indistinguishable from growing once the eye has nothing to compare against —
+ * the tile's apparent rest size is simply the middle of the swing. */
+@keyframes vcCatBreathe {
+  from { transform: scale(1); }
+  to { transform: scale(0.965); }
+}
+
+/* The hover pop: the cat notices the wallet you moved onto. Scale past its rest
+ * size on the launch's own overshoot curve, straighten up as it swells, then a
+ * small counter-lean on the way back down.
+ *
+ * Two identical copies, and that is the mechanism, not a mistake. This has to
+ * replay on *every* hover change, including from one wallet straight to the
+ * next, and a CSS animation restarts only when its `animation-name` changes —
+ * re-applying the same name to an element that already carries it does nothing
+ * at all, which is the classic "it only ever played once" bug. `WalletPicker`
+ * alternates between these two names on each hover, so the name always changes
+ * and the animation always restarts. The alternative — re-keying the element to
+ * force a remount — would throw away the 220ms colour transition underneath it,
+ * which is the one thing that must *not* restart.
+ *
+ * The +4° at the peak and the -2.5° recoil are both inside the budget in
+ * `CAT_SEAT`: the peak leans away from the first row, and by the time the tile
+ * leans back toward it the scale is under 1. */
+@keyframes vcCatPopA {
+  0% { transform: scale(1) rotate(0deg); }
+  34% { transform: scale(1.14) rotate(4deg); }
+  64% { transform: scale(0.985) rotate(-2.5deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+@keyframes vcCatPopB {
+  0% { transform: scale(1) rotate(0deg); }
+  34% { transform: scale(1.14) rotate(4deg); }
+  64% { transform: scale(0.985) rotate(-2.5deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+/* The mascot blinks once, a beat after the tile lands — long enough after
+ * that it reads as the cat noticing you rather than as part of the launch.
+ * Runs once, not on a loop: a cat that blinks forever is a broken cat.
+ * `CatMascot` sets `transform-box:fill-box` so this squashes the eye about its
+ * own centre. */
+@keyframes vcCatWink {
+  0%,
+  100% { transform: scaleY(1); }
+  42%,
+  58% { transform: scaleY(0.08); }
 }
 
 /* Sparkles pop and fade on their own clocks; the component staggers them with
- * an animation-delay per sparkle. */
+ * an animation-delay per sparkle, and re-keys them on every hover change so the
+ * cluster re-bursts with the cat's pop instead of twinkling through it. */
 @keyframes vcSparkle {
   0%,
   100% {
@@ -308,14 +369,16 @@ button {
   }
 }
 
-/* Belt and braces. `WalletPicker` already refuses to render the sticker at all
- * when `matchMedia` reports reduced motion — this catches the case where the
- * probe is unavailable (some test DOMs) and the markup ships anyway. Only the
- * loops are stilled: the sticker's resting position comes from an inline
- * transform, never from a keyframe, so nothing is left stranded. */
+/* Belt and braces. `WalletPicker` already renders the cat seated and still, and
+ * drops the sparkles entirely, when `matchMedia` reports reduced motion — this
+ * catches the case where the probe is unavailable (some test DOMs) and the
+ * markup ships anyway. Only the loops are stilled: the cat's seated position
+ * comes from an inline transform, never from a keyframe, so it stays put and
+ * stays visible. Its retint is untouched on purpose — a colour change is not
+ * motion, and losing it would cost the reader the whole point of the mascot. */
 @media (prefers-reduced-motion: reduce) {
-  [data-wsticker],
-  [data-wsticker] *,
+  [data-wcat],
+  [data-wcat] *,
   [data-wspark] {
     animation: none !important;
   }
