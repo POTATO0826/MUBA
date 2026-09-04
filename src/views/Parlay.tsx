@@ -22,7 +22,17 @@ import {
 } from "../desk/fill.ts";
 import { buildPayoffChart, ETH_VOL_BOX } from "../desk/payoff.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, pill, tag } from "../theme.ts";
+import {
+  C,
+  FEED_STATE,
+  MONO,
+  SANS,
+  feedState,
+  pill,
+  stateAge,
+  stateDot,
+  tag,
+} from "../theme.ts";
 import type { OrderRow } from "../types.ts";
 
 const PRICING_COLUMNS = "88px 96px 110px 100px 100px 84px 84px 1fr";
@@ -155,12 +165,35 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
   const previewable = orders.some((o) => o.preview);
   const [selected, setSelected] = useState<string | null>(null);
 
-  // No socket is open. The blotter is a 30s poll over a 15s server cache, and
-  // the pill says so — `client.ws.subscribeOrders` is P2's optional garnish and
-  // was not taken, so a `STREAMING` label here would be the same kind of
-  // decoration this phase exists to remove.
+  /**
+   * The blotter's provenance pill.
+   *
+   * No socket is open. The blotter is a 30s poll over a 15s server cache, and
+   * the pill says so — `client.ws.subscribeOrders` is P2's optional garnish and
+   * was not taken, so a `STREAMING` label here would be the same kind of
+   * decoration this phase exists to remove.
+   *
+   * Two claims this pill used to make that the data did not support, both fixed
+   * here:
+   *
+   *  - it read `POLL 30s` for *any* non-mock source, including a `stale` one.
+   *    A stale book is precisely the book that is **not** being polled
+   *    successfully; the cadence was advertised loudest exactly when it had
+   *    stopped working. STALE now takes the cadence's place and brings the age
+   *    of the read that is actually on screen, which is the disclosure.
+   *  - the dot beside it was green and pulsing unconditionally, so a screen of
+   *    checked-in fixtures wore the universal "data is arriving" animation
+   *    while the label next to it honestly said SEEDED. `stateDot` pulses for
+   *    `live` and nothing else.
+   */
+  const feed = feedState(source.meta.source);
+  const feedAge = stateAge(source.meta.fetchedAt, Date.now());
   const feedLabel =
-    source.meta.source === "mock" ? "SEEDED" : `POLL ${Math.round(REFRESH_MS / 1000)}s`;
+    feed === "live"
+      ? `LIVE · POLL ${Math.round(REFRESH_MS / 1000)}s`
+      : feed === "stale"
+        ? `STALE${feedAge ? ` · ${feedAge}` : ""}`
+        : FEED_STATE[feed].label;
 
   return (
     <div
@@ -325,9 +358,17 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
             <div style={sx("flex:1")} />
             {/* The exact call whose output is on screen, not a decoration. With
                 no MM chain the panel is showing the order book instead, and it
-                says the call that produced that. */}
+                says the call that produced that.
+
+                The filled branch used to be a flat green — the LIVE colour —
+                even when the snapshot underneath it was stale. It now carries
+                the feed's own colour, so an aged MM chain reads amber like
+                everything else aged on the page. (The mock never reaches this
+                branch: it ships no MM quotes at all.) */}
             <span
-              style={sx(`font:500 10px/1 ${MONO};color:${mm.length > 0 ? C.green : C.dim}`)}
+              style={sx(
+                `font:500 10px/1 ${MONO};color:${mm.length > 0 ? FEED_STATE[feed].color : C.dim}`,
+              )}
             >
               {mm.length > 0
                 ? `● client.mmPricing.getPricingArray('${asset}')`
@@ -483,15 +524,13 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
               </span>
             )}
             <span
+              data-testid="desk-feed"
+              title={FEED_STATE[feed].means}
               style={sx(
-                `display:flex;align-items:center;gap:7px;font:500 10px/1 ${MONO};color:${C.muted}`,
+                `display:flex;align-items:center;gap:7px;font:500 10px/1 ${MONO};color:${FEED_STATE[feed].color}`,
               )}
             >
-              <span
-                style={sx(
-                  `width:6px;height:6px;border-radius:99px;background:${C.green};animation:vcPulse 2s infinite`,
-                )}
-              />
+              <span style={sx(stateDot(feed))} />
               {feedLabel}
             </span>
           </div>

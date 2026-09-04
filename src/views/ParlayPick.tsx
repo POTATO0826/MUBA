@@ -3,7 +3,15 @@ import { PlayerMark } from "../components/PlayerMark.tsx";
 import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
 import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
-import { SPOT_CHIP, bookDeltaNote, liveTag, seededTag, spotChipSx, spotFor } from "../data/spot.ts";
+import {
+  LIVE_COLOR,
+  SPOT_CHIP,
+  bookDeltaNote,
+  liveTag,
+  seededTag,
+  spotChipSx,
+  spotFor,
+} from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
 import {
   PARLAY_CARDS,
@@ -235,7 +243,10 @@ export function ParlayPick(p: ParlayPickProps) {
                     <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
                   ) : (
                     <span data-testid={`spot-${sym}`} style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>
-                      {seededTag(u.px)} · <span style={sx(`color:${C.green}`)}>{liveTag(liveSpot)}</span> · base ±
+                      {/* `LIVE_COLOR` is the vocabulary's LIVE tint, not a
+                          hand-picked green — the same constant the header chip
+                          and the footer's provenance line use. */}
+                      {seededTag(u.px)} · <span style={sx(`color:${LIVE_COLOR}`)}>{liveTag(liveSpot)}</span> · base ±
                       {u.t.toFixed(1)}%
                     </span>
                   )}

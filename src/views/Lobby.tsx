@@ -5,7 +5,7 @@ import { PlayerMark } from "../components/PlayerMark.tsx";
 import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS } from "../theme.ts";
 import { LobbyCard } from "../ui/LobbyCards.tsx";
 import type { LobbyDef } from "../types.ts";
 
@@ -138,7 +138,19 @@ function BiggestPayoffs() {
         <span style={sx(`width:6px;height:6px;border-radius:99px;background:${C.accent}`)} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.14em;color:${C.accent}`)}>BIGGEST PAYOFFS 24H</span>
         <div style={sx("flex:1")} />
-        <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>SETTLED ON BASE · MOCK</span>
+        {/* `SETTLED_CASES` is a checked-in fixture list, so this reads SEEDED
+            like every other fixture in the app. It said `MOCK` — the word the
+            implementation uses (`mockMarketSource`, `wallet.id === "mock"`) and
+            the fourth different name one app had for one idea. Same claim, same
+            resting grey, the vocabulary's word. */}
+        <span
+          title={FEED_STATE.seeded.means}
+          style={sx(
+            `font:500 9px/1 ${MONO};letter-spacing:.1em;color:${FEED_STATE.seeded.color}`,
+          )}
+        >
+          SETTLED ON BASE · {FEED_STATE.seeded.label}
+        </span>
       </div>
 
       <div style={sx(`display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px solid ${C.line}`)}>

@@ -366,7 +366,7 @@ rather than forking from it. `src/lib/sx.ts` is the whole mechanism.
 
 Market data sits behind one interface, `MarketSource` in `src/data/market.ts`;
 the app still ships `mockMarketSource` and every live feature degrades to it.
-As of the P3+P4 gate:
+As of the P7 gate:
 
 | Surface | Live? | Behind |
 |---|---|---|
@@ -375,17 +375,47 @@ As of the P3+P4 gate:
 | Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it (~7 of 18 names); the other names render exactly the seeded app | same |
 | "Launch attack" → real `fillOrder`, $2 hard cap, ~$0.01 target | REAL, mainnet | `THETADUEL_TRADE=on` opt-IN, default off |
 | Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** — deploy is gated on the owner's own read | owner |
-| Attest referee (`/api/lock` + `/api/attest`) | live code; lock requires seat a's EIP-191 signature | `ATTESTOR_PRIVATE_KEY` |
-| USDC staking UI | NOT built (P6) — hard prerequisite: on-chain seat binding (see `docs/reviews/escrow-adversarial-review.md`, X-1) | — |
+| Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`) | `ATTESTOR_PRIVATE_KEY` |
+| USDC staking UI — the side bet, its six states, the claim | BUILT (`src/state/stake.ts`, `src/desk/escrow.ts`); inert until an escrow is deployed, and never on the mock wallet | `THETADUEL_STAKE=on` opt-IN + `THETADUEL_ESCROW` |
+| The seeded board, tape, duel and PTS ledger | SEEDED, permanently and by design — settlement never reads a live number | — |
 
 The seeded game never depends on any of it: kill every flag and the app is
 byte-for-byte the offline build. **Residual trust, stated plainly:** the attest
 server re-derives the winner from committed picks and never signs a claimed
 one, but it can see picks in the clear and holds the only verdict key — a
-dishonest operator could collude, and a duel's counterparty (who knows the
-room key) could still lock seat `a` first. Commit-reveal and on-chain seat
-binding are the named v2; the escrow's unconditional 6-hour refund is the
-escape hatch that needs no server at all.
+dishonest operator could collude. The counterparty-locks-seat-`a` attack that
+X-1 named is closed: `src/server/seats.ts` reads `a` and `b` out of the
+contract's `duels` getter, so a lock is compared against who actually paid a
+stake rather than against who says so. Commit-reveal is the named v2; the
+escrow's unconditional 6-hour refund is the escape hatch that needs no server
+at all.
+
+### Reading the chips
+
+Four words, one colour each, everywhere in the app. They are defined once in
+`FEED_STATE` (`src/theme.ts`) and no surface phrases or tints its own — the
+footer, the news wire's header, `/desk`'s blotter pill and the lobby's payoff
+marquee all read from that record.
+
+| Chip | Colour | What it claims |
+|---|---|---|
+| `LIVE` | green | Fresh from the venue, read inside the refresh window. The only state that pulses. |
+| `SEEDED` | grey | A deterministic fixture. No network was involved and none failed — this is what the offline build runs on. |
+| `STALE` | amber | Was live; the refresh failed; these are the last good numbers. Always shown with the age of that read — the age is the disclosure, the word alone is not. |
+| `PARTIAL` | blue | Live, but a feed dropped. Some sources answered and some did not. |
+
+Two more chips are compounds of the same vocabulary rather than new states:
+`LIVE SPOT · SEEDED TAPE` on the spin reel and the pick screen says both things
+at once — the annotation beside a price is a live print, the number the duel
+settles on is the seeded one — and `/desk`'s payoff label reads `SPOT 2,375.76 ·
+LIVE` or `SPOT 4,182 · REFERENCE`, where `REFERENCE` is the constant the
+structure was written around and is pinned by `test/engine.test.ts`.
+
+Words that look like these and are not: `SEASON 01 · LIVE` (the season is
+running), `MOCK WALLET · FAKE ADDRESS` (a wallet tier), `PARTIAL` on an order
+row (the venue's own fill status), `SIDE BET · UNAVAILABLE` (a feature is off).
+None of them wear one of the four colours — accent is the brand and no feed
+state is accent — which is what keeps the collision harmless.
 
 ## What the tape actually does
 

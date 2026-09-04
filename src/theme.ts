@@ -82,3 +82,142 @@ export const miniTag = (color: string): string =>
 export const chipStyle = (color: string): string =>
   `flex:none;font:500 10px/1 ${MONO};padding:6px 8px;border-radius:6px;border:1px solid ${C.border};` +
   `background:${C.raised};color:${color}`;
+
+/* ------------------------------------------------------------------------ *
+ *  Feed state — the four words this app may use about where a number came
+ *  from, and the one colour each of them owns.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Provenance, as a closed set.
+ *
+ * Every wave that shipped a live feed invented its own badge for this, so the
+ * same idea ended up said four ways: the wire called a fixture `SEEDED` in
+ * amber, the footer called the same thing "mock data" in grey, `/desk` called
+ * it `SEEDED` beside a green pulsing dot, and the lobby called it `MOCK`. Worse,
+ * amber meant "this is a fixture" on the wire and "this is real but old" in the
+ * footer — the same colour making two different claims on two screens of one
+ * app.
+ *
+ * This record is the single definition. A surface picks a state and takes the
+ * label and the colour with it; it does not get to phrase or tint its own.
+ *
+ * The four states are exhaustive over what a feed can be and are deliberately
+ * *not* about anything else — a season that is running, a wallet that is a
+ * stub, an order that filled halfway, a feature that is switched off. Those all
+ * use words that collide with these (`SEASON 01 · LIVE`, `MOCK WALLET`,
+ * `PARTIAL` on an order row, `SIDE BET · UNAVAILABLE`) and they are correct as
+ * they stand; what keeps them from being confusing is that none of them wear
+ * one of these four colours. Accent is the brand, and no feed state is accent.
+ */
+export type FeedState = "live" | "seeded" | "stale" | "partial";
+
+export interface FeedStateSpec {
+  /** The chip's text. Rendered verbatim, never re-cased or abbreviated. */
+  label: string;
+  /** The state's colour, everywhere it appears — chip, dot, tinted text. */
+  color: string;
+  /** Exactly what the chip claims. Also the chip's `title`, so the claim is
+   *  readable on the screen and not only in this file. */
+  means: string;
+}
+
+export const FEED_STATE: Record<FeedState, FeedStateSpec> = {
+  /** Fresh data from the venue, right now — read inside the source's own
+   *  refresh window with nothing degraded. The only state that may pulse. */
+  live: {
+    label: "LIVE",
+    color: C.green,
+    means: "Fresh from the venue — read within the refresh window.",
+  },
+  /**
+   * A deterministic fixture. No network was involved and none failed: this is
+   * the checked-in data the offline build runs on. Grey rather than amber
+   * because a fixture is the app's ordinary resting state, not a warning —
+   * amber is reserved for the one case where the numbers are real and wrong.
+   */
+  seeded: {
+    label: "SEEDED",
+    color: C.dim,
+    means: "Deterministic fixture — no network, nothing failed.",
+  },
+  /**
+   * Was live; the refresh failed; these are the last good numbers still on
+   * screen. Real data wearing the wrong timestamp, which is the one genuinely
+   * dangerous state — hence the warning colour, and hence the rule that a
+   * STALE chip always appears next to the age of the read it is showing
+   * (`stateAge`). The age is the disclosure; the word alone is not.
+   */
+  stale: {
+    label: "STALE",
+    color: C.amber,
+    means: "Last good read — the refresh failed. The age is how old it is.",
+  },
+  /**
+   * Some feeds answered and some did not. The rows on screen are live; a
+   * source that should have contributed to them is missing. Blue because it is
+   * neither clean nor wrong — it is incomplete, and the reader's question is
+   * "what is missing", not "should I trust this".
+   */
+  partial: {
+    label: "PARTIAL",
+    color: C.blue,
+    means: "Live, but a feed dropped — some sources did not answer.",
+  },
+};
+
+/**
+ * The wire word for a source's own kind string.
+ *
+ * `MarketMeta.source` is `"mock" | "live" | "stale"` and `NewsSource` reports
+ * `"mock" | "live" | "partial"`; both spell a fixture `"mock"`, which is the
+ * *implementation's* word for it (`mockMarketSource`, `wallet.id === "mock"`)
+ * and not the reader's. This is the one place the translation happens, so no
+ * view has to remember that "mock" is shown as SEEDED.
+ */
+export function feedState(kind: "mock" | "live" | "stale" | "partial"): FeedState {
+  return kind === "mock" ? "seeded" : kind;
+}
+
+/**
+ * A state chip: `tag()` in the state's colour.
+ *
+ * Reusing `tag` rather than inventing a fifth chip shape is the point — a
+ * provenance chip is a category tag whose category happens to be "where this
+ * came from", and it should sit on a header bar looking like every other tag
+ * there. `stateMiniChip` is the same chip at `miniTag` scale, for the header
+ * bars that are already running two chips deep.
+ */
+export const stateChip = (state: FeedState): string => tag(FEED_STATE[state].color);
+
+export const stateMiniChip = (state: FeedState): string => miniTag(FEED_STATE[state].color);
+
+/**
+ * The 6px status dot, in the state's colour.
+ *
+ * It pulses for `live` and only for `live`. A pulsing dot is the universal
+ * "something is arriving" signal, and putting one beside a fixture — which
+ * `/desk` did — is a claim the data does not support, made in animation rather
+ * than in words so that no amount of reading the label catches it.
+ */
+export const stateDot = (state: FeedState): string =>
+  `width:6px;height:6px;border-radius:99px;background:${FEED_STATE[state].color}` +
+  (state === "live" ? ";animation:vcPulse 2s infinite" : "");
+
+/**
+ * `"12s ago"` / `"4m ago"`, or `null` when a source has no age.
+ *
+ * Lives here, beside the vocabulary, rather than in whichever view drew it
+ * first, because the age is half of what STALE means: the word says the
+ * refresh failed and this number says how much that cost you. Two surfaces
+ * phrasing it two ways would be the same drift this block exists to end.
+ *
+ * `fetchedAt: 0` is the mock's marker for "no age at all" — a fixture is not
+ * "from 3 seconds ago" — and returns `null` rather than a nonsense duration.
+ */
+export function stateAge(fetchedAt: number, now: number): string | null {
+  if (!fetchedAt) return null;
+  const seconds = Math.max(0, Math.round((now - fetchedAt) / 1000));
+  if (seconds < 90) return `${seconds}s ago`;
+  return `${Math.round(seconds / 60)}m ago`;
+}
