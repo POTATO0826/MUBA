@@ -2,6 +2,7 @@ import { ThetanutsClient, getOptionImplementationInfo } from "@thetanuts-finance
 import type { PayoutType, ThetanutsLogger } from "@thetanuts-finance/thetanuts-client";
 import { JsonRpcProvider } from "ethers";
 import type { FillPreview, MmQuote, OrderRow, PricingRow } from "../types.ts";
+import { qualifiedAssets, type QualifiedAsset } from "../data/qualify.ts";
 
 /**
  * Live Thetanuts market data, read on the server.
@@ -311,6 +312,30 @@ export interface MarketSnapshot {
   /** How many orders carried usable greeks. Zero means the pricing table is
    *  quoted but unscoreable — `/desk` degrades rather than inventing a delta. */
   greeksSeen: number;
+  /**
+   * The asset gate, measured against **this** capture — `qualifiedAssets()`
+   * from `src/data/qualify.ts`, run over the same raw response every other
+   * field here was built from.
+   *
+   * It rides in the envelope rather than being recomputed in the browser for
+   * two reasons, and the second is the load-bearing one:
+   *
+   *  1. Two of the four conditions are unanswerable after this builder runs —
+   *     `availableAmount` has been aggregated into a display `size` string and
+   *     `rawApiData.priceFeed` has been resolved to a symbol and discarded. The
+   *     gate must read the raw capture, and the server is the only place that
+   *     still holds it.
+   *  2. It is measured **beside** the book it grades, at the same `at`. A
+   *     second read to gate a first read's rows is two snapshots pretending to
+   *     be one, which is how a lobby ends up offering an asset the blotter
+   *     below it does not carry.
+   *
+   * `[]` is an ordinary answer, not an error: it is what a 404ing indexer, a
+   * thin book, or a fixture with no depth all correctly produce. Note the
+   * asymmetry with {@link underlyings} — that is "has a two-sided table to
+   * draw", this is "can be dealt as a round", and the second is much stricter.
+   */
+  qualified: QualifiedAsset[];
   /** Set when this snapshot is being served past its TTL because the refresh
    *  failed. */
   note?: string;
@@ -342,6 +367,43 @@ export interface MarketClient {
    * (index.d.ts:7677) and is used rather than reimplemented.
    */
   mmPricing?: {
+    /**
+     * **The `"ETH" | "BTC"` here is the SDK's own signature, quoted, not our
+     * gate.** It stays narrow, and this comment is why.
+     *
+     * ```ts
+     * // node_modules/@thetanuts-finance/thetanuts-client/dist/index.d.ts:7690
+     * getPricingArray(underlying: 'ETH' | 'BTC'): Promise<MMVanillaPricing[]>;
+     * ```
+     *
+     * `MarketClient` is a **structural mirror** of the real client, narrowed to
+     * the members this file calls, and its job is to be a type the SDK's own
+     * object satisfies. Widening this parameter would make the mirror claim the
+     * vendor accepts arguments the vendor's `.d.ts` rejects — a fake client
+     * would typecheck against a call the real one refuses at compile time.
+     * That is a lie about someone else's API, which is worse than a narrow
+     * type.
+     *
+     * **Contrast `src/desk/rfq.ts`, which widened for exactly the opposite
+     * reason** (`docs/plan6-audit.md`, "The `rfq.ts` union"). There our field
+     * was *narrower* than the SDK's `RFQUnderlying` — eight members,
+     * `index.d.ts:3102` — so we were deciding what the venue sells. Here the
+     * SDK decides, and it has decided two. `docs/plan6-audit.md` finding 1
+     * recommends widening this to "the SDK's eight"; that recommendation
+     * conflates two different declarations in the same file, and the line
+     * numbers above are the check. The audit's §9 item 14 is nonetheless
+     * satisfied by this comment rather than by a change: what it bans is an
+     * *undocumented* union, and the ban exists because a hardcoded pair once
+     * passed for a market.
+     *
+     * The **product** decision — that we ask only these two rather than all
+     * eight price-feed assets — is `MM_UNDERLYINGS`, a value, where it can be
+     * changed without misdescribing the vendor. And the gate that decides what
+     * is playable is neither of them: it is `qualifiedAssets()`, which grades
+     * on MM pricing and refuses to gate on it. `scripts/probe-assets.ts:256`'s
+     * cast mirrors this signature and is likewise required by the SDK, not by
+     * us; it stays.
+     */
     getPricingArray(underlying: "ETH" | "BTC"): Promise<readonly RawMmQuote[]>;
     filterByStrikeRange?(
       pricing: RawMmQuote[],
@@ -1415,6 +1477,17 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     underlyings: Object.keys(pricing).sort(),
     optionBook,
     greeksSeen,
+    // The gate reads `raw`, NOT the snapshot being returned around it — see
+    // `QualifySnapshot`'s docblock for why that is the only order that works.
+    // `RawMarket` is structurally assignable to `QualifySnapshot` with no
+    // adapter and no cast, which `test/qualify.test.ts` pins at compile time.
+    //
+    // `at` is passed through so an order past its own `orderExpiryTimestamp`
+    // stops counting toward depth: filling a stale order reverts `Signer Not
+    // Authorized`, so an asset propped up by expired rows is not playable, and
+    // this builder is the one place that knows what time the capture is from.
+    // The purity rule survives — `at` is still an argument, never a clock.
+    qualified: [...qualifiedAssets(raw, at)],
   };
 }
 

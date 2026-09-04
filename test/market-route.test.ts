@@ -98,6 +98,97 @@ describe("the envelope", () => {
     expect(env.mmPricing).toEqual({});
   });
 
+  test("the envelope carries the asset gate, measured against the same capture", async () => {
+    // The gate has to travel on the wire because it cannot be recomputed off
+    // the far side of it: `buildSnapshot` aggregates `availableAmount` into a
+    // display string and resolves `rawApiData.priceFeed` to a symbol, and the
+    // gate's depth and dedupe conditions need both of those raw. See
+    // `QualifySnapshot`'s docblock.
+    const fake = fakeClient();
+    const env = await createMarketService({ client: fake.client, now: fakeClock().now }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    // Non-vacuity: the frozen capture is a real book and really does qualify
+    // ETH and BTC. Without this the loop below passes on an empty array and
+    // the whole test says nothing.
+    expect(env.qualified.map((a) => a.underlying).sort()).toEqual(["BTC", "ETH"]);
+
+    // Whatever qualified had to pass all four conditions, and the shape has to
+    // survive `Response.json()` — a grade the lobby cannot read is worse than
+    // no grade at all.
+    for (const asset of env.qualified) {
+      expect(typeof asset.underlying).toBe("string");
+      expect(["DEEP", "THIN"]).toContain(asset.grade);
+      expect(asset.spot).toBeGreaterThan(0);
+      expect(asset.orders).toBeGreaterThanOrEqual(6);
+      expect(asset.greeked).toBeGreaterThanOrEqual(4);
+      expect(asset.depthUsd).toBeGreaterThanOrEqual(50);
+    }
+
+    // The gate is STRICTER than `underlyings`, always. "Has a two-sided table
+    // to draw" and "can be dealt as a round" are different claims, and the day
+    // they invert is the day a lobby offers an asset its own blotter cannot
+    // fill. Not asserted as equal: the frozen capture is a real book and this
+    // must keep holding when it is recaptured thinner.
+    const names = env.qualified.map((a) => a.underlying);
+    expect(names.length).toBeLessThanOrEqual(env.underlyings.length);
+    for (const name of names) expect(env.underlyings).toContain(name);
+
+    // ETH once, not twice. The gate deduplicates by feed ADDRESS, and this
+    // fixture really does hold the same address under `ETH` and `ETH/USD`.
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  test("the gate rides through the JSON route, not just the in-process envelope", async () => {
+    // `handle()` is what the browser actually reads. A field that exists on the
+    // typed envelope and vanishes at `Response.json()` would leave the lobby
+    // greying every group forever with nothing on screen to say why.
+    const res = await createMarketService({ client: fakeClient().client }).handle();
+    const body = (await res.json()) as { ok: boolean; qualified?: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(Array.isArray(body.qualified)).toBe(true);
+  });
+
+  test("an empty gate is an ANSWER — a book with no depth qualifies nobody", async () => {
+    // The 404ing indexer, a thin morning, a truncated response: all land here,
+    // and none of them is an error. `ok` stays true, the board still ships, and
+    // the lobby greys its live groups with a reason rather than hiding them.
+    const client: MarketClient = {
+      chainConfig: FIXTURE.chainConfig,
+      api: {
+        fetchOrders: () => Promise.resolve([]),
+        getMarketData: () => Promise.resolve({ prices: FIXTURE.prices }),
+      },
+    };
+    const env = await createMarketService({ client, now: fakeClock().now }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.qualified).toEqual([]);
+    expect(env.note).toBeUndefined();
+  });
+
+  test("a stale re-serve keeps the gate that graded those exact rows", async () => {
+    // The rows and the gate are one reading of one moment. Re-serving the rows
+    // under a fresher-looking empty gate would grey every live group while
+    // their own prices are still on screen; the `note` is what discloses age,
+    // once, for all of it.
+    const fake = fakeClient();
+    const clock = fakeClock();
+    const service = createMarketService({ client: fake.client, now: clock.now });
+
+    const good = await service.snapshot();
+    clock.advance(TTL_MS * 4);
+    fake.failWith(new Error("indexer 404"));
+    const stale = await service.snapshot();
+
+    expect(good.ok && stale.ok).toBe(true);
+    if (!good.ok || !stale.ok) return;
+    expect(stale.qualified).toEqual(good.qualified);
+    expect(stale.note).toContain("stale");
+  });
+
   test("handle() answers 200 with that envelope, uncached", async () => {
     const fake = fakeClient();
     const res = await createMarketService({ client: fake.client }).handle();
@@ -351,6 +442,25 @@ describe("MM pricing rides beside the book, and fails on its own", () => {
     expect(Object.keys(env.mmPricing)).toEqual(["ETH"]);
     // And the BTC *book* — a different host entirely — is untouched.
     expect(env.pricing.BTC?.length).toBeGreaterThan(0);
+  });
+
+  test("MM pricing GRADES the gate — it never gates it", async () => {
+    // The distinction plan 6 §7 exists to make. Only ETH and BTC have MM
+    // pricing; the resting book covers more. So a live MM chain must move an
+    // asset from THIN to DEEP and must not decide whether it is playable at
+    // all — the day it does, the game silently amputates the protocol's own
+    // breadth and AVAX becomes the broken default asset again.
+    const withMm = await createMarketService({ client: withPricing().client, now: fakeClock().now }).snapshot();
+    const noMm = await createMarketService({ client: fakeClient().client, now: fakeClock().now }).snapshot();
+
+    expect(withMm.ok && noMm.ok).toBe(true);
+    if (!withMm.ok || !noMm.ok) return;
+
+    // Same assets qualify either way — the gate did not move.
+    expect(withMm.qualified.map((a) => a.underlying)).toEqual(noMm.qualified.map((a) => a.underlying));
+    // Only the grade moved.
+    expect(withMm.qualified.map((a) => a.grade)).toEqual(["DEEP", "DEEP"]);
+    expect(noMm.qualified.map((a) => a.grade)).toEqual(["THIN", "THIN"]);
   });
 
   test("a dead pricing HOST does not empty the snapshot", async () => {

@@ -5,7 +5,7 @@ import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/lobbies.ts";
 import type { RoomView } from "./data/room.ts";
 import type { WalletSource } from "./data/wallet.ts";
-import type { MarketSource } from "./data/market.ts";
+import { qualifiedAssetsOf, type MarketSource } from "./data/market.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
@@ -119,6 +119,30 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    * app has always dealt.
    */
   const optionBook = useOptionBook(source);
+
+  /**
+   * Today's qualified assets — the asset gate, measured, threaded to the screens
+   * that offer a market.
+   *
+   * Read straight off the source rather than through a hook, and deliberately
+   * not memoised: `qualifiedAssetsOf` is one property read plus a `??`, and both
+   * shipped sources hand back an array whose identity is stable for the life of
+   * the source (`NO_QUALIFIED` for the mock, the wire array for the live one).
+   * A `useMemo` here would cost more than it saved and would add a dependency
+   * on a value that already changes exactly when the book does.
+   *
+   * `[]` offline, `[]` while the indexer 404s, and `[]` on the seeded source —
+   * all of which are the honest answer, and all of which grey the live sector
+   * groups *with a reason* rather than hiding them or inventing a grade.
+   *
+   * **Not passed anywhere near the match.** `useMatch` above has already been
+   * given its inputs; the gate informs what a lobby *offers*, never what a seed
+   * *deals*. `src/state/match.ts` may not import `data/qualify` at all
+   * (`test/determinism.test.ts`, `ASSET_GATE_RE`), and the reel takes the list
+   * as the second argument of `spinSlice(book, qualified, seed)` — injected,
+   * never imported.
+   */
+  const liveAssets = qualifiedAssetsOf(source);
 
   const { state, derived, actions } = useMatch(route ?? currentRoute(), {
     liveSeats: stake.live,
@@ -454,6 +478,11 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           onPublish={actions.publishLobby}
           onBack={actions.go("battles")}
           stake={stake}
+          // The asset gate reaches a screen. `CreateLobby` has declared this
+          // prop since plan 6 landed and nothing has ever passed it, which is
+          // why every live sector group has been greying with a reason that was
+          // true by accident — `docs/plan6-audit.md` items 15, 18 and 19.
+          live={liveAssets}
         />
       )}
 

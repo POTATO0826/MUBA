@@ -1,4 +1,5 @@
 import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
+import type { Grade, QualifiedAsset } from "./qualify.ts";
 
 /**
  * Everything the UI needs from a market venue, behind one interface.
@@ -77,6 +78,106 @@ export interface MarketSource {
    * that the data arrived late. That is the whole point of the seam.
    */
   spot(underlying: string): number | null;
+  /**
+   * Today's **qualified** assets — the asset gate, measured.
+   *
+   * `src/data/qualify.ts` runs four conditions over one raw `fetchOrders()` +
+   * `getMarketData()` capture: spot readable, ≥6 fillable resting orders, ≥4 of
+   * them carrying a usable delta, ≥$50 of summed depth. This is that answer,
+   * carried down `/api/market` beside the book it was measured from.
+   *
+   * **Synchronous, like `spot()` and `pricing()`.** The gate is arithmetic over
+   * a capture the source already holds — the fetch resolved before the source
+   * was constructed. A promise here would put a Suspense boundary between the
+   * lobby and a number that is already in memory, which is a regression, not a
+   * feature.
+   *
+   * **One accessor, not two.** `Grade` is a *field* of {@link QualifiedAsset},
+   * so a separate `grade(sym)` accessor would be a second home for the same
+   * measurement. Callers that want the grade alone read {@link gradeIndex};
+   * callers that want the bare names read {@link qualifiedNames}. Both are
+   * projections of this, and there is exactly one place the numbers live.
+   *
+   * ## Optional, and absence means something
+   *
+   * A missing implementation is not the same claim as an empty array, and this
+   * codebase keeps that distinction everywhere else (`spot()` is `null`, never
+   * `0`; `mmPricing` is absent, never `[]`):
+   *
+   *  - **absent** — this source never read a raw book, so it cannot say. Only
+   *    hand-built fakes in tests are in this state; every shipped source
+   *    implements it.
+   *  - **`[]`** — a book was measured and nothing qualified. That is the honest
+   *    answer for the seeded fixtures and for a live read against a 404ing
+   *    indexer, and it is not a failure: the lobby greys its live groups *with a
+   *    reason* and the seeded board still publishes.
+   *
+   * Read it through {@link qualifiedAssetsOf} rather than calling it directly,
+   * so every caller collapses those two states the same way.
+   */
+  qualified?(): readonly QualifiedAsset[];
+}
+
+/** The empty measurement, shared so a source that has nothing to report keeps a
+ *  stable identity across renders — a fresh `[]` per call would re-run every
+ *  memo downstream of it. */
+export const NO_QUALIFIED: readonly QualifiedAsset[] = Object.freeze([]);
+
+/**
+ * The qualified set from any source, total.
+ *
+ * The one reader of {@link MarketSource.qualified}. A source that cannot answer
+ * and a source that measured nothing both come back `[]` here — the distinction
+ * matters at the *implementation* boundary (a fake that never read a book must
+ * not be able to claim it read an empty one) and nowhere above it.
+ */
+export function qualifiedAssetsOf(source: MarketSource): readonly QualifiedAsset[] {
+  return source.qualified?.() ?? NO_QUALIFIED;
+}
+
+/**
+ * The names only — the second argument `spinSlice(book, qualified, seed)` takes,
+ * and what `liveSectorStatus()` reads.
+ *
+ * The engine never decides which assets exist; it is handed the list. This is
+ * where that list comes from on the live path.
+ */
+export function qualifiedNames(source: MarketSource): readonly string[] {
+  return qualifiedAssetsOf(source).map((a) => a.underlying);
+}
+
+/**
+ * `{ ETH: "DEEP", AVAX: "THIN" }` — the shape `LobbyCard`'s `grades` prop and
+ * `CreateLobby`'s live chips already expect.
+ *
+ * Only qualified assets appear. A symbol missing from this map has not been
+ * graded `THIN`; it has not been graded at all, and a caller that defaults a
+ * miss to `THIN` is printing a measurement nobody made.
+ */
+export function gradeIndex(source: MarketSource): Readonly<Record<string, Grade>> {
+  const out: Record<string, Grade> = {};
+  for (const asset of qualifiedAssetsOf(source)) out[asset.underlying] = asset.grade;
+  return out;
+}
+
+/**
+ * The whole board as one plain record — the first argument
+ * `spinSlice(book, qualified, seed)` and `cardsForSlice(rows, …)` take.
+ *
+ * `SliceBook` in `src/engine/spin.ts` is declared as exactly this shape, and it
+ * is **structurally matched here rather than imported**. The direction matters:
+ * the engine may never import a market source, so the value has to be built on
+ * this side of the boundary and handed across as data. Naming the engine's type
+ * here would point the dependency the wrong way for the sake of a synonym.
+ *
+ * Every accessor it calls is synchronous, so this is a render-time expression
+ * and not an effect — and it is cheap enough to be one: a handful of keys over
+ * arrays the source already holds by reference.
+ */
+export function sliceBookOf(source: MarketSource): Readonly<Record<string, readonly PricingRow[]>> {
+  const book: Record<string, readonly PricingRow[]> = {};
+  for (const underlying of source.underlyings()) book[underlying] = source.pricing(underlying);
+  return book;
 }
 
 const PRICING: Record<string, readonly PricingRow[]> = {
@@ -127,4 +228,15 @@ export const mockMarketSource: MarketSource = {
   // The mock has no spot at all — inventing one here is how a seeded number
   // starts passing for a live one. Every caller already handles `null`.
   spot: () => null,
+  // Answered, and the answer is none.
+  //
+  // The gate is a measurement of a raw `fetchOrders()` capture — order counts,
+  // deltas, summed collateral depth — and the fixtures above are a *rendered*
+  // pricing table, which is the one shape `docs/plan6-audit.md` and
+  // `qualify.ts`'s own docblock both say cannot be measured backwards. So the
+  // seeded source has no book to gate on and says so, rather than declaring
+  // ETH and BTC qualified because they happen to have rows here. Empty is not a
+  // failure: the lobby greys its live groups with a reason and the six seeded
+  // sector chips still publish a lobby.
+  qualified: () => NO_QUALIFIED,
 };

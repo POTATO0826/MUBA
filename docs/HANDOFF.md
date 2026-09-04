@@ -28,16 +28,146 @@
 
 ### Where the branch is
 
-- Work moved to branch **`new`** (not `zq`). HEAD `c4d52df`. Plan 6's five
-  phases each landed as their own commit: `89bbd7f` A, `c4d52df` B, `a5fed99` C,
-  `185d646` D, `316d969` E, `067d4ee` the §7 asset gate.
-- **The tree is dirty.** Builders were landing throughout this write —
-  `src/data/{universe,sectors,lobbies}.ts`, `views/{CreateLobby,Parlay,ParlayPick}.tsx`,
-  `ui/LobbyCards.tsx`, `engine/score.ts`, `server/{attest,thetanuts}.ts`,
-  `types.ts`, `desk/fill.ts`, a new `components/ParlayCardFace.tsx`, and their
-  tests. `bunx tsc --noEmit` was **clean** and `determinism`/`parlay`/`qualify`/
-  `detail`/`rfq` were **green** at the end of it. Run `git status` and the full
-  suite yourself before trusting any line below.
+- Work moved to branch **`new`** (not `zq` — `zq` is merged in, `new` carries
+  everything). HEAD is now **`7229f2e`**, pushed — `git log origin/new..HEAD`
+  is empty, everything below is on `origin/new`. Plan 6's five phases each
+  landed as their own commit: `89bbd7f` A, `c4d52df` B, `a5fed99` C, `185d646`
+  D, `316d969` E, `067d4ee` the §7 asset gate. Then, after the audit doc landed
+  (`c5fb304`, see below), four more commits shipped:
+  - `199fd85` — the duel score was dividing ETH-denominated marks by USDC
+    premiums: wrong by ~2,375× on ETH and ~81,000× on BTC, and *differently*
+    wrong per player. Fixed by converting to USD at both edges, with branded
+    unit types. A third defect was found in passing: `bid`/`ask`/`mid` are
+    USDC on the same row as an ETH-denominated `mark`.
+  - `4876630` — plan 7 box/condor logic: `deriveLadders` is the only book
+    reader, snapping is irregular by construction, and for a long call condor
+    **the wing width IS the maximum payout**.
+  - `d3e64d8` — plan 6 phase E card faces: driven from `CARD_CONTRACT`, max
+    loss now the same 17px as the payout (it was 9.5px under a 22px
+    multiplier). IV and theta print an em dash because the data does not
+    reach the card.
+  - `7229f2e` — plan 7 price history from Chainlink on Base, the same feed
+    that settles the option; `AnswerUpdated` logs at 9 RPC calls for 33h of
+    history versus a rate-limited round walk.
+  - (`c5fb304` itself: the plan 6 §9 audit — `docs/plan6-audit.md` — plus the
+    RFQ underlying union widened to the SDK's own eight assets.)
+- **`plan 7` is a new, separate plan layered on top of plan 6** (box/condor
+  logic + Chainlink price history so far; untracked `plan7-box-builder-arena
+  (1).md` at repo root is its spec). **`docs/plan6-audit.md` does not cover
+  any of it** — treat plan 7 as unaudited until someone runs the same
+  file:line exercise over it.
+- **The tree is dirty again, right now, on top of all of that** — six agents
+  were in flight when this was written. See "IN FLIGHT at handoff time" below
+  for who owns which files before you touch any of them.
+
+### Open items — what did not pass
+
+Primary source: **`docs/plan6-audit.md`**, audited 2026-09-05, scoreboard
+**PASS 12 · PARTIAL 5 · FAIL 1 · OWNER-ONLY 2**. Re-run the greps yourself
+before trusting a row — this is a summary, not a substitute.
+
+**One root cause explains the single FAIL and four of the five PARTIALs**:
+`cardsForSlice`, `multipleAt` (`src/engine/parlay.ts`), `spinSlice`
+(`src/engine/spin.ts`) and `qualifiedAssets`/`qualifiedUnderlyings`
+(`src/data/qualify.ts`) are built, pure, and unit-tested — and had **zero
+production call sites** at audit time. Wiring them in was in progress at
+handoff time (see "IN FLIGHT" below) — do not assume it landed without
+re-checking.
+
+- **#2 — FAIL. No rendered multiplier traces to a live ask or
+  `calculatePayout`.** `multipleAt` (`parlay.ts:600`) is the only caller of
+  `calculatePayout`, and nothing outside its own module calls *it*.
+  `ParlayPick.tsx:404` instead prints `quote.multiplier` from
+  `desk/optionize.ts:277 multiplierFor` (a hand-rolled clamped ratio) or
+  `tierOdds(tier)`. Closes by driving `ParlayPick`'s cards off
+  `cardsForSlice`/`multipleAt` instead of `optionize.quoteFor`.
+- **#8 — PARTIAL. No UI ever renders a dead slot.** The engine does it right —
+  `cardsForSlice` returns `null` per unqualified slot (`parlay.ts:556`),
+  `test/parlay.test.ts:449` pins seven dead slots — but `ParlayPick.tsx` still
+  deals all eight seeded `PARLAY_CARDS` unconditionally. Same fix as #2.
+- **#14 — PARTIAL, one of two fixed.** `src/desk/rfq.ts:256`'s hardcoded
+  `"ETH"|"BTC"` union was widened to the SDK's real eight-member
+  `RFQUnderlying` this session (`test/rfq.test.ts`, 60 pass).
+  **`src/server/thetanuts.ts:345`** (`getPricingArray`'s dependency signature)
+  still has the narrow union — outside this audit's file grant, reported not
+  edited.
+- **#15 — PARTIAL, "passes as a module, unwired in the app".**
+  `qualifiedUnderlyings` (`data/qualify.ts:526`) is pure and fixture-tested,
+  but the only three `data/qualify` imports under `src/` (`sectors.ts:3`,
+  `ui/LobbyCards.tsx:5`, `views/CreateLobby.tsx:11`) are all `import type`.
+  `CreateLobby` accepts `live?: readonly QualifiedAsset[]` and
+  `src/App.tsx:440-457` never passes it, so it's always `[]`. Closes by
+  passing `qualifiedAssets()` into `CreateLobby` from `App.tsx:440`.
+- **#17 — PARTIAL.** The committed live run in `docs/asset-gate.md` is a
+  failure notice (`BOOK UNREACHABLE`, exit 1, 17:10Z) — a transient local TLS
+  problem, not a real outage (see below). A same-day re-run at 17:53Z passed
+  (exit 0, 6 qualified) but was never committed as a replacement table.
+  **Re-run and commit a fresh live table before the room.**
+- **#18 — PARTIAL, follows from #15.** `sectors.ts:241 NO_BOOK_REASON` +
+  `CreateLobby.tsx:486-488` do grey a sector with a reason — but since `live`
+  is never passed, **every** sector greys, always, carrying no information.
+  Same fix as #15.
+- **#19 — PARTIAL, follows from #15.** DEEP/THIN defaults to `THIN` for every
+  symbol (`CreateLobby.tsx:287-292`, empty grades map). The slice reveal has
+  **no grade surface at all** — `spinSlice` has no caller.
+- **#20/#21 — OWNER-ONLY, not done.** No Base fill has ever executed from
+  this repo; no BaseScan link exists anywhere in it. #21 was additionally
+  recorded as "blocked upstream by the book-endpoint 404" — **that block is
+  stale**, the book was healthy again the same day (`docs/book-endpoint.md`);
+  the only real blocker left is that nobody has funded a wallet and executed
+  the fill.
+
+#### Check when the app/chain is running again
+
+What the owner means by "check soon when server is running" — these can only
+be verified against a live app or a live chain:
+
+- **Two end-to-end fills on Base**, under $2 each — one ETH/BTC, one
+  non-ETH/BTC — with BaseScan links. Never done from this repo.
+- **Deploy + BaseScan-verify `DuelEscrow.sol`** (compiled, adversarially
+  reviewed SHIP-WITH-NOTES, never deployed).
+- **Whether an MM ticker is still quoted minutes later**, so a duel can
+  actually be scored end-to-end rather than only at the instant it was dealt.
+- **Re-run `bun run scripts/probe-assets.ts` live, in front of an audience**,
+  and commit the table if it passes — the one currently committed is the
+  stale failure notice from #17 above.
+
+#### Owner-only (no agent can close these)
+
+- Fund the demo wallet (~$10 USDC + $2 ETH on Base) plus a second wallet for
+  the two-seat escrow demo.
+- An Alchemy/QuickNode Base RPC key → `RPC_URL`.
+- Personally review, then deploy and BaseScan-verify `DuelEscrow.sol`.
+- The two end-to-end fills themselves (#20/#21 above).
+- Drop `src/assets/parlay-pick.mp3` (seam is live, silence until then).
+
+### IN FLIGHT at handoff time
+
+Six agents were running when this was written. Their work may be sitting
+**uncommitted in the working tree right now** — check file ownership below
+before editing any of these files, and before believing any status above that
+touches them.
+
+| Agent | Owns | What it's closing |
+|---|---|---|
+| **B2 equities removal** | `src/data/universe.ts`, `sectors.ts`, `lobbies.ts`, `src/views/CreateLobby.tsx`, `src/ui/LobbyCards.tsx`, `test/app.test.tsx`, `test/determinism.test.ts` | The owner's outstanding complaint: fictional equities (NVDA/TSLA/AAPL…) are still visible in the UI. Choosing between deleting them outright (retiring the pinned NVDA replay locks) or keeping them as a clearly-marked offline practice board. |
+| **Gate wiring** | `src/data/market.ts`, `src/App.tsx`, `src/server/thetanuts.ts`, `test/market-route.test.ts` | Closing the audit's headline finding — the new engine modules had zero production call sites (items #2/#8/#15/#18/#19 above). |
+| **BoxBuilder UI** (plan 7) | `src/views/BoxBuilder.tsx`, `test/boxbuilder.test.tsx` | Neither file exists in the tree yet as of this writing — this agent had not landed its first commit. |
+| **Plan 7 §10 measurements** | read-only; writes `docs/plan7-measurements.md` (does not exist yet) | Gates plan 7 step 5 (the RFQ path) — plan 7 §8 says do not start step 5 before this is answered. |
+| **IV threading** | `src/desk/optionize.ts`, `test/detail.test.ts` | Getting IV/theta data to the card face (see `d3e64d8` above — they currently print an em dash). |
+| **You (this session)** | `docs/HANDOFF.md` | This document. |
+
+`git status` at the moment this was written also showed `src/data/thetanuts.tsx`
+modified and `.scratch/` untracked, both outside the six file sets above —
+unclear which agent, if any, owns them; check before assuming either is safe
+to touch.
+
+**Recovery recipe if a session dies mid-flight:** uncommitted work sits in the
+working tree, it does not vanish. Run `git status` and the full suite. If
+green: review the diff against the relevant plan section and gate-commit it.
+If red or partial: prefer reverting that file set and re-running the phase
+with the plan section as the brief, rather than trying to finish someone
+else's half-done edit blind.
 
 ### ⚠ The single most important thing to understand about plan 6
 
@@ -63,9 +193,9 @@ defaults to `THIN` for every symbol because nothing measured. Two edits close al
 of it — see "Next" below. Full item-by-item audit with a `file:line` per row:
 **`docs/plan6-audit.md`**.
 
-### 🔴 Demo-critical: the live book endpoint is 404ing
+### The live book endpoint — RESOLVED, it was never actually down
 
-- **~~The live book endpoint is 404ing.~~ RETRACTED — the book is healthy.**
+- **Was reported as "404ing" / "moved". That claim was WRONG and is retracted.**
   `fetchOrders()` never requests `indexerApiUrl`; it issues a relative `get("/")`
   against the axios instance built on `apiBaseUrl`, a Cloudflare Worker origin
   that has been serving ~382 greeked orders throughout. `indexerApiUrl` is a path
@@ -73,24 +203,36 @@ of it — see "Next" below. Full item-by-item audit with a `file:line` per row:
   404s by design and always did. A real transport failure (local TLS
   interception, since cleared) printed the wrong field in the probe's error
   banner; someone curled that URL, got the expected 404, and two unrelated facts
-  fused into "the venue moved its book". Live probe now: ETH $1.18M and BTC
-  $1.41M depth (DEEP), SOL/XRP/BNB/AVAX qualified (THIN) — six underlyings. Do
-  NOT ask the protocol team about this. Full teardown: `docs/book-endpoint.md`.
+  fused into "the venue moved its book". Live probe re-run the same day: ETH
+  $1.18M and BTC $1.41M depth (DEEP), SOL/XRP/BNB/AVAX qualified (THIN) — six
+  underlyings, exit 0. **Do NOT ask the protocol team whether the book moved —
+  it didn't**, and asking costs credibility with the people who wrote the
+  service. Full teardown: `docs/book-endpoint.md`.
 
-
-- **Effect:** `scripts/probe-assets.ts` cannot read a live book (its committed
-  run at `docs/asset-gate.md` says `BOOK UNREACHABLE`, exit 1); `/api/market`
-  falls back to its last good snapshot and labels itself `stale`.
-- **Fix is a URL, not a refactor.** `indexerApiUrl` is overridable in the client
-  config. **Ask the protocol team for the current book endpoint** — this is the
-  highest-value question to put to them and it blocks the §7 demo beat.
-- A second, machine-local problem stacks on top: TLS interception here makes the
-  SDK's Node agent report `unable to get local issuer certificate`. Bun's own
-  `fetch` (different CA store) reaches the host fine. Run the probe from an
-  un-intercepted network before any demo.
+- **The committed `docs/asset-gate.md` failure table (17:10Z, exit 1,
+  `BOOK UNREACHABLE`) is stale.** It captured the TLS-interception window below,
+  not a real outage, and `/api/market`'s `stale` fallback at that moment was the
+  designed degradation working correctly, not a bug. The identical gate passed
+  live at 17:53Z the same day (exit 0, 6 qualified) — but that success run was
+  never committed as a replacement table, so the only *table* on record in the
+  repo is still the frozen `--fixture` one. **Re-run the probe yourself; don't
+  trust either committed table's freshness.**
+- A machine-local problem caused it: TLS interception here made the SDK's Node
+  agent report `unable to get local issuer certificate`. Bun's own `fetch`
+  (different CA store) reaches the host fine. This can recur — it is a property
+  of this machine's network, not the protocol's — so run the probe from an
+  un-intercepted network before any demo; if it fails again with that message,
+  it's a proxy in the room, not Thetanuts.
+- **The one thing still worth asking the protocol team** (low priority, per
+  `docs/book-endpoint.md` §7): whether the Cloudflare Workers.dev origin the SDK
+  resolves to (`round-snowflake-9c31.devops-118.workers.dev`) is stable
+  production infra for a live demo, or whether there's a canonical hostname
+  instead. If a URL genuinely needs repointing, the knob is `apiBaseUrl` (env
+  `THETANUTS_API_BASE_URL`, see `docs/book-endpoint.md` §8) — **not**
+  `indexerApiUrl`, which is the wrong field for the book.
 - Meanwhile `bun run scripts/probe-assets.ts --fixture` demonstrates the identical
   gate over a frozen genuine capture, banner-marked so it can never be mistaken
-  for a live table. That is the demo-safe path.
+  for a live table. That is the demo-safe path regardless of network state.
 
 ### A landmine that will bite the next session
 

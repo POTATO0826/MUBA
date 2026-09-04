@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
-import { mockMarketSource, type MarketSource } from "./market.ts";
+import { NO_QUALIFIED, mockMarketSource, type MarketSource } from "./market.ts";
+import type { QualifiedAsset } from "./qualify.ts";
 
 /**
  * The live Thetanuts book, behind the existing `MarketSource` interface.
@@ -42,6 +43,10 @@ interface Wire {
    *  second host, that fails on its own. The book still arrives. */
   mmPricing?: Record<string, MmQuote[]>;
   orders?: OrderRow[];
+  /** The asset gate, measured server-side beside the book it grades. Absent on
+   *  an envelope from a server that predates it; `[]` means "measured, nothing
+   *  qualified", which is the ordinary answer on a thin or unreachable book. */
+  qualified?: QualifiedAsset[];
   greeksSeen?: number;
   note?: string;
   reason?: string;
@@ -58,6 +63,10 @@ function sourceFrom(wire: Wire, stale: boolean): MarketSource {
   const spot = wire.spot ?? {};
   const underlyings = wire.underlyings ?? [];
   const orders = wire.orders ?? [];
+  // Hoisted out of the accessor so the array keeps ONE identity for the life of
+  // this source. `qualifiedAssetsOf(source)` is called in render, and a fresh
+  // array per call would re-run every memo hanging off the lobby's live groups.
+  const qualified = wire.qualified ?? NO_QUALIFIED;
   const note = wire.note;
   return {
     // The footer prints this, so the provenance line updates itself.
@@ -80,6 +89,17 @@ function sourceFrom(wire: Wire, stale: boolean): MarketSource {
       const px = spot[underlying];
       return typeof px === "number" && Number.isFinite(px) ? px : null;
     },
+    // Measured on the server, against the raw capture — see `MarketSnapshot.
+    // qualified`. It is NOT recomputed here: the gate needs `availableAmount`
+    // and `rawApiData.priceFeed`, and both are consumed by `buildSnapshot`
+    // before anything reaches this wire.
+    //
+    // A stale source keeps the stale gate, deliberately. The rows and the gate
+    // that graded them are one reading of one moment; re-serving the rows under
+    // a fresher-looking empty gate would grey every live group while their own
+    // prices are still on screen, which reads as a bug rather than as age. The
+    // `stale` label on `meta` is what discloses the age, once, for all of it.
+    qualified: () => qualified,
   };
 }
 
