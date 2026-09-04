@@ -250,6 +250,53 @@ export interface PricingRow {
    */
   mark?: string;
   /**
+   * The **market maker's own name** for the instrument whose mark joined this
+   * row — `ETH-3SEP26-2100-C`, with the year.
+   *
+   * Set together with `mark` and by the same join, off the same `RawMmQuote`,
+   * or absent together with it. That atomicity is the field's whole job: two
+   * namespaces name the same option on Base and they do not agree, because the
+   * order book's `OrderRow.instrument` is built here as `ETH-3SEP-4400-C`
+   * (no year, composed from an expiry label) while the MM chain ships the SDK's
+   * own string. `src/server/attest.ts` keys its marks map by the second, so a
+   * fill that wants to be scoreable has to carry the second — and the only
+   * honest way to get it is to COPY it off the row the mark came from.
+   *
+   * Never translate one namespace into the other. `FilledLeg.instrument`'s
+   * docstring names a synthesised instrument name as the one failure mode that
+   * pays the wrong player quietly; a near-miss key is worse than no key,
+   * because no key refunds and a near miss silently marks the wrong thing.
+   */
+  markTicker?: string;
+  /**
+   * `mark`, converted to **US dollars per contract** — `markPrice ×
+   * underlyingPrice`, both read off the SAME market-maker row.
+   *
+   * This is the only mark-shaped number on this row the duel clock may score
+   * on, and it exists because `mark` is NOT in dollars: the venue quotes in
+   * units of the underlying (`tnuts-test/FINDINGS.md` §1), so an ETH call
+   * marked `0.1155` is 0.1155 ETH, ~$276 at the spot it was quoted against.
+   * A fill pays USDC, so scoring the unconverted number against the premium is
+   * wrong by a factor of spot. See `src/engine/score.ts` §Units.
+   *
+   * Note the row's own asymmetry while you are here: `bid`, `ask` and `mid` come
+   * off the signed order book and are already USDC per contract, `mark` comes
+   * off the market maker and is not. They sit in the same row and they are not
+   * comparable. That is the venue's design, not this app's, and the way to
+   * survive it is to never treat one of these fields as a substitute for
+   * another.
+   *
+   * Derived, not verbatim — so it is a *new* field beside `mark` rather than a
+   * rewrite of it. The rule that the venue's own traded number is never
+   * recomputed still holds: `mark` is untouched and is what `/desk` prints.
+   *
+   * Absent when the quote carried no `underlyingPrice`. A row with a mark and
+   * no spot is a row the duel cannot score, and it says so by absence rather
+   * than by reaching for a price out of `MarketSnapshot.spot`, which is a
+   * different feed read at a different instant.
+   */
+  markUsd?: string;
+  /**
    * The resting order this row would fill against — the **best ask**, i.e. the
    * cheapest order whose maker is selling.
    *
@@ -285,8 +332,25 @@ export interface MmQuote {
   bid: string;
   /** `feeAdjustedAsk`, verbatim. Same rule as `bid`. */
   ask: string;
-  /** `markPrice`, verbatim. */
+  /** `markPrice`, verbatim — and **in units of the underlying**, not dollars.
+   *  An ETH call at `0.1155` is 0.1155 ETH (FINDINGS §1). `markUsd` is the
+   *  dollar figure; this one is what the venue published and what `/desk`
+   *  prints. */
   mark: string;
+  /** `underlyingPrice`, verbatim — the spot THIS quote was made against, which
+   *  is why it is carried on the row rather than looked up in
+   *  `MarketSnapshot.spot`. `"—"` when the quote published none, in which case
+   *  `markUsd` is absent too. */
+  spot: string;
+  /**
+   * `mark × spot`, **US dollars per contract** — the only mark on this row the
+   * duel clock may score against, for the reason `PricingRow.markUsd` gives at
+   * length. Absent when the quote carried no `underlyingPrice`: no spot, no
+   * dollar price, no score, and the duel refunds rather than guessing.
+   *
+   * Derived, and therefore a field of its own: `mark` stays verbatim.
+   */
+  markUsd?: string;
   /** `ask - bid` of the two published fee-adjusted numbers. A subtraction of
    *  what the SDK sent, not a re-derivation of the fee adjustment. */
   spread: string;

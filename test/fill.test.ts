@@ -24,6 +24,13 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { MarketSource } from "../src/data/market.ts";
 import { mockMarketSource } from "../src/data/market.ts";
+// The other two thirds of the join, imported so this file can assert the whole
+// of it rather than its own end: the server that writes a row's ticker and
+// dollar mark, the reducer that keys the duel clock's map, and the score that
+// only ever sees the result.
+import { buildSnapshot } from "../src/server/thetanuts.ts";
+import { usdMarksFromSnapshot } from "../src/server/attest.ts";
+import { duelScore } from "../src/engine/score.ts";
 import {
   ALCHEMY_HINT,
   DROP_COPY,
@@ -1312,25 +1319,32 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
   /**
    * Two namespaces name the same option on Base and they do not agree: the
    * order book prints `ETH-3SEP-4400-C` and the market-maker chain prints
-   * `ETH-3SEP26-2100-C`. `marksFromSnapshot` keys only on the second, because
-   * `MmQuote` is the only shape in the snapshot carrying a name AND a mark.
+   * `ETH-3SEP26-2100-C`. `usdMarksFromSnapshot` keys only on the second, because
+   * the market-maker quote is the only thing in the snapshot carrying a name, a
+   * mark AND the spot to price it in dollars.
    *
    * So the rule this block pins is not "produce the right name" — it is
    * "produce the venue's name or admit you have none". A near-miss key pays the
    * wrong player quietly; an absent key refunds both, which is the direction
-   * plan 6 §C3 already chose over a coin flip.
+   * plan 6 §C3 already chose over a coin flip. The same rule now governs the
+   * entry mark, which must be **dollars**: copied from the row's `markUsd` or
+   * absent, never a venue mark passed off as money.
    */
   const MM_TICKER = "ETH-27SEP26-4400-C";
+  /** 0.0716 ETH at a spot of 2,000 — the dollar price of one contract, which is
+   *  what the server writes to `PricingRow.markUsd` and the only mark that may
+   *  be divided by a USDC premium. */
+  const ENTRY_USD = 143.2;
 
-  test("a venue instrument and mark ride through to the receipt, verbatim", async () => {
+  test("a venue instrument and a DOLLAR mark ride through to the receipt, verbatim", async () => {
     const s = spy({ confirmSlip: async () => true });
     const { result } = await runSlip(s, [
-      pleg("a", { instrument: MM_TICKER, entryMark: 0.0716 }),
+      pleg("a", { instrument: MM_TICKER, entryMarkUsd: ENTRY_USD }),
     ]);
 
     expect(result.status).toBe("filled");
     expect(result.filled[0]!.instrument).toBe(MM_TICKER);
-    expect(result.filled[0]!.entryMark).toBe(0.0716);
+    expect(result.filled[0]!.entryMarkUsd).toBe(ENTRY_USD);
     // Nothing landed in `unmarkable`, so the duel clock can read this basket.
     expect(result.unmarkable).toEqual([]);
 
@@ -1338,17 +1352,15 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
     expect(scored).toHaveLength(1);
     // Character for character. The whole point is that this is an assignment.
     expect(scored[0]!.instrument).toBe(MM_TICKER);
-    expect(scored[0]!.entryMark).toBe(0.0716);
+    expect(scored[0]!.entryMark as number).toBe(ENTRY_USD);
     // 18dp contracts and 6dp USDC, converted to the units `FilledLeg` names.
     expect(scored[0]!.contracts).toBeCloseTo(0.15, 10);
-    expect(scored[0]!.premium).toBeCloseTo(0.0099, 10);
+    expect(scored[0]!.premium as number).toBeCloseTo(0.0099, 10);
   });
 
   test("a leg with no venue name is reported unmarkable rather than given one", async () => {
-    // The ordinary case today: a card is built from a `PricingRow`, which
-    // carries the mark's value but not the mark's name.
     const s = spy({ confirmSlip: async () => true });
-    const { result } = await runSlip(s, [pleg("a", { entryMark: 0.0716 })]);
+    const { result } = await runSlip(s, [pleg("a", { entryMarkUsd: ENTRY_USD })]);
 
     expect(result.status).toBe("filled");
     expect(result.filled[0]!.instrument).toBeUndefined();
@@ -1359,7 +1371,11 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
     expect(filledLegsFor(result)).toEqual([]);
   });
 
-  test("a leg with a name but no mark is unmarkable too — both are required", async () => {
+  test("a leg with a name but no dollar mark is unmarkable too — both are required", async () => {
+    // This is the "no spot" case in the shape it actually arrives in: the market
+    // maker quoted the instrument, published no `underlyingPrice`, so the server
+    // wrote a `mark` and no `markUsd`, so the card carried no dollar price. The
+    // leg fills, the player holds the option, and the duel refunds.
     const s = spy({ confirmSlip: async () => true });
     const { result } = await runSlip(s, [pleg("a", { instrument: MM_TICKER })]);
     expect(result.unmarkable).toHaveLength(1);
@@ -1374,10 +1390,10 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
       },
     });
     const { result } = await runSlip(s, [
-      pleg("a", { instrument: MM_TICKER, entryMark: 0.07 }),
+      pleg("a", { instrument: MM_TICKER, entryMarkUsd: ENTRY_USD }),
       pleg("stale", {
         instrument: MM_TICKER,
-        entryMark: 0.07,
+        entryMarkUsd: ENTRY_USD,
         order: makeOrder({ orderExpiryTimestamp: NOW / 1000 + 30 }),
       }),
     ]);
@@ -1388,25 +1404,204 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
     expect(filledLegsFor(result)).toEqual([]);
   });
 
-  test("legFromCard copies the card's mark and never fabricates an instrument", () => {
+  test("legFromCard copies the card's dollar mark and never fabricates an instrument", () => {
     const card = {
       id: "safe-bull",
       underlying: "ETH",
       strike: "4,400",
       expiry: "27 SEP",
       stance: "bull" as const,
-      mark: 0.0716,
+      markUsd: ENTRY_USD,
       row: { order: makeOrder() },
     };
     const leg = legFromCard(card, TARGET_FILL_USDC)!;
-    expect(leg.entryMark).toBe(0.0716);
+    expect(leg.entryMarkUsd).toBe(ENTRY_USD);
     // No ticker on the card, so none on the leg. The label is a display string
     // in this app's own format and is deliberately not either venue's.
     expect(leg.instrument).toBeUndefined();
     expect(leg.label).toBe("ETH-27 SEP-4,400-C");
 
-    // `LiveCard.mark` is `number | null`; null is "no mark", not zero.
-    expect(legFromCard({ ...card, mark: null }, TARGET_FILL_USDC)!.entryMark).toBeUndefined();
+    // `null` is "no dollar price", not zero — a worthless option and an
+    // unpriceable one are different answers.
+    expect(legFromCard({ ...card, markUsd: null }, TARGET_FILL_USDC)!.entryMarkUsd).toBeUndefined();
+  });
+
+  test("the card seam has no field for a venue mark, so one cannot be passed off as money", () => {
+    // Structural, not a convention. `FillableCard` declares `markUsd` and no
+    // `mark`: the number `/desk` prints is in units of the underlying, and the
+    // way to stop it being divided by a USDC premium is to give it nowhere to
+    // sit on the way to `FilledLeg`. A `LiveCard` still carries its own `mark`
+    // and still satisfies this interface — it just cannot hand that one over.
+    const withVenueMark = {
+      id: "safe-bull",
+      underlying: "ETH",
+      strike: "4,400",
+      expiry: "27 SEP",
+      stance: "bull" as const,
+      mark: 0.0716, //   the venue's number, in ETH — carried, and ignored here
+      markUsd: ENTRY_USD,
+      row: { order: makeOrder() },
+    };
+    const leg = legFromCard(withVenueMark, TARGET_FILL_USDC)!;
+    expect(leg.entryMarkUsd).toBe(ENTRY_USD);
+    expect(leg.entryMarkUsd).not.toBe(0.0716);
+  });
+
+  /**
+   * ── the whole join, end to end ──────────────────────────────────────────────
+   *
+   * The two defects met in one place, so this is where they are proved closed:
+   * a real market-maker quote goes into `buildSnapshot`, comes out as a pricing
+   * row carrying the MM's own ticker and a dollar mark, becomes a card, becomes
+   * a leg, is filled, is reduced to a `FilledLeg`, and finally keys into the map
+   * the SAME snapshot produces for the attestor — scoring a finite number.
+   *
+   * Against the code before this change every one of the last three steps was
+   * impossible: the row had no ticker, so the leg had no instrument, so the map
+   * lookup missed and every duel refunded.
+   */
+  test("a real MM ticker and dollar mark travel snapshot → card → fill → score", async () => {
+    const EXPIRY_UNIX = 1_788_422_400;
+    const STRIKE = 2100;
+    const TICKER = "ETH-3SEP26-2100-C";
+
+    /** One order resting on exactly the instrument the MM quotes, so the join
+     *  has something to attach to. */
+    const bookOrder = {
+      order: {
+        price: "7140000", //             0.0714 USDC per contract, 8dp
+        isBuyer: false, //               an ask: a player can buy it
+        nonce: "4242",
+        expiry: String(EXPIRY_UNIX), //  the OPTION's expiry, which is the join key
+      },
+      availableAmount: "10000000000",
+      signature: "0xsignature",
+      makerAddress: "0xmaker",
+      rawApiData: {
+        orderExpiryTimestamp: EXPIRY_UNIX,
+        strikes: [String(STRIKE * 10 ** 8)],
+        isCall: true,
+        collateral: USDC,
+        priceFeed: "0xfeed",
+      },
+    };
+
+    const snapshot = buildSnapshot(
+      {
+        orders: [bookOrder],
+        prices: { "ETH/USD": 2375.76 },
+        chainConfig: { priceFeeds: { ETH: "0xfeed" }, contracts: { optionBook: null } },
+        mmPricing: {
+          ETH: [
+            {
+              ticker: TICKER,
+              feeAdjustedBid: 0.1146,
+              feeAdjustedAsk: 0.1194,
+              markPrice: 0.116552,
+              strike: STRIKE,
+              expiry: EXPIRY_UNIX,
+              isCall: true,
+              underlying: "ETH",
+              underlyingPrice: 2375.76,
+            },
+          ],
+        },
+      },
+      NOW,
+    );
+
+    // 1. the row carries the MM's own name and the dollar price of a contract.
+    const row = snapshot.pricing.ETH![0]!;
+    expect(row.markTicker).toBe(TICKER);
+    expect(row.mark).toBe("0.1166"); //      the venue's number, in ETH
+    expect(row.markUsd).toBe("276.8996"); // 0.116552 × 2375.76, to 4dp
+    expect(row.order).toBeDefined();
+
+    // 2. a card built off that row → a leg. Both fields copied, neither made up.
+    const leg = legFromCard(
+      {
+        id: "eth-2100-c",
+        underlying: "ETH",
+        strike: row.strike,
+        expiry: row.expiry,
+        stance: "bull",
+        instrument: row.markTicker,
+        markUsd: Number(row.markUsd),
+        row: { order: row.order! },
+      },
+      TARGET_FILL_USDC,
+    )!;
+    expect(leg.instrument).toBe(TICKER);
+    expect(leg.entryMarkUsd).toBe(276.8996);
+
+    // 3. fill it, and reduce the receipt to what the duel clock scores.
+    const s = spy({ confirmSlip: async () => true });
+    const { result } = await runSlip(s, [{ ...leg, order: makeOrder() }]);
+    expect(result.unmarkable).toEqual([]);
+    const scored = filledLegsFor(result);
+    expect(scored).toHaveLength(1);
+
+    // 4. THE LOOKUP THAT NEVER USED TO HIT. The map is the attestor's own
+    //    reduction of the same snapshot, and the leg's key is in it.
+    const marks = usdMarksFromSnapshot(snapshot);
+    expect(marks.get(scored[0]!.instrument) as number).toBe(276.8996);
+
+    // 5. and it therefore scores a number instead of refusing. Flat, because
+    //    entry and scoring marks came from one snapshot — the point is that it
+    //    is finite at all.
+    const score = duelScore(scored, marks);
+    expect(Number.isNaN(score)).toBe(false);
+    expect(score).toBe(0);
+
+    // The counterfactual, stated so the assertion above cannot be read as
+    // trivially true: the order book's own name for the same option is a
+    // different string, and it marks nothing.
+    expect(snapshot.orders[0]!.instrument).not.toBe(TICKER);
+    expect(marks.get(snapshot.orders[0]!.instrument)).toBeUndefined();
+  });
+
+  test("the same journey with no published spot ends unmarkable, not mis-scored", async () => {
+    // One field removed from the quote — `underlyingPrice` — and the whole
+    // chain fails closed: no `markUsd` on the row, no dollar mark on the card,
+    // no `FilledLeg`, no verdict, both stakes refunded. The player still holds
+    // the option; only the duel declines to price it.
+    const EXPIRY_UNIX = 1_788_422_400;
+    const snapshot = buildSnapshot(
+      {
+        orders: [],
+        prices: { "ETH/USD": 2375.76 },
+        chainConfig: { priceFeeds: { ETH: "0xfeed" }, contracts: { optionBook: null } },
+        mmPricing: {
+          ETH: [
+            {
+              ticker: "ETH-3SEP26-2100-C",
+              feeAdjustedBid: 0.1146,
+              feeAdjustedAsk: 0.1194,
+              markPrice: 0.116552,
+              strike: 2100,
+              expiry: EXPIRY_UNIX,
+              isCall: true,
+              underlying: "ETH",
+              // underlyingPrice deliberately absent
+            },
+          ],
+        },
+      },
+      NOW,
+    );
+    const quote = snapshot.mmPricing.ETH![0]!;
+    expect(quote.mark).toBe("0.1166");
+    expect(quote.spot).toBe("—");
+    expect(quote.markUsd).toBeUndefined();
+    expect(usdMarksFromSnapshot(snapshot).size).toBe(0);
+
+    const s = spy({ confirmSlip: async () => true });
+    const { result } = await runSlip(s, [
+      pleg("a", { instrument: "ETH-3SEP26-2100-C" }), // name, no dollar mark
+    ]);
+    expect(result.status).toBe("filled");
+    expect(result.unmarkable).toHaveLength(1);
+    expect(filledLegsFor(result)).toEqual([]);
   });
 });
 
@@ -1987,10 +2182,9 @@ describe("the parlay slip, on screen", () => {
   });
 
   test("the slip says which legs the duel clock cannot score, before anything is signed", async () => {
-    // The namespace gap, on screen. A `PricingRow` carries the mark's value but
-    // not the market maker's ticker, so no leg built from the chain has the key
-    // `marksFromSnapshot` is indexed by — and the screen says that rather than
-    // letting a player discover it as a refund six hours later.
+    // A row with the venue's mark and nothing else: no market-maker ticker to
+    // key a marks map by, and no dollar price to measure from. The screen says
+    // so rather than letting a player discover it as a refund six hours later.
     serveTradeOn();
     const desk = await mountDesk({
       ...slipSource,
@@ -2001,6 +2195,38 @@ describe("the parlay slip, on screen", () => {
     expect(html).toContain("cannot be scored on the duel clock");
     // And the disclosure does not overclaim: the position itself is real.
     expect(html).toContain("settles at expiry regardless");
+    await desk.unmount();
+    globalThis.fetch = realFetch;
+  });
+
+  test("a row carrying BOTH the ticker and the dollar mark drops the warning", async () => {
+    // The other side of the same disclosure, and the screen-level proof that
+    // the join now closes: give the row what the server writes and the slip
+    // stops saying it cannot be scored. Before this change no row could carry
+    // either field, so this banner was unconditional on live data.
+    serveTradeOn();
+    const desk = await mountDesk({
+      ...slipSource,
+      pricing: () => [
+        chainRow({ mark: "0.0712", markTicker: "ETH-27SEP26-4400-C", markUsd: "169.16" }),
+      ],
+    });
+    await desk.click("+ SLIP");
+    expect(desk.container.innerHTML).not.toContain("cannot be scored on the duel clock");
+    await desk.unmount();
+    globalThis.fetch = realFetch;
+  });
+
+  test("a ticker with no dollar mark still warns — a name alone is not enough", async () => {
+    // The market maker quoted the instrument and published no spot, so the row
+    // has a name and no money. Half a join is not a join.
+    serveTradeOn();
+    const desk = await mountDesk({
+      ...slipSource,
+      pricing: () => [chainRow({ mark: "0.0712", markTicker: "ETH-27SEP26-4400-C" })],
+    });
+    await desk.click("+ SLIP");
+    expect(desk.container.innerHTML).toContain("cannot be scored on the duel clock");
     await desk.unmount();
     globalThis.fetch = realFetch;
   });

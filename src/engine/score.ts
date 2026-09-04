@@ -19,7 +19,11 @@
  * player keeps the position they bought regardless of who took the pot, and no
  * line below can affect that.
  *
- * ## Three decisions, and why they are what they are
+ * ## Four decisions, and why they are what they are
+ *
+ * **0. Every number in the ratio is USD.** See "Units" below — this is the
+ * decision the other three sit on top of, because a ratio of two different
+ * currencies is not a return, it is an exchange rate with extra steps.
  *
  * **1. Return on premium, not absolute P&L.**
  *
@@ -55,6 +59,54 @@
  * second, `duelOutcome` reports it as `noVerdict`, and `scoresTie` refuses to
  * separate anything that is not finite.
  *
+ * ## Units — the whole of decision 0, because it decides who is paid
+ *
+ * **Everything this module divides is USD.** `entryMark` is USD per contract,
+ * a marks-map value is USD per contract, `premium` is USD (USDC, 6dp, the exact
+ * figure the wallet approved). The quotient is therefore dimensionless, which is
+ * the only thing a "return on premium" can honestly be.
+ *
+ * That has to be said out loud because **the venue does not quote in USD**. A
+ * Thetanuts market-maker mark is quoted *in units of the underlying* — an ETH
+ * call at `0.1155` is 0.1155 ETH, not $0.1155 (`tnuts-test/FINDINGS.md` §1) —
+ * while the premium a fill actually pays is USDC. Dividing one by the other
+ * yields a number wrong by a factor of spot, roughly 2,500× on ETH and 80,000×
+ * on BTC, and *differently* wrong for each player. Nothing in the arithmetic
+ * below can detect that, so the conversion is done where the spot lives, at the
+ * two edges, and the branded types are how this module says so:
+ *
+ *  - the mark side, in the server's market builder — `markUsd = markPrice ×
+ *    underlyingPrice`, both read off the SAME market-maker row so the two
+ *    numbers are one quote's own opinion rather than a join across feeds. The
+ *    verbatim `mark` is kept beside it and is never what the duel scores on.
+ *    (Named by description rather than by path: `test/determinism.test.ts`
+ *    greps this file's *text* for live-market module names, comments included,
+ *    and it is right to — an engine module has no business importing one.)
+ *  - the entry side, in `src/desk/fill.ts` — a leg carries `entryMarkUsd`,
+ *    copied from the row's `markUsd`, and a row that carried no spot yields no
+ *    `markUsd`, hence no `entryMarkUsd`, hence an unmarkable leg. **No spot, no
+ *    score** — the same fail-closed direction as a missing instrument.
+ *
+ * **Why USD and not the underlying.** The alternative convention — divide the
+ * premium by spot at entry and keep everything in ETH/BTC — is dimensionally
+ * sound too, and it is rejected for one reason: it is not comparable across
+ * underlyings. It would score an ETH basket in ETH and a BTC basket in BTC and
+ * then compare the two numbers, which measures each player in the very unit
+ * they were betting on and systematically docks whichever player's underlying
+ * rallied during the duel. USD is the only numeraire both slates share, and it
+ * is also the one the premium is already denominated in — so the denominator
+ * stays the exact on-chain figure rather than becoming a quantity derived from
+ * a price read.
+ *
+ * **The second-order consequence, stated rather than discovered.** The two
+ * marks are converted at two different spots — entry spot at fill time, snapshot
+ * spot at scoring time — so the underlying's own move over the duel is INSIDE
+ * the score. That is intended. A player who called ETH up and bought a call
+ * should be paid for that call; a convention that cancelled the underlying's
+ * move would score a correct directional bet as flat, which is the opposite of
+ * what this game is for. What the score measures is what a USDC wallet would
+ * see: dollars out, dollars back.
+ *
  * ## Purity
  *
  * No clock, no network, no import of anything that has either. Every input is
@@ -64,6 +116,42 @@
  * this directory and forbids a live-data import here — that guard is the reason
  * the marks arrive as a parameter rather than as a fetch.
  */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Units, at the type level
+// ─────────────────────────────────────────────────────────────────────────────
+
+declare const USD_PER_CONTRACT: unique symbol;
+declare const USD_TOTAL: unique symbol;
+
+/**
+ * A price of ONE contract, in **US dollars**.
+ *
+ * Branded, so a plain `number` is not assignable and the conversion has to be
+ * written down. That is the entire point: the number this type replaces was a
+ * venue mark in units of the underlying, it looked exactly like a dollar price
+ * (`0.1155`), and it was divided by a dollar premium for two phases without
+ * anything complaining. A brand cannot check arithmetic, but it moves the error
+ * from "invisible" to "there is a cast here, and the line above it had better be
+ * a multiplication by spot".
+ *
+ * Every construction site is therefore a deliberate `as UsdPerContract` next to
+ * the conversion that earns it: the server's market builder (mark × the same MM
+ * row's `underlyingPrice`), `src/desk/fill.ts` (copied from that), and
+ * `src/server/attest.ts`'s two readers, which parse numbers the server itself
+ * published or a seat signed.
+ */
+export type UsdPerContract = number & { readonly [USD_PER_CONTRACT]: "usd/contract" };
+
+/**
+ * An amount of **US dollars** — a whole-position figure, not a per-contract one.
+ *
+ * A separate brand from `UsdPerContract` because both are dollars and they are
+ * still not interchangeable: a premium in the `entryMark` slot would be
+ * dimensionally fine and completely wrong, and that is exactly the class of
+ * mistake types are for.
+ */
+export type Usd = number & { readonly [USD_TOTAL]: "usd" };
 
 /**
  * One leg of a slip that was actually filled on chain.
@@ -90,15 +178,26 @@ export interface FilledLeg {
    * one failure mode that would pay the wrong player quietly.
    */
   instrument: string;
-  /** The mark price per contract at the moment of the fill. The baseline the
-   *  duel measures from; not the price paid (that is `premium`, which carries
-   *  the spread and the fee). */
-  entryMark: number;
+  /**
+   * What one contract was marked at, **in US dollars**, at the moment of the
+   * fill. The baseline the duel measures from; not the price paid (that is
+   * `premium`, which carries the spread and the fee).
+   *
+   * USD, not the venue's own quote. The market maker quotes in units of the
+   * underlying (§Units); this field is that quote already multiplied by the
+   * spot the same quote was made against, and the multiplication happens on the
+   * server, once, in its market builder. Nothing in this module can tell
+   * a converted number from an unconverted one — the brand is the only guard,
+   * and a leg that could not be converted must arrive unmarkable instead.
+   */
+  entryMark: UsdPerContract;
   /** Contracts held. Positive — this game only ever buys. */
   contracts: number;
-  /** USDC actually paid for those contracts. The denominator, and the reason a
-   *  small good basket can beat a large mediocre one. */
-  premium: number;
+  /** USDC actually paid for those contracts, in dollars. The denominator, and
+   *  the reason a small good basket can beat a large mediocre one. The one
+   *  number here that was always USD and never needed converting: it is
+   *  `totalCollateral` off the fill receipt, 6dp, exactly what left the wallet. */
+  premium: Usd;
 }
 
 /**
@@ -146,11 +245,20 @@ function usable(leg: FilledLeg | null | undefined): leg is FilledLeg {
 /** The score, with the working shown — what the attestor needs to say *why* it
  *  refused rather than only that it did. */
 export interface ScoreDetail {
-  /** `pnl / premium`, or `NaN` when the basket is unscoreable. */
+  /** `pnl / premium`, or `NaN` when the basket is unscoreable. Dimensionless —
+   *  dollars over dollars — which it only is because of §Units. */
   score: number;
-  /** `Σ (mark_now − mark_entry) × contracts`, in the marks' own units. */
+  /**
+   * `Σ (mark_now − mark_entry) × contracts`, **in US dollars**.
+   *
+   * Plain `number`, unlike the branded inputs it is summed from. The brands
+   * exist to make a *producer* write down its conversion; an output nobody
+   * feeds back in gains nothing from one, and branding it would put an `as`
+   * cast in every assertion that reads it, which is how a brand stops being
+   * read as a claim and starts being read as syntax.
+   */
   pnl: number;
-  /** `Σ premium_paid`. */
+  /** `Σ premium_paid`, in US dollars. Plain `number`, for the reason `pnl` gives. */
   premium: number;
   /**
    * Every leg the snapshot could not mark, or that failed `usable`, named by
@@ -173,7 +281,7 @@ export interface ScoreDetail {
  */
 export function scoreDetail(
   legs: readonly FilledLeg[],
-  marks: ReadonlyMap<string, number>,
+  marks: ReadonlyMap<string, UsdPerContract>,
 ): ScoreDetail {
   const unmarkable: string[] = [];
   let pnl = 0;
@@ -201,6 +309,9 @@ export function scoreDetail(
   // reading: a player who filled nothing has no position, and no position is
   // not a score of zero that could tie or win.
   const scoreable = unmarkable.length === 0 && premium > 0 && Number.isFinite(pnl);
+  // Both sums are dollars because both inputs were required to be — no
+  // conversion happens here, and none may: there is no spot in scope, which is
+  // the structural version of "the edges do the converting".
   return { score: scoreable ? pnl / premium : Number.NaN, pnl, premium, unmarkable };
 }
 
@@ -215,6 +326,12 @@ export function scoreDetail(
  * `src/desk/fill.ts` means size is partly an accident of book depth on the
  * round.
  *
+ * Every term is USD (§Units): the marks map holds dollars per contract, so does
+ * `entryMark`, and `premium` is the USDC that left the wallet. The quotient is
+ * dimensionless. Hand a map of raw venue marks to this function and it will
+ * return a number — a plausible-looking, entirely wrong number — which is why
+ * the map is typed `UsdPerContract` rather than `number`.
+ *
  * Marks come from the same snapshot for both players, read once and passed in.
  * Reading them separately per player would let a mid-scoring book refresh
  * decide a duel.
@@ -223,7 +340,10 @@ export function scoreDetail(
  * and note 3 of the module docstring. Callers that move money must test with
  * `Number.isFinite`, or better, use `duelOutcome`, which cannot forget to.
  */
-export function duelScore(legs: readonly FilledLeg[], marks: ReadonlyMap<string, number>): number {
+export function duelScore(
+  legs: readonly FilledLeg[],
+  marks: ReadonlyMap<string, UsdPerContract>,
+): number {
   return scoreDetail(legs, marks).score;
 }
 
@@ -275,7 +395,7 @@ export interface DuelOutcome {
 export function duelOutcome(
   aLegs: readonly FilledLeg[],
   bLegs: readonly FilledLeg[],
-  marks: ReadonlyMap<string, number>,
+  marks: ReadonlyMap<string, UsdPerContract>,
 ): DuelOutcome {
   const aDetail = scoreDetail(aLegs, marks);
   const bDetail = scoreDetail(bLegs, marks);

@@ -148,12 +148,22 @@ function absDelta(raw: string | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** `markPrice` as a number, or `undefined`. Most live rows carry no mark —
- *  market-maker pricing covers two underlyings — and that is a fact about the
- *  feed, never a reason to substitute a mid we computed. */
-function markOf(row: PricingRow): number | undefined {
-  if (row.mark === undefined) return undefined;
-  const n = Number(String(row.mark).replace("−", "-"));
+/**
+ * `markUsd` as a number, or `undefined` — **US dollars per contract**.
+ *
+ * `markUsd`, not `mark`. The venue quotes a mark in units of the underlying
+ * (`tnuts-test/FINDINGS.md` §1), the premium a fill pays is USDC, and the duel
+ * score divides one by the other — so the row's dollar figure, derived on the
+ * server against the spot that same quote was made against, is the only one of
+ * the two that may be sent. See `src/engine/score.ts` §Units.
+ *
+ * Most live rows carry neither: market-maker pricing covers two underlyings,
+ * and that is a fact about the feed, never a reason to substitute a mid we
+ * computed or a spot from another call.
+ */
+function markUsdOf(row: PricingRow): number | undefined {
+  if (row.markUsd === undefined) return undefined;
+  const n = Number(String(row.markUsd).replace("−", "-"));
   return Number.isFinite(n) ? n : undefined;
 }
 
@@ -1286,27 +1296,33 @@ function ParlaySlip({
   useEffect(() => () => decide.current?.(false), []);
 
   /**
-   * The legs, and the one field this screen deliberately leaves empty.
+   * The legs, and the two fields the duel clock cannot do without.
    *
-   * `instrument` is the key the duel clock marks a filled leg by, and it must
-   * be the **venue's own** name, verbatim (`src/engine/score.ts`). A
-   * `PricingRow` carries the mark's *value* — joined on the server from
-   * `MmQuote.markPrice` — but not the mark's *name*, and the order book's
+   * `instrument` is the key a filled leg is marked by, and it must be the
+   * **venue's own** name, verbatim (`src/engine/score.ts`): the order book's
    * `ETH-3SEP-4400-C` is a different namespace from the market maker's
-   * `ETH-3SEP26-2100-C`. So it is passed as `undefined` rather than composed
-   * from a strike and an expiry: a near-miss key is the one failure that pays
-   * the wrong player quietly, and the honest outcome is `unmarkable` → no
-   * verdict → both stakes refunded. The line below says so on screen.
+   * `ETH-3SEP26-2100-C`, and only the second one keys into a marks map. It is
+   * therefore **copied** off `row.markTicker` — the ticker of the MM quote that
+   * joined this row's mark — and left `undefined` when no quote joined. Never
+   * composed from a strike and an expiry: a near-miss key is the one failure
+   * that pays the wrong player quietly, and the honest outcome is `unmarkable`
+   * → no verdict → both stakes refunded.
+   *
+   * `entryMarkUsd` is the same story in the other dimension: dollars, because
+   * the premium is dollars, and absent when the quote published no spot to
+   * convert with. Both are copied, neither is computed here, and the line below
+   * says on screen how many legs are missing either.
    */
   const legs: ParlayFillLeg[] = rows.map((row) => ({
     id: rowKey(row),
     label: `${underlying}-${row.expiry}-${row.strike}-${row.type === "CALL" ? "C" : "P"}`,
-    entryMark: markOf(row),
+    instrument: row.markTicker,
+    entryMarkUsd: markUsdOf(row),
     order: row.order!,
     usdcAmount: amount,
   }));
   /** Legs the duel clock could not score even if they all landed. */
-  const unscoreable = legs.filter((l) => !l.instrument || l.entryMark === undefined);
+  const unscoreable = legs.filter((l) => !l.instrument || l.entryMarkUsd === undefined);
   /** What the slip asks for. Shown beside the cap so the staircase is visible
    *  before it is refused — but the refusal itself is in code, above the
    *  network, which is the half that is a bound. */

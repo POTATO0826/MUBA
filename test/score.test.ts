@@ -44,21 +44,33 @@ import {
   scoreDetail,
   scoresTie,
   type FilledLeg,
+  type Usd,
+  type UsdPerContract,
 } from "../src/engine/score.ts";
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
-/** A leg, spelled out. Every test builds its legs through this so a field can
- *  never be silently omitted and defaulted into the arithmetic. */
+/**
+ * A leg, spelled out. Every test builds its legs through this so a field can
+ * never be silently omitted and defaulted into the arithmetic.
+ *
+ * The two casts are where a test asserts what a producer has to earn: every
+ * number below is **US dollars** — dollars per contract for the mark, dollars
+ * for the premium — because that is the only unit `duelScore` can divide (§Units
+ * in the module under test). The last section of this file is about what
+ * happens when they are not.
+ */
 const leg = (instrument: string, entryMark: number, contracts: number, premium: number): FilledLeg => ({
   instrument,
-  entryMark,
+  entryMark: entryMark as UsdPerContract,
   contracts,
-  premium,
+  premium: premium as Usd,
 });
 
-const marksOf = (entries: Record<string, number>): ReadonlyMap<string, number> =>
-  new Map(Object.entries(entries));
+/** A book, in dollars per contract. Same claim as `leg`'s two casts, made once
+ *  for the map the score is read against. */
+const marksOf = (entries: Record<string, number>): ReadonlyMap<string, UsdPerContract> =>
+  new Map(Object.entries(entries).map(([k, v]) => [k, v as UsdPerContract]));
 
 /**
  * THE FIXTURE. One frozen book, four instruments, and it is the same map for
@@ -237,8 +249,8 @@ describe("one snapshot, both players — the signature is the enforcement", () =
     // the ONE instance the caller passed, so there is no second source that
     // could have drifted.
     const seen: string[] = [];
-    class Watched extends Map<string, number> {
-      override get(k: string): number | undefined {
+    class Watched extends Map<string, UsdPerContract> {
+      override get(k: string): UsdPerContract | undefined {
         seen.push(k);
         return super.get(k);
       }
@@ -355,11 +367,11 @@ describe("unscoreable is a real answer, and it is not zero", () => {
   });
 
   test("a book entry that is not a number is a missing mark, never a guess", () => {
-    const rotten = new Map<string, number>([
-      ["A-C", Number.NaN],
-      ["B-C", Number.POSITIVE_INFINITY],
-      ["C-C", -1],
-    ]);
+    const rotten = marksOf({
+      "A-C": Number.NaN,
+      "B-C": Number.POSITIVE_INFINITY,
+      "C-C": -1,
+    });
     for (const name of ["A-C", "B-C", "C-C"]) {
       const d = scoreDetail([leg(name, 1, 1, 1)], rotten);
       expect(d.unmarkable).toEqual([name]);
@@ -472,6 +484,135 @@ describe("ties are refused, and there is no tiebreak", () => {
       "scoreDetail",
       "scoresTie",
     ]);
+  });
+});
+
+/**
+ * ─── the units, which decide who is paid ─────────────────────────────────────
+ *
+ * The defect this section pins is not an arithmetic slip. Every formula above
+ * was right; every number fed into it was in the wrong currency.
+ *
+ * A Thetanuts market-maker mark is quoted **in units of the underlying** — an
+ * ETH call marked `0.1155` is 0.1155 ETH, not $0.1155 (`tnuts-test/FINDINGS.md`
+ * §1) — while the premium a fill pays is USDC. `score = Σ Δmark × contracts ÷
+ * Σ premium` therefore divided ETH by dollars and produced a ratio that is not a
+ * return, is wrong by a factor of spot, and is wrong by a *different* factor for
+ * an ETH basket than for a BTC one.
+ *
+ * Nothing in this module can detect that: `0.1155` and `276.84` are both
+ * plausible doubles. So the fix converts at the two edges (`markUsd` on the
+ * server, `entryMarkUsd` on the fill) and the tests below fix the numbers a
+ * correct edge must produce — including, in the last one, a duel where the
+ * unconverted numbers pay the loser.
+ *
+ * These numbers are the FINDINGS capture rounded to clean doubles: ETH at
+ * 2,000 → 2,200 over the duel, BTC at 80,000 → 80,800.
+ */
+describe("units: the ratio is dollars over dollars, or it is nothing", () => {
+  /** ETH 2,100 call. 0.10 ETH at entry (spot 2,000) → 0.12 ETH now (spot 2,200). */
+  const ETH_ENTRY_USD = 0.1 * 2_000; //  $200.00 per contract
+  const ETH_NOW_USD = 0.12 * 2_200; //   $264.00 per contract
+
+  const USD_BOOK = marksOf({ "ETH-27SEP26-2100-C": ETH_NOW_USD });
+
+  test("a converted leg scores the return a wallet would recognise", () => {
+    //   pnl     = ($264.00 − $200.00) × 2 = $128.00
+    //   premium = $400.00 (what the wallet actually paid, USDC)
+    //   score   = 128 ÷ 400 = 0.32
+    const legs = [leg("ETH-27SEP26-2100-C", ETH_ENTRY_USD, 2, 400)];
+    const d = scoreDetail(legs, USD_BOOK);
+    expect(d.pnl).toBeCloseTo(128, 10);
+    expect(d.premium).toBe(400);
+    expect(d.score).toBeCloseTo(0.32, 12);
+  });
+
+  test("the SAME position priced in the venue's own units scores 3,200× too small", () => {
+    // What the code did before the conversion existed: venue marks in ETH over a
+    // USDC premium. The formula is untouched; only the units are wrong.
+    //   pnl     = (0.12 − 0.10) × 2 = 0.04   ← ETH
+    //   premium = 400                        ← dollars
+    //   score   = 0.0001
+    const venueBook = marksOf({ "ETH-27SEP26-2100-C": 0.12 });
+    const mixed = [leg("ETH-27SEP26-2100-C", 0.1, 2, 400)];
+    expect(scoreDetail(mixed, venueBook).score).toBeCloseTo(0.0001, 12);
+
+    // Three thousand two hundred times off, and finite — so it signs, and it
+    // signs a number that means nothing. A wrong unit does not look like an
+    // error, which is exactly why it survived two phases.
+    expect(Number.isFinite(scoreDetail(mixed, venueBook).score)).toBe(true);
+    expect(scoreDetail(mixed, venueBook).score).not.toBeCloseTo(0.32, 6);
+  });
+
+  test("a wrong conversion factor is caught — the spot has to be THIS quote's", () => {
+    // Mutation guard. Convert the entry mark at the SCORING spot instead of its
+    // own — the tempting simplification, "just use the latest price" — and the
+    // $40 the underlying's own move contributed vanishes, leaving only the
+    // option's ETH-denominated gain repriced. $128 becomes $88: still positive,
+    // still plausible, and a third of the return gone. Nothing downstream could
+    // tell.
+    //   pnl = ($264.00 − $220.00) × 2 = $88.00 → 0.22, not 0.32
+    const wrong = [leg("ETH-27SEP26-2100-C", 0.1 * 2_200, 2, 400)];
+    expect(scoreDetail(wrong, USD_BOOK).score).toBeCloseTo(0.22, 12);
+    expect(scoreDetail(wrong, USD_BOOK).score).not.toBeCloseTo(0.32, 6);
+
+    // And converting at a spot off by a single dollar moves the sixth decimal —
+    // which is the resolution a duel is decided at, so "close enough" is not.
+    const offByOne = [leg("ETH-27SEP26-2100-C", 0.1 * 2_001, 2, 400)];
+    expect(scoresTie(scoreDetail(offByOne, USD_BOOK).score, 0.32)).toBe(false);
+  });
+
+  test("across two underlyings, the unconverted score pays the WRONG player", () => {
+    // The argument for dollars over "keep everything in the underlying", in one
+    // duel. Both players risked $400.
+    //
+    //   A  ETH  0.10 → 0.11 ETH, spot 2,000 → 2,200   $200.00 → $242.00
+    //   B  BTC  0.010 → 0.011 BTC, spot 80,000 → 80,800   $800.00 → $888.80
+    //
+    // In dollars: A made $84 on $400 (0.2100), B made $88.80 on $400 (0.2220).
+    // B won, narrowly and honestly.
+    //
+    // In the venue's own units: A's numerator is 0.02 ETH and B's is 0.001 BTC.
+    // A's is twenty times larger — not because A did better, but because an
+    // ether is worth a fortieth of a bitcoin, so an ETH-denominated price has
+    // forty times more of it per dollar. The duel would be decided by which
+    // underlying the reel dealt.
+    const usd = marksOf({
+      "ETH-27SEP26-2100-C": 0.11 * 2_200,
+      "BTC-27SEP26-70000-C": 0.011 * 80_800,
+    });
+    const right = duelOutcome(
+      [leg("ETH-27SEP26-2100-C", 0.1 * 2_000, 2, 400)],
+      [leg("BTC-27SEP26-70000-C", 0.01 * 80_000, 1, 400)],
+      usd,
+    );
+    expect(right.aScore).toBeCloseTo(0.21, 12);
+    expect(right.bScore).toBeCloseTo(0.222, 12);
+    expect(right.noVerdict).toBe(false);
+    expect(right.aWins).toBe(false); // B, on the money that actually moved.
+
+    // The same two baskets, unconverted.
+    const venue = marksOf({ "ETH-27SEP26-2100-C": 0.11, "BTC-27SEP26-70000-C": 0.011 });
+    const wrong = duelOutcome(
+      [leg("ETH-27SEP26-2100-C", 0.1, 2, 400)],
+      [leg("BTC-27SEP26-70000-C", 0.01, 1, 400)],
+      venue,
+    );
+    expect(wrong.noVerdict).toBe(false);
+    // B won the duel and A is handed the pot. This assertion IS the defect: not
+    // a rounding difference, the other player.
+    expect(wrong.aWins).toBe(true);
+    expect(wrong.aScore).toBeGreaterThan(wrong.bScore);
+  });
+
+  test("a leg whose spot was unavailable never reaches this module scored", () => {
+    // The edges cannot convert without a spot, so they emit nothing rather than
+    // a guess — and an absent mark is already unmarkable here. Stated as the
+    // round trip: whatever "no spot" turns into, it must be a refund and not a
+    // number. `test/fill.test.ts` and `test/attest.test.ts` hold the two edges.
+    const d = scoreDetail([leg("ETH-27SEP26-2100-C", ETH_ENTRY_USD, 2, 400)], marksOf({}));
+    expect(d.unmarkable).toEqual(["ETH-27SEP26-2100-C"]);
+    expect(Number.isNaN(d.score)).toBe(true);
   });
 });
 

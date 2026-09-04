@@ -60,7 +60,13 @@ import {
   type SeatProvider,
   type SeatReader,
 } from "../src/server/seats.ts";
-import { SCORE_DP, duelScore, type FilledLeg } from "../src/engine/score.ts";
+import {
+  SCORE_DP,
+  duelScore,
+  type FilledLeg,
+  type Usd,
+  type UsdPerContract,
+} from "../src/engine/score.ts";
 import {
   BASE_CHAIN_ID,
   DEADLINE_SECONDS,
@@ -78,6 +84,7 @@ import {
   fillsMessage,
   lockMessage,
   marksFromSnapshot,
+  usdMarksFromSnapshot,
   type AttestEnvelope,
   type AttestFail,
   type AttestOk,
@@ -1495,15 +1502,39 @@ const ETH = "ETH-27SEP26-4400-C";
 const BTC = "BTC-27SEP26-70000-P";
 
 /** The frozen book both slates are marked against. ETH up from 0.25, BTC up
- *  from 2.00 — the same two moves `test/score.test.ts` hand-computes. */
+ *  from 2.00 — the same two moves `test/score.test.ts` hand-computes.
+ *
+ *  Every number in this file is **US dollars** (`src/engine/score.ts` §Units):
+ *  dollars per contract for a mark, dollars for a premium. They are small
+ *  because they are the score fixture's numbers, not because a mark is small —
+ *  the arithmetic under test is a ratio and does not care, and the tests that
+ *  care about the conversion itself live in `test/score.test.ts` and in the
+ *  reducer section at the foot of this file. */
 const MARKS: Record<string, number> = { [ETH]: 0.5, [BTC]: 2.25 };
+
+/** `MARKS` as the score wants it: dollars per contract, branded. */
+const marksMap = (m: Record<string, number> = MARKS): Map<string, UsdPerContract> =>
+  new Map(Object.entries(m).map(([k, v]) => [k, v as UsdPerContract]));
+
+/** A dollar mark read back out of a map, as a plain number.
+ *
+ *  The brand's job is to make a *producer* write its conversion down; an
+ *  assertion is a reader, and `expect(x).toBe(276.9)` should not need a cast to
+ *  say what it means. So the widening happens here, once, rather than at seven
+ *  assertion sites where it would read as noise. */
+const dollars = (v: UsdPerContract | undefined): number | undefined => v;
 
 const filled = (
   instrument: string,
   entryMark: number,
   contracts: number,
   premium: number,
-): FilledLeg => ({ instrument, entryMark, contracts, premium });
+): FilledLeg => ({
+  instrument,
+  entryMark: entryMark as UsdPerContract,
+  contracts,
+  premium: premium as Usd,
+});
 
 /**
  * The two baskets, and the whole point of §C1 in two lines.
@@ -1534,7 +1565,7 @@ interface Book {
 
 function book(at = SNAP_AT, marks: Record<string, number> = MARKS): Book {
   let reads = 0;
-  let current: MarkSnapshot = { at, marks: new Map(Object.entries(marks)) };
+  let current: MarkSnapshot = { at, marks: marksMap(marks) };
   return {
     source: {
       read: async () => {
@@ -1544,7 +1575,7 @@ function book(at = SNAP_AT, marks: Record<string, number> = MARKS): Book {
     },
     reads: () => reads,
     set: (nextAt, nextMarks) => {
-      current = { at: nextAt, marks: new Map(Object.entries(nextMarks)) };
+      current = { at: nextAt, marks: marksMap(nextMarks) };
     },
   };
 }
@@ -1649,7 +1680,7 @@ describe("the duel clock scores marks, and the tape is not consulted", () => {
     // Stated before anything depends on it: BIG makes more money, GOOD has the
     // better return, and the tape — on WINNING_SLIP — pays A. So a verdict of B
     // below can only have come from the marks.
-    const marks = new Map(Object.entries(MARKS));
+    const marks = marksMap();
     expect(duelScore(GOOD, marks)).toBe(1);
     expect(duelScore(BIG, marks)).toBe(0.5);
     expect(expectedWinner(WINNING_SLIP)).toBe(A);
@@ -1930,7 +1961,7 @@ describe("sign nothing — plan 6 §C3, and there is no tiebreak", () => {
 
   test("a snapshot with no timestamp signs nothing", async () => {
     const undated: MarkSource = {
-      read: async () => ({ at: Number.NaN, marks: new Map(Object.entries(MARKS)) }),
+      read: async () => ({ at: Number.NaN, marks: marksMap() }),
     };
     const h = harness(T0, null, undated);
     okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
@@ -2335,10 +2366,13 @@ describe("the snapshot reducer fails closed", () => {
   test("a reduced snapshot drives a real verdict end to end", async () => {
     // The two halves joined: the reducer's output IS the map the score reads,
     // and the instrument key is the book's own name for the thing, verbatim.
-    const reduced = marksFromSnapshot({
+    //
+    // `usdMarksFromSnapshot`, and `markUsd` rather than `mark`, because the map
+    // the score reads is dollars — see the reducer's own describe block below.
+    const reduced = usdMarksFromSnapshot({
       mmPricing: {
-        ETH: [{ ticker: ETH, mark: "0.5" }],
-        BTC: [{ ticker: BTC, mark: "2.25" }],
+        ETH: [{ ticker: ETH, mark: "0.0002", markUsd: "0.5" }],
+        BTC: [{ ticker: BTC, mark: "0.00003", markUsd: "2.25" }],
       },
     });
     const source: MarkSource = { read: async () => ({ at: SNAP_AT, marks: reduced }) };
@@ -2346,5 +2380,186 @@ describe("the snapshot reducer fails closed", () => {
     okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD }))));
     h.advance(AFTER - T0);
     expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
+  });
+});
+
+/**
+ * ─── the DOLLAR reducer, which is the only one the duel clock may use ────────
+ *
+ * `marksFromSnapshot` above reads the venue's own numbers in the venue's own
+ * units, and those units are not one currency: a market-maker `markPrice` is
+ * quoted in units of the underlying (FINDINGS §1) while a `mid` off the signed
+ * order book is already USDC per contract. Both are honest readings of the book
+ * and neither is money the same way, so the score — which divides by a USDC
+ * premium — cannot use either.
+ *
+ * `usdMarksFromSnapshot` therefore reads **one field, `markUsd`**, which the
+ * server wrote by multiplying a mark by the spot that same market-maker quote
+ * was made against. It copies; it never converts. Everything else contributes
+ * nothing, and nothing is a refund.
+ */
+describe("usdMarksFromSnapshot reads dollars, and only dollars", () => {
+  test("markUsd is what it takes, keyed by the market maker's own ticker", () => {
+    const marks = usdMarksFromSnapshot({
+      mmPricing: {
+        ETH: [{ ticker: "ETH-3SEP26-2100-C", mark: "0.1166", spot: "2375.7600", markUsd: "277.0136" }],
+        BTC: [{ ticker: "BTC-3SEP26-70000-P", mark: "0.0100", spot: "81004.0400", markUsd: "810.0404" }],
+      },
+    });
+    expect(dollars(marks.get("ETH-3SEP26-2100-C"))).toBe(277.0136);
+    expect(dollars(marks.get("BTC-3SEP26-70000-P"))).toBe(810.0404);
+    expect(marks.size).toBe(2);
+  });
+
+  test("a mark with no markUsd contributes NOTHING — no spot, no score", () => {
+    // The row is perfectly good and perfectly unscoreable: the market maker
+    // quoted a price and published no spot to value it in dollars, so the
+    // server wrote no `markUsd`. Reaching for `mark` here would divide ETH by
+    // USDC; reaching for a spot elsewhere in the snapshot would join two feeds
+    // read at two instants. Both are refused by reading one field.
+    const marks = usdMarksFromSnapshot({
+      mmPricing: { ETH: [{ ticker: "ETH-3SEP26-2100-C", mark: "0.1166", spot: "—" }] },
+    });
+    expect(marks.size).toBe(0);
+    expect(dollars(marks.get("ETH-3SEP26-2100-C"))).toBeUndefined();
+  });
+
+  test("neither `mark` nor `mid` nor a bid is ever a dollar mark", () => {
+    // Every field a well-meaning edit might fall back to, refused in one list.
+    // `mid` is the sharpest of them: it IS dollars (the order book prices in
+    // USDC), so a fallback to it would be right for order-book rows and wrong
+    // for market-maker ones, which is the worst kind of nearly-working.
+    for (const row of [
+      { ticker: "X-C", mark: "1.5" },
+      { ticker: "X-C", mid: "1.5" },
+      { ticker: "X-C", bid: "1.4", ask: "1.6" },
+      { ticker: "X-C", mark: "1.5", spot: "2000" },
+      { ticker: "X-C", markUsd: "—" },
+      { ticker: "X-C", markUsd: "3000 USD" },
+      { ticker: "X-C", markUsd: Number.NaN },
+      { ticker: "X-C", markUsd: null },
+      { ticker: "X-C", markUsd: "-1" },
+      { markUsd: "1.5" }, //             no name
+      { ticker: "", markUsd: "1.5" }, // empty name
+    ]) {
+      expect(usdMarksFromSnapshot({ mmPricing: { ETH: [row] } }).size).toBe(0);
+    }
+  });
+
+  test("a numeric zero is a real dollar price; a missing one is not a price", () => {
+    expect(dollars(usdMarksFromSnapshot({ mmPricing: { ETH: [{ ticker: "X-C", markUsd: 0 }] } }).get("X-C"))).toBe(0);
+    expect(dollars(usdMarksFromSnapshot({ mmPricing: { ETH: [{ ticker: "X-C", markUsd: 0.5 }] } }).get("X-C"))).toBe(0.5);
+  });
+
+  test("it fails closed on every shape it does not recognise", () => {
+    for (const snapshot of [
+      null,
+      undefined,
+      42,
+      "a string",
+      [],
+      {},
+      { mmPricing: null },
+      { mmPricing: { ETH: "not rows" } },
+      { mmPricing: { ETH: [null, 7, "x"] } },
+    ]) {
+      expect(usdMarksFromSnapshot(snapshot).size).toBe(0);
+    }
+  });
+
+  test("a pricing row joins on markTicker, which is the MM's name and not the book's", () => {
+    // The namespace defect, in the reducer. An order-book row names itself
+    // `ETH-3SEP-2100-C` (no year) under `instrument`, and that name marks
+    // nothing. The same row carries `markTicker` — the ticker of the MM quote
+    // whose mark it borrowed — and THAT is the key a fill can copy and score by.
+    const marks = usdMarksFromSnapshot({
+      pricing: {
+        ETH: [
+          {
+            instrument: "ETH-3SEP-2100-C",
+            markTicker: "ETH-3SEP26-2100-C",
+            mark: "0.1166",
+            markUsd: "277.0136",
+          },
+        ],
+      },
+    });
+    expect(dollars(marks.get("ETH-3SEP26-2100-C"))).toBe(277.0136);
+    expect(dollars(marks.get("ETH-3SEP-2100-C"))).toBeUndefined();
+  });
+
+  test("first writer wins, and mmPricing is still visited first", () => {
+    const marks = usdMarksFromSnapshot({
+      mmPricing: { ETH: [{ ticker: "X-C", markUsd: "1" }] },
+      pricing: { ETH: [{ markTicker: "X-C", markUsd: "2" }] },
+      orders: [{ instrument: "X-C", markUsd: "3" }],
+    });
+    expect(dollars(marks.get("X-C"))).toBe(1);
+  });
+
+  test("the two reducers disagree by a factor of spot, and the types keep them apart", () => {
+    // Both read the same row. One returns the venue's 0.1166, the other the
+    // 276.91 dollars that is; the difference is the whole defect, and it is
+    // 2,375× — not a rounding error, a different currency.
+    const snapshot = {
+      mmPricing: { ETH: [{ ticker: "ETH-3SEP26-2100-C", mark: "0.1166", markUsd: "277.0136" }] },
+    };
+    expect(marksFromSnapshot(snapshot).get("ETH-3SEP26-2100-C")).toBe(0.1166);
+    expect(dollars(usdMarksFromSnapshot(snapshot).get("ETH-3SEP26-2100-C"))).toBe(277.0136);
+    // `marksFromSnapshot` returns `Map<string, number>` and `MarkSnapshot.marks`
+    // wants `ReadonlyMap<string, UsdPerContract>`, so the wrong one of these two
+    // cannot be wired into a `MarkSource` without an `as` a reviewer would have
+    // to explain. That is a compile-time assertion; this line is the note that
+    // it exists.
+    expect(marksFromSnapshot(snapshot).size).toBe(1);
+  });
+
+  test("an unconvertible book signs nothing — the whole path, end to end", async () => {
+    // Every mark present, every spot missing, so nothing is in dollars. The
+    // attestor must refuse, and the six-hour refund does the rest. This is the
+    // state a duel on a quote with no published spot is in, and it must never
+    // become a signature.
+    const reduced = usdMarksFromSnapshot({
+      mmPricing: {
+        ETH: [{ ticker: ETH, mark: "0.5" }],
+        BTC: [{ ticker: BTC, mark: "2.25" }],
+      },
+    });
+    expect(reduced.size).toBe(0);
+
+    const source: MarkSource = { read: async () => ({ at: SNAP_AT, marks: reduced }) };
+    const h = harness(T0, null, source);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock())));
+    h.advance(AFTER - T0);
+    // An empty book is refused before the freeze, so the refusal is the
+    // snapshot's and not the score's — and either way nothing is signed.
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market snapshot has no marks",
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("one leg convertible and one not still signs nothing", async () => {
+    // The partial case, which is the dangerous one: a book with marks in it
+    // looks healthy, and scoring the legs it happens to cover would hand the
+    // duel to whichever player's unquoted leg was the missing one.
+    const reduced = usdMarksFromSnapshot({
+      mmPricing: {
+        ETH: [{ ticker: ETH, markUsd: "0.5" }],
+        BTC: [{ ticker: BTC, mark: "2.25" }], // quoted, no spot, no dollars
+      },
+    });
+    expect(reduced.size).toBe(1);
+
+    const source: MarkSource = { read: async () => ({ at: SNAP_AT, marks: reduced }) };
+    const h = harness(T0, null, source);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
+    h.advance(AFTER - T0);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: `unmarkable leg: ${BTC}`,
+    });
+    expect(h.signed).toEqual([]);
   });
 });

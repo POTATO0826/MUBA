@@ -867,6 +867,40 @@ export function payoutTypeFor(
 }
 
 /**
+ * THE conversion: a market-maker mark, priced in US dollars per contract.
+ *
+ * One function, called from the two places that need it — the desk's MM table
+ * and the order-book join — so the multiplication that turns a venue price into
+ * money exists exactly once in this repo. Everything downstream copies its
+ * output and nothing recomputes it; `src/engine/score.ts` §Units is why that
+ * matters.
+ *
+ * `markPrice` is quoted **in units of the underlying** (`tnuts-test/FINDINGS.md`
+ * §1) and `underlyingPrice` is the spot **that same quote** was made against.
+ * Multiplying the two is self-consistent by construction; multiplying by a spot
+ * from `getMarketData().prices` would join two feeds read at two instants, and
+ * the duel subtracts two of these numbers taken minutes apart.
+ *
+ * `markUsd: undefined` — never zero, never `"—"` — when either half is missing
+ * or the spot is not strictly positive. A spot of zero would price every
+ * contract at $0.00, which is a number and a wrong one, and a sentinel string
+ * that parsed as a number is the failure the duel clock's reducer exists to
+ * refuse. Absent means unmarkable means refunded, which is the safe direction.
+ */
+function pricedInUsd(
+  markPrice: number,
+  underlyingPrice: number | undefined,
+): { spot: number | null; markUsd: string | undefined } {
+  const spot =
+    typeof underlyingPrice === "number" && underlyingPrice > 0 ? underlyingPrice : null;
+  return {
+    spot,
+    markUsd:
+      spot === null || !Number.isFinite(markPrice) ? undefined : (markPrice * spot).toFixed(4),
+  };
+}
+
+/**
  * The ±`MM_STRIKE_BAND` window around spot, or `null` when no row published one.
  *
  * The centre is read off the quotes themselves (`underlyingPrice` is on every
@@ -935,16 +969,25 @@ export function buildMmQuotes(rows: readonly RawMmQuote[]): MmQuote[] {
   return centred
     .slice(0, MM_ROWS)
     .sort((a, b) => a.strike - b.strike || Number(b.isCall) - Number(a.isCall))
-    .map((r) => ({
-      ticker: r.ticker,
-      type: r.isCall ? ("CALL" as const) : ("PUT" as const),
-      strike: money(r.strike),
-      expiry: expiryLabel(r.expiry),
-      bid: r.feeAdjustedBid.toFixed(4),
-      ask: r.feeAdjustedAsk.toFixed(4),
-      mark: Number.isFinite(r.markPrice) ? r.markPrice.toFixed(4) : "—",
-      spread: (r.feeAdjustedAsk - r.feeAdjustedBid).toFixed(4),
-    }));
+    .map((r) => {
+      const { spot, markUsd } = pricedInUsd(r.markPrice, r.underlyingPrice);
+      return {
+        ticker: r.ticker,
+        type: r.isCall ? ("CALL" as const) : ("PUT" as const),
+        strike: money(r.strike),
+        expiry: expiryLabel(r.expiry),
+        bid: r.feeAdjustedBid.toFixed(4),
+        ask: r.feeAdjustedAsk.toFixed(4),
+        mark: Number.isFinite(r.markPrice) ? r.markPrice.toFixed(4) : "—",
+        // Carried so `markUsd` is auditable off the same row: a reader can
+        // multiply the two printed numbers and get the third.
+        spot: spot === null ? "—" : spot.toFixed(4),
+        // The dollar price of one contract — see `MmQuote.markUsd` and
+        // `pricedInUsd`, which is the only place the multiplication happens.
+        markUsd,
+        spread: (r.feeAdjustedAsk - r.feeAdjustedBid).toFixed(4),
+      };
+    });
 }
 
 /**
@@ -1007,7 +1050,29 @@ function optionExpiryOf(entry: RawOrderEntry): number | null {
 }
 
 /**
- * `underlying|isCall|strike|optionExpiry` → `markPrice`, verbatim.
+ * One market-maker quote, as the order book's own rows borrow it.
+ *
+ * The three fields travel together because they are one row's opinion of one
+ * instrument, and splitting them is how both of plan 6's scoring defects
+ * happened: a mark with no name cannot be looked up, and a mark with no spot
+ * cannot be turned into money. A level joins all three or none.
+ */
+export interface MmMark {
+  /** `ticker`, verbatim — the MM namespace, with the year. The key
+   *  `src/server/attest.ts` builds its marks map on. */
+  ticker: string;
+  /** `markPrice`, verbatim, 4dp. In units of the underlying. */
+  mark: string;
+  /** `underlyingPrice`, verbatim — the spot this quote was made against. */
+  spot?: string;
+  /** `mark × spot`, US dollars per contract, 4dp. Absent when the quote
+   *  published no spot. */
+  markUsd?: string;
+}
+
+/**
+ * `underlying|isCall|strike|optionExpiry` → the quote's name, mark and dollar
+ * mark.
  *
  * The join that gives an order-book level a mark. Both feeds name the same
  * instrument and neither is a superset of the other: the MM chain has strikes
@@ -1024,19 +1089,44 @@ function optionExpiryOf(entry: RawOrderEntry): number | null {
  * The strike is keyed at its 8dp integer value rather than as a float, so
  * `2650` off the chain and `2650.00000001` off a division cannot become two
  * different keys.
+ *
+ * It carries the quote's **name** as well as its price, and that is the fix for
+ * plan 6's first scoring defect. Before it, a level got the mark's value and
+ * nothing else, so a fill had no MM-namespace ticker to key the marks map by,
+ * every filled leg was unmarkable and every duel refunded. The name is copied
+ * off the same row as the number; nothing here composes one.
+ *
+ * It carries the quote's **spot** too, and that is the fix for the second. A
+ * mark is in units of the underlying, a premium is USDC, and the only number
+ * that can bridge them is the spot this very quote was made against — not
+ * `getMarketData().prices`, which is a second feed read at a second instant and
+ * would put the two sides of a subtraction on different clocks.
  */
 export function markIndex(
   mmPricing: Record<string, readonly RawMmQuote[]> | undefined,
-): Map<string, string> {
-  const out = new Map<string, string>();
+): Map<string, MmMark> {
+  const out = new Map<string, MmMark>();
   for (const [underlying, rows] of Object.entries(mmPricing ?? {})) {
     for (const row of rows ?? []) {
       if (!Number.isFinite(row.strike) || !Number.isFinite(row.expiry)) continue;
       if (!Number.isFinite(row.markPrice)) continue;
+      // A quote with no name is a quote nothing can be looked up by, so it is
+      // not an entry at all — the same refusal `marksFromSnapshot` makes.
+      if (typeof row.ticker !== "string" || !row.ticker.trim()) continue;
       const key = markKey(underlying, row.isCall, row.strike, row.expiry);
       // First writer wins: a duplicated (strike, expiry, side) row is the feed
       // contradicting itself, and averaging two marks would invent a third.
-      if (!out.has(key)) out.set(key, row.markPrice.toFixed(4));
+      if (out.has(key)) continue;
+      // Name, mark, spot and dollar mark, all off THIS row. Written as one
+      // object so a later edit cannot take three of the four from one quote and
+      // the fourth from another.
+      const { spot, markUsd } = pricedInUsd(row.markPrice, row.underlyingPrice);
+      out.set(key, {
+        ticker: row.ticker.trim(),
+        mark: row.markPrice.toFixed(4),
+        spot: spot === null ? undefined : spot.toFixed(4),
+        markUsd,
+      });
     }
   }
   return out;
@@ -1196,6 +1286,16 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
   const ordered = new Map<string, Level[]>();
   const rowOf = new Map<Level, PricingRow>();
   for (const level of levels.values()) {
+    // The MM quote this level joins, or none. Read once, so the name, the mark
+    // and the dollar mark on the row below cannot come from different quotes —
+    // three fields off one object is the invariant `MmMark` exists to hold.
+    // A single-strike level only: a spread has no mark of its own on the MM
+    // chain, and joining on its first strike would attach a vanilla's mark to
+    // a two-leg product.
+    const mm =
+      level.strikes.length === 1 && level.optionExpiry !== null
+        ? marks.get(markKey(level.underlying, level.isCall, level.strikes[0]!, level.optionExpiry))
+        : undefined;
     const scale = maxByUnderlying.get(level.underlying) ?? 1;
     // Looked up from the implementation address, not inferred from the strikes
     // — `docs/reviews/mcp-crosscheck.md` §BUG-2. A conflicted level passes no
@@ -1250,16 +1350,17 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       // "unpriceable", and a payout type nothing authoritative backs is the
       // exact failure BUG-2 was.
       payout: payout ?? undefined,
-      // `markPrice`, verbatim, where an MM quote names this exact instrument.
-      // A single-strike level only: a spread has no mark of its own on the MM
-      // chain, and joining on its first strike would attach a vanilla's mark to
-      // a two-leg product.
-      mark:
-        level.strikes.length === 1 && level.optionExpiry !== null
-          ? marks.get(
-              markKey(level.underlying, level.isCall, level.strikes[0]!, level.optionExpiry),
-            )
-          : undefined,
+      // `markPrice`, verbatim, where an MM quote names this exact instrument —
+      // in units of the underlying, unlike the `bid`/`ask`/`mid` beside it.
+      mark: mm?.mark,
+      // The MM's own name for it, verbatim, and the dollar price of one
+      // contract. All three from `mm`, so a row can never carry a name from one
+      // quote and a price from another. Absent together when nothing joined;
+      // `markUsd` additionally absent when the quote published no spot, which
+      // leaves the row quotable and unscoreable — a real state, and the safe
+      // one.
+      markTicker: mm?.ticker,
+      markUsd: mm?.markUsd,
       // The order behind the best ask — what pressing this row would fill. A
       // level with no ask carries none, and `cardsForSlice` drops it: a card
       // must be pressable or it must not be dealt.

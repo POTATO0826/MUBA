@@ -668,6 +668,14 @@ describe("buildMmQuotes trims ~782 rows to the fourteen a desk reads", () => {
       bid: "0.1146", // feeAdjustedBid 0.11460000000000001, verbatim
       ask: "0.1194", // feeAdjustedAsk 0.11939999999999999, verbatim
       mark: "0.1166",
+      // `underlyingPrice`, verbatim — the spot THIS quote was made against, and
+      // the only spot that may price it. Carried so `markUsd` is auditable off
+      // the same row: multiply the two printed numbers and get the third.
+      spot: "2375.7600",
+      // The one derived price on the row, and it is derived rather than copied
+      // because the venue publishes no dollar mark: `mark` is in units of the
+      // underlying (FINDINGS §1), and 0.116552 × 2375.76 = 276.9134…
+      markUsd: "276.8996",
       spread: "0.0048",
     });
     // And the pre-fee numbers are nowhere near the output: raw bid 0.115 would
@@ -763,6 +771,229 @@ describe("buildMmQuotes trims ~782 rows to the fourteen a desk reads", () => {
     const [row] = buildMmQuotes([mm({ markPrice: NaN })]);
     expect(row!.mark).toBe("—");
     expect(row!.bid).toBe("0.1146");
+    // And no dollar mark at all — `"—"` would parse as nothing but `undefined`
+    // is the state the duel clock's reducer is written against.
+    expect(row!.markUsd).toBeUndefined();
+  });
+});
+
+/**
+ * ─── the one derived price, and why it is derived ───────────────────────────
+ *
+ * Every other number on an `MmQuote` is copied. `markUsd` is not, because the
+ * venue does not publish one: `markPrice` is quoted **in units of the
+ * underlying** (FINDINGS §1), so an ETH call marked `0.1166` is 0.1166 ETH,
+ * ~$277 — and the premium a fill pays for it is USDC. `src/engine/score.ts`
+ * divides one by the other, so exactly one multiplication has to happen
+ * somewhere, and this is the only place that holds both halves of it from the
+ * same quote.
+ *
+ * The tests below are mutation guards on that multiplication. A wrong spot, a
+ * spot from another feed, a missing spot silently read as 1 — each produces a
+ * plausible number, and each has to kill an assertion here, because nothing
+ * downstream can tell a converted price from an unconverted one.
+ */
+describe("markUsd: the venue's mark, priced in the venue's own spot", () => {
+  test("it is mark × the spot on the SAME row, to 4dp", () => {
+    const [row] = buildMmQuotes([mm({ markPrice: 0.2, underlyingPrice: 2000 })]);
+    expect(row!.mark).toBe("0.2000");
+    expect(row!.spot).toBe("2000.0000");
+    expect(row!.markUsd).toBe("400.0000");
+  });
+
+  test("a different spot gives a different dollar mark — the factor is load-bearing", () => {
+    // If the multiplication were dropped, or done against a hard-coded 1, every
+    // one of these would read "0.2000". They do not.
+    // Struck at the money each time, because `buildMmQuotes` also cuts strikes
+    // more than ±25% from the quote's own spot — a band this test is not about.
+    for (const [spot, usd] of [
+      [1_000, "200.0000"],
+      [2_000, "400.0000"],
+      [80_000, "16000.0000"],
+    ] as const) {
+      const [row] = buildMmQuotes([
+        mm({ markPrice: 0.2, underlyingPrice: spot, strike: spot }),
+      ]);
+      expect(row!.markUsd).toBe(usd);
+      expect(row!.markUsd).not.toBe(row!.mark);
+    }
+  });
+
+  test("BTC and ETH marks of the same size are NOT the same money", () => {
+    // The cross-underlying case, which is the one that pays the wrong player if
+    // the conversion is skipped: two quotes both marked 0.05, forty times apart
+    // in dollars.
+    const [eth] = buildMmQuotes([mm({ markPrice: 0.05, underlyingPrice: 2_000 })]);
+    const [btc] = buildMmQuotes([
+      mm({ markPrice: 0.05, underlyingPrice: 80_000, underlying: "BTC", strike: 80_000 }),
+    ]);
+    expect(eth!.mark).toBe(btc!.mark);
+    expect(eth!.markUsd).toBe("100.0000");
+    expect(btc!.markUsd).toBe("4000.0000");
+  });
+
+  test("no spot means no dollar mark — never a spot of 1, never a zero", () => {
+    // Both halves of the fail-closed rule. `undefined` because the quote said
+    // nothing; and a published zero is refused too, because a spot of zero
+    // would price every contract at $0.00 and hand the duel to whoever was down
+    // the least.
+    for (const over of [
+      { underlyingPrice: undefined },
+      { underlyingPrice: 0 },
+      { underlyingPrice: -1 },
+      { underlyingPrice: Number.NaN },
+    ]) {
+      const [row] = buildMmQuotes([mm(over)]);
+      expect(row!.mark).toBe("0.1166"); // still quotable
+      expect(row!.markUsd).toBeUndefined(); // and not scoreable
+      expect(row!.spot).toBe("—");
+    }
+  });
+
+  test("the row's own spot, not the snapshot's — two feeds, two instants", () => {
+    // `MarketSnapshot.spot` comes from `getMarketData().prices`, a different
+    // call at a different moment. Using it here would put the two sides of the
+    // duel's subtraction on different clocks, and the band around these strikes
+    // is already centred on the quote's own number for the same reason.
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        prices: { "ETH/USD": 9_999 }, // the other feed, wildly out
+        mmPricing: { ETH: [mm({ markPrice: 0.2, underlyingPrice: 2_000 })] },
+      },
+      AT,
+    );
+    expect(built.spot.ETH).toBe(9_999);
+    expect(built.mmPricing.ETH![0]!.markUsd).toBe("400.0000"); // 0.2 × 2,000
+  });
+});
+
+/**
+ * ─── the join onto an order-book level: three fields or none ────────────────
+ *
+ * A `PricingRow` describes a resting order-book level. Where a market maker
+ * quotes the same option, the level borrows three things from that quote and
+ * they must be the SAME quote's:
+ *
+ *  - `mark` — the venue's number, verbatim, in units of the underlying;
+ *  - `markTicker` — the MM's own name for it, which is the key the duel clock's
+ *    marks map is built on and is a *different namespace* from the order book's
+ *    own `ETH-3SEP-4400-C`;
+ *  - `markUsd` — the dollar price of one contract.
+ *
+ * Before this join carried the last two, a filled leg had no key to look itself
+ * up by and no dollar baseline to be measured from, so every duel refunded.
+ * That is the defect these tests hold shut.
+ */
+describe("a level borrows a name, a mark and a dollar mark from ONE quote", () => {
+  const EXPIRY = 1_788_422_400;
+  /** An ETH 2,100 call resting on the book, named the way the MM names it. */
+  const level = () =>
+    order({ strikes: ["210000000000"], isCall: true, isBuyer: false, expiry: EXPIRY });
+
+  const rowFor = (quotes: RawMmQuote[]) =>
+    buildSnapshot(
+      {
+        orders: [level()],
+        prices: FIXTURE.prices,
+        chainConfig: FIXTURE.chainConfig,
+        mmPricing: { ETH: quotes },
+      },
+      AT,
+    ).pricing.ETH![0]!;
+
+  test("all three arrive together, off the quote that matched", () => {
+    const row = rowFor([mm({ strike: 2100, expiry: EXPIRY })]);
+    expect(row.mark).toBe("0.1166");
+    expect(row.markTicker).toBe("ETH-3SEP26-2100-C");
+    expect(row.markUsd).toBe("276.8996");
+  });
+
+  test("the ticker is the market maker's, not the one this app composes", () => {
+    // The whole of defect one. The order row for the same option is named in a
+    // second namespace, without a year, and that name marks nothing. A fill
+    // must copy `markTicker`; composing a key out of a strike and an expiry
+    // label is the near-miss that pays the wrong player quietly.
+    const built = buildSnapshot(
+      {
+        orders: [level()],
+        prices: FIXTURE.prices,
+        chainConfig: FIXTURE.chainConfig,
+        mmPricing: { ETH: [mm({ strike: 2100, expiry: EXPIRY })] },
+      },
+      AT,
+    );
+    expect(built.pricing.ETH![0]!.markTicker).toBe("ETH-3SEP26-2100-C");
+    expect(built.orders[0]!.instrument).toBe("ETH-4SEP-2100-C");
+    expect(built.orders[0]!.instrument).not.toBe(built.pricing.ETH![0]!.markTicker);
+  });
+
+  test("no quote matches: no mark, no ticker, no dollars — all three absent", () => {
+    // A level nobody quotes is quotable and unscoreable, and says so by absence
+    // rather than by borrowing the neighbouring strike's numbers.
+    const row = rowFor([mm({ strike: 2400, expiry: EXPIRY })]);
+    expect(row.mark).toBeUndefined();
+    expect(row.markTicker).toBeUndefined();
+    expect(row.markUsd).toBeUndefined();
+  });
+
+  test("a quote with no spot gives the level a name and a mark but no dollars", () => {
+    // The partial state, and the one that must not be papered over: the level
+    // can be looked up, and there is still nothing to measure it in. Unmarkable,
+    // therefore refunded.
+    const row = rowFor([mm({ strike: 2100, expiry: EXPIRY, underlyingPrice: undefined })]);
+    expect(row.mark).toBe("0.1166");
+    expect(row.markTicker).toBe("ETH-3SEP26-2100-C");
+    expect(row.markUsd).toBeUndefined();
+  });
+
+  test("a quote with no ticker joins nothing at all — a nameless mark is unusable", () => {
+    const row = rowFor([mm({ strike: 2100, expiry: EXPIRY, ticker: "" })]);
+    expect(row.mark).toBeUndefined();
+    expect(row.markTicker).toBeUndefined();
+    expect(row.markUsd).toBeUndefined();
+  });
+
+  test("a multi-strike level borrows nothing, however well its first strike matches", () => {
+    // A spread has no mark of its own on the MM chain, and attaching a
+    // vanilla's name and price to it would be a two-leg product wearing a
+    // one-leg quote's identity.
+    const built = buildSnapshot(
+      {
+        orders: [
+          order({
+            strikes: ["210000000000", "220000000000"],
+            isCall: true,
+            isBuyer: false,
+            expiry: EXPIRY,
+          }),
+        ],
+        prices: FIXTURE.prices,
+        chainConfig: FIXTURE.chainConfig,
+        mmPricing: { ETH: [mm({ strike: 2100, expiry: EXPIRY })] },
+      },
+      AT,
+    );
+    const row = built.pricing.ETH![0]!;
+    expect(row.markTicker).toBeUndefined();
+    expect(row.markUsd).toBeUndefined();
+  });
+
+  test("the join is on the OPTION expiry — a level with none borrows nothing", () => {
+    // `order.expiry` is the contract's expiry; `orderExpiryTimestamp` is when
+    // the signature goes stale, and they differ by hours on live data. Joining
+    // on the wrong one produces a map that never hits, which is indistinguishable
+    // from "the market maker stopped quoting".
+    const built = buildSnapshot(
+      {
+        orders: [order({ strikes: ["210000000000"], isCall: true, isBuyer: false })],
+        prices: FIXTURE.prices,
+        chainConfig: FIXTURE.chainConfig,
+        mmPricing: { ETH: [mm({ strike: 2100, expiry: EXPIRY })] },
+      },
+      AT,
+    );
+    expect(built.pricing.ETH![0]!.markTicker).toBeUndefined();
   });
 });
 
@@ -951,9 +1182,18 @@ function order(over: {
   priceFeed?: string;
   optionBookAddress?: string | undefined;
   greeks?: unknown;
+  /** The **option's** expiry, unix seconds — `order.expiry`, which is the key an
+   *  MM mark joins on and is NOT `orderExpiryTimestamp` (the signature's
+   *  deadline). Absent by default, because most of this file's cases predate
+   *  the join and a level with no option expiry is deliberately unjoinable. */
+  expiry?: number;
 } = {}): RawOrderEntry {
   return {
-    order: { price: over.price ?? "100000000", isBuyer: over.isBuyer ?? true },
+    order: {
+      price: over.price ?? "100000000",
+      isBuyer: over.isBuyer ?? true,
+      ...(over.expiry === undefined ? {} : { expiry: String(over.expiry) }),
+    },
     availableAmount: over.availableAmount ?? "10000000000",
     rawApiData: {
       collateral: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",

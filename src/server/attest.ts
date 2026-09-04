@@ -220,7 +220,13 @@ import { LOBBIES, YOU, bookOf, canPlay, opponentOf } from "../data/lobbies.ts";
 import { MODES, MODE_SALT } from "../data/modes.ts";
 import { settle } from "../engine/match.ts";
 import { PARLAY_CARDS, cardById, legForCard, type ParlayCard, type ParlayLeg } from "../engine/parlay.ts";
-import { SCORE_DP, duelOutcome, type FilledLeg } from "../engine/score.ts";
+import {
+  SCORE_DP,
+  duelOutcome,
+  type FilledLeg,
+  type Usd,
+  type UsdPerContract,
+} from "../engine/score.ts";
 import { seededRandom, spinCase } from "../engine/spin.ts";
 import { Wallet, ZeroAddress, getAddress, id, keccak256, toUtf8Bytes, verifyMessage } from "ethers";
 import { createSeatReader, type SeatReader } from "./seats.ts";
@@ -439,8 +445,22 @@ export interface TypedDataSigner {
 export interface MarkSnapshot {
   /** When the snapshot was built, ms. */
   at: number;
-  /** Instrument name, as the book spells it, → mark price per contract. */
-  marks: ReadonlyMap<string, number>;
+  /**
+   * Instrument name, as the **market maker** spells it (`ETH-3SEP26-2100-C`,
+   * with the year), → **US dollars** per contract.
+   *
+   * Both halves of that sentence are load-bearing and each was a defect:
+   *
+   *  - the KEY is the MM namespace, because that is the namespace a mark has a
+   *    name in. The order book's own `ETH-3SEP-4400-C` names the same options
+   *    and joins to nothing; a fill copies the MM ticker off the row it filled
+   *    (`PricingRow.markTicker`) rather than composing one.
+   *  - the VALUE is dollars, because the premium it is divided by is USDC. The
+   *    venue quotes marks in units of the underlying, so the number that
+   *    arrives here has already been multiplied by the spot its own quote was
+   *    made against — see `usdMarksFromSnapshot`.
+   */
+  marks: ReadonlyMap<string, UsdPerContract>;
 }
 
 /**
@@ -1034,6 +1054,21 @@ function finiteNumber(raw: unknown, opts: { min: number; max: number }): number 
  * body rather than a market opinion. `src/engine/score.ts` re-checks all of
  * this — it is pure and cannot assume a caller — so this layer exists to give
  * a client a reason rather than to be the only gate.
+ *
+ * ## Units on the wire
+ *
+ * `entryMark` and `premium` are **US dollars**, per contract and total
+ * respectively. Nothing here can verify that — a seat signs its own slate, and
+ * `0.1155` is a valid double whether it means eleven cents or 0.1155 ETH — so
+ * the guarantee is upstream and structural: the only producer is
+ * `filledLegsFor` in `src/desk/fill.ts`, which copies `markUsd` off the row it
+ * filled and refuses to emit a leg that has none. A client that sent venue
+ * units instead would be describing a basket that scores wrong *for itself*; it
+ * cannot make the server misread anyone else's, because the marks both slates
+ * are compared against are the server's own and are dollars by construction.
+ *
+ * The casts below are that statement, made once, where the untyped wire becomes
+ * a `FilledLeg`.
  */
 function readLegs(raw: unknown, who: string): readonly FilledLeg[] | { reason: string } {
   if (!Array.isArray(raw)) return { reason: `bad ${who} legs` };
@@ -1053,7 +1088,12 @@ function readLegs(raw: unknown, who: string): readonly FilledLeg[] | { reason: s
     if (entryMark === null) return { reason: `bad ${who} entryMark` };
     if (contracts === null) return { reason: `bad ${who} contracts` };
     if (premium === null) return { reason: `bad ${who} premium` };
-    legs.push({ instrument, entryMark, contracts, premium });
+    legs.push({
+      instrument,
+      entryMark: entryMark as UsdPerContract,
+      contracts,
+      premium: premium as Usd,
+    });
   }
   return legs;
 }
@@ -1176,32 +1216,65 @@ function marketNumber(raw: unknown): number | null {
  *  - **First writer wins per instrument**, and the sources are visited
  *    mark-bearing first, so a quote's own mark is never overwritten by a
  *    neighbouring row's midpoint.
+ *
+ * ## This is NOT the map the duel clock scores on
+ *
+ * Its values are **the venue's own numbers in the venue's own units**, and
+ * those units are not dollars: a market-maker `markPrice` is quoted in units of
+ * the underlying (`tnuts-test/FINDINGS.md` §1), while a `mid` off the signed
+ * order book is already USDC per contract. This function mixes the two happily,
+ * because both are legitimate readings of "what the book says this is worth" and
+ * neither is money the same way. Dividing either by a USDC premium is what
+ * `usdMarksFromSnapshot` exists to stop.
+ *
+ * So: keep this for reading the book, and never hand its output to `duelScore`.
+ * The type system enforces exactly that — this returns `Map<string, number>`
+ * and the score wants `ReadonlyMap<string, UsdPerContract>`.
  */
 export function marksFromSnapshot(snapshot: unknown): Map<string, number> {
   const marks = new Map<string, number>();
-  if (!isRecord(snapshot)) return marks;
-
-  const take = (row: unknown): void => {
-    if (!isRecord(row)) return;
-    const nameRaw = row["ticker"] ?? row["instrument"];
-    if (typeof nameRaw !== "string" || !nameRaw) return;
-    const name = nameRaw.trim();
-    if (!name || marks.has(name)) return;
+  walkSnapshotRows(snapshot, (name, row) => {
+    if (marks.has(name)) return;
     const value = marketNumber(row["mark"]) ?? marketNumber(row["mid"]);
     if (value === null) return;
     marks.set(name, value);
+  });
+  return marks;
+}
+
+/**
+ * Every named row of a snapshot, whatever shape the snapshot is in.
+ *
+ * Each field is either an array of rows or a per-underlying record of them;
+ * both are walked, because which one a snapshot uses is not this module's
+ * business. `mmPricing` is visited first — it is the only field documented to
+ * carry the SDK's own `markPrice`, verbatim — then `pricing`, then `orders`, so
+ * a caller's first-writer-wins rule sees the authoritative source first.
+ *
+ * A row with no usable name is not visited at all: `""` would collide with
+ * every other `""`, and a nameless mark is a mark nothing can look up.
+ */
+function walkSnapshotRows(
+  snapshot: unknown,
+  take: (name: string, row: Record<string, unknown>) => void,
+): void {
+  if (!isRecord(snapshot)) return;
+
+  const visit = (row: unknown): void => {
+    if (!isRecord(row)) return;
+    const nameRaw = row["ticker"] ?? row["markTicker"] ?? row["instrument"];
+    if (typeof nameRaw !== "string" || !nameRaw) return;
+    const name = nameRaw.trim();
+    if (!name) return;
+    take(name, row);
   };
 
-  // Each field is either an array of rows or a per-underlying record of them;
-  // both are walked, because which one a snapshot uses is not this module's
-  // business. `mmPricing` is visited first — it is the only field documented to
-  // carry the SDK's own `markPrice`, verbatim.
   const walk = (field: unknown): void => {
     if (Array.isArray(field)) {
-      for (const row of field) take(row);
+      for (const row of field) visit(row);
     } else if (isRecord(field)) {
       for (const rows of Object.values(field)) {
-        if (Array.isArray(rows)) for (const row of rows) take(row);
+        if (Array.isArray(rows)) for (const row of rows) visit(row);
       }
     }
   };
@@ -1209,6 +1282,52 @@ export function marksFromSnapshot(snapshot: unknown): Map<string, number> {
   walk(snapshot["mmPricing"]);
   walk(snapshot["pricing"]);
   walk(snapshot["orders"]);
+}
+
+/**
+ * Reduce a market snapshot to `instrument → **US dollars** per contract` — the
+ * map the duel clock is scored on, and the only one it will accept.
+ *
+ * ## It reads exactly one field, and never does arithmetic
+ *
+ * `markUsd`. Not `mark`, not `mid`, not `bid`, not a `mark` multiplied by a
+ * spot found elsewhere in the snapshot. The conversion happened once, on the
+ * server, in `src/server/thetanuts.ts`, against the spot the SAME market-maker
+ * quote was made against; this function copies the result. That is a deliberate
+ * refusal of the tempting version, which would take `mark` and multiply it by
+ * `snapshot.spot[underlying]` — a different feed, read at a different instant,
+ * joined by an underlying name this function would have to parse out of a
+ * ticker. Every one of those steps is a place to be quietly wrong about money.
+ *
+ * Reading one field also makes the unit hazard structurally unreachable. A
+ * `PricingRow` carries `bid`/`ask`/`mid` in USDC per contract and `mark` in
+ * units of the underlying, in the same object; a reducer that accepted "the
+ * mark, or failing that the mid" would mix the two across rows and nobody
+ * downstream could tell. `markUsd` is only ever written by the one join that
+ * knows both halves.
+ *
+ * ## Everything missing is unmarkable, and unmarkable refunds
+ *
+ * A row with no `markUsd` contributes nothing: no market-maker quote joined it,
+ * or one did and published no spot. The leg holding that instrument is then
+ * unmarkable, `duelScore` returns `NaN`, `decideWinner` signs nothing and the
+ * escrow's six-hour refund returns both stakes rake-free. **No spot, no score.**
+ * That is the same direction every other miss in this file takes, and it is the
+ * only direction that cannot pay the wrong player.
+ *
+ * First writer wins per instrument, `mmPricing` visited first, exactly as above.
+ */
+export function usdMarksFromSnapshot(snapshot: unknown): Map<string, UsdPerContract> {
+  const marks = new Map<string, UsdPerContract>();
+  walkSnapshotRows(snapshot, (name, row) => {
+    if (marks.has(name)) return;
+    const value = marketNumber(row["markUsd"]);
+    if (value === null) return;
+    // The cast is a copy, not a conversion: `markUsd` is dollars by
+    // construction where it was written, and this module has no spot with which
+    // to make it so if it were not.
+    marks.set(name, value as UsdPerContract);
+  });
   return marks;
 }
 
@@ -1246,7 +1365,9 @@ function envMarkSource(): MarkSource {
       }
       const at = typeof envelope["at"] === "number" ? envelope["at"] : NaN;
       if (!Number.isFinite(at)) return { reason: "market snapshot has no timestamp" };
-      return { at, marks: marksFromSnapshot(envelope) };
+      // `usdMarksFromSnapshot`, never `marksFromSnapshot`: the score divides by
+      // a USDC premium, so the only marks that may reach it are dollars.
+      return { at, marks: usdMarksFromSnapshot(envelope) };
     },
   };
 }

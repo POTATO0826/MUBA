@@ -1,4 +1,4 @@
-import type { FilledLeg } from "../engine/score.ts";
+import type { FilledLeg, Usd, UsdPerContract } from "../engine/score.ts";
 import type { FillableOrder, OrderRow } from "../types.ts";
 
 /**
@@ -1109,22 +1109,33 @@ export interface ParlayFillLeg {
    * pays the wrong player quietly, and a translation between the two schemes
    * would be exactly that — a near-miss guess dressed as a join.
    *
-   * `undefined` is the honest and currently *usual* answer: a card is built
-   * from a `PricingRow`, and a `PricingRow` carries the mark's **value**
-   * (`mark`, joined on the server) but not the mark's **name**. A leg with no
+   * `undefined` remains the honest answer whenever the venue gave us no name.
+   * A `PricingRow` now carries `markTicker` beside the mark it joined — the MM
+   * quote's own string, copied, never composed — so a card built from a live
+   * chain row has one; a card built from anything else does not. A leg with no
    * instrument here is unmarkable, `duelScore` refuses, and the duel refunds —
    * which fails closed. See `ParlayFillResult.unmarkable`.
    */
   instrument?: string;
   /**
-   * The mark price per contract at the moment of the fill, verbatim from the
-   * venue (`markPrice`) — the baseline the duel clock measures from, and *not*
-   * the price paid, which carries the spread and the fee.
+   * What one contract was marked at, **in US dollars**, at the moment of the
+   * fill — the baseline the duel clock measures from, and *not* the price paid,
+   * which carries the spread and the fee.
    *
-   * Same rule as `instrument`: copied or absent. Absent for every underlying
-   * with no market-maker pricing, which is six of the eight price feeds.
+   * Dollars, and named for it, because the venue's own number is not: a
+   * market-maker `markPrice` is quoted in units of the underlying, so an ETH
+   * call marked `0.1155` is 0.1155 ETH — about $276 — while the premium this
+   * leg pays is USDC. Scoring one against the other is wrong by a factor of
+   * spot, and `src/engine/score.ts` §Units is where that reasoning lives.
+   *
+   * Same rule as `instrument`: **copied or absent, never computed here.** The
+   * source is `PricingRow.markUsd`, which the server derives from a mark and
+   * the spot that same quote was made against. Absent when no market-maker
+   * quoted the instrument (six of the eight price feeds have none) *and* when
+   * one did but published no spot. Both cases are unmarkable, which is the
+   * fail-closed direction: no spot, no score, both stakes refunded.
    */
-  entryMark?: number;
+  entryMarkUsd?: number;
   /** The resting order this leg fills against. `FillableOrder` (`src/types.ts`)
    *  is assignable, which is how a `LiveCard`'s `row.order` gets here. */
   order: RawFillOrder;
@@ -1140,8 +1151,9 @@ export interface ParlayLegState {
   /** `ParlayFillLeg.instrument`, carried through untouched — the duel clock's
    *  join key, or `undefined` when the venue gave us no name. */
   instrument?: string;
-  /** `ParlayFillLeg.entryMark`, carried through untouched. */
-  entryMark?: number;
+  /** `ParlayFillLeg.entryMarkUsd`, carried through untouched. US dollars per
+   *  contract — see there for why the unit is in the name. */
+  entryMarkUsd?: number;
   /** Set from `previewed` onward: what this leg costs, exactly. */
   quote?: FillQuote;
   /** Set on `filled`. */
@@ -1219,12 +1231,15 @@ export interface ParlayFillResult {
    * Landed legs the **duel clock cannot score**, by label.
    *
    * A leg reaches this list when it filled but carries no venue `instrument`
-   * or no `entryMark` — so `marksFromSnapshot` has no key for it and
-   * `duelScore` returns `NaN`, the attestor signs nothing and the duel refunds
-   * both stakes. That is the correct direction to fail in, and it is reported
-   * here rather than swallowed because it is a **product fact, not a bug**:
-   * market-maker pricing exists for ETH and BTC only, so a duel fought on an
-   * order-book-only underlying has no marks to be scored against today.
+   * or no `entryMarkUsd` — so `usdMarksFromSnapshot` has no key for it, or the
+   * baseline it would be measured from is missing, and either way `duelScore`
+   * returns `NaN`, the attestor signs nothing and the duel refunds both stakes.
+   * That is the correct direction to fail in, and it is reported here rather
+   * than swallowed because it is a **product fact, not a bug**: market-maker
+   * pricing exists for ETH and BTC only, so a duel fought on an
+   * order-book-only underlying has no marks to be scored against today. The
+   * same goes for a quote that published no spot — no spot, no dollar price,
+   * no score.
    *
    * Non-empty does **not** mean anything went wrong with the fill. The two
    * clocks are independent: the player holds the option either way, and it
@@ -1252,16 +1267,27 @@ export interface FillableCard {
   /** The row's own expiry label — `"12 SEP"`. */
   expiry: string;
   stance: "bull" | "bear";
-  /** `markPrice` as a number, or `null`/absent — `LiveCard.mark`. Carried, not
-   *  recomputed; it becomes `ParlayFillLeg.entryMark`. */
-  mark?: number | null;
   /**
-   * The venue's own instrument name, if the caller has one.
+   * What one contract of this card is marked at **in US dollars** —
+   * `PricingRow.markUsd` as a number, or `null`/absent. Carried, not
+   * recomputed; it becomes `ParlayFillLeg.entryMarkUsd`.
    *
-   * `LiveCard` does not carry one today, and neither does the `PricingRow`
-   * underneath it — see `ParlayFillLeg.instrument`. Declared here so that the
-   * day a ticker is threaded onto the row, the join closes by supplying a
-   * field rather than by inventing a format.
+   * Note what is deliberately NOT on this shape: the venue's raw `mark`. It is
+   * on `PricingRow` and on `LiveCard`, it is the number `/desk` prints, and it
+   * is in units of the underlying rather than dollars — so a seam that accepted
+   * both would be one field name away from scoring an ETH price against a USDC
+   * premium, which is the defect this shape was changed to close. Structural
+   * typing lets a `LiveCard` carrying `mark` satisfy this interface; it just
+   * cannot hand that number to the duel clock through here.
+   */
+  markUsd?: number | null;
+  /**
+   * The venue's own instrument name, if the caller has one — the market
+   * maker's `ticker`, which is what `PricingRow.markTicker` now carries beside
+   * the mark it joined.
+   *
+   * Copied through `legFromCard` verbatim. Nothing composes one: see
+   * `ParlayFillLeg.instrument`.
    */
   instrument?: string;
   row: { order?: FillableOrder };
@@ -1287,8 +1313,11 @@ export function cardLabel(card: FillableCard): string {
  * already refuses to deal one; this is the same rule held at the fill seam, so
  * a caller that builds legs some other way cannot route around it.
  *
- * `instrument` and `entryMark` are **copied straight off the card or left
- * absent**. Nothing here derives a name from a strike and an expiry.
+ * `instrument` and `entryMarkUsd` are **copied straight off the card or left
+ * absent**. Nothing here derives a name from a strike and an expiry, and
+ * nothing here multiplies a mark by a spot: the card either arrived with a
+ * dollar price the server computed or it did not, and "did not" is a leg the
+ * duel clock will decline to score.
  */
 export function legFromCard(card: FillableCard, usdcAmount: bigint): ParlayFillLeg | null {
   const order = card.row.order;
@@ -1297,7 +1326,7 @@ export function legFromCard(card: FillableCard, usdcAmount: bigint): ParlayFillL
     id: card.id,
     label: cardLabel(card),
     instrument: card.instrument,
-    entryMark: card.mark ?? undefined,
+    entryMarkUsd: card.markUsd ?? undefined,
     order,
     usdcAmount,
   };
@@ -1307,11 +1336,20 @@ export function legFromCard(card: FillableCard, usdcAmount: bigint): ParlayFillL
  * The landed legs, in the shape the duel clock scores — `FilledLeg`
  * (`src/engine/score.ts`).
  *
- * Only legs that carry **both** a venue instrument name and an entry mark are
- * returned. A leg missing either is not translated, not defaulted and not
+ * Only legs that carry **both** a venue instrument name and a dollar entry mark
+ * are returned. A leg missing either is not translated, not defaulted and not
  * guessed at; it is named in `ParlayFillResult.unmarkable` instead, and the
  * consequence (no verdict, both stakes refunded) is the one plan 6 §C3 already
  * chose over a coin flip.
+ *
+ * **This is the seam where the units become one currency.** `FilledLeg` is all
+ * dollars (`src/engine/score.ts` §Units) and both of its money fields are met
+ * here: `entryMark` is `entryMarkUsd`, which the server converted from the
+ * venue's underlying-denominated mark at that quote's own spot, and `premium`
+ * is `totalCollateral`, the USDC that left the wallet, which was never anything
+ * but dollars. The two brands are cast exactly once each, on the two lines
+ * below, and there is no third producer of a `FilledLeg` outside
+ * `src/server/attest.ts`'s wire reader.
  *
  * The type is imported for its shape only, so the desk still names no engine
  * module at runtime.
@@ -1319,14 +1357,18 @@ export function legFromCard(card: FillableCard, usdcAmount: bigint): ParlayFillL
 export function filledLegsFor(result: ParlayFillResult): readonly FilledLeg[] {
   const legs: FilledLeg[] = [];
   for (const leg of result.filled) {
-    if (!leg.instrument || leg.entryMark === undefined || !leg.quote) continue;
+    if (!leg.instrument || leg.entryMarkUsd === undefined || !leg.quote) continue;
     legs.push({
       // Verbatim. The whole point of this function is that this line is an
       // assignment and never a template string.
       instrument: leg.instrument,
-      entryMark: leg.entryMark,
+      // Already dollars when it reached the card — see `ParlayFillLeg`. The
+      // cast asserts that provenance; it does not create it, and there is
+      // deliberately no spot in scope here with which it could.
+      entryMark: leg.entryMarkUsd as UsdPerContract,
       contracts: Number(leg.quote.numContracts) / 10 ** 18,
-      premium: Number(leg.quote.totalCollateral) / 10 ** 6,
+      // USDC 6dp → dollars. The one number in the ratio that was always money.
+      premium: (Number(leg.quote.totalCollateral) / 10 ** 6) as Usd,
     });
   }
   return legs;
@@ -1384,7 +1426,7 @@ export async function runParlayFill(
     // Carried, never derived. If the caller had no venue name for this leg,
     // neither does anything downstream — see `ParlayFillResult.unmarkable`.
     instrument: leg.instrument,
-    entryMark: leg.entryMark,
+    entryMarkUsd: leg.entryMarkUsd,
     status: "pending",
   }));
   const snapshot = (): ParlayLegState[] => ladder.map((s) => ({ ...s }));
@@ -1724,11 +1766,11 @@ export async function runParlayFill(
     totalDebit,
     maxLoss: totalDebit,
     spent: filled.reduce((acc, s) => acc + (s.quote?.totalCollateral ?? 0n), 0n),
-    // A landed leg with no venue instrument name, or no entry mark, is one the
-    // duel clock cannot score. Named here so the gap is visible on the receipt
-    // rather than discovered as a refund six hours later.
+    // A landed leg with no venue instrument name, or no DOLLAR entry mark, is
+    // one the duel clock cannot score. Named here so the gap is visible on the
+    // receipt rather than discovered as a refund six hours later.
     unmarkable: filled
-      .filter((s) => !s.instrument || s.entryMark === undefined)
+      .filter((s) => !s.instrument || s.entryMarkUsd === undefined)
       .map((s) => s.label),
   };
 }
