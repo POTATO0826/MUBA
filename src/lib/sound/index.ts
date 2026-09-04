@@ -19,7 +19,7 @@ export {
   subscribeSound,
 } from "./engine.ts";
 
-export { useSfxClick, useSoundEnabled, useSoundHover, useSoundUnlock } from "./react.ts";
+export { useCountUp, useSfxClick, useSoundEnabled, useSoundHover, useSoundUnlock } from "./react.ts";
 
 // Pure helpers callers need at the call site: the reel's tick is parameterised
 // by the measured gap between tile crossings, and the duel's combo ladder by

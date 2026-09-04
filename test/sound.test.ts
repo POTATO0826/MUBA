@@ -36,7 +36,7 @@ import {
   stopRiser,
   subscribeSound,
 } from "../src/lib/sound/engine.ts";
-import { SFX_MAP, recipeOf } from "../src/lib/sound/map.ts";
+import { PALETTE_DECAY, PALETTE_DETUNE, SFX_MAP, recipeOf } from "../src/lib/sound/map.ts";
 import type { SfxName, SfxOpts } from "../src/lib/sound/map.ts";
 import { __setTestSink, audioAvailable, sfx } from "../src/lib/sound/index.ts";
 import { useSoundHover } from "../src/lib/sound/react.ts";
@@ -660,5 +660,115 @@ describe("pure helpers", () => {
       act(() => root.unmount());
       container.remove();
     }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Wave 5 — the duel soundtrack's pure seams                           */
+/* ------------------------------------------------------------------ */
+
+describe("palette", () => {
+  afterEach(() => setPalette("NORMAL"));
+
+  test("setPalette moves the global palette and getPalette reads it back", () => {
+    expect(getPalette()).toBe("NORMAL");
+    setPalette("BLITZ");
+    expect(getPalette()).toBe("BLITZ");
+    setPalette("QUICK");
+    expect(getPalette()).toBe("QUICK");
+    setPalette("NORMAL");
+    expect(getPalette()).toBe("NORMAL");
+  });
+
+  test("the three palettes carry the pinned detune and decay scales", () => {
+    // BLITZ = +2 semitones (2^(2/12) ≈ 1.1225), decay ×0.7; QUICK = +1 (≈1.0595), ×0.85.
+    expect(PALETTE_DETUNE.NORMAL).toBe(1);
+    expect(PALETTE_DECAY.NORMAL).toBe(1);
+    expect(PALETTE_DETUNE.BLITZ).toBeCloseTo(2 ** (2 / 12), 3);
+    expect(PALETTE_DETUNE.QUICK).toBeCloseTo(2 ** (1 / 12), 3);
+    expect(PALETTE_DECAY.BLITZ).toBe(0.7);
+    expect(PALETTE_DECAY.QUICK).toBe(0.85);
+    // Sharper mode ⇒ higher pitch, shorter tail — strictly ordered.
+    expect(PALETTE_DETUNE.BLITZ).toBeGreaterThan(PALETTE_DETUNE.QUICK);
+    expect(PALETTE_DECAY.BLITZ).toBeLessThan(PALETTE_DECAY.QUICK);
+  });
+});
+
+describe("the riser rule (A-g)", () => {
+  // Mirrors matchSound.ts's inline `Math.max(320, settleAt * RISER_MS_PER_PRINT)`
+  // with RISER_MS_PER_PRINT = 6 — the wall-clock remainder of the window after
+  // the 0.85 trigger, at 40ms per print. If matchSound.ts ever exports the
+  // helper, point this at the export instead of the local mirror.
+  const riserMs = (settleAt: number) => Math.max(320, settleAt * 6);
+
+  test("duration scales with the window instead of overrunning it", () => {
+    expect(riserMs(56)).toBe(336);   // BLITZ — plan 3's flat 1600ms would overrun 5×
+    expect(riserMs(110)).toBe(660);  // QUICK
+    expect(riserMs(200)).toBe(1200); // NORMAL
+    expect(riserMs(10)).toBe(320);   // the floor keeps a riser audible at all
+  });
+
+  test("startRiser/stopRiser are inert singletons without audio", () => {
+    expect(() => {
+      startRiser(336);
+      startRiser(336); // second start is a no-op, never a double bed
+      stopRiser(true);
+      stopRiser();     // stopping a stopped riser is safe
+    }).not.toThrow();
+  });
+});
+
+describe("the combo ladder over a duel", () => {
+  test("diffWon narrates the won-set sequence and the streak follows 5A's semantics", () => {
+    // [none] → [0] → [0,2] → [0] (leg 2 falls back) → [0,1,2]
+    const frames: boolean[][] = [
+      [false, false, false],
+      [true, false, false],
+      [true, false, true],
+      [true, false, false],
+      [true, true, true],
+    ];
+    let streak = 0;
+    const rungs: number[] = [];
+    for (let i = 1; i < frames.length; i++) {
+      const prev = frames[i - 1]!;
+      const next = frames[i]!;
+      // 5A resets the streak when a previously-won leg drops back through
+      // its target — a real miss — never on a merely quiet tick.
+      const dropped = prev.some((won, j) => won && !next[j]);
+      if (dropped) streak = 0;
+      for (const _ of diffWon(prev, next)) rungs.push(streak++);
+    }
+    // Hits climb 0,1 · the fall-back resets · then 0,1 again.
+    expect(rungs).toEqual([0, 1, 0, 1]);
+    expect(diffWon(frames[2]!, frames[3]!)).toEqual([]); // a drop is not a hit
+    expect(comboPitch(rungs[1]!)).toBeCloseTo(1.122, 3);
+    expect(comboPitch(rungs[2]!)).toBe(1); // the ladder restarts at the root
+  });
+});
+
+describe("ambience beds", () => {
+  test("study and duel beds are safe singletons with no audio context", () => {
+    expect(() => {
+      startAmbience("study");
+      startAmbience("study"); // singleton: the second start is a no-op
+      startAmbience("duel");
+      stopAmbience("study");
+      stopAmbience("study");  // stopping twice is safe
+      stopAmbience("duel");
+      stopAmbience("duel");
+    }).not.toThrow();
+  });
+});
+
+describe("wave 5 recipes in the map", () => {
+  test("the duel and count-up events carry sane tiers and cooldowns", () => {
+    expect(recipeOf("duel.leg.hit")?.tier).toBe("event");
+    expect(recipeOf("duel.riser")?.tier).toBe("event");
+    expect(recipeOf("result.count")?.tier).toBe("ui");
+    expect(recipeOf("result.count")?.cooldownMs).toBe(40);
+    expect(recipeOf("result.count.done")?.tier).toBe("action");
+    expect(recipeOf("duel.settle.ready")?.tier).toBe("event");
+    expect(recipeOf("duel.leg.miss")?.tier).toBe("event");
   });
 });

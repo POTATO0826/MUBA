@@ -3,6 +3,7 @@ import { modeTag, type ModeSpec } from "../data/modes.ts";
 import { sectorChips } from "../data/sectors.ts";
 import { legState, type MatchVerdict } from "../engine/match.ts";
 import { conditionText, type ParlayLeg } from "../engine/parlay.ts";
+import { useCountUp } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
 import type { Player, SectorKey } from "../types.ts";
@@ -33,6 +34,9 @@ interface ResultProps {
 export function Result(p: ResultProps) {
   const v = p.verdict;
   const nLegs = p.myLegs.length;
+  // The banked figure climbs on arrival. Silent builds (and reduced motion)
+  // get the final number on the first render — see `useCountUp`.
+  const banked = useCountUp(p.pointsWon, { steps: 24 });
 
   const sides = [
     { who: p.you, legs: p.myLegs, mult: p.myMult, score: v.myScore, win: v.meWins, read: v.myRead },
@@ -72,7 +76,7 @@ export function Result(p: ResultProps) {
             </div>
             <div data-testid="points-won" style={sx(`margin-top:10px;font:500 11px/1 ${MONO};color:${v.meWins ? C.green : C.dim}`)}>
               {v.meWins
-                ? `+${p.pointsWon.toLocaleString("en-US")} PTS banked at ×${p.myMult.toFixed(2)} — your parlay's odds`
+                ? `+${banked.toLocaleString("en-US")} PTS banked at ×${p.myMult.toFixed(2)} — your parlay's odds`
                 : `0 PTS · ${p.opponent.name} banks the odds this time`}
             </div>
           </div>

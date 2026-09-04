@@ -5,6 +5,7 @@ import type { WireItem } from "../data/news.ts";
 import { meta } from "../data/universe.ts";
 import { buildChartCard } from "../engine/chart.ts";
 import { fmtPx, series } from "../engine/tape.ts";
+import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -160,7 +161,10 @@ export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent,
               pick a parlay — the tape you duel on starts where these charts end.
             </div>
             <button
-              onClick={onDone}
+              onClick={() => {
+                sfx("ui.click.primary");
+                onDone();
+              }}
               style={sx(
                 `width:100%;height:40px;margin-top:14px;border:none;border-radius:8px;` +
                   `background:${C.accent};color:${C.bg};font:700 13px/1 ${SANS};cursor:pointer`,

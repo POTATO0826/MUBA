@@ -24,6 +24,7 @@ import {
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
 import { sfx } from "../lib/sound/index.ts";
 import type { Route } from "../lib/route.ts";
+import { useMatchSound } from "./matchSound.ts";
 import type { LobbyDef, MarketFilter, Mode, SectorKey, Tab } from "../types.ts";
 
 /**
@@ -449,6 +450,11 @@ export function useMatch(route: Route) {
     state.deadline,
     state.form.prize,
   ]);
+
+  // Everything the match plays because state MOVED — the beds, the ready
+  // edges, the leg hits, the riser into the settle. Read-only and inert when
+  // there is no audio context (every test), so it adds no timer and no render.
+  useMatchSound(state, derived);
 
   return { state, derived, actions };
 }

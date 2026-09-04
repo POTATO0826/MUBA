@@ -90,7 +90,10 @@ export function Room(p: RoomProps) {
           action={
             p.ready.me ? null : (
               <button
-                onClick={p.onReady}
+                onClick={() => {
+                  sfx("room.ready.me");
+                  p.onReady();
+                }}
                 style={sx(
                   `height:40px;width:100%;border:none;border-radius:8px;background:${C.accent};color:${C.bg};` +
                     `font:700 13px/1 ${SANS};cursor:pointer`,

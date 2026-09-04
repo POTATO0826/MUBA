@@ -18,6 +18,19 @@ import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, sectorColor, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
 
+/**
+ * The four tiers ride four pitches: SAFE 880 · EVEN 988 · SHARP 1174 ·
+ * DEGEN 1396 Hz. `parlay.card.hover` and `parlay.card.pick` are both written
+ * around 880 (map.ts), so what they take is the ratio — and DEGEN's 1396 is
+ * the threshold that earns it the detuned, unstable minor third.
+ */
+const TIER_PITCH: Record<Tier, number> = {
+  SAFE: 1,
+  EVEN: 988 / 880,
+  SHARP: 1174 / 880,
+  DEGEN: 1396 / 880,
+};
+
 /** Tier accents. DEGEN borrows the HIGH VAR violet. */
 export const TIER_COLOR: Record<Tier, string> = {
   SAFE: C.green,
@@ -148,7 +161,11 @@ export function ParlayPick(p: ParlayPickProps) {
                         key={card.id}
                         data-parlay={`${sym}:${card.id}`}
                         aria-pressed={on}
-                        onClick={() => p.onPick(sym, card.id)}
+                        onPointerEnter={() => sfx("parlay.card.hover", { pitch: TIER_PITCH[card.tier] })}
+                        onClick={() => {
+                          sfx("parlay.card.pick", { pitch: TIER_PITCH[card.tier] });
+                          p.onPick(sym, card.id);
+                        }}
                         style={sx(
                           `text-align:left;position:relative;padding:12px;border-radius:10px;cursor:pointer;` +
                             `background:linear-gradient(160deg,${tc}${on ? "2e" : "0f"},${C.card} 60%);` +
@@ -249,7 +266,10 @@ export function ParlayPick(p: ParlayPickProps) {
 
             <div style={sx("padding:12px")}>
               <button
-                onClick={p.onLock}
+                onClick={() => {
+                  sfx("parlay.lock");
+                  p.onLock();
+                }}
                 disabled={!p.allPicked}
                 style={sx(
                   `width:100%;height:38px;border:none;border-radius:8px;font:700 12.5px/1 ${SANS};` +
