@@ -12,6 +12,7 @@ import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
 import { useMatch } from "./state/match.ts";
+import { useDuelStake } from "./state/stake.ts";
 import { useRankProgress } from "./state/rank.ts";
 import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
@@ -72,7 +73,31 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   // gesture, capture-phase, so the click that starts the session is audible.
   useSoundUnlock();
 
-  const { state, derived, actions } = useMatch(route ?? currentRoute());
+  // The headless fallback. A hook, so it must run unconditionally even when a
+  // real source was injected — cheap, and it keeps the rules of hooks honest.
+  // It is read here, above the match, because the side bet needs a wallet id and
+  // the match needs to know whether a real seat is held.
+  const fallback = useMockWallet();
+  const active = wallet ?? fallback;
+
+  /**
+   * The optional USDC side bet, and the reason it is the FIRST stateful hook in
+   * this component.
+   *
+   * `useMatch` needs `stake.live` — an on-chain seat means the opponent's ready
+   * must come from `DuelJoined` rather than from `OPP_READY_MS` — and `begin`
+   * therefore takes the match key as an argument rather than the hook taking it
+   * as a parameter, because the key is derived state that does not exist yet.
+   *
+   * With no flag, no escrow, or the mock wallet this settles at `available:
+   * false`, opens no socket, constructs no contract and renders no DOM anywhere
+   * downstream. That is the whole rollback story: flags off is today's app.
+   */
+  const stake = useDuelStake(active);
+
+  const { state, derived, actions } = useMatch(route ?? currentRoute(), {
+    liveSeats: stake.live,
+  });
   const ledger = useLedger();
   // The rank moment's whole input. Derived from the ledger, so by the time
   // `Result` mounts (App settles on duel → result) `history[0]` is the match
@@ -90,10 +115,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
     deskLines: derived.briefs,
   });
 
-  // The headless fallback. A hook, so it must run unconditionally even when a
-  // real source was injected — cheap, and it keeps the rules of hooks honest.
-  const fallback = useMockWallet();
-  const active = wallet ?? fallback;
+  // The chain says the other seat filled. The same patch the fake timer would
+  // have applied — which is exactly why the timer is suppressed while a stake is
+  // live: two sources for one fact is one source too many.
+  useEffect(() => {
+    if (stake.joined) actions.oppReady();
+  }, [stake.joined, actions]);
 
   // The address follows the match, so a spin can be shared with its seed in it.
   useEffect(() => {
@@ -118,13 +145,53 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   /** Your lobby filled: into the room. */
   const start = useCallback((id: string) => actions.start(id), [actions]);
 
-  /** Readying up is when the entry leaves the balance. Before that, the seat can still be given back. */
+  /**
+   * Readying up is when the entry leaves the balance. Before that, the seat can
+   * still be given back.
+   *
+   * The two lines are in this order and are deliberately not awaited on each
+   * other: **the PTS entry is locked synchronously, exactly as it always has
+   * been**, and only then does the optional side bet start. `stake.begin` is a
+   * no-op unless the flag is on, an escrow is deployed and the wallet can sign;
+   * when it does run it never throws and every failure inside it lands the room
+   * in PTS-only. Nothing about the points game can be delayed, blocked or
+   * changed by a chain.
+   */
   const readyUp = useCallback(() => {
     if (state.lobbyId) ledger.enter(stakeOf(state.lobbyId));
     actions.readyUp();
-  }, [actions, ledger, stakeOf, state.lobbyId]);
+    stake.begin(derived.matchKey);
+  }, [actions, derived.matchKey, ledger, stake, stakeOf, state.lobbyId]);
 
-  /** The duel settled: the winner banks the stake at their parlay's odds. */
+  /** The slip locks: commit it to the referee, signed, so a verdict can be
+   *  derived later. A no-op with no stake in play. */
+  const lockParlay = useCallback(() => {
+    stake.commit(derived.matchKey, state.myPicks);
+    actions.lockParlay();
+  }, [actions, derived.matchKey, stake, state.myPicks]);
+
+  /** Walking out of a room abandons the side bet's local state too. The escrow
+   *  is unaffected — an unjoined duel is still cancellable and a full one still
+   *  refunds after the timeout — but this browser stops tracking it. */
+  const leaveRoom = useCallback(() => {
+    stake.reset();
+    actions.leaveRoom();
+  }, [actions, stake]);
+
+  const backToBattles = useCallback(() => {
+    stake.reset();
+    actions.backToBattles();
+  }, [actions, stake]);
+
+  /**
+   * The duel settled: the winner banks the stake at their parlay's odds.
+   *
+   * `ledger.settle` fires FIRST and unconditionally — before any chain call
+   * exists in this function, and there still is none. The points, the XP, the
+   * streak and the rank are all banked from the seeded verdict alone. The USDC
+   * claim is offered on the result screen afterwards, by `Result`'s own panel,
+   * and it can fail all day without any of the above noticing.
+   */
   const settle = useCallback(() => {
     const v = derived.verdict;
     if (derived.lobby && v) {
@@ -206,6 +273,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           onPrizeDown={actions.prizeDown}
           onPublish={actions.publishLobby}
           onBack={actions.go("battles")}
+          stake={stake}
         />
       )}
 
@@ -218,9 +286,10 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           ready={state.ready}
           entryLabel={derived.entryLabel}
           prizeLabel={derived.prizeLabel}
+          stake={stake}
           onReady={readyUp}
           onBegin={actions.beginSpin}
-          onLeave={actions.leaveRoom}
+          onLeave={leaveRoom}
         />
       )}
 
@@ -276,7 +345,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           stakePoints={derived.stakePoints}
           prizeLabel={derived.prizeLabel}
           onPick={actions.pick}
-          onLock={actions.lockParlay}
+          onLock={lockParlay}
         />
       )}
 
@@ -323,7 +392,9 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           streak={rank.streak}
           posBefore={rank.posBefore}
           posAfter={rank.posAfter}
-          onBackToBattles={actions.backToBattles}
+          stake={stake}
+          matchKey={derived.matchKey}
+          onBackToBattles={backToBattles}
           onRematch={actions.go("create")}
           onOpenLadder={actions.go("ranks")}
         />

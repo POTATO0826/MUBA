@@ -1,4 +1,11 @@
 import { useCallback, useState } from "react";
+import {
+  BASESCAN_TX,
+  REFUND_TIMEOUT_HOURS,
+  payoutOf,
+  usd as usdcText,
+} from "../desk/escrow.ts";
+import type { DuelStake } from "../state/stake.ts";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { ExitRow, RankUpSequence } from "../components/RankUpSequence.tsx";
 import { CHAMP_ART } from "../data/fixtures.ts";
@@ -39,6 +46,20 @@ interface ResultProps {
   streak: number;
   posBefore: number;
   posAfter: number;
+  /**
+   * The optional USDC side bet, and the match key the referee knows it by.
+   *
+   * Both optional together: absent — no flag, no escrow, the mock wallet, a
+   * test — this screen renders exactly the DOM it rendered before staking
+   * existed. `SideBetClaim` returns `null` for every one of those cases.
+   *
+   * The ordering this screen depends on lives in `App.settle`, not here:
+   * `ledger.settle` fires FIRST and unconditionally, so the PTS result, the XP
+   * and the rank move whether or not a chain is reachable. The panel below is
+   * strictly downstream of a game that has already finished.
+   */
+  stake?: DuelStake;
+  matchKey?: string;
   onBackToBattles: () => void;
   onRematch: () => void;
   /** `View the full ladder →`. Live: `App` points it at `go("ranks")`, so the
@@ -219,6 +240,12 @@ export function Result(p: ResultProps) {
         </div>
       </div>
 
+      {/* Outside the debrief block on purpose: `phase === "rank"` sets
+          `pointer-events:none` on everything above, and a CLAIM button that
+          stops responding the moment someone presses "Next" would be a button
+          holding real money hostage to an animation. */}
+      <SideBetClaim stake={p.stake} matchKey={p.matchKey} meWins={v.meWins} />
+
       {/* The gate. One press, and the XP moment owns the screen. */}
       {phase === "debrief" && (
         <div style={sx("margin-top:18px")}>
@@ -298,6 +325,179 @@ export function Result(p: ResultProps) {
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE CLAIM — AND THE SIX-HOUR CLOCK NOBODY ELSE WILL MENTION
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * The order of operations on this screen is fixed and is the whole point:
+ *
+ *   1. `ledger.settle` — already happened, in `App.settle`, unconditionally.
+ *      The points, the XP and the rank are banked before anything below runs
+ *      and regardless of whether it runs at all.
+ *   2. `POST /api/attest` — the referee re-derives the winner from the picks it
+ *      committed and signs an EIP-712 verdict. It is handed a match key and
+ *      nothing else; a `winner` in the body would be ignored.
+ *   3. `escrow.settle(verdict)` — relayed from this browser, because `settle` is
+ *      permissionless and the winner should never wait on the server to pay gas.
+ *   4. A BaseScan link, because a payout nobody can open is not evidence.
+ *
+ * **Why the copy insists on six hours** (adversarial review finding 4-1,
+ * executed): `settle` has no timeout of its own — it is closed by the first
+ * `refund`. So after `TIMEOUT` a *losing* player who refunds first moves the
+ * duel to REFUNDED, and the winner's still-in-date verdict then reverts
+ * `not full`. Both sides end flat. No principal is at risk and no third party
+ * gains, but the winner loses the 0.92 × stake they earned, and the only defence
+ * is to relay promptly. That is a UI responsibility and this is the UI.
+ *
+ * **Why the server-down copy says refund** rather than retry: the escrow's
+ * timeout needs no server, no signature and no cooperation from the other
+ * player. It is the one guarantee that survives this app disappearing entirely.
+ */
+function SideBetClaim({
+  stake,
+  matchKey,
+  meWins,
+}: {
+  stake: DuelStake | undefined;
+  matchKey: string | undefined;
+  meWins: boolean;
+}) {
+  // Nothing was staked — no flag, no escrow, the mock wallet, a failed stake
+  // that already fell back to PTS-only, or a duel nobody backed. In every one of
+  // those the screen is exactly the screen it was before staking existed.
+  if (!stake || !matchKey || stake.phase !== "staked") return null;
+
+  const takes = usdcText(payoutOf(stake.amount));
+  const each = usdcText(stake.amount);
+  const done = stake.claimPhase === "claimed";
+  const busy = stake.claimPhase === "signing" || stake.claimPhase === "relaying";
+  const tone = done ? C.green : meWins ? C.accent : C.dim;
+
+  return (
+    <div
+      data-side-bet-claim={stake.claimPhase}
+      style={sx(
+        `margin-top:18px;padding:16px 18px;border:1px solid ${tone}4d;border-radius:12px;` +
+          `background:${C.card}`,
+      )}
+    >
+      <div style={sx("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
+        <span style={sx(`font:700 9px/1 ${MONO};letter-spacing:.16em;color:${tone}`)}>
+          SIDE BET · ON-CHAIN
+        </span>
+        <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>
+          SEPARATE FROM THE PTS POOL
+        </span>
+      </div>
+
+      {/* No slip was pinned, so no verdict can be derived: the referee refused
+          the lock, or the room never reached one. The escrow still holds both
+          stakes and still returns them on the timeout, and there is nothing to
+          claim — a CLAIM button here would be a promise this app cannot keep.
+          Only the OPENER can know this: the seat binding makes `a` the seat that
+          locks, so a joiner has no local evidence either way and is shown the
+          ordinary claim copy. */}
+      {stake.seat === "a" && !stake.locked ? (
+        <div
+          data-claim-unlocked={stake.lockError?.code ?? "none"}
+          style={sx(`margin-top:11px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}
+        >
+          {stake.lockError
+            ? `${stake.lockError.message} ${stake.lockError.recovery}`
+            : `This duel's slip was never committed to the referee, so no verdict can be signed
+               for it. Both stakes refund automatically after ${REFUND_TIMEOUT_HOURS} hours — the escrow's
+               timeout needs no server and no cooperation from anyone.`}
+        </div>
+      ) : meWins ? (
+        <>
+          <div style={sx(`margin-top:11px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>
+            You won the duel, so the escrow owes you {takes} — the {each} you each staked, less the
+            4% rake. Relaying the verdict is permissionless, so this browser sends it; the server
+            only signs it.
+          </div>
+          {!done && (
+            <button
+              data-claim
+              disabled={busy}
+              onClick={() => {
+                sfx("ui.click.primary");
+                stake.claim(matchKey);
+              }}
+              style={sx(
+                `margin-top:13px;height:44px;padding:0 20px;border:none;border-radius:10px;` +
+                  `font:700 13.5px/1 ${SANS};` +
+                  (busy
+                    ? `background:${C.border};color:${C.dim};cursor:progress`
+                    : `background:${C.accent};color:${C.bg};cursor:pointer`),
+              )}
+            >
+              {stake.claimPhase === "signing"
+                ? "Asking the referee…"
+                : stake.claimPhase === "relaying"
+                  ? "Relaying the verdict…"
+                  : `CLAIM ${takes}`}
+            </button>
+          )}
+          <div style={sx(`margin-top:10px;font:500 10.5px/1.55 ${MONO};color:${C.amber}`)}>
+            Claim within {REFUND_TIMEOUT_HOURS} hours. After that either player can pull their own
+            stake back, and a refund closes settlement for good — you would get your {each} back and
+            nothing more.
+          </div>
+        </>
+      ) : (
+        <div style={sx(`margin-top:11px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>
+          The duel went the other way, so your {each} side bet is the winner's to claim. If nobody
+          relays a verdict, the stake refunds automatically after {REFUND_TIMEOUT_HOURS} hours —
+          the escrow's timeout needs no server and no cooperation from anyone.
+        </div>
+      )}
+
+      {done && stake.claimHash && (
+        <div style={sx("margin-top:12px")}>
+          <a
+            data-claim-tx
+            href={`${BASESCAN_TX}${stake.claimHash}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            style={sx(`font:700 11px/1 ${MONO};letter-spacing:.1em;color:${C.green}`)}
+          >
+            PAID · VIEW ON BASESCAN ↗
+          </a>
+        </div>
+      )}
+
+      {stake.claimPhase === "failed" && stake.claimError && (
+        <div
+          data-claim-error={stake.claimError.code}
+          style={sx(`margin-top:12px;font:400 10.5px/1.6 ${MONO};color:${C.amber};text-wrap:pretty`)}
+        >
+          {stake.claimError.message}{" "}
+          {stake.claimError.code === "ATTESTOR_DOWN"
+            ? `The referee is unreachable — stake refunds automatically after ${REFUND_TIMEOUT_HOURS} hours.`
+            : stake.claimError.recovery}
+        </div>
+      )}
+
+      {stake.refundable && (
+        <button
+          data-refund
+          onClick={() => {
+            sfx("ui.click.primary");
+            stake.refund();
+          }}
+          style={sx(
+            `margin-top:12px;height:36px;padding:0 14px;border:1px solid ${C.borderMid};` +
+              `border-radius:8px;background:transparent;color:${C.muted};font:500 12px/1 ${SANS};cursor:pointer`,
+          )}
+        >
+          Refund my {each}
+        </button>
       )}
     </div>
   );

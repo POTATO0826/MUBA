@@ -150,8 +150,31 @@ const legsMax = (sectors: readonly SectorKey[]) => Math.min(4, bookForSectors(se
  *  legal-looking and the gated Publish explains why it will not go. */
 const clampLegs = (n: number, max: number) => Math.max(2, Math.min(max, n));
 
-export function useMatch(route: Route) {
+/**
+ * What `useMatch` is allowed to be told about the world outside the sim.
+ *
+ * Exactly one field, and it only ever *removes* behaviour: with a real USDC
+ * stake held in the escrow, the second seat is a real address that has really
+ * paid, so faking its ready would be a lie the chain could contradict. Default
+ * `false`, so PTS-only play — which is every existing caller and every existing
+ * test — keeps the 1100 ms `OPP_READY_MS` timer exactly.
+ *
+ * Note what this deliberately is NOT: a way for the chain to influence the
+ * match. Nothing here reaches settlement; `(lobby, seed, picks)` is still the
+ * whole input, and `test/determinism.test.ts`'s source scan still forbids this
+ * file from naming the referee routes, the market layer or the SDK — which is
+ * also why the staking machine itself lives in `src/state/stake.ts` and this
+ * seam is one boolean wide.
+ */
+export interface MatchOptions {
+  /** An on-chain seat is held for this duel, so the opponent's ready must come
+   *  from `DuelJoined` (via `actions.oppReady`) rather than from a timer. */
+  liveSeats?: boolean;
+}
+
+export function useMatch(route: Route, options: MatchOptions = {}) {
   const [state, setState] = useState<MatchState>(() => initialState(route));
+  const liveSeats = options.liveSeats === true;
 
   // The clock runs outside React's render, so it reads the tab through a ref.
   const stateRef = useRef(state);
@@ -201,12 +224,17 @@ export function useMatch(route: Route) {
 
   // The other player readies up a beat after you enter the room. The spin
   // still waits for you.
+  //
+  // `liveSeats` is the one thing that can switch this off, and it switches off
+  // only from the moment a stake is actually held on chain: until then — which
+  // is all of PTS-only play, and the whole of every existing test — the 1100 ms
+  // timer runs exactly as it always has.
   const inRoom = state.tab === "room" && state.lobbyId !== null;
   useEffect(() => {
-    if (!inRoom || state.ready.opp) return;
+    if (!inRoom || state.ready.opp || liveSeats) return;
     const t = setTimeout(() => patch((s) => ({ ready: { ...s.ready, opp: true } })), OPP_READY_MS);
     return () => clearTimeout(t);
-  }, [inRoom, state.ready.opp, state.lobbyId, patch]);
+  }, [inRoom, state.ready.opp, state.lobbyId, patch, liveSeats]);
 
   const actions = useMemo(() => {
     /** Both seats are taken: into the room, where both players ready up. */
@@ -315,6 +343,16 @@ export function useMatch(route: Route) {
       // ---------- the room ----------
 
       readyUp: () => patch((s) => ({ ready: { ...s.ready, me: true } })),
+      /**
+       * The other seat filled — for real.
+       *
+       * The same patch the `OPP_READY_MS` timer applies, reachable by a caller
+       * that watched the escrow's `DuelJoined` instead of a clock. It exists so
+       * that `liveSeats` can suppress the timer without leaving the room with no
+       * way to ever start; it carries no data into settlement, and it is
+       * idempotent, so a poller may call it on every tick.
+       */
+      oppReady: () => patch((s) => ({ ready: { ...s.ready, opp: true } })),
       /** Both ready: the spin decides what you play on. A no-op until then. */
       beginSpin: () =>
         patch((s) => (s.ready.me && s.ready.opp ? { tab: "spin" } : {})),

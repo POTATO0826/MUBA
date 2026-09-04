@@ -1,4 +1,15 @@
 import { useEffect } from "react";
+import {
+  BASESCAN_ADDRESS,
+  BASESCAN_TX,
+  REFUND_TIMEOUT_HOURS,
+  payoutOf,
+  // Aliased: `data/leaderboard.ts` exports a `usd` of its own for the copy
+  // desk's dollars, and the two must never be confused — that one formats a
+  // `number` of career P/L, this one formats USDC base units.
+  usd as usdcText,
+} from "../desk/escrow.ts";
+import type { DuelStake } from "../state/stake.ts";
 import { CardArt } from "../components/CardArt.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { RANK_COLOR, RankBadge } from "../components/RankBadge.tsx";
@@ -90,6 +101,21 @@ interface RoomProps {
   ready: { me: boolean; opp: boolean };
   entryLabel: string;
   prizeLabel: string;
+  /**
+   * The optional USDC side bet.
+   *
+   * Optional in the strongest sense: absent — a test, a story, a build with
+   * `THETADUEL_STAKE` unset, a server with no escrow deployed, or the mock
+   * wallet — this view renders **exactly** the DOM it rendered before staking
+   * existed, which `test/stake.test.ts` asserts by string-comparing
+   * `container.innerHTML`. `SideBet` below returns `null` for every one of those
+   * cases, and a `null` child contributes no markup.
+   *
+   * It is also *only* a side bet: nothing on this screen converts between PTS
+   * and USDC, no exchange rate is shown, and the entry figure above stays the
+   * PTS pool's own ETH-denominated fiction, untouched.
+   */
+  stake?: DuelStake;
   onReady: () => void;
   onBegin: () => void;
   onLeave: () => void;
@@ -211,6 +237,7 @@ export function Room(p: RoomProps) {
             )
           }
           note={p.ready.me ? "Entry locked. Waiting on the other seat." : "Readying locks your entry into the pool."}
+          stakePanel={<SideBet stake={p.stake} ready={p.ready.me} />}
         />
 
         <div style={sx("display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-width:64px")}>
@@ -437,6 +464,9 @@ function Seat(p: {
   accent: string;
   action: React.ReactNode;
   note: string;
+  /** The side bet, directly under the ready button it is driven by. `null`
+   *  whenever staking is not live, which is the default build. */
+  stakePanel?: React.ReactNode;
 }) {
   return (
     <div
@@ -472,10 +502,180 @@ function Seat(p: {
           height turns out to be. */}
       <div style={sx("flex:1")} />
       {p.action}
+      {p.stakePanel}
       <div style={sx(`font:400 10.5px/1.5 ${MONO};color:${C.faint}`)}>{p.note}</div>
     </div>
   );
 }
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE SIDE BET — SIX STATES, AND THE SIXTH IS "PLAY ANYWAY"
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * The ready press does two things and they are deliberately not the same thing.
+ * It locks the PTS entry — instantly, synchronously, exactly as it always has —
+ * and it *starts* this. The points game never waits on a chain and never learns
+ * whether one answered.
+ *
+ * So the machine reads:
+ *
+ *   idle ─► approving ─► staking ─► confirming ─► staked
+ *              └────────────┴────────────┴──────────► failed
+ *
+ * and `failed` is not an error state. It is the game as it has always been:
+ * every one of the escrow module's fourteen codes lands here, the duel goes
+ * ahead, and the copy says so in the same sentence as the failure. A side bet
+ * that could stop a match would not be a side bet.
+ *
+ * Two rules the copy obeys without exception:
+ *
+ *  - **Its own unit.** Every figure here is `$`, USDC. The PRIZE POOL and YOUR
+ *    ENTRY figures above are the PTS game's ETH-denominated pool. No rate
+ *    between them is shown, computed or implied, because there is not one.
+ *  - **The six-hour line, on the winning side.** Adversarial review finding 4-1:
+ *    `settle` has no timeout of its own and is closed by the first `refund`, so
+ *    a loser who pulls their stake after the timeout forces a draw and the
+ *    winner loses their profit. Nobody's principal is at risk either way — but
+ *    the winner has to know to claim promptly, and this is where they are first
+ *    told.
+ */
+function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolean }) {
+  // Every "not live" case in one place: no stake layer, the flag off, no escrow
+  // deployed, the mock wallet. `null` is what makes the flag-off DOM identical.
+  //
+  // The refusal copy is gated on the ready press, not on mount, and that is a
+  // deliberate ordering rather than a hedge. **Byte-for-byte identity of the
+  // un-staked room is the pinned property** — a build with the flag off, a build
+  // with the flag on and no escrow deployed, and a build on the mock wallet must
+  // all render exactly the room that existed before this file was touched, and
+  // `test/stake.test.ts` compares `container.innerHTML` to prove it. An honest
+  // refusal belongs at the point of action, which is the moment the player
+  // readies up and *would* have staked; decorating an untouched screen with a
+  // notice about a feature that is not on is the other kind of dishonesty.
+  if (!stake) return null;
+  if (!stake.available) {
+    if (!stake.unavailable || !ready) return null;
+    return (
+      <div data-side-bet="unavailable" style={sx(PANEL(C.borderMid))}>
+        <div style={sx(HEAD(C.dim))}>SIDE BET · UNAVAILABLE</div>
+        <div style={sx(BODY)}>{stake.unavailable}</div>
+      </div>
+    );
+  }
+
+  const each = usdcText(stake.amount);
+  const takes = usdcText(payoutOf(stake.amount));
+  const tone =
+    stake.phase === "failed"
+      ? C.amber
+      : stake.phase === "staked"
+        ? C.green
+        : stake.phase === "idle"
+          ? C.dim
+          : C.blue;
+
+  return (
+    <div data-side-bet={stake.phase} style={sx(PANEL(tone))}>
+      <div style={sx("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
+        <span style={sx(HEAD(tone))}>SIDE BET · ON-CHAIN</span>
+        <span style={sx(`font:700 9px/1 ${MONO};letter-spacing:.14em;color:${tone}`)}>
+          {PHASE_LABEL[stake.phase]}
+        </span>
+      </div>
+
+      {/* The plan's sentence, verbatim. It is the only place the two currencies
+          appear near each other, and it is there to say they are separate. */}
+      <div style={sx(`margin-top:8px;font:700 12px/1.4 ${MONO};color:${C.text}`)}>
+        Side bet: {each} USDC each, on-chain. Separate from the PTS pool.
+      </div>
+
+      <div style={sx(BODY)}>{lineFor(stake, ready, takes)}</div>
+
+      {stake.phase === "failed" && stake.error && (
+        <div data-side-bet-error={stake.error.code} style={sx(`${BODY};color:${C.amber}`)}>
+          {stake.error.message} {stake.error.recovery}
+        </div>
+      )}
+
+      {/* The referee refused to pin the slip. The stake is still in the escrow
+          and still comes back on the timeout — but no verdict will ever be
+          signed for this duel, and saying so here is better than a CLAIM button
+          that fails an entire match later. */}
+      {stake.lockError && (
+        <div data-side-bet-lock={stake.lockError.code} style={sx(`${BODY};color:${C.amber}`)}>
+          {stake.lockError.message} {stake.lockError.recovery}
+        </div>
+      )}
+
+      <div style={sx("display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap")}>
+        <a
+          href={`${BASESCAN_ADDRESS}${stake.escrow}`}
+          target="_blank"
+          rel="noreferrer noopener"
+          style={sx(`font:500 9.5px/1 ${MONO};letter-spacing:.08em;color:${C.dim}`)}
+        >
+          ESCROW {stake.escrow.slice(0, 6)}…{stake.escrow.slice(-4)} ↗
+        </a>
+        {stake.hash && (
+          <a
+            href={`${BASESCAN_TX}${stake.hash}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            style={sx(`font:500 9.5px/1 ${MONO};letter-spacing:.08em;color:${C.blue}`)}
+          >
+            {stake.approvalSkipped ? "1 TX" : "2 TX"} ↗
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const PHASE_LABEL: Record<DuelStake["phase"], string> = {
+  idle: "NOT PLACED",
+  approving: "APPROVING",
+  staking: "STAKING",
+  confirming: "WAITING FOR SEAT",
+  staked: "STAKED",
+  failed: "PTS-ONLY",
+};
+
+/** One line per phase. The two that mention six hours are the two where the
+ *  player's money is actually sitting in the contract. */
+function lineFor(stake: DuelStake, ready: boolean, takes: string): string {
+  switch (stake.phase) {
+    case "idle":
+      return ready
+        ? "No side bet on this duel."
+        : "Ready up to place it. Declining costs nothing — the duel plays either way.";
+    case "approving":
+      return "Approving exactly this amount to the escrow. Never an unlimited approval.";
+    case "staking":
+      return "Sending the stake to the escrow on Base.";
+    case "confirming":
+      return (
+        "Your stake is held. Waiting for the other seat to fill on chain — the duel itself " +
+        "does not wait."
+      );
+    case "staked":
+      return (
+        `Both stakes held. Winner takes ${takes} after the 4% rake, and should claim within ` +
+        `${REFUND_TIMEOUT_HOURS} hours: after that either player can pull their stake back, which voids the bet.`
+      );
+    case "failed":
+      return "";
+  }
+}
+
+const PANEL = (tone: string): string =>
+  `margin-top:2px;padding:11px 12px;border:1px solid ${tone}4d;border-radius:10px;` +
+  `background:rgba(9,9,11,.55)`;
+
+const HEAD = (tone: string): string =>
+  `font:700 9px/1 ${MONO};letter-spacing:.14em;color:${tone}`;
+
+const BODY = `margin-top:7px;font:400 10.5px/1.55 ${MONO};color:${C.faint};text-wrap:pretty`;
 
 function Figure({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
