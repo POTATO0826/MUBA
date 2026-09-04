@@ -1,4 +1,4 @@
-import { ChromeCandles } from "../components/ChromeCandles.tsx";
+import { ChromeRally } from "../components/ChromeRally.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
@@ -88,11 +88,13 @@ export function LobbyCard({
       )}
     >
       {/* The gradient wall stays: it is the room the chrome is standing in, and
-          without a lit bed behind them the candles read as black on black. The
-          generative pattern art that used to sit on top of it is gone from the
-          board — `Room.tsx` still draws it, where one big card can carry it. */}
+          without a lit bed behind them the instrument reads as black on black.
+          The generative pattern art that used to sit on top of it is gone from
+          the board — `Room.tsx` still draws it, where one big card can carry
+          it. `market` goes through because the ornament picks its object from
+          it: the board was drawing the same picture six times over. */}
       <div style={sx(wall(a, b, deg))} />
-      <ChromeCandles id={lobby.id} color={color} />
+      <ChromeRally id={lobby.id} color={color} market={lobby.market} />
 
       {/* Hover: three lines over the name. */}
       <div

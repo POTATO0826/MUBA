@@ -183,29 +183,39 @@ describe("the board", () => {
     expect(container.querySelector("[data-tilt]")).toBeNull();
   });
 
-  // The ornament is `ChromeCandles`: a rally of chrome capsules with a sheen
-  // travelling down each one. It is decoration and nothing else, so what these
-  // guard is that it stays inert, stays deterministic, and never collides with
-  // the identical ornament on the card beside it.
+  // The ornament is `ChromeRally`: one chrome instrument per card, revealed by
+  // a cold specular travelling along each capsule. It is decoration and nothing
+  // else, so what these guard is that it stays inert, stays deterministic, and
+  // never collides with the ornament on the card beside it.
   test("the chrome rally draws on every card, on both surfaces, and stays inert", () => {
     mount("/battles");
     const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
     expect(art).toHaveLength(6);
     for (const a of art) {
-      expect(a.dataset.pattern).toBe("chrome-candles");
+      expect(a.dataset.pattern).toBe("chrome-rally");
       // Never in the way of a click, never in the accessibility tree.
       expect(a.getAttribute("aria-hidden")).not.toBeNull();
       expect(a.style.pointerEvents).toBe("none");
-      // Six bodies + six rims + twelve wicks + three ticks + the streak.
+      // Per capsule: a body, a halo, a specular core and a rim, plus the
+      // hairlines, four ticks and the streak's two rects. The rally's six
+      // capsules are the thinner of the two objects and still clear this.
       expect(a.querySelectorAll("rect").length).toBeGreaterThanOrEqual(28);
-      // Six falling sheens, plus the streak and its pool.
+      // One falling specular per capsule, plus the streak and its pool.
       expect(a.querySelectorAll("animateTransform").length).toBeGreaterThanOrEqual(8);
     }
+    // The board is no longer six copies of one picture: the object is chosen
+    // from the lobby's market (CRYPTO → candles, STOCK → tape, MIXED → a bit of
+    // its id's hash), so both objects are on screen at once.
+    const objects = new Set(art.map((a) => a.dataset.object));
+    expect(objects).toEqual(new Set(["candles", "tape"]));
+    expect(container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.dataset.object).toBe("candles");
+    expect(container.querySelector<HTMLElement>('[data-art="kz-semis"]')!.dataset.object).toBe("tape");
+
     // The home board renders the same card, so it gets the same ornament.
     remount("/");
     const home = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
     expect(home).toHaveLength(4);
-    expect(home.every((a) => a.dataset.pattern === "chrome-candles")).toBe(true);
+    expect(home.every((a) => a.dataset.pattern === "chrome-rally")).toBe(true);
   });
 
   test("two cards never share a gradient id, and neither redraws differently", () => {
@@ -215,7 +225,7 @@ describe("the board", () => {
 
     const a = idsOf("kz-semis");
     const b = idsOf("mi-majors");
-    expect(a.length).toBeGreaterThanOrEqual(11); // 7 gradients + 6 clip paths
+    expect(a.length).toBeGreaterThanOrEqual(11); // 9 gradients + one clip per capsule
     expect(new Set(a).size).toBe(a.length);
     expect(a.some((id) => b.includes(id))).toBe(false);
     // Each card points only at its own defs.
@@ -247,10 +257,12 @@ describe("the board", () => {
         // Nothing to still: the clocks were never rendered. (CSS cannot stop
         // SMIL, so the stylesheet's reduced-motion block is no help here.)
         expect(a.querySelectorAll("animate, animateTransform")).toHaveLength(0);
-        // The light is parked at each bar's waist rather than left at a bar's
-        // head, so the still frame is the lit frame, not a dark one.
-        const parked = Array.from(a.querySelectorAll("g[clip-path] > rect"));
-        expect(parked).toHaveLength(6);
+        // The light is parked at each capsule's waist rather than left at its
+        // head, so the still frame is the lit frame, not a dark one. (The
+        // halo and the core share one carrier group, hence `> g` and not
+        // `> rect`.) Six capsules for the rally, nine for the tape.
+        const parked = Array.from(a.querySelectorAll("g[clip-path] > g"));
+        expect(parked.length).toBeGreaterThanOrEqual(6);
         expect(parked.every((r) => (r.getAttribute("transform") ?? "").startsWith("translate(0 "))).toBe(true);
       }
     } finally {
