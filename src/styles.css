@@ -263,6 +263,59 @@ button {
   animation-play-state: paused;
 }
 
+/* ---- The wallet-picker sticker (src/ui/WalletPicker.tsx). Hovering a wallet
+ * row springs a big tile of that wallet's own icon out from behind the row's
+ * top-right corner, with sparkles around it.
+ *
+ * The launch itself is a *transition* on the row's sticker element, not a
+ * keyframe, because it has to run backwards on mouse-leave. What lives here is
+ * only the part that loops while the pointer stays: the idle wobble and the
+ * sparkle twinkle. They sit on separate elements from the launch (an inner span
+ * inside the sticker, and free-standing sparkle spans) so that the animation's
+ * `transform` never fights the transition's `transform` — the browser lets an
+ * animation win outright, and a launch that stopped halfway looked broken.
+ *
+ * Both keyframes are written symmetrically about their base value (rotate(0),
+ * scale(0)/opacity 0), so removing the animation on mouse-leave — which is how
+ * the component switches it off — never drops the element far from where it
+ * already was. Each animated element also carries a short transition, so the
+ * hand-back from animation to base value eases rather than snaps. ---- */
+
+/* Alive-while-hovered: the tile drifts a few degrees either side of its
+ * settled tilt. The settled tilt itself is the launch transition's, on the
+ * parent, so this stays centred on zero and the two compose. */
+@keyframes vcStickerWobble {
+  from { transform: rotate(-3.5deg); }
+  to { transform: rotate(3.5deg); }
+}
+
+/* Sparkles pop and fade on their own clocks; the component staggers them with
+ * an animation-delay per sparkle. */
+@keyframes vcSparkle {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-18deg);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1) rotate(16deg);
+  }
+}
+
+/* Belt and braces. `WalletPicker` already refuses to render the sticker at all
+ * when `matchMedia` reports reduced motion — this catches the case where the
+ * probe is unavailable (some test DOMs) and the markup ships anyway. Only the
+ * loops are stilled: the sticker's resting position comes from an inline
+ * transform, never from a keyframe, so nothing is left stranded. */
+@media (prefers-reduced-motion: reduce) {
+  [data-wsticker],
+  [data-wsticker] *,
+  [data-wspark] {
+    animation: none !important;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

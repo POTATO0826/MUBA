@@ -121,8 +121,10 @@ export function MatchSpin(p: MatchSpinProps) {
         return;
       }
       setSpinning(false);
+      // The landing is the case-open clip alone — the per-leg reveal arpeggio
+      // used to fire here too, and the owner cut it: two voices on one landing
+      // read as a doubled transient, and the recording is the one that sells it.
       sfx("spin.land");
-      sfx("spin.reveal", { leg: step });
       // Hold on the landing, then either the next leg or lock.
       settleTimer = setTimeout(() => setStep((s) => s + 1), SETTLE_MS);
     };
