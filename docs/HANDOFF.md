@@ -35,34 +35,65 @@
   P4 spot annotations + book-delta advisory (src/data/spot.ts), P5a escrow
   (NOT deployed), P5b attest referee with EIP-191-signed locks.
   README's "Thetanuts — what is actually live" table is current.
-- WALLET HOVER: DONE and SHIPPED through 2f72112 — sticker launch, brand
-  colours (rdns map + canvas sampling, failures→neutral), and the owner's
-  CAT mascot on an 88px light tile (src/components/CatMascot.tsx), row at
-  a 22% brand wash, one wink. Owner-approved steers recorded in the
-  commit history (6bd54aa→6368c9d→2f72112); accepted deviations: grey cat
-  for colourless wallets, sticker may cover the INSTALLED chip. Reference
-  gifs at repo root.
-- IN FLIGHT at handoff time (ONE Opus builder; if it died mid-work, see
-  the mid-flight section at the bottom — the brief is summarized here):
+- ⚙ **UI BUILDERS CAN NOW SEE THEIR OWN WORK — always give them this.**
+  Headless Chrome is installed; `--screenshot` needs an ABSOLUTE WINDOWS
+  path (a relative one dies with "Access is denied"), and
+  `--virtual-time-budget` lets animations settle so a mid-animation frame
+  is captured:
+  `"/c/Program Files/Google/Chrome/Application/chrome.exe" --headless=new
+  --disable-gpu --hide-scrollbars --virtual-time-budget=2500
+  --screenshot="C:\...\scratchpad\out.png" --window-size=700,560
+  "file:///C:\...\scratchpad\harness.html"`
+  The builder then READS the PNG and looks at it. Every UI wave before this
+  was built blind, which is why the card ornament and the wallet sticker
+  each needed 2-4 owner rejections. Brief every future UI builder with it,
+  and tell them not to report done on anything they have not looked at.
+  A screenshot of the live app works too (dev server on :3000).
+- ⚙ Owner's standing workflow rule: **an extra task given mid-work gets its
+  own parallel agent immediately** — never queued behind the current one.
+  Only file-set disjointness constrains it; if it collides with a running
+  builder's files, send it to THAT builder via SendMessage instead.
+- IN FLIGHT (FOUR Opus builders; if they died mid-work, see the mid-flight
+  section at the bottom — briefs summarized here):
+  1) WALLET, SINGLE-CAT REWORK — src/ui/WalletPicker.tsx +
+     src/components/CatMascot.tsx + src/styles.css. Shipped so far
+     (6bd54aa→6368c9d→2f72112): per-row sticker launch, brand colours
+     (rdns map for 6 majors + canvas icon sampler + neutral fallback), the
+     owner's cat on an 88px light tile, 22% brand row wash, one wink.
+     NOW REWORKING to the owner's latest: **ONE cat at a single fixed seat
+     at the dialog's top** (delete the per-row stickers), the box may
+     expand so the cat can be bigger, and hovering a row only RETINTS the
+     cat to that wallet's colour; × must stay visible/clickable. Owner
+     steers to date: not a pixel copy of the reference — cat pop-up +
+     wallet colour driving cat AND buttons, animated; lime accents
+     rejected; sticker-under-× rejected; sticker-covers-INSTALLED-chip
+     accepted.
   2) CHROME-CANDLES REWORK — src/components/ChromeCandles.tsx +
      src/ui/LobbyCards.tsx ONLY (styles.css belongs to builder 1). v1
-     (committed) was rejected by the owner: capsules too huge, sheens are
-     flat milky bands, green-washed. Required material (from the owner's
-     watch-clip frames, chrome-capture-2026-09-04.gif in repo root):
-     ~85% darkness, hairline 1px rim speculars, narrow feathered traveling
-     sheen, cold ice-blue light (#7dd3fc family) with card accent only in
-     the faint ambient pool, slender 1-1.5px trend-line. THEN per-card
-     THEMED objects (crypto = candle rally, stocks = a different chrome
-     object) — owner's words: "custom theme related object for each,
-     please don't make them identical; if not, focus on only 1 first."
+     (committed, 9c46ca8) was rejected by the owner as "way off": capsules
+     too huge, sheens are flat milky bands, green-washed, beam too thick.
+     Required material (owner's watch-clip frames,
+     chrome-capture-2026-09-04.gif at repo root): ~85% darkness, hairline
+     1px rim speculars, a narrow feathered travelling sheen, cold ice-blue
+     light (#7dd3fc family) with the card accent only in the faint ambient
+     pool, a slender 1-1.5px trend-line. THEN per-card THEMED objects
+     (crypto = candle rally, stocks = a different chrome object) — owner:
+     "custom theme related object for each, please don't make them
+     identical; if not, focus on only 1 first."
+  3) ON-CHAIN SEAT BINDING (the P6 prerequisite) — NEW src/server/seats.ts
+     + src/server/attest.ts + tests. Escrow unconfigured ⇒ today's
+     signature-only path byte-identical; escrow configured ⇒ the lock's
+     a/b must match the chain's seats, failing CLOSED on RPC failure.
+  4) P6 STAKING UI — new escrow module + src/views/Room.tsx, Result.tsx,
+     CreateLobby.tsx, src/state/**, src/App.tsx, test/stake.test.ts.
+     Behind THETADUEL_STAKE=on AND escrow-configured; PTS ledger settles
+     first and unconditionally; every failure degrades to PTS-only; the
+     1100ms OPP_READY_MS timer stays for PTS-only play.
 - Owner asks pending beyond that: drop the Dota 2 hero-pick theme at
   src/assets/parlay-pick.mp3 (seam is live, silence until then); eyeball
   the wallet sticker covering the INSTALLED chip while hovered and the
   36px dialog header gap (accepted for now unless the owner objects).
-- NEXT per plan after in-flight lands: P6 staking UI — HARD PREREQUISITE:
-  on-chain seat binding (read a/b from DuelOpened/DuelJoined instead of the
-  lock body; docs/reviews/escrow-adversarial-review.md X-1 residual +
-  attest.ts docstring) — then P7 truth pass (README table exists; still
+- NEXT once the four land: P7 truth pass (README table exists; still
   owed: consistent LIVE/SEEDED/STALE/PARTIAL chip vocabulary sweep).
 - Session facts a fresh account cannot see: dev server runs `bun run dev`
   on :3000 in the orchestrator's background (restart it — it dies with the
