@@ -28,6 +28,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { liveExpiries, type Box, type LadderSnapshot } from "../src/data/box.ts";
 import type { RoomSeat, RoomView } from "../src/data/room.ts";
+import { usdc } from "../src/data/stake.ts";
 import {
   _resetRooms,
   createRoom,
@@ -44,11 +45,15 @@ import {
 } from "../src/engine/score.ts";
 import {
   BoxBuilder,
+  NOTIONAL_STAKE_COPY,
   NO_FILL_COPY,
   PICK_VERSION,
   REVEAL_COPY,
   decodeBoxPick,
   encodeBoxPick,
+  noFillCopy,
+  stakeBasisLine,
+  type DuelCustody,
 } from "../src/views/BoxBuilder.tsx";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
@@ -358,10 +363,14 @@ describe("§6.1 — no fill, no verdict", () => {
     mount(<BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />);
     const body = text();
 
-    // The rule, in the words a player reads, and the refund path it points at.
+    // The rule, in the words a player reads. Both halves that `duelOutcome`
+    // actually proves — no verdict, no tiebreak — and nothing about a refund,
+    // because with no custody there are no stakes to refund.
     expect(body).toContain(NO_FILL_COPY);
-    expect(body).toContain("six-hour refund");
+    expect(body).toContain("no verdict is signed");
     expect(body).toContain("There is no tiebreak");
+    expect(body).toContain("Nothing was staked");
+    expect(body).not.toContain("six-hour refund");
 
     // No verdict means no verdict language. `SpotDiff` printed YOU WIN / YOU
     // LOSE / DRAW off a comparison it could always make; this screen cannot
@@ -380,6 +389,163 @@ describe("§6.1 — no fill, no verdict", () => {
     // expiry for the option.
     expect(text()).toContain("resolves in minutes");
     expect(text()).toContain("settles at its own expiry");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custody — the screen may not promise money that nothing holds
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The tripwire, and why it is a scan of the rendered screen rather than of the
+ * source.
+ *
+ * `room.stakeUsdc` is an in-memory number on the room store. No approval, no
+ * transfer, no escrow — `useDuelStake` is wired to the seeded match flow only,
+ * and `DuelEscrow` is compiled and adversarially reviewed but not deployed. The
+ * screen nevertheless used to print "winner takes $20.00" on every duel and, at
+ * the reveal, "DuelEscrow's six-hour refund returns both stakes, rake-free": a
+ * mechanism, a window and a rake, named confidently, for money nobody took from
+ * a contract that is not on chain.
+ *
+ * A source scan would only guard the constants that exist today. What has to be
+ * guarded is *the screen* — any sentence added anywhere on it, by anyone, in any
+ * duel state. So this mounts the real component in all four states a player can
+ * be in and greps what a player would actually read.
+ *
+ * The one exemption is the node whose entire job is to **deny** custody:
+ * `data-role="notional-stake"` says "no USDC is approved, transferred or
+ * escrowed", which a regex cannot tell from a promise. It is subtracted from the
+ * text and separately asserted to be present, so the exemption cannot be used to
+ * smuggle anything back in.
+ */
+const CUSTODY_PROMISES = [
+  "winner takes",
+  "refund",
+  "rake",
+  "escrow",
+  "both stakes",
+  "the pot",
+  "held in",
+  "returns both",
+];
+
+describe("custody is claimed only when something holds the stake", () => {
+  /** The screen's whole text minus the one sentence that denies custody. */
+  function readableWithoutTheDenial(): string {
+    const denial = container.querySelector('[data-role="notional-stake"]')?.textContent ?? "";
+    expect(denial).toBe(NOTIONAL_STAKE_COPY);
+    return text().split(denial).join(" ");
+  }
+
+  test("no state of an unstaked duel promises money to anyone", () => {
+    // Every state a player can read the strip in, including the bystander who
+    // opened the invite link and never gets a lock button.
+    const states: { label: string; ui: () => React.ReactElement }[] = [
+      {
+        label: "before either box is locked",
+        ui: () => {
+          const id = openRoom();
+          return <BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />;
+        },
+      },
+      {
+        label: "locked, waiting on the other seat",
+        ui: () => {
+          const id = openRoom();
+          pickRoom(id, HOST, drawAndLock(view(id), "host", [0, 3]));
+          return <BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />;
+        },
+      },
+      {
+        label: "both boxes in",
+        ui: () => {
+          const id = openRoom();
+          pickRoom(id, HOST, drawAndLock(view(id), "host", [0, 3]));
+          pickRoom(id, GUEST, drawAndLock(view(id), "guest", [1, 4]));
+          return <BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />;
+        },
+      },
+      {
+        label: "watching, not playing",
+        ui: () => {
+          const id = openRoom();
+          return <BoxBuilder {...BASE} room={view(id)} seat={null} />;
+        },
+      },
+    ];
+
+    for (const state of states) {
+      const ui = state.ui();
+      mount(ui);
+      const body = readableWithoutTheDenial().toLowerCase();
+      const found = CUSTODY_PROMISES.filter((p) => body.includes(p));
+      // Reported as a pair so a failure names the state and the word, rather
+      // than printing the whole screen.
+      expect({ state: state.label, promises: found }).toEqual({
+        state: state.label,
+        promises: [],
+      });
+      // The stake itself is still shown — it is a real setting both seats
+      // agreed to, and hiding it would make the create screen's field look
+      // like it did nothing. It is shown labelled.
+      expect(text()).toContain(`${usdc(10)} each, notional`);
+      unmount();
+    }
+  });
+
+  test("the reveal's refund sentence exists only for a duel an escrow holds", () => {
+    const held: DuelCustody = {
+      escrow: "0x00000000000000000000000000000000000dead0",
+      refundHours: 6,
+    };
+
+    // Unstaked: the true halves survive untouched, the refund does not.
+    expect(NO_FILL_COPY).toContain("no verdict is signed");
+    expect(NO_FILL_COPY).toContain("There is no tiebreak");
+    expect(NO_FILL_COPY).toContain("nothing to return");
+    expect(NO_FILL_COPY).not.toContain("refund");
+    expect(noFillCopy(null)).toBe(NO_FILL_COPY);
+
+    // Escrowed: the same two true halves, plus the refund the escrow can pay.
+    // Proves the branch is a live seam and not dead code kept for comfort.
+    expect(noFillCopy(held)).toContain("no verdict is signed");
+    expect(noFillCopy(held)).toContain("There is no tiebreak");
+    expect(noFillCopy(held)).toContain("6-hour refund returns both stakes, rake-free");
+
+    // And the same asymmetry in the strip.
+    expect(stakeBasisLine(10, null)).toBe(`${usdc(10)} each, notional · nothing is held`);
+    expect(stakeBasisLine(10, held)).toBe(`${usdc(10)} each · winner takes ${usdc(20)}`);
+  });
+
+  test("custody, when it is real, reaches the screen", () => {
+    const id = openRoom();
+    pickRoom(id, HOST, drawAndLock(view(id), "host", [0, 3]));
+    pickRoom(id, GUEST, drawAndLock(view(id), "guest", [1, 4]));
+    mount(
+      <BoxBuilder
+        {...BASE}
+        room={view(id)}
+        seat="host"
+        onLock={() => {}}
+        custody={{ escrow: "0x00000000000000000000000000000000000dead0", refundHours: 6 }}
+      />,
+    );
+    // The promise comes back, and the disclaimer goes away — one switch, and
+    // the escrow address is what throws it.
+    expect(text()).toContain(`winner takes ${usdc(20)}`);
+    expect(text()).toContain("6-hour refund returns both stakes, rake-free");
+    expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
+  });
+
+  test("App hands the arena no custody, because the arena has none", async () => {
+    // The seam's only caller. If this ever becomes `custody={stake}` or a
+    // literal, that is a claim about money and it must be argued for here
+    // first — `stake` is the *seeded match's* side bet and pointing the arena
+    // at it would have the arena claim custody of another duel's money.
+    const app = await Bun.file(join(import.meta.dir, "..", "src", "App.tsx")).text();
+    const passes = [...app.matchAll(/custody=\{([^}]*)\}/g)].map((m) => m[1]!.trim());
+    expect(passes).toEqual(["null"]);
   });
 });
 

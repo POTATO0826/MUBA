@@ -557,6 +557,25 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           locking={roomState.busy}
           onLock={lockArenaBox}
           dealt={dealtAsset}
+          // Nothing holds the arena's stake, so the screen is told so
+          // explicitly rather than left to assume.
+          //
+          // `room.stakeUsdc` is an in-memory number on the room store
+          // (`src/server/rooms.ts`) that no code path ever turns into a
+          // transfer: `useDuelStake` above is keyed to the seeded match flow
+          // and is reached only from `readyUp`/`lockParlay`/`settle`, never
+          // from here, and it would settle at `available: false` anyway —
+          // `stakingAvailable()` needs a deployed escrow and `DuelEscrow` is
+          // compiled and reviewed but not on chain.
+          //
+          // This is the seam, and it is the whole of it: the day the escrow is
+          // deployed and the arena room is routed through `useDuelStake`, this
+          // line becomes the escrow address and its timeout, and the reveal
+          // starts promising the refund again — in one place, and only because
+          // something can pay it. Passing `stake` from above would NOT be that
+          // wiring; it is a different duel's side bet and would make the arena
+          // claim custody of money staked on the seeded match.
+          custody={null}
         />
       )}
 

@@ -230,6 +230,75 @@ export const BLIND_COPY =
 export const REVEAL_COPY =
   "Both boxes, one chart: yours outlined, theirs filled. Where they overlap, you agreed.";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Custody — who, if anyone, is actually holding the stake
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Proof that a duel's stake is held by something, or `null` when nothing holds
+ * it.
+ *
+ * ## Why this is a prop and not a boolean, and why it carries an address
+ *
+ * The arena's stake is a **number the room carries**: `room.stakeUsdc` is set on
+ * the create screen, clamped by `createRoom` in `src/server/rooms.ts`, and kept
+ * in that process's `Map`. No USDC is approved, transferred, or escrowed
+ * anywhere on the arena path — `useDuelStake` (`src/state/stake.ts`) is wired to
+ * the seeded match flow only, and `DuelEscrow` is compiled and adversarially
+ * reviewed but **not deployed** (`README.md`,
+ * `docs/reviews/escrow-adversarial-review.md`).
+ *
+ * The screen used to say otherwise. It printed "winner takes $20.00" on every
+ * duel and, at the reveal, named a mechanism, a window and a rake — "DuelEscrow's
+ * six-hour refund returns both stakes, rake-free" — for a refund of stakes that
+ * were never taken, from a contract that is not on chain. That is the one class
+ * of untruth this screen must not commit, because it is about custody of money.
+ *
+ * So custody has to be *shown*, not assumed. `escrow` is here rather than a bare
+ * `held: true` precisely so the claim cannot be switched on by optimism: a
+ * caller that wants this screen to promise a refund has to name the deployed
+ * contract that would pay it, which is the same interlock
+ * `stakingAvailable()` enforces in `src/desk/escrow.ts` — a flag on its own is
+ * not allowed to move money, and it is not allowed to make a promise about money
+ * either.
+ *
+ * `null` — the only value `App` passes today — is the honest state, and it is
+ * the default, so a future caller who forgets this prop degrades to the truth
+ * rather than to the promise.
+ */
+export interface DuelCustody {
+  /** The deployed `DuelEscrow` holding both stakes, checksummed or lowercase. */
+  escrow: string;
+  /** Hours after which that escrow refunds unconditionally — `TIMEOUT` on the
+   *  contract, `REFUND_TIMEOUT_HOURS` in `src/desk/escrow.ts`. */
+  refundHours: number;
+}
+
+/**
+ * The stake line in the duel strip.
+ *
+ * With custody it is what the winner takes. Without, the amount is still shown —
+ * it is a real setting, both seats agreed to it, and hiding it would make the
+ * create screen's field look like it did nothing — but it is labelled for what
+ * it is: notional, held by nobody.
+ */
+export function stakeBasisLine(stakeUsdc: number, custody: DuelCustody | null): string {
+  return custody
+    ? `${usdc(stakeUsdc)} each · winner takes ${usdc(poolOf(stakeUsdc))}`
+    : `${usdc(stakeUsdc)} each, notional · nothing is held`;
+}
+
+/**
+ * Said once, in the duel strip, in the same register as the Review panel's
+ * "Buying is switched off in this build".
+ *
+ * The house voice for a switched-off capability on this screen is: name the
+ * thing that is off, say what *is* real, and say exactly what would have to
+ * change. This does all three.
+ */
+export const NOTIONAL_STAKE_COPY =
+  "Stakes are switched off in this build. The amount above is a number this room carries, not money anyone took — no USDC is approved, transferred or escrowed on this path, and DuelEscrow is written and reviewed but not deployed. The duel is for pride.";
+
 /**
  * §6.1, stated as the fact it currently is rather than as a rule for later.
  *
@@ -239,14 +308,47 @@ export const REVEAL_COPY =
  * path is plan 7 §5 and is not built — so every duel that reaches this screen
  * ends with both sides unfilled, which is exactly the case §6.1 legislates for.
  * There is no tiebreak to write: `duelOutcome` reports `noVerdict` for an
- * unfilled slate and the escrow's six-hour refund path returns both stakes.
+ * unfilled slate, and it does so for reasons that have nothing to do with money.
+ *
+ * That last part is why this constant lost a sentence rather than gaining a
+ * caveat. **No verdict** and **no tiebreak** are true, proven by
+ * `duelOutcome` and asserted in `test/boxduel.test.tsx`; they stay exactly as
+ * they were. What was never true is the refund that followed them — see
+ * {@link DuelCustody}. With nothing staked there is nothing to return, and that
+ * is the honest end of the sentence.
  */
 export const NO_FILL_COPY =
-  "Neither box was filled, so there is nothing to mark and no verdict is signed. DuelEscrow's six-hour refund returns both stakes, rake-free, with no signature from anyone. There is no tiebreak.";
+  "Neither box was filled, so there is nothing to mark and no verdict is signed. There is no tiebreak. Nothing was staked on this duel, so there is nothing to return.";
 
-/** §6 — plan 6's two clocks, said once, where the duel is. */
+/**
+ * The same rule when a deployed escrow really is holding both stakes — the
+ * sentence the screen used to print unconditionally, printed only when the thing
+ * it describes exists.
+ *
+ * Unreachable today by construction, and deliberately so: `App` passes `null`,
+ * and the only way here is a caller that can name a deployed contract. That is
+ * the seam route (b) fills in, kept in one place so wiring the escrow is a
+ * change to what `App` passes rather than a rewrite of the reveal.
+ */
+export function noFillCopy(custody: DuelCustody | null): string {
+  if (!custody) return NO_FILL_COPY;
+  return (
+    "Neither box was filled, so there is nothing to mark and no verdict is signed. There is " +
+    `no tiebreak. DuelEscrow's ${custody.refundHours}-hour refund returns both stakes, ` +
+    "rake-free, with no signature from anyone."
+  );
+}
+
+/**
+ * §6 — plan 6's two clocks, said once, where the duel is.
+ *
+ * "regardless of who took the pot" was the old tail. It is a small claim next to
+ * the refund sentence, but it is the same claim — it presumes a pot someone
+ * takes — so it goes for the same reason. The rule itself is untouched: two
+ * clocks, one for the duel and one for the option.
+ */
 export const TWO_CLOCK_COPY =
-  "A duel resolves in minutes, on the change in mark of the filled position. The option itself settles at its own expiry regardless of who took the pot.";
+  "A duel resolves in minutes, on the change in mark of the filled position. The option itself settles at its own expiry regardless of how the duel ended.";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A box, on the wire
@@ -625,6 +727,15 @@ export interface BoxBuilderProps {
    * screen. `null` (no room, or nothing dealt) leaves the chips as they were.
    */
   dealt?: string | null;
+  /**
+   * What is actually holding this duel's stake — `null`, the default, when
+   * nothing is.
+   *
+   * See {@link DuelCustody}. It defaults to `null` rather than being required so
+   * that forgetting it degrades to the truth: a caller who does not think about
+   * custody gets a screen that promises none.
+   */
+  custody?: DuelCustody | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -723,6 +834,7 @@ export function BoxBuilder({
   locking = false,
   onLock,
   dealt = null,
+  custody = null,
 }: BoxBuilderProps) {
   // Fixed at mount when the caller does not supply one, so every derived
   // expiry set and every "now" divider in one session agree with each other.
@@ -1115,9 +1227,8 @@ export function BoxBuilder({
             <span style={sx(`font:700 12px/1 ${MONO};color:${C.text}`)}>
               {shortAddress(room.host)} vs {room.guest ? shortAddress(room.guest) : "—"}
             </span>
-            <span style={sx(`font:500 10.5px/1 ${MONO};color:${C.dim}`)}>
-              {usdc(room.stakeUsdc)} each · winner takes {usdc(poolOf(room.stakeUsdc))} ·{" "}
-              {room.durationMinutes} min
+            <span data-role="stake-basis" style={sx(`font:500 10.5px/1 ${MONO};color:${C.dim}`)}>
+              {stakeBasisLine(room.stakeUsdc, custody)} · {room.durationMinutes} min
             </span>
             <div style={sx("flex:1")} />
             {seatIndex === null ? (
@@ -1160,6 +1271,17 @@ export function BoxBuilder({
             )}
           </div>
 
+          {/* Said in every state of the duel, not only at the reveal, and said
+              to bystanders too — the amount above is on screen from the moment
+              the strip renders, so the sentence that qualifies it has to be
+              there at the same moment. Absent when a real escrow is named,
+              because then there is nothing to qualify. */}
+          {custody === null && (
+            <span data-role="notional-stake" style={sx(`${NOTE};color:${C.amber}`)}>
+              {NOTIONAL_STAKE_COPY}
+            </span>
+          )}
+
           {seatIndex !== null && !revealed && (
             <span style={sx(NOTE)}>{locked !== null ? BLIND_COPY : LOCK_COPY}</span>
           )}
@@ -1194,7 +1316,7 @@ export function BoxBuilder({
                 )}
 
               <span data-role="no-verdict" style={sx(NOTE)}>
-                {NO_FILL_COPY}
+                {noFillCopy(custody)}
               </span>
               <span style={sx(NOTE)}>{TWO_CLOCK_COPY}</span>
             </div>

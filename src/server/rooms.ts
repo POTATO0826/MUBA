@@ -30,6 +30,22 @@ interface Room {
   id: string;
   host: string;
   guest: string | null;
+  /**
+   * What the two seats agreed to play for, in USDC — and **nothing in this file
+   * or downstream of it holds a cent of it**.
+   *
+   * It is set by the host on the create screen, clamped below, and kept in the
+   * `Map`. It is never approved, never transferred and never escrowed: the
+   * staking layer (`src/state/stake.ts` → `contracts/DuelEscrow.sol`) is wired
+   * to the seeded match flow only, and the escrow is compiled and adversarially
+   * reviewed but not deployed. Any screen rendering this number must say so —
+   * `BoxBuilder`'s `DuelCustody` prop is where that is enforced, and it defaults
+   * to "nothing holds it" so a caller who forgets degrades to the truth.
+   *
+   * Storing it anyway is not dishonest, it is the point: it is a real setting
+   * both players see, and it is what the escrow would be opened for the day
+   * there is one.
+   */
   stakeUsdc: number;
   durationMinutes: number;
   lobbyName: string;

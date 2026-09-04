@@ -37,7 +37,16 @@ export interface BattleState {
    * migration rather than a union member.
    */
   mode: GameMode;
-  /** What each player stakes, in USDC. The pot is twice this. */
+  /**
+   * What each player agrees to play for, in USDC. The pot would be twice this.
+   *
+   * Conditional on purpose: this is a **setting**, not a transfer. It travels to
+   * `createRoom` and lives in the room store's `Map`, and no code path turns it
+   * into money — the escrow that would hold it is written and reviewed but not
+   * deployed, and the arena is not routed through `src/state/stake.ts`. See the
+   * note on `Room.stakeUsdc` in `src/server/rooms.ts`, and `DuelCustody` in
+   * `src/views/BoxBuilder.tsx` for how a screen is made to say so.
+   */
   stakeUsdc: number;
   /** Raw text in the stake field — kept apart from `stakeUsdc` so a half-typed
    *  "1." survives until blur. */
@@ -109,9 +118,10 @@ export function useBattle() {
 
   const derived = useMemo(
     () => ({
-      /** The pot the winner takes: both stakes. */
+      /** The pot the winner would take: both stakes. Notional until an escrow
+       *  is deployed and the arena is routed through it — see `stakeUsdc`. */
       prizeLabel: usdc(poolOf(state.stakeUsdc)),
-      /** What one player risks. */
+      /** What one player would risk. Nothing takes it today. */
       entryLabel: usdc(state.stakeUsdc),
     }),
     [state.stakeUsdc],
