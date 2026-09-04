@@ -5,6 +5,7 @@ import {
   createMarketService,
   type MarketClient,
   type RawMarket,
+  type RawMmQuote,
 } from "../src/server/thetanuts.ts";
 
 /**
@@ -92,6 +93,9 @@ describe("the envelope", () => {
     expect(env.optionBook.address).toBeTruthy();
     expect(env.optionBook.agreed).toBe(true);
     expect(env.note).toBeUndefined();
+    // A client with no `mmPricing` module is not an error — the key is present
+    // and empty, and `/desk` falls back to the book-derived chain.
+    expect(env.mmPricing).toEqual({});
   });
 
   test("handle() answers 200 with that envelope, uncached", async () => {
@@ -260,6 +264,206 @@ describe("stale beats blank", () => {
     fake.failWith(new Error("cold start, no book"));
     const env = await createMarketService({ client: fake.client }).snapshot();
     expect(env.ok).toBe(false);
+  });
+});
+
+// ─── the second feed ─────────────────────────────────────────────────────────
+
+/** One MM quote, near enough spot to survive the ±25% band. */
+function quote(over: Partial<RawMmQuote> = {}): RawMmQuote {
+  return {
+    ticker: "ETH-3SEP26-2400-C",
+    feeAdjustedBid: 0.1146,
+    feeAdjustedAsk: 0.1194,
+    markPrice: 0.116552,
+    strike: 2400,
+    expiry: 1_788_422_400,
+    isCall: true,
+    underlying: "ETH",
+    underlyingPrice: 2375.76,
+    ...over,
+  };
+}
+
+/** The base fake plus an `mmPricing` module that can be told to fail per
+ *  underlying, and that records what it was asked for. */
+function withPricing(fail: Partial<Record<string, Error>> = {}) {
+  const base = fakeClient();
+  const asked: string[] = [];
+  const filtered: [number, number][] = [];
+
+  const client: MarketClient = {
+    ...base.client,
+    mmPricing: {
+      async getPricingArray(underlying) {
+        asked.push(underlying);
+        const boom = fail[underlying];
+        if (boom) throw boom;
+        return [quote({ underlying }), quote({ underlying, strike: 2450 })];
+      },
+      filterByStrikeRange(pricing, min, max) {
+        filtered.push([min, max]);
+        return pricing.filter((p) => p.strike >= min && p.strike <= max);
+      },
+    },
+  };
+
+  return { client, asked, filtered };
+}
+
+describe("MM pricing rides beside the book, and fails on its own", () => {
+  test("both tradable underlyings are read, and only those two", () => {
+    // The other six price-feed assets return `[]` rather than throwing
+    // (FINDINGS §5.5), so asking them is six round trips to learn nothing.
+    const fake = withPricing();
+    return createMarketService({ client: fake.client })
+      .snapshot()
+      .then((env) => {
+        expect(fake.asked).toEqual(["ETH", "BTC"]);
+        expect(env.ok).toBe(true);
+        if (!env.ok) return;
+        expect(Object.keys(env.mmPricing).sort()).toEqual(["BTC", "ETH"]);
+        expect(env.mmPricing.ETH?.[0]?.bid).toBe("0.1146");
+      });
+  });
+
+  test("the SDK's own filterByStrikeRange makes the cut, at the ±25% band", () => {
+    // Reimplementing a filter the venue publishes is how two definitions of
+    // "near the money" start disagreeing.
+    const fake = withPricing();
+    return createMarketService({ client: fake.client })
+      .snapshot()
+      .then(() => {
+        expect(fake.filtered).toHaveLength(2);
+        for (const [min, max] of fake.filtered) {
+          expect(min).toBeCloseTo(2375.76 * 0.75, 6);
+          expect(max).toBeCloseTo(2375.76 * 1.25, 6);
+        }
+      });
+  });
+
+  test("ONE dead underlying costs only its own rows", async () => {
+    const fake = withPricing({ BTC: new Error("pricing host 503") });
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(Object.keys(env.mmPricing)).toEqual(["ETH"]);
+    // And the BTC *book* — a different host entirely — is untouched.
+    expect(env.pricing.BTC?.length).toBeGreaterThan(0);
+  });
+
+  test("a dead pricing HOST does not empty the snapshot", async () => {
+    // The signed order book is the load-bearing feed. `pricing.thetanuts.
+    // finance` and the indexer fail independently, and only one of them is
+    // allowed to take this screen down.
+    const fake = withPricing({ ETH: new Error("ENOTFOUND"), BTC: new Error("ENOTFOUND") });
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.mmPricing).toEqual({});
+    expect(env.underlyings).toEqual(["BTC", "ETH"]);
+    expect(env.orders.length).toBeGreaterThan(0);
+    // Not a stale read either — this snapshot is fresh and complete in the one
+    // feed that matters.
+    expect(env.note).toBeUndefined();
+  });
+});
+
+// ─── the quote line ──────────────────────────────────────────────────────────
+
+describe("previewFillOrder is called server-side, at $1.00, with the referrer", () => {
+  const KEY = "THETADUEL_REFERRER";
+  const before = process.env[KEY];
+
+  afterEach(() => {
+    if (before === undefined) delete process.env[KEY];
+    else process.env[KEY] = before;
+  });
+
+  /** The base fake plus an `optionBook` whose preview the test controls. */
+  function withBook(
+    impl: (usdc?: bigint, referrer?: string) => { numContracts: bigint; totalCollateral: bigint },
+  ) {
+    const base = fakeClient();
+    const seen: { usdc?: bigint; referrer?: string }[] = [];
+    const client: MarketClient = {
+      ...base.client,
+      optionBook: {
+        previewFillOrder(_order, usdc, referrer) {
+          seen.push({ usdc, referrer });
+          return impl(usdc, referrer);
+        },
+      },
+    };
+    return { client, seen };
+  }
+
+  test("every shipped row gets a quote at the fixed $1.00 notional", async () => {
+    process.env[KEY] = "0xReferrer";
+    const fake = withBook(() => ({ numContracts: 4_300_000_000_000_000n, totalCollateral: 999_999n }));
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(fake.seen).toHaveLength(env.orders.length);
+    // $1.00 in USDC 6dp, and our referrer on every one — the same attribution
+    // string P3's fill will carry.
+    for (const call of fake.seen) expect(call).toEqual({ usdc: 1_000000n, referrer: "0xReferrer" });
+    expect(env.orders[0]?.preview).toEqual({
+      contracts: "0.0043", // 18dp
+      collateral: "1.00", //  6dp
+      fillable: true,
+    });
+  });
+
+  test("no referrer configured passes undefined rather than an empty address", async () => {
+    delete process.env[KEY];
+    const fake = withBook(() => ({ numContracts: 1n, totalCollateral: 1n }));
+    await createMarketService({ client: fake.client }).snapshot();
+    expect(fake.seen[0]?.referrer).toBeUndefined();
+  });
+
+  test("numContracts === 0n is the book-depth guard, not an error", async () => {
+    // Depth on Base swung from 426 resting orders to 130 inside a day. "This
+    // order will not absorb a dollar" is an ordinary reading; the row greys out
+    // and says so.
+    const fake = withBook(() => ({ numContracts: 0n, totalCollateral: 0n }));
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.orders[0]?.preview).toEqual({
+      contracts: "0.0000",
+      collateral: "0.00",
+      fillable: false,
+    });
+  });
+
+  test("a preview that throws costs one row its quote line and nothing more", async () => {
+    // ORDER_EXPIRED / INVALID_ORDER on an order the indexer is still serving.
+    let first = true;
+    const fake = withBook(() => {
+      if (first) {
+        first = false;
+        throw new Error("ORDER_EXPIRED");
+      }
+      return { numContracts: 2n, totalCollateral: 2n };
+    });
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.orders[0]?.preview).toBeUndefined();
+    expect(env.orders[1]?.preview?.fillable).toBe(true);
+  });
+
+  test("a client with no optionBook ships rows with no quote line at all", async () => {
+    const env = await createMarketService({ client: fakeClient().client }).snapshot();
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    for (const row of env.orders) expect(row.preview).toBeUndefined();
   });
 });
 

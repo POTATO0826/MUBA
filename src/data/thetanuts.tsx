@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { OrderRow, PricingRow } from "../types.ts";
+import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
 import { mockMarketSource, type MarketSource } from "./market.ts";
 
 /**
@@ -38,6 +38,9 @@ interface Wire {
   underlyings?: string[];
   spot?: Record<string, number>;
   pricing?: Record<string, PricingRow[]>;
+  /** Absent whenever the pricing host was unreachable — a second feed, on a
+   *  second host, that fails on its own. The book still arrives. */
+  mmPricing?: Record<string, MmQuote[]>;
   orders?: OrderRow[];
   greeksSeen?: number;
   note?: string;
@@ -51,6 +54,7 @@ export const REFRESH_MS = 30_000;
 /** A snapshot the client actually holds, live or stale. */
 function sourceFrom(wire: Wire, stale: boolean): MarketSource {
   const pricing = wire.pricing ?? {};
+  const mmPricing = wire.mmPricing ?? {};
   const spot = wire.spot ?? {};
   const underlyings = wire.underlyings ?? [];
   const orders = wire.orders ?? [];
@@ -66,6 +70,9 @@ function sourceFrom(wire: Wire, stale: boolean): MarketSource {
     },
     underlyings: () => underlyings,
     pricing: (underlying) => pricing[underlying] ?? [],
+    // Empty is not a failure state here: only ETH and BTC have MM pricing, and
+    // a snapshot built while the pricing host was down carries none at all.
+    mmPricing: (underlying) => mmPricing[underlying] ?? [],
     orders: () => orders,
     // A miss is `null`, never 0: Thetanuts prices 7 assets and the board has
     // 18, so "no live spot" is the common case and must not read as "$0".

@@ -1,4 +1,4 @@
-import type { OrderRow, PricingRow } from "../types.ts";
+import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
 
 /**
  * Everything the UI needs from a market venue, behind one interface.
@@ -40,6 +40,18 @@ export interface MarketSource {
   /** Assets that have an options book. */
   underlyings(): readonly string[];
   pricing(underlying: string): readonly PricingRow[];
+  /**
+   * Market-maker two-sided quotes — `client.mmPricing.getPricingArray(u)`, a
+   * genuinely different feed from `pricing()`.
+   *
+   * `pricing()` is derived from resting signed orders: real, fillable, and
+   * one-sided on most levels. This is what the MM will quote, two-sided, at
+   * strikes nobody has an order on. Empty is the ordinary answer — only ETH and
+   * BTC have MM pricing at all, the mock has none, and the pricing host fails
+   * independently of the indexer. `/desk` shows the chain from `pricing()`
+   * whenever this is empty rather than an empty table.
+   */
+  mmPricing(underlying: string): readonly MmQuote[];
   orders(): readonly OrderRow[];
   /**
    * Live USD spot for an asset, or `null`.
@@ -95,6 +107,11 @@ export const mockMarketSource: MarketSource = {
   meta: { ok: true, source: "mock", fetchedAt: 0 },
   underlyings: () => ["ETH", "BTC"],
   pricing: (underlying) => PRICING[underlying] ?? [],
+  // No seeded MM chain, deliberately. Inventing fourteen two-sided quotes
+  // would put a table on screen under a heading that names a live SDK call and
+  // reads as its output. Empty means the panel shows the seeded chain above,
+  // which is labelled for what it is.
+  mmPricing: () => [],
   orders: () => ORDERS,
   // The mock has no spot at all — inventing one here is how a seeded number
   // starts passing for a live one. Every caller already handles `null`.

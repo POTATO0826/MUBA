@@ -1,10 +1,14 @@
+import { useState } from "react";
 import { ASK_CHIPS, SLIP_LEGS, SLIP_NOTES, SLIP_ROWS } from "../data/fixtures.ts";
 import type { MarketSource } from "../data/market.ts";
-import { buildPayoffChart } from "../engine/payoff.ts";
+import { REFRESH_MS } from "../data/thetanuts.tsx";
+import { buildPayoffChart, ETH_VOL_BOX } from "../desk/payoff.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, pill, tag } from "../theme.ts";
 
 const PRICING_COLUMNS = "88px 96px 110px 100px 100px 84px 84px 1fr";
+/** The MM chain: ticker, type, strike, expiry, and the four prices. */
+const MM_COLUMNS = "168px 72px 96px 92px 92px 92px 92px 1fr";
 
 const TYPE_COLOR = { CALL: C.green, PUT: C.red, RANGER: C.violet } as const;
 const STATUS_COLOR = {
@@ -21,9 +25,39 @@ interface ParlayProps {
 }
 
 export function Parlay({ source, asset, onAsset }: ParlayProps) {
-  const chart = buildPayoffChart();
+  // The structure is written on ETH, so ETH's live print is the one that
+  // anchors it. `null` — every asset Thetanuts does not publish, and the mock
+  // for all of them — draws exactly the chart this screen always drew, labelled
+  // `· REFERENCE` instead of pretending.
+  const chart = buildPayoffChart(ETH_VOL_BOX, source.spot("ETH"));
   const pricing = source.pricing(asset);
+  const mm = source.mmPricing(asset);
   const orders = source.orders();
+
+  /**
+   * The RANGER disposition, read off the rows rather than off a flag.
+   *
+   * `structure` is set only by the live builder, so the seeded RANGER rows in
+   * the mock never reach this line — the copy below is a statement about what
+   * the SDK can price, and applying it to a fixture would be a claim about
+   * nothing. SDK 0.3.0 ships real ranger payout math, so `payout` is populated
+   * and the unsupported branch stays unrendered; it is kept because the branch
+   * is a property of the installed SDK, not of this file.
+   */
+  const rangers = pricing.filter((r) => r.structure === "RANGER");
+  const unpriceable = rangers.filter((r) => !r.payout);
+
+  /** Whether any shipped row was previewed at all. The mock has none, and a
+   *  blotter of un-clickable rows must not advertise a quote it cannot give. */
+  const previewable = orders.some((o) => o.preview);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // No socket is open. The blotter is a 30s poll over a 15s server cache, and
+  // the pill says so — `client.ws.subscribeOrders` is P2's optional garnish and
+  // was not taken, so a `STREAMING` label here would be the same kind of
+  // decoration this phase exists to remove.
+  const feedLabel =
+    source.meta.source === "mock" ? "SEEDED" : `POLL ${Math.round(REFRESH_MS / 1000)}s`;
 
   return (
     <div
@@ -116,8 +150,13 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
                 strokeWidth="1.5"
                 strokeDasharray="3 3"
               />
+              {/* The number itself comes from `buildPayoffChart`, which knows
+                  whether it is a live print or the reference the structure was
+                  written around. This view carries no spot literal of its own —
+                  it was the fifth of the five hardcoded-spot sites, and the one
+                  that would have kept saying 4,182 with a live book on screen. */}
               <text x={chart.spotLabelX} y="14" fill={C.muted} fontFamily={MONO} fontSize="10">
-                SPOT 4,182
+                {chart.spotLabel}
               </text>
               {chart.strikeMarks.map((s) => (
                 <g key={s.label}>
@@ -181,10 +220,64 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
               ))}
             </div>
             <div style={sx("flex:1")} />
-            <span style={sx(`font:500 10px/1 ${MONO};color:${C.green}`)}>
-              ● client.mmPricing.getPricingArray
+            {/* The exact call whose output is on screen, not a decoration. With
+                no MM chain the panel is showing the order book instead, and it
+                says the call that produced that. */}
+            <span
+              style={sx(`font:500 10px/1 ${MONO};color:${mm.length > 0 ? C.green : C.dim}`)}
+            >
+              {mm.length > 0
+                ? `● client.mmPricing.getPricingArray('${asset}')`
+                : "○ client.api.fetchOrders()"}
             </span>
           </div>
+
+          {mm.length > 0 && (
+            <div style={sx("overflow-x:auto")}>
+              <div
+                style={sx(
+                  `display:grid;grid-template-columns:${MM_COLUMNS};gap:10px;padding:10px 18px;` +
+                    `background:${C.raised};border-bottom:1px solid ${C.border};font:500 10px/1 ${MONO};` +
+                    `letter-spacing:.1em;color:${C.dim}`,
+                )}
+              >
+                <div>TICKER</div>
+                <div>TYPE</div>
+                <div>STRIKE</div>
+                <div>EXPIRY</div>
+                <div>BID</div>
+                <div>ASK</div>
+                <div>MARK</div>
+                <div>SPREAD</div>
+              </div>
+
+              {mm.map((q, i) => (
+                <div
+                  key={q.ticker}
+                  style={sx(
+                    `display:grid;grid-template-columns:${MM_COLUMNS};gap:10px;align-items:center;` +
+                      `padding:12px 18px;border-bottom:1px solid ${C.lineSoft};background:${
+                        i % 2 ? C.panelAlt : "transparent"
+                      }`,
+                  )}
+                >
+                  <div style={sx(`font:400 11px/1 ${MONO};color:${C.faint}`)}>{q.ticker}</div>
+                  <div>
+                    <span style={sx(tag(TYPE_COLOR[q.type]))}>{q.type}</span>
+                  </div>
+                  <div style={sx(`font:700 12px/1 ${MONO}`)}>{q.strike}</div>
+                  <div style={sx(`font:400 12px/1 ${MONO};color:${C.muted}`)}>{q.expiry}</div>
+                  {/* `feeAdjustedBid`/`feeAdjustedAsk`, verbatim from the venue.
+                      The fee cap is 4e-4 in the shipped code and 3e-4 in the
+                      docs (FINDINGS §5.1); nothing here recomputes either. */}
+                  <div style={sx(`font:500 12px/1 ${MONO};color:${C.green}`)}>{q.bid}</div>
+                  <div style={sx(`font:500 12px/1 ${MONO};color:${C.red}`)}>{q.ask}</div>
+                  <div style={sx(`font:400 12px/1 ${MONO};color:${C.muted}`)}>{q.mark}</div>
+                  <div style={sx(`font:400 12px/1 ${MONO};color:${C.dim}`)}>{q.spread}</div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={sx("overflow-x:auto")}>
             <div
@@ -240,6 +333,30 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
               </div>
             ))}
           </div>
+
+          {rangers.length > 0 && (
+            <div
+              style={sx(
+                `padding:12px 18px;border-top:1px solid ${C.border};font:400 10.5px/1.5 ${MONO};` +
+                  `color:${unpriceable.length > 0 ? C.amber : C.dim}`,
+              )}
+            >
+              {unpriceable.length > 0
+                ? // Unreachable on SDK 0.3.0, and kept for the day it is not:
+                  // 0.2.5's `calculatePayout` threw `Unknown option type: RANGER`
+                  // on both casings, so a row could be quoted and unpriceable at
+                  // the same time. The rows still show their two-sided market —
+                  // only the payoff is withheld.
+                  "PAYOFF UNAVAILABLE — ranger math is on-chain only"
+                : // `payout` is the flag that stops these pricing as condors:
+                  // the SDK derives a payout type from the order shape and
+                  // four-strike orders default to `call_condor` unless the
+                  // caller says otherwise (FINDINGS, "the 4-strike discriminator
+                  // trap"). The server decided it once, with `validateRanger`
+                  // in scope.
+                  `${rangers.length} RANGER · payout '${rangers[0]!.payout}' — priced off-chain, isRanger set`}
+            </div>
+          )}
         </section>
 
         <section
@@ -253,8 +370,15 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
             )}
           >
             <span style={sx(`font:700 14px/1 ${SANS}`)}>Live orders</span>
-            <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>client.api.fetchOrders</span>
+            <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>
+              client.api.fetchOrders()
+            </span>
             <div style={sx("flex:1")} />
+            {previewable && (
+              <span style={sx(`font:500 10px/1 ${MONO};color:${C.faint}`)}>
+                select a row · previewFillOrder($1.00)
+              </span>
+            )}
             <span
               style={sx(
                 `display:flex;align-items:center;gap:7px;font:500 10px/1 ${MONO};color:${C.muted}`,
@@ -265,45 +389,95 @@ export function Parlay({ source, asset, onAsset }: ParlayProps) {
                   `width:6px;height:6px;border-radius:99px;background:${C.green};animation:vcPulse 2s infinite`,
                 )}
               />
-              STREAMING
+              {feedLabel}
             </span>
           </div>
 
-          {orders.map((o, i) => (
-            <div
-              key={`${o.instrument}-${o.time}-${i}`}
-              style={sx(
-                `display:flex;align-items:center;gap:14px;padding:12px 18px;` +
-                  `border-bottom:1px solid ${C.lineSoft};background:${i % 2 ? C.panelAlt : "transparent"}`,
-              )}
-            >
-              <span
-                style={sx(
-                  `min-width:44px;font:700 10px/1 ${MONO};letter-spacing:.1em;padding:6px 7px;` +
-                    "border-radius:5px;text-align:center;background:" +
-                    (o.side === "BUY"
-                      ? `rgba(74,222,128,.14);color:${C.green}`
-                      : `rgba(248,113,113,.14);color:${C.red}`),
+          {orders.map((o, i) => {
+            const key = `${o.instrument}-${o.time}-${i}`;
+            const preview = o.preview;
+            // Grey is a statement about the book, not about the row: the
+            // maker's remaining collateral will not absorb even a dollar.
+            const thin = preview !== undefined && !preview.fillable;
+            const open = selected === key;
+            return (
+              <div key={key}>
+                <div
+                  onClick={previewable ? () => setSelected(open ? null : key) : undefined}
+                  style={sx(
+                    `display:flex;align-items:center;gap:14px;padding:12px 18px;` +
+                      `border-bottom:1px solid ${C.lineSoft};background:${
+                        open ? C.raised : i % 2 ? C.panelAlt : "transparent"
+                      }` +
+                      (previewable ? ";cursor:pointer" : "") +
+                      (thin ? ";opacity:.5" : ""),
+                  )}
+                >
+                  <span
+                    style={sx(
+                      `min-width:44px;font:700 10px/1 ${MONO};letter-spacing:.1em;padding:6px 7px;` +
+                        "border-radius:5px;text-align:center;background:" +
+                        (o.side === "BUY"
+                          ? `rgba(74,222,128,.14);color:${C.green}`
+                          : `rgba(248,113,113,.14);color:${C.red}`),
+                    )}
+                  >
+                    {o.side}
+                  </span>
+                  <span style={sx(`font:700 12px/1 ${MONO};min-width:150px`)}>{o.instrument}</span>
+                  <span style={sx(`font:400 11px/1 ${MONO};color:${C.muted};min-width:80px`)}>
+                    {o.size}
+                  </span>
+                  <span style={sx(`font:500 12px/1 ${MONO};min-width:90px`)}>{o.px}</span>
+                  <span
+                    style={sx(
+                      `font:500 10px/1 ${MONO};letter-spacing:.1em;color:${STATUS_COLOR[o.status]}`,
+                    )}
+                  >
+                    {o.status}
+                  </span>
+                  <div style={sx("flex:1")} />
+                  <span style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>{o.time}</span>
+                </div>
+
+                {open && (
+                  <div
+                    style={sx(
+                      `padding:12px 18px 14px;border-bottom:1px solid ${C.lineSoft};` +
+                        `background:${C.raised};font:400 11px/1.5 ${MONO}`,
+                    )}
+                  >
+                    {/* Computed on the server, at snapshot time, by the
+                        synchronous `previewFillOrder` — the SDK never enters
+                        this bundle. It is a quote against a book that is up to
+                        15 seconds old, not a promise of a fill; P3 re-previews
+                        against a freshly fetched order before it signs. */}
+                    <div style={sx(`color:${C.faint}`)}>
+                      client.optionBook.previewFillOrder(order, 1_000000n, referrer)
+                    </div>
+                    <div style={sx("margin-top:8px")}>
+                      {preview === undefined ? (
+                        <span style={sx(`color:${C.dim}`)}>no preview for this row</span>
+                      ) : preview.fillable ? (
+                        <span style={sx(`color:${C.muted}`)}>
+                          $1.00 buys{" "}
+                          <span style={sx(`color:${C.accent};font-weight:700`)}>
+                            {preview.contracts}
+                          </span>{" "}
+                          contracts · collateral{" "}
+                          <span style={sx(`color:${C.accent};font-weight:700`)}>
+                            ${preview.collateral}
+                          </span>
+                        </span>
+                      ) : (
+                        <span style={sx(`color:${C.amber}`)}>no fill available</span>
+                      )}
+                    </div>
+                  </div>
                 )}
-              >
-                {o.side}
-              </span>
-              <span style={sx(`font:700 12px/1 ${MONO};min-width:150px`)}>{o.instrument}</span>
-              <span style={sx(`font:400 11px/1 ${MONO};color:${C.muted};min-width:80px`)}>
-                {o.size}
-              </span>
-              <span style={sx(`font:500 12px/1 ${MONO};min-width:90px`)}>{o.px}</span>
-              <span
-                style={sx(
-                  `font:500 10px/1 ${MONO};letter-spacing:.1em;color:${STATUS_COLOR[o.status]}`,
-                )}
-              >
-                {o.status}
-              </span>
-              <div style={sx("flex:1")} />
-              <span style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>{o.time}</span>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </section>
       </div>
 

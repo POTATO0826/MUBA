@@ -1,4 +1,5 @@
 import index from "./src/index.html";
+import { createAttestService } from "./src/server/attest.ts";
 import { createNewsService } from "./src/server/news.ts";
 import { createMarketService } from "./src/server/thetanuts.ts";
 
@@ -26,6 +27,21 @@ const news = createNewsService();
  * chain at all.
  */
 const market = createMarketService();
+
+/**
+ * One attest service for the process, and here the single instance is not an
+ * optimisation but the feature: the committed picks live in ITS map. A
+ * per-request instance would forget every lock the moment it answered, so
+ * `/api/attest` would have nothing to re-derive from and first-write-wins —
+ * the property that stops a losing player re-locking a winning slip — would
+ * mean nothing.
+ *
+ * Constructing it reads no key and opens nothing: the attestor signer is built
+ * lazily from `ATTESTOR_PRIVATE_KEY` on first use, so a process without one
+ * boots normally and simply answers the three routes with
+ * `{ ok: false, reason: "attestor not configured" }`.
+ */
+const attest = createAttestService();
 
 /**
  * The optional media: the room's waiting music and the two button clips. They
@@ -59,6 +75,9 @@ const ASSETS = {
   // as the fallback — so a 404 here is a voicing change, not a silence.
   "/assets/case-tick.mp3": audio("case-tick.mp3"),
   "/assets/case-land.mp3": audio("case-land.mp3"),
+  // The pick-phase bed (owner-supplied, gitignored like every ripped track):
+  // absent, the parlay screen is silent — never an error.
+  "/assets/parlay-pick.mp3": audio("parlay-pick.mp3"),
 };
 
 const server = Bun.serve({
@@ -79,6 +98,32 @@ const server = Bun.serve({
      * operator flipping it does not have to restart the process.
      */
     "/api/market": () => market.handle(),
+
+    /**
+     * The settlement referee, in two halves — same always-200 envelope again.
+     *
+     * `/api/lock` commits `{matchKey, picks, a, b}` FIRST-WRITE-WINS: a second
+     * lock on the same match returns the first payload untouched. That is what
+     * pins a slip before the tape can be watched.
+     *
+     * `/api/attest` then takes the match key and NOTHING ELSE. It re-derives
+     * the winner here, from the seed and the committed picks, and signs the
+     * escrow's EIP-712 `Verdict`. A `winner` in the request body is ignored —
+     * the server signing a client's claim is the one failure that would pay the
+     * wrong player, so the route is shaped so it cannot happen.
+     *
+     * `ATTESTOR_PRIVATE_KEY` is read inside the service and never leaves it:
+     * a signature and an address are the only things these routes return.
+     */
+    "/api/lock": (req: Request) => attest.handleLock(req),
+    "/api/attest": (req: Request) => attest.handleAttest(req),
+
+    /**
+     * What this process knows about one duel: locked here, attested here. It
+     * reads nothing on chain — plan 5's staking UI watches `DuelJoined` itself
+     * — so it answers from memory and needs no `await`.
+     */
+    "/api/duel-status": (req: Request) => attest.handleStatus(new URL(req.url)),
 
     /**
      * The WalletConnect project id, read at boot by `src/wallet/config.ts`.

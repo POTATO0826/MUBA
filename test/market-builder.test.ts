@@ -1,14 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
+  buildMmQuotes,
   buildSnapshot,
   classify,
   collateralTokens,
   feedSymbols,
   greeksOf,
+  mmStrikeBand,
+  payoutTypeFor,
+  productNameOf,
   resolveOptionBook,
   type MarketSnapshot,
   type RawMarket,
+  type RawMmQuote,
   type RawOrderEntry,
 } from "../src/server/thetanuts.ts";
 import type { PricingRow } from "../src/types.ts";
@@ -452,6 +457,277 @@ describe("empty-book safety", () => {
   });
 });
 
+// ─── the MM chain ────────────────────────────────────────────────────────────
+
+describe("buildMmQuotes trims ~782 rows to the fourteen a desk reads", () => {
+  test("prices are COPIED, never recomputed", () => {
+    // The one rule this function exists to keep. `feeAdjustedBid`/`Ask` are
+    // the venue's own post-fee numbers; the docs say the cap is 3e-4 and the
+    // shipped code uses 4e-4, and the live capture agrees with the code
+    // (FINDINGS §5.1). Re-deriving them here would quote a price 1bp off what
+    // the book will trade — in our favour on one side, against us on the other.
+    const [row] = buildMmQuotes([mm()]);
+    expect(row).toEqual({
+      ticker: "ETH-3SEP26-2100-C",
+      type: "CALL",
+      strike: "2,100",
+      expiry: "3 SEP",
+      bid: "0.1146", // feeAdjustedBid 0.11460000000000001, verbatim
+      ask: "0.1194", // feeAdjustedAsk 0.11939999999999999, verbatim
+      mark: "0.1166",
+      spread: "0.0048",
+    });
+    // And the pre-fee numbers are nowhere near the output: raw bid 0.115 would
+    // have rendered "0.1150".
+    expect(row!.bid).not.toBe("0.1150");
+  });
+
+  test("spread is ask minus bid of the two published numbers, not a second fee model", () => {
+    const [row] = buildMmQuotes([mm({ feeAdjustedBid: 0.2, feeAdjustedAsk: 0.25 })]);
+    expect(row!.spread).toBe("0.0500");
+  });
+
+  test("only the front expiry survives", () => {
+    // Three expiries at one strike read as three prices for one thing.
+    const rows = buildMmQuotes([
+      mm({ strike: 2400, expiry: 1_789_027_200 }),
+      mm({ strike: 2400 }),
+      mm({ strike: 2450, expiry: 1_789_027_200 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.expiry).toBe("3 SEP");
+  });
+
+  test("strikes outside ±25% of the MM's own spot are cut", () => {
+    // The band is centred on `underlyingPrice` — the price the MM quoted
+    // against — not on a spot from another call taken at another instant.
+    const rows = buildMmQuotes([
+      mm({ strike: 1000 }), // below 1,781.82
+      mm({ strike: 2400 }),
+      mm({ strike: 3500 }), // above 2,969.70
+    ]);
+    expect(rows.map((r) => r.strike)).toEqual(["2,400"]);
+  });
+
+  test("mmStrikeBand reads the centre off the quotes and is null without one", () => {
+    expect(mmStrikeBand([mm()])).toEqual({
+      spot: 2375.76,
+      min: 2375.76 * 0.75,
+      max: 2375.76 * 1.25,
+    });
+    expect(mmStrikeBand([mm({ underlyingPrice: undefined })])).toBeNull();
+    expect(mmStrikeBand([])).toBeNull();
+  });
+
+  test("with no spot at all nothing is cut — a missing centre is not a filter", () => {
+    const rows = buildMmQuotes([
+      mm({ strike: 1000, underlyingPrice: undefined }),
+      mm({ strike: 3500, underlyingPrice: undefined }),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  test("fourteen rows, and they are the fourteen nearest spot", () => {
+    const strikes = Array.from({ length: 23 }, (_, i) => 1800 + i * 50); // all in band
+    const rows = buildMmQuotes(strikes.map((strike) => mm({ strike })));
+    expect(rows).toHaveLength(14);
+    // Spot 2,375.76: the window closes at 2,050 below and 2,700 above.
+    expect(rows[0]!.strike).toBe("2,050");
+    expect(rows[13]!.strike).toBe("2,700");
+  });
+
+  test("the survivors come back in STRIKE order, not in nearest-to-spot order", () => {
+    // The cut ranks by distance; the table must still read as a chain.
+    const rows = buildMmQuotes([2500, 2200, 2400, 2300].map((strike) => mm({ strike })));
+    expect(rows.map((r) => r.strike)).toEqual(["2,200", "2,300", "2,400", "2,500"]);
+  });
+
+  test("a call and a put on the same strike sit call-first", () => {
+    const rows = buildMmQuotes([mm({ isCall: false }), mm({ isCall: true })]);
+    expect(rows.map((r) => r.type)).toEqual(["CALL", "PUT"]);
+  });
+
+  test("an empty chain is an empty table, not a throw", () => {
+    expect(buildMmQuotes([])).toEqual([]);
+  });
+
+  test("NaN and Infinity are dropped rather than rendered", () => {
+    // An empty `getPricingArray` result has two indistinguishable causes
+    // (FINDINGS §5.5) and a malformed row has none worth guessing at. Either
+    // way the row is not shown — "NaN" in a bid column is a worse lie than a
+    // missing row.
+    const rows = buildMmQuotes([
+      mm({ strike: NaN }),
+      mm({ expiry: NaN }),
+      mm({ feeAdjustedBid: NaN }),
+      mm({ feeAdjustedAsk: Infinity }),
+      mm({ strike: 2400 }),
+    ]);
+    expect(rows.map((r) => r.strike)).toEqual(["2,400"]);
+  });
+
+  test("an unusable markPrice degrades to a dash while the quote still prints", () => {
+    const [row] = buildMmQuotes([mm({ markPrice: NaN })]);
+    expect(row!.mark).toBe("—");
+    expect(row!.bid).toBe("0.1146");
+  });
+});
+
+// ─── the two namespaces ──────────────────────────────────────────────────────
+
+describe("productNameOf / payoutTypeFor: one map, no string surgery", () => {
+  test("our structure plus the call/put flag names the registry product", () => {
+    expect(productNameOf("CALL", true)).toBe("LINEAR_CALL");
+    expect(productNameOf("PUT", false)).toBe("PUT");
+    expect(productNameOf("SPREAD", true)).toBe("CALL_SPREAD");
+    expect(productNameOf("SPREAD", false)).toBe("PUT_SPREAD");
+    expect(productNameOf("FLY", true)).toBe("CALL_FLY");
+    expect(productNameOf("FLY", false)).toBe("PUT_FLY");
+    expect(productNameOf("CONDOR", true)).toBe("CALL_CONDOR");
+    expect(productNameOf("CONDOR", false)).toBe("PUT_CONDOR");
+    expect(productNameOf("RANGER", true)).toBe("RANGER");
+  });
+
+  test("a RANGER is a ranger whichever way it was quoted", () => {
+    // Four strikes and equal widths is the structure; the call/put flag on the
+    // order says nothing about it.
+    expect(payoutTypeFor("RANGER", true)).toBe("ranger");
+    expect(payoutTypeFor("RANGER", false)).toBe("ranger");
+  });
+
+  test("the payout namespace is NOT the registry namespace lowercased", () => {
+    // The trap: `IRON_CONDOR` → `iron_condor` survives a `.toLowerCase()` and
+    // `LINEAR_CALL` → `call` does not, so lowercasing looks right until the one
+    // case where it silently isn't. Three unions name these shapes and no two
+    // share strings (FINDINGS "0.3.0 delta").
+    expect(payoutTypeFor("CALL", true)).toBe("call");
+    expect(productNameOf("CALL", true).toLowerCase()).toBe("linear_call");
+    expect(payoutTypeFor("CONDOR", false)).toBe("put_condor");
+  });
+
+  test("every structure resolves to a payout type — none of them guesses", () => {
+    const structures = ["CALL", "PUT", "SPREAD", "FLY", "CONDOR", "RANGER"] as const;
+    const payouts = structures.flatMap((s) => [payoutTypeFor(s, true), payoutTypeFor(s, false)]);
+    // The vanilla and ranger rows ignore the flag — `classify()` already put
+    // the call/put decision INTO the structure for those, so a `CALL` quoted
+    // with `isCall: false` is a contradiction the map resolves in favour of the
+    // structure rather than inventing a third answer. Only the multi-leg
+    // structures genuinely need the flag to pick a side.
+    expect(payouts).toEqual([
+      "call", "call",
+      "put", "put",
+      "call_spread", "put_spread",
+      "call_fly", "put_fly",
+      "call_condor", "put_condor",
+      "ranger", "ranger",
+    ]);
+  });
+
+  test("live rows carry it and the mock never does", () => {
+    // The field is what defuses the 4-strike discriminator trap downstream: a
+    // ranger fed to `calculatePayoutAtPrice` without `isRanger: true` prices as
+    // a condor, silently.
+    const ranger = rowsFor("BTC").find((r) => r.structure === "RANGER");
+    expect(ranger!.payout).toBe("ranger");
+    for (const u of snap.underlyings) for (const row of rowsFor(u)) expect(row.payout).toBeTruthy();
+  });
+});
+
+// ─── mmPricing on the snapshot ───────────────────────────────────────────────
+
+describe("buildSnapshot carries the MM chain beside the book", () => {
+  test("each underlying is built independently", () => {
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        mmPricing: {
+          ETH: [mm({ strike: 2400 }), mm({ strike: 2450 })],
+          BTC: [mm({ underlying: "BTC", strike: 2400 })],
+        },
+      },
+      AT,
+    );
+    expect(Object.keys(built.mmPricing).sort()).toEqual(["BTC", "ETH"]);
+    expect(built.mmPricing.ETH).toHaveLength(2);
+    expect(built.mmPricing.BTC).toHaveLength(1);
+  });
+
+  test("a pricing-host outage empties the MM panel and NOTHING else", () => {
+    // The order book is the load-bearing feed; MM quotes are the second
+    // opinion beside it. Two hosts, two failure modes, and only one of them is
+    // allowed to empty this screen.
+    const built = buildSnapshot(FIXTURE, AT);
+    expect(built.mmPricing).toEqual({});
+    expect(built.underlyings).toEqual(["BTC", "ETH"]);
+    expect(built.orders.length).toBeGreaterThan(0);
+  });
+
+  test("an underlying whose rows are all unusable is ABSENT, not empty", () => {
+    // `{ ETH: [] }` on the wire would draw a headed table with no rows under
+    // it, which reads as "the MM stopped quoting ETH".
+    const built = buildSnapshot({ ...FIXTURE, mmPricing: { ETH: [mm({ strike: NaN })] } }, AT);
+    expect(built.mmPricing).toEqual({});
+  });
+});
+
+// ─── the fill preview ────────────────────────────────────────────────────────
+
+describe("the quote line", () => {
+  /** Everything `previewFillOrder` gives us, as the builder consumes it. */
+  const preview = () => ({ contracts: "0.0043", collateral: "1.00", fillable: true });
+
+  test("only the rows that ship are previewed", () => {
+    // Previewing all 426 live orders to draw 40 would be forty times the work
+    // for the same screen.
+    let calls = 0;
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        preview: () => {
+          calls += 1;
+          return preview();
+        },
+      },
+      AT,
+    );
+    expect(calls).toBe(built.orders.length);
+    for (const row of built.orders) expect(row.preview).toEqual(preview());
+  });
+
+  test("no previewer at all leaves every row without a quote line", () => {
+    // Which is the mock's state, and a state the view renders as silence — not
+    // as a zero, and not as "no fill available".
+    for (const row of snap.orders) expect(row.preview).toBeUndefined();
+  });
+
+  test("a row the SDK refuses to preview keeps its place in the blotter", () => {
+    // `previewFillOrder` throws ORDER_EXPIRED / INVALID_ORDER on orders the
+    // indexer is still serving. One of those must not cost the others.
+    const built = buildSnapshot({ ...FIXTURE, preview: () => null }, AT);
+    expect(built.orders.length).toBe(snap.orders.length);
+    for (const row of built.orders) expect(row.preview).toBeUndefined();
+  });
+
+  test("the preview reads the order it was built from, in order", () => {
+    const seen: string[] = [];
+    buildSnapshot(
+      {
+        ...FIXTURE,
+        preview: (entry) => {
+          seen.push(String(entry.rawApiData?.strikes?.[0]));
+          return null;
+        },
+      },
+      AT,
+    );
+    // Same orders, same sequence as the blotter rows themselves.
+    const expected = FIXTURE.orders
+      .filter((o) => (o.rawApiData?.strikes ?? []).length > 0)
+      .map((o) => String(o.rawApiData!.strikes![0]));
+    expect(seen).toEqual(expected.slice(0, seen.length));
+  });
+});
+
 // ─── a synthetic order, for the cases the live book did not hand us ──────────
 
 /**
@@ -485,5 +761,37 @@ function order(over: {
         "optionBookAddress" in over ? over.optionBookAddress : "0x1bDff855d6811728acaDC00989e79143a2bdfDed",
       greeks: "greeks" in over ? over.greeks : { delta: -0.1, iv: 0.5, gamma: 0, theta: 0, vega: 0 },
     },
+  };
+}
+
+/**
+ * One MM quote — **the real one**, every field overridable.
+ *
+ * These defaults are not invented: they are the row `getPricingArray('ETH')`
+ * returned in the capture written up as FINDINGS §1, field for field, floating
+ * point tails included (`feeAdjustedBid: 0.11460000000000001` against a raw bid
+ * of `0.115` — the 4e-4 fee cap the shipped code applies and the docs deny).
+ * That is what makes the passthrough test above mean something: the numbers it
+ * asserts are the venue's, not a rounding this file chose.
+ *
+ * It is a builder rather than a checked-in JSON file because the MM chain is
+ * ~782 rows deep and every case here is about *which* rows survive — front
+ * expiry, the ±25% band, the fourteen nearest spot. Those are shaped by strike
+ * and expiry alone, and a fixture large enough to exercise them would be a
+ * fixture nobody could read. The order book, where the interesting content is
+ * in the fields, gets the frozen capture instead.
+ */
+function mm(over: Partial<RawMmQuote> = {}): RawMmQuote {
+  return {
+    ticker: "ETH-3SEP26-2100-C",
+    feeAdjustedBid: 0.11460000000000001,
+    feeAdjustedAsk: 0.11939999999999999,
+    markPrice: 0.116552,
+    strike: 2100,
+    expiry: 1_788_422_400,
+    isCall: true,
+    underlying: "ETH",
+    underlyingPrice: 2375.76,
+    ...over,
   };
 }

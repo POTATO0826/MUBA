@@ -141,6 +141,81 @@ export interface PricingRow {
    * this is the field that will carry that decision to `isRanger`.
    */
   structure?: string;
+  /**
+   * The `PayoutType` string the SDK's payout math wants for this row —
+   * `'call' | 'put' | 'call_spread' | ... | 'ranger'`, lowercase snake_case.
+   *
+   * Three namespaces name these shapes and none of them share strings
+   * (FINDINGS "0.3.0 delta"): `PayoutType` here, the UPPER_SNAKE `ProductName`
+   * registry (`RANGER`), and `OptionStructure`, which has no ranger at all.
+   * This field carries the *payout* one and only that, resolved once on the
+   * server by `payoutTypeFor()` so no client has to guess which namespace it is
+   * holding. Live rows only; never set on the mock.
+   */
+  payout?: string;
+}
+
+/**
+ * One market-maker quote, as `/desk` renders it.
+ *
+ * This is `client.mmPricing.getPricingArray('ETH'|'BTC')` — a different feed
+ * from the signed order book that fills `PricingRow`, and the reason the desk
+ * can show two-sided prices at strikes nobody has a resting order on.
+ *
+ * Strings, like `PricingRow`, because formatting a live number is a decision
+ * (how many decimals is an honest ask?) and it is made once, on the server,
+ * next to the field documentation rather than in a view.
+ */
+export interface MmQuote {
+  /** `ETH-3SEP26-2100-C`, the MM's own instrument name. */
+  ticker: string;
+  type: "CALL" | "PUT";
+  strike: string;
+  expiry: string;
+  /** `feeAdjustedBid`, verbatim. **Never** recomputed from `rawBidPrice` — the
+   *  docs and the shipped code disagree about the fee cap (4e-4 in
+   *  `dist/index.js`, 3e-4 in `llms-full.txt`; FINDINGS §5.1) and the shipped
+   *  number is the one the book will actually trade at. */
+  bid: string;
+  /** `feeAdjustedAsk`, verbatim. Same rule as `bid`. */
+  ask: string;
+  /** `markPrice`, verbatim. */
+  mark: string;
+  /** `ask - bid` of the two published fee-adjusted numbers. A subtraction of
+   *  what the SDK sent, not a re-derivation of the fee adjustment. */
+  spread: string;
+}
+
+/**
+ * What a $1 fill of one resting order would actually buy.
+ *
+ * `client.optionBook.previewFillOrder(order, usdcAmount, referrer)` answers this
+ * — and it is **synchronous** (FINDINGS "0.3.0 delta": the docs' two-field
+ * description is wrong twice over; the shipped `.d.ts` returns a plain
+ * ten-field object, not a Promise). It is computed on the server, at snapshot
+ * build time, for one small fixed notional, because the SDK is not in the client
+ * bundle and never will be — a browser that could preview a fill would be a
+ * browser carrying axios, viem and ethers to draw a blotter.
+ *
+ * Preview is not a promise of a fill. Book depth on Base swung from 426 resting
+ * orders to 130 inside one day, and this snapshot is up to 15 seconds old; P3
+ * re-previews against a freshly fetched order immediately before it signs.
+ */
+export interface FillPreview {
+  /** `numContracts`, 18dp, rendered to 4. */
+  contracts: string;
+  /** `totalCollateral` — the USDC (6dp) actually spent, rendered to 2. This is
+   *  the number P3 approves *exactly*, never `MaxUint256`. */
+  collateral: string;
+  /**
+   * The book-depth guard, and the only field the view branches on.
+   *
+   * `false` is `numContracts === 0n`: the maker's remaining collateral will not
+   * absorb even the quote notional, so the row greys out and reads "no fill
+   * available". That is a normal state on a thin book, not an error — the demo
+   * never assumes a fill exists.
+   */
+  fillable: boolean;
 }
 
 export interface OrderRow {
@@ -150,4 +225,8 @@ export interface OrderRow {
   px: string;
   status: "FILLED" | "PARTIAL" | "OPEN" | "CANCELLED";
   time: string;
+  /** Live rows only, and only when the client exposed `optionBook`. Absent
+   *  means "not previewed", which is different from "cannot fill" — the mock
+   *  never carries it and its rows are never greyed. */
+  preview?: FillPreview;
 }

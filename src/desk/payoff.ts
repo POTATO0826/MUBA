@@ -1,4 +1,25 @@
-/** Expiry payoff for the worked ETH vol box on the Duel attack screen. */
+/**
+ * Expiry payoff for the worked ETH vol box on the Duel attack screen.
+ *
+ * ## Why this file lives in `src/desk/` and not `src/engine/`
+ *
+ * It used to sit in `src/engine/`, which `test/determinism.test.ts` scans: no
+ * engine module may import the live news wire or the live market. That guard is
+ * the reason seeded replays stay identical, and it is not negotiable. This
+ * module is *presentation* — nothing in settlement has ever imported it — and
+ * P2 gives its chart a live spot anchor, which would have meant either widening
+ * the guard (forbidden) or lying about where the number came from. Moving the
+ * file was the cheaper of the two, and the one the plan named.
+ *
+ * ⚠ The scan asserts `engineFiles() >= 6` so a broken glob cannot make it pass
+ * vacuously. After this move `src/engine/` holds exactly 6 modules — the floor
+ * budget is spent. Removing another engine file means lowering that floor and
+ * arguing for it.
+ *
+ * `ETH_VOL_BOX` stays a frozen fixture: `test/engine.test.ts` pins its payoff
+ * shape, and `buildPayoffChart()` with no arguments is byte-identical to what
+ * it produced before live spot existed.
+ */
 
 export interface StructureLeg {
   type: "CALL" | "PUT";
@@ -48,6 +69,13 @@ export interface PayoffChart {
   zeroY: string;
   spotX: string;
   spotLabelX: string;
+  /** True when the spot line is a live quote rather than the reference price.
+   *  The view labels the two differently — a seeded number that reads as live
+   *  is exactly the lie this whole phase exists to remove. */
+  spotIsLive: boolean;
+  /** `SPOT 2,375.76 · LIVE` or `SPOT 4,182 · REFERENCE`. Rendered verbatim; the
+   *  view no longer carries a hardcoded number of its own (C4's fifth site). */
+  spotLabel: string;
   gridY: readonly { y: string; ty: string; label: string }[];
   gridX: readonly { x: string; label: string }[];
   strikeMarks: readonly { x: string; y: string; ty: string; label: string }[];
@@ -56,11 +84,36 @@ export interface PayoffChart {
 
 const LO = 3200;
 const HI = 5200;
-const SPOT = 4182;
+/**
+ * The reference spot the structure was written around.
+ *
+ * One of the five hardcoded-spot sites the plan's C4 correction enumerates.
+ * It survives as an explicit *fallback*, not as a fact: `buildPayoffChart()`
+ * with no live price still draws the chart it always drew, and says
+ * `· REFERENCE` while doing it.
+ */
+export const SPOT_FALLBACK = 4182;
 const SAMPLES = 81;
 
-/** Everything the payoff SVG needs, in its 900×300 viewBox coordinates. */
-export function buildPayoffChart(structure: Structure = ETH_VOL_BOX): PayoffChart {
+/**
+ * Everything the payoff SVG needs, in its 900×300 viewBox coordinates.
+ *
+ * `spot` is the live USD price of the structure's underlying, or `null` when
+ * there is none — `null` is the ordinary case, not an error (`MarketSource.spot`
+ * returns it for every asset Thetanuts does not publish). With `null` the
+ * output is byte-identical to the pre-live chart, which is what keeps
+ * `test/engine.test.ts` honest about being a fixture test.
+ */
+export function buildPayoffChart(
+  structure: Structure = ETH_VOL_BOX,
+  spot: number | null = null,
+): PayoffChart {
+  const live = typeof spot === "number" && Number.isFinite(spot);
+  const spotPrice = live ? (spot as number) : SPOT_FALLBACK;
+  // Geometry only. A live ETH print sits below this chart's 3,200 floor today,
+  // and a dashed line drawn off the left edge is a rendering bug, not a fact.
+  // The *label* always prints the true number; only the line is clamped.
+  const SPOT = Math.min(HI, Math.max(LO, spotPrice));
   const xs = Array.from({ length: SAMPLES }, (_, i) => LO + ((HI - LO) * i) / (SAMPLES - 1));
   const vals = xs.map((s) => payoff(structure, s));
 
@@ -94,7 +147,12 @@ export function buildPayoffChart(structure: Structure = ETH_VOL_BOX): PayoffChar
     fill: `${path}L${X(HI).toFixed(1)},${Y(0).toFixed(1)}L${X(LO).toFixed(1)},${Y(0).toFixed(1)}Z`,
     zeroY: Y(0).toFixed(1),
     spotX: X(SPOT).toFixed(1),
-    spotLabelX: (X(SPOT) + 8).toFixed(1),
+    // Nudged left near the right edge so the label never runs out of the box.
+    spotLabelX: (X(SPOT) + (X(SPOT) > 700 ? -108 : 8)).toFixed(1),
+    spotIsLive: live,
+    spotLabel: `SPOT ${spotPrice.toLocaleString("en-US", { maximumFractionDigits: 2 })} · ${
+      live ? "LIVE" : "REFERENCE"
+    }`,
     gridY: [vmax, vmax * 0.5, 0, vmin * 0.5, vmin].map((v) => ({
       y: Y(v).toFixed(1),
       ty: (Y(v) + 3.5).toFixed(1),
