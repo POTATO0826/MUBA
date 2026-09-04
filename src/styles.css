@@ -283,10 +283,15 @@ button {
 
 /* Alive-while-hovered: the tile drifts a few degrees either side of its
  * settled tilt. The settled tilt itself is the launch transition's, on the
- * parent, so this stays centred on zero and the two compose. */
+ * parent, so this stays centred on zero and the two compose.
+ *
+ * ±3° is a clearance budget, not a taste call. `STICKER_SEAT` in
+ * WalletPicker.tsx sizes the tile's gap to the panel edge and to the close
+ * button from 8° of settled tilt plus this amplitude; widening it walks the
+ * tile's corner into both. */
 @keyframes vcStickerWobble {
-  from { transform: rotate(-3.5deg); }
-  to { transform: rotate(3.5deg); }
+  from { transform: rotate(-3deg); }
+  to { transform: rotate(3deg); }
 }
 
 /* Sparkles pop and fade on their own clocks; the component staggers them with
