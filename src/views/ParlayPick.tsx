@@ -622,11 +622,21 @@ export function ParlayPick(p: ParlayPickProps) {
  * `null`, which is what makes the face print `MAX LOSS —` instead of a number
  * nobody quoted.
  *
- * `theta` and `iv` are `null` on **both** paths today, and that is a data gap
- * rather than a rendering choice: `OptionQuote` carries neither, and no row in
- * the feed carries theta at all (`PricingRow` has `iv`, `delta`, `bid`, `ask`,
- * `mark` — no greeks beyond delta). The FULL face prints `θ —  ·  IV —` until
- * the desk layer carries them.
+ * `iv` now comes from the quote: the desk layer decodes `PricingRow.iv`'s
+ * percent string back to the fraction the face wants, so the ÷100 exactly
+ * undoes the server's ×100 and recovers the greek's original value rather
+ * than inventing a convention. A row without one yields `undefined`, and the
+ * face draws a dash.
+ *
+ * `theta` stays `null`, and that is a data gap rather than a rendering choice:
+ * `rawApiData.greeks` carries it on the wire, but nothing between there and
+ * here does — the server's own `Greeks` interface declares only `delta` and
+ * `iv`, and `PricingRow` has no theta field at all. Threading it is a
+ * six-site change, and it is NOT the mirror of the IV work: the sampled
+ * `theta: -4.4791` sits beside premia quoted in fractions of the underlying
+ * (~0.05), so per-day versus per-year has to be settled against live data
+ * first. Rendered verbatim it would print `θ −4.5` next to a `0.09` premium,
+ * which is exactly the class of mistake the IV decode exists to prevent.
  */
 function faceValues(stance: Stance, leg: ParlayLeg, quote: OptionQuote | null): FaceValues {
   return {
@@ -637,7 +647,7 @@ function faceValues(stance: Stance, leg: ParlayLeg, quote: OptionQuote | null): 
     mult: quote ? quote.multiplier : leg.mult,
     premium: quote ? quote.premium : null,
     theta: null,
-    iv: null,
+    iv: quote?.iv ?? null,
   };
 }
 

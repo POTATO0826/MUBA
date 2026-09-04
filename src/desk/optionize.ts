@@ -120,6 +120,25 @@ export interface OptionQuote {
   premium: number;
   /** Derived — see `multiplierFor`. Never a table lookup. */
   multiplier: number;
+  /**
+   * Implied volatility **as a fraction** — `0.582` for a row that prints
+   * `58.2%`. Absent when the row carried none.
+   *
+   * The unit is the interesting part, and it is deliberately not the row's.
+   * `PricingRow.iv` is a *display string* in percent (`"58.2%"`, or `"—"`
+   * where the order carried no greeks), because `/desk` prints it verbatim.
+   * A face that wants to render `IV 58%` wants the fraction, so the ×100 is
+   * undone exactly once — here — rather than left for each consumer to guess
+   * at. On the server the same number starts life as a fraction too
+   * (`greeksOf().iv`, multiplied by 100 only at the moment it becomes a
+   * string), so this field is the original datum recovered, not a new
+   * convention invented.
+   *
+   * `undefined` and never `0`: a row with no IV yields a quote with no IV, and
+   * the card face draws a faint dash. A zero would render `IV 0%`, which is a
+   * claim the book never made.
+   */
+  iv?: number;
   /** `"12 SEP"`, as the row carries it. */
   expiry: string;
   /** The tier this quote was chosen to stand for. */
@@ -187,12 +206,38 @@ function parsePrice(s: string | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * `"58.2%"` → `0.582`. `null` for `"—"`, for a missing field, and — the case
+ * worth stating — for anything that is not written in percent.
+ *
+ * The `%` is **required**, and refusing a bare number is the whole point of
+ * this function. Every producer of `PricingRow.iv` writes percent today: the
+ * live builder formats `` `${(iv * 100).toFixed(1)}%` `` and the seeded table
+ * is hand-written the same way. If some future producer ever emitted `"0.58"`
+ * or `"58"`, there would be no way to tell which of the two it meant, and
+ * guessing wrong prints `IV 0%` or `IV 5800%` beside a real strike. A dash is
+ * honest about not knowing; a mis-scaled number is not. So an unrecognised
+ * shape degrades to absence, exactly like a row that carried no greeks at all.
+ */
+function parseIv(s: string | undefined): number | null {
+  if (typeof s !== "string") return null;
+  const t = s.trim();
+  if (!t.endsWith("%")) return null;
+  const n = Number(t.slice(0, -1).replace(/,/g, "").replace("−", "-"));
+  // A non-positive IV is not a volatility anyone quoted — it is a zero-filled
+  // field or a sign error, and either way it is an absence, not a datum.
+  return Number.isFinite(n) && n > 0 ? +(n / 100).toFixed(6) : null;
+}
+
 /** One eligible row, decoded. `null` means "this row cannot stand for a leg". */
 interface Candidate {
   strike: number;
   delta: number;
   premium: number;
   expiry: string;
+  /** Fraction, or `null` where the row carried no IV. Never a reason to reject
+   *  a row: a quotable strike with no published IV is still a quotable strike. */
+  iv: number | null;
 }
 
 /**
@@ -232,7 +277,9 @@ function candidate(row: PricingRow, want: OptionSide): Candidate | null {
   const premium = parsePrice(row.ask) ?? parsePrice(row.mid) ?? parsePrice(row.bid);
   if (premium === null) return null;
 
-  return { strike, delta, premium, expiry: row.expiry };
+  // IV is carried, never required. It is a thing the card *says*, not a thing
+  // the leg is priced off, so its absence must not cost a strike.
+  return { strike, delta, premium, expiry: row.expiry, iv: parseIv(row.iv) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -349,6 +396,9 @@ export function optionizeTier(
     impliedProb,
     premium: best.premium,
     multiplier,
+    // `?? undefined`: the quote's shape says "absent" with `undefined`, the
+    // row's decoder says it with `null`, and the seam between them is here.
+    iv: best.iv ?? undefined,
     expiry: best.expiry,
     tier,
     offTarget: bestGap > PROB_TOLERANCE,
