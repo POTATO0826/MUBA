@@ -16,13 +16,23 @@
  *    fails, a change broke seed-replay compatibility. Do not "fix" the test by
  *    updating the expected values — fix the change, or the demo's shareable
  *    URLs and every stored ledger row stop meaning what they meant.
+ *
+ * 3. *The injected seam* (plan6 §B4): `spinSlice` deals a real market slice off
+ *    a real book, and the book arrives as an **argument**. The ban in (1) is
+ *    unchanged and must stay unchanged — the seam moved, it did not open. The
+ *    two properties asserted at the bottom of this file are the whole design:
+ *    same seed + same book ⇒ the same slice, and same seed + a *different* book
+ *    ⇒ the same slice **shape** with different prices behind it. The first says
+ *    a shared URL still replays; the second says the game did not memorise an
+ *    outcome, because everything priced moved and nothing dealt did.
  */
 
 import { describe, expect, test } from "bun:test";
 import { join, relative } from "node:path";
 import { bookFor } from "../src/data/lobbies.ts";
-import { spinCase } from "../src/engine/spin.ts";
+import { type SliceBook, spinCase, spinSlice } from "../src/engine/spin.ts";
 import { TAPE_LEN, pctAt, series } from "../src/engine/tape.ts";
+import type { PricingRow } from "../src/types.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const ENGINE_DIR = join(ROOT, "src", "engine");
@@ -76,6 +86,26 @@ const LIVE_NEWS_RE = /data\/news|data\/wire|\/api\/news/;
 const LIVE_MARKET_RE =
   /data\/thetanuts|server\/thetanuts|server\/seats|\/api\/market|\/api\/attest|\/api\/lock|thetanuts-client/;
 
+/**
+ * The forbidden reference, part three: the asset gate itself.
+ *
+ * `data/qualify.ts` is pure and holds no live value, so `LIVE_MARKET_RE` has no
+ * quarrel with it and neither does replay. It is banned from the engine for a
+ * different reason, and the reason is the design rather than determinism:
+ * **the engine never decides which assets exist.** That is a fact about the
+ * book, the book is injected, and `spinSlice(book, qualified, seed)` takes the
+ * answer as an argument. An engine module that could call
+ * `qualifiedUnderlyings` itself would be a reel that computes its own universe
+ * — one refactor away from a reel that computes its own prices, and there would
+ * be no test between here and there.
+ *
+ * Deliberately narrow, like the two above: it names the gate module and nothing
+ * else. The engine may keep naming `MarketSlice` and `PricingRow` (they are
+ * shapes, declared in `src/types.ts`, and carry no value), and it may keep
+ * importing `data/universe.ts`, which is the seeded board.
+ */
+const ASSET_GATE_RE = /data\/qualify/;
+
 /** Every engine module, globbed at runtime so a NEW engine file is covered the
  *  moment it lands — no test edit required. */
 function engineFiles(): readonly string[] {
@@ -111,6 +141,25 @@ describe("determinism boundary — live news and live market never reach settlem
     // data informs /desk and the spot annotations — never the deal and never
     // the settle. `(lobby, seed)` is the whole input to settlement.
     expect(offenders).toEqual([]);
+  });
+
+  test("no engine module computes its own universe — the gate is injected, never imported", async () => {
+    const offenders: string[] = [];
+    for (const path of guardedFiles()) {
+      const text = await Bun.file(path).text();
+      const hit = text.match(ASSET_GATE_RE);
+      if (hit) offenders.push(`${rel(path)} → ${hit[0]}`);
+    }
+    expect(offenders).toEqual([]);
+
+    // The shapes stay importable: they are types, and a type carries no value.
+    expect(ASSET_GATE_RE.test(`import type { MarketSlice, PricingRow } from "../types.ts";`)).toBe(
+      false,
+    );
+    expect(ASSET_GATE_RE.test(`import { UNIVERSE } from "../data/universe.ts";`)).toBe(false);
+    expect(ASSET_GATE_RE.test(`import { qualifiedUnderlyings } from "../data/qualify.ts";`)).toBe(
+      true,
+    );
   });
 
   test("the guard regex stays narrow — it must not swallow legitimate imports", () => {
@@ -193,6 +242,203 @@ describe("engine lock — the seed-replay contract", () => {
 
   test("replay is idempotent — a second call on the same inputs is deep-equal", () => {
     expect(spinCase(bookFor("STOCK"), 3, 424242)).toEqual(spinCase(bookFor("STOCK"), 3, 424242));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The injected seam — market data as an ARGUMENT, and the property that proves
+// the game did not memorise an outcome
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One hand-written row. Everything the reel reads is on it, and nothing else
+ *  is, so a book below can be read at a glance and altered one axis at a time. */
+function row(
+  side: "CALL" | "PUT",
+  strike: bigint,
+  expiry: number,
+  ask: string,
+  delta: string,
+): PricingRow {
+  return {
+    type: side,
+    strike: (Number(strike) / 1e8).toFixed(2),
+    expiry: String(expiry),
+    bid: "0.00",
+    ask,
+    iv: "0.60",
+    delta,
+    depth: 50,
+    size: "1",
+    order: {
+      order: { price: "0", isBuyer: false, expiry: String(expiry) },
+      availableAmount: "10000000000",
+      rawApiData: { strikes: [strike.toString()], isCall: side === "CALL" },
+    },
+  };
+}
+
+const E1 = 1788595200;
+const E2 = 1789113600;
+const D8 = 100000000n;
+
+/** The reference book: two underlyings, two expiries, a five-rung ETH ladder. */
+function bookA(): SliceBook {
+  return {
+    ETH: [
+      row("CALL", 2000n * D8, E1, "1.20", "0.72"),
+      row("CALL", 2200n * D8, E1, "0.90", "0.58"),
+      row("CALL", 2400n * D8, E1, "0.61", "0.41"),
+      row("CALL", 2600n * D8, E1, "0.38", "0.27"),
+      row("CALL", 2800n * D8, E1, "0.19", "0.14"),
+      row("PUT", 2100n * D8, E2, "0.44", "-0.31"),
+      row("PUT", 2300n * D8, E2, "0.72", "-0.49"),
+      row("PUT", 2500n * D8, E2, "1.05", "-0.66"),
+    ],
+    BTC: [
+      row("CALL", 80000n * D8, E1, "820.00", "0.63"),
+      row("CALL", 82000n * D8, E1, "540.00", "0.44"),
+      row("PUT", 78000n * D8, E1, "310.00", "-0.22"),
+      row("PUT", 84000n * D8, E1, "980.00", "-0.71"),
+    ],
+  };
+}
+
+/** Same instruments, **different prices**. The book moved; nothing the reel
+ *  deals moved with it. */
+function bookRepriced(): SliceBook {
+  const out: Record<string, PricingRow[]> = {};
+  for (const [sym, rows] of Object.entries(bookA())) {
+    out[sym] = rows.map((r) => ({
+      ...r,
+      ask: (Number(r.ask) * 1.37 + 0.05).toFixed(2),
+      delta: (Number(r.delta) * 0.9).toFixed(2),
+    }));
+  }
+  return out;
+}
+
+/** Same **shape** — same underlyings in the same order, the same rung counts,
+ *  the same sides — over a different set of listed instruments: every strike a
+ *  thousand dollars higher, every expiry a week later. This is the book on a
+ *  different day. */
+function bookShifted(): SliceBook {
+  const out: Record<string, PricingRow[]> = {};
+  const WEEK = 7 * 24 * 3600;
+  for (const [sym, rows] of Object.entries(bookA())) {
+    out[sym] = rows.map((r) => {
+      const raw = r.order!.rawApiData!.strikes![0]!;
+      const strike = BigInt(raw) + 1000n * D8;
+      const expiry = Number(r.order!.order.expiry) + WEEK;
+      return row(r.type as "CALL" | "PUT", strike, expiry, r.ask, r.delta);
+    });
+  }
+  return out;
+}
+
+/** Where a slice's window sits on its own ladder, as ordinals — the part of a
+ *  slice that is the *seed's* decision rather than the book's. */
+function shapeOf(book: SliceBook, slice: NonNullable<ReturnType<typeof spinSlice>>) {
+  const rows = (book[slice.underlying] ?? []).filter(
+    (r) => Number(r.order!.order.expiry) === slice.expiry,
+  );
+  const expiries = [
+    ...new Set((book[slice.underlying] ?? []).map((r) => Number(r.order!.order.expiry))),
+  ].sort((a, b) => a - b);
+  const ladder = [
+    ...new Set(rows.map((r) => BigInt(r.order!.rawApiData!.strikes![0]!))),
+  ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return {
+    underlying: slice.underlying,
+    constraint: slice.constraint,
+    expiryIndex: expiries.indexOf(slice.expiry),
+    loIndex: ladder.indexOf(BigInt(slice.strikeLo)),
+    hiIndex: ladder.indexOf(BigInt(slice.strikeHi)),
+    rungs: ladder.length,
+  };
+}
+
+/** Every ask the slice's window actually exposes — "the prices", as a player
+ *  would meet them. */
+function pricesIn(book: SliceBook, slice: NonNullable<ReturnType<typeof spinSlice>>): string[] {
+  const lo = BigInt(slice.strikeLo);
+  const hi = BigInt(slice.strikeHi);
+  return (book[slice.underlying] ?? [])
+    .filter((r) => {
+      const k = BigInt(r.order!.rawApiData!.strikes![0]!);
+      return Number(r.order!.order.expiry) === slice.expiry && k >= lo && k <= hi;
+    })
+    .map((r) => r.ask);
+}
+
+describe("the injected seam — same seed, same slice; same seed, different book", () => {
+  const SEEDS = Array.from({ length: 240 }, (_, i) => i + 1);
+
+  test("the guard is still the guard: spin.ts names market SHAPES, never a market SOURCE", async () => {
+    // The seam moved into the signature, not through the wall. If this file ever
+    // has to be told about `data/thetanuts` to keep passing, the design failed.
+    const src = await Bun.file(join(ENGINE_DIR, "spin.ts")).text();
+    expect(src).toContain(`import type { MarketSlice, PricingRow } from "../types.ts";`);
+    expect(LIVE_MARKET_RE.test(src)).toBe(false);
+    expect(ASSET_GATE_RE.test(src)).toBe(false);
+  });
+
+  test("same seed + same book ⇒ the same slice, every time", () => {
+    for (const seed of SEEDS) {
+      const first = spinSlice(bookA(), ["ETH", "BTC"], seed);
+      const second = spinSlice(bookA(), ["ETH", "BTC"], seed);
+      expect(first).not.toBeNull();
+      expect(first).toEqual(second);
+    }
+  });
+
+  test("same seed + a repriced book ⇒ the IDENTICAL slice, and different prices inside it", () => {
+    // The book moved and the arena did not. This is the half of the design that
+    // says a shared `?seed=N` link still means what it meant — the reel deals a
+    // room, and the room does not know what anything in it costs.
+    let sawADifference = false;
+    for (const seed of SEEDS) {
+      const a = spinSlice(bookA(), ["ETH", "BTC"], seed)!;
+      const b = spinSlice(bookRepriced(), ["ETH", "BTC"], seed)!;
+      expect(b).toEqual(a);
+
+      const asksA = pricesIn(bookA(), a);
+      const asksB = pricesIn(bookRepriced(), b);
+      expect(asksA.length).toBe(asksB.length);
+      if (asksA.join() !== asksB.join()) sawADifference = true;
+    }
+    expect(sawADifference).toBe(true);
+  });
+
+  test("same seed + a shifted book ⇒ the same slice SHAPE, at different strikes and expiries", () => {
+    // The book on another day: same instruments' shape, none of the same lines.
+    // The seed's decisions — which name, which expiry *in order*, where on the
+    // ladder the window sits, which constraint — survive verbatim. The values
+    // are all the book's, and all of them move.
+    let sawMovedStrikes = 0;
+    for (const seed of SEEDS) {
+      const a = spinSlice(bookA(), ["ETH", "BTC"], seed)!;
+      const c = spinSlice(bookShifted(), ["ETH", "BTC"], seed)!;
+
+      expect(shapeOf(bookShifted(), c)).toEqual(shapeOf(bookA(), a));
+
+      expect(c.expiry).not.toBe(a.expiry);
+      expect(c.strikeLo).not.toBe(a.strikeLo);
+      expect(c.strikeHi).not.toBe(a.strikeHi);
+      expect(BigInt(c.strikeLo) - BigInt(a.strikeLo)).toBe(1000n * D8);
+      sawMovedStrikes++;
+    }
+    expect(sawMovedStrikes).toBe(SEEDS.length);
+  });
+
+  test("with no book at all the reel deals nothing — the seeded board still plays", () => {
+    // Offline, or a dead /api/market. A null arena is a true statement; an
+    // invented one would be the house dealing a market that is not there. The
+    // seeded path is untouched by any of this and keeps its own locks above.
+    for (const seed of SEEDS) {
+      expect(spinSlice({}, ["ETH", "BTC"], seed)).toBeNull();
+      expect(spinSlice(bookA(), [], seed)).toBeNull();
+    }
+    expect(spinCase(bookFor("STOCK"), 3, 424242).syms).toEqual(["TSLA", "AMD", "META"]);
   });
 });
 

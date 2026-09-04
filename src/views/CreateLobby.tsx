@@ -8,7 +8,17 @@ import {
 import type { DuelStake } from "../state/stake.ts";
 import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
 import { MODES, MODE_ORDER, modeTag } from "../data/modes.ts";
-import { SECTORS, SECTOR_ORDER, bookForSectors, symsOfSector } from "../data/sectors.ts";
+import type { Grade, QualifiedAsset } from "../data/qualify.ts";
+import {
+  GRADE_BLURB,
+  GRADE_COLOR,
+  SECTORS,
+  SECTOR_ORDER,
+  bookForSectors,
+  liveSectorStatus,
+  symsOfSector,
+} from "../data/sectors.ts";
+import { LIVE_SYMS } from "../data/universe.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx, sxWith } from "../lib/sx.ts";
 import { C, MONO, SANS, miniTag, pill, tag } from "../theme.ts";
@@ -183,6 +193,76 @@ function StakeField({ stake }: { stake: DuelStake | undefined }) {
   );
 }
 
+// ── The live book ───────────────────────────────────────────────────────────
+//
+// The six chips above this are the SEEDED board's groups — the eighteen-row
+// replay fixture the offline game deals from. This row is the other board: the
+// four groups drawn over assets Thetanuts actually has a feed for, each one
+// measured against today's book by the asset gate.
+//
+// A group with nothing qualified is GREYED WITH THE REASON, never hidden. A
+// host who picks MEME and gets an empty lobby learns nothing; a host who sees
+// MEME greyed, reading "no live book today", has just been told the shape of
+// the market they were about to trade in — and that is the claim the whole
+// integration rests on, made in the one place a host is deciding anything.
+
+const LIVE_ROW = "display:flex;gap:6px;margin-top:10px;flex-wrap:wrap";
+
+const LIVE_CHIP = (color: string, open: boolean): string =>
+  `display:flex;align-items:center;gap:7px;min-width:0;padding:7px 10px;border-radius:9px;` +
+  (open
+    ? `border:1px solid ${color}59;background:${color}12`
+    : // Greyed, not gone: dashed and dim, so "not today" reads differently from
+      // both "selected" and "never existed".
+      `border:1px dashed ${C.border};background:transparent;opacity:.62`);
+
+/** One live group, with today's book against it. */
+function LiveSector({
+  status,
+  grades,
+}: {
+  status: ReturnType<typeof liveSectorStatus>[number];
+  grades: Readonly<Record<string, Grade>>;
+}) {
+  return (
+    <div
+      data-live-sector={status.key}
+      data-live-open={status.open}
+      title={status.blurb}
+      style={sx(LIVE_CHIP(status.color, status.open))}
+    >
+      <span
+        style={sx(
+          `font:700 9.5px/1 ${MONO};letter-spacing:.12em;color:${status.open ? status.color : C.dim}`,
+        )}
+      >
+        {status.label}
+      </span>
+      {status.open ? (
+        <span style={sx(`display:flex;align-items:center;gap:6px;min-width:0`)}>
+          {status.playable.map((sym) => (
+            <span
+              key={sym}
+              data-live-asset={sym}
+              title={`${sym} — ${GRADE_BLURB[grades[sym] ?? "THIN"]}`}
+              style={sx(`font:500 10px/1 ${MONO};color:${C.textSoft};white-space:nowrap`)}
+            >
+              {sym}{" "}
+              <span style={sx(`color:${GRADE_COLOR[grades[sym] ?? "THIN"]}`)}>
+                {grades[sym] ?? "THIN"}
+              </span>
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span data-live-reason style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>
+          {status.reason}
+        </span>
+      )}
+    </div>
+  );
+}
+
 interface CreateLobbyProps {
   form: LobbyForm;
   entryLabel: string;
@@ -214,6 +294,16 @@ interface CreateLobbyProps {
    * DOM it rendered before staking existed.
    */
   stake?: DuelStake;
+  /**
+   * Today's qualified assets, from `qualifiedAssets()` against the live book.
+   *
+   * Optional and defaulting to none, which is the honest render offline and
+   * whenever `/api/market` is down: every live group greys with its reason and
+   * the seeded board — which needs no book and is what the six chips above
+   * deal from — still publishes a lobby. An empty list is a statement about
+   * the market, not a broken screen.
+   */
+  live?: readonly QualifiedAsset[];
 }
 
 /** Four fields, then a card on the board: name, book, legs, prize.
@@ -231,6 +321,23 @@ export function CreateLobby(p: CreateLobbyProps) {
   // filter over the universe, not state.
   const book = bookForSectors(p.form.sectors);
   const tooSmall = p.form.sectors.length === 0 || book.length < p.form.legs;
+
+  // The live groups, measured against today's book. Recomputed each render for
+  // the same reason the book above is: it is a filter over an injected list,
+  // not state, and the list changes every time the snapshot refreshes.
+  const qualified = p.live ?? [];
+  const liveStatus = liveSectorStatus(qualified.map((a) => a.underlying));
+  const grades: Record<string, Grade> = Object.fromEntries(
+    qualified.map((a) => [a.underlying, a.grade]),
+  );
+
+  // The seeded groups that name nothing the protocol has a feed for — SEMIS,
+  // BIG TECH, OLD WORLD and DEFI, today. Derived from the live board rather
+  // than listed, so this marking cannot go stale the way a list would.
+  const onChain = new Set(LIVE_SYMS);
+  const untradeable = new Set(
+    SECTOR_ORDER.filter((k) => !symsOfSector(k).some((sym) => onChain.has(sym))),
+  );
 
   // Keystrokes get one click per quarter second at most: a held key must not
   // machine-gun the mixer, and R11 forbids per-character sounds outright.
@@ -318,7 +425,31 @@ export function CreateLobby(p: CreateLobbyProps) {
             )}
           />
 
-          <div style={sx(`${LABEL};margin-top:20px`)}>BOOK</div>
+          <div style={sx(`${LABEL};margin-top:20px`)}>LIVE BOOK ON BASE</div>
+          <div data-live-book style={sx(LIVE_ROW)}>
+            {liveStatus.map((s) => (
+              <LiveSector key={s.key} status={s} grades={grades} />
+            ))}
+          </div>
+          <div style={sx(NOTE)}>
+            Measured against the resting order book right now — spot, order count, greeks and
+            depth. A group with no book is greyed rather than hidden, because which sectors are
+            trading today is part of what you are choosing.{" "}
+            <span style={sx(`color:${GRADE_COLOR.DEEP}`)}>DEEP</span> means market makers quote
+            both sides; <span style={sx(`color:${GRADE_COLOR.THIN}`)}>THIN</span> means resting
+            orders only — a harder round, not a broken one.
+          </div>
+
+          <div style={sx(`${LABEL};margin-top:24px;color:${C.amber}`)}>
+            PRACTICE BOARD · SEEDED, NOT TRADEABLE
+          </div>
+          <div data-seeded-warning style={sx(`${NOTE};color:${C.amber};margin-top:8px`)}>
+            The eighteen names below are a seeded replay fixture for offline play. Thetanuts has
+            no market for the equities on it — nothing dealt from this board can be filled on
+            Base. The live groups above are the ones that settle on chain.
+          </div>
+
+          <div style={sx(`${LABEL};margin-top:16px`)}>BOOK</div>
           <div style={sx("display:flex;gap:6px;margin-top:10px;flex-wrap:wrap")}>
             {MARKETS.map((m) => (
               <button
@@ -336,7 +467,8 @@ export function CreateLobby(p: CreateLobbyProps) {
             ))}
           </div>
           <div style={sx(NOTE)}>
-            The spin deals both players' legs from this book. Neither of you picks a ticker.
+            The spin deals both players' legs from this book. Neither of you picks a ticker. Struck
+            through groups exist on the seeded board only.
           </div>
 
           <div style={sx(`${LABEL};margin-top:20px`)}>SECTORS</div>
@@ -345,6 +477,15 @@ export function CreateLobby(p: CreateLobbyProps) {
               <button
                 key={k}
                 data-sector={k}
+                // Which seeded groups name nothing Thetanuts has a feed for.
+                // Computed from the live board rather than written down, so the
+                // day AVAX or XRP joins a group the marking moves on its own.
+                data-seeded-only={untradeable.has(k)}
+                title={
+                  untradeable.has(k)
+                    ? `${SECTORS[k].label} — seeded fixture only. Thetanuts has no market for these names.`
+                    : undefined
+                }
                 aria-pressed={p.form.sectors.includes(k)}
                 onClick={() => {
                   sfx("ui.toggle.on");
@@ -361,7 +502,14 @@ export function CreateLobby(p: CreateLobbyProps) {
                   if (focusVisible(e.currentTarget)) openTip(k, e.currentTarget);
                 }}
                 onBlur={closeTip}
-                style={sx(pill(p.form.sectors.includes(k)))}
+                style={sx(
+                  pill(p.form.sectors.includes(k)) +
+                    // Still selectable — the seeded board is a real, playable
+                    // offline mode and disabling it would delete that mode.
+                    // Struck through and dimmed, so nobody reads NVDA as
+                    // something they could buy on Base.
+                    (untradeable.has(k) ? ";opacity:.5;text-decoration:line-through" : ""),
+                )}
               >
                 {SECTORS[k].label}
                 <span style={sx(`margin-left:6px;color:${C.faint}`)}>{symsOfSector(k).length}</span>

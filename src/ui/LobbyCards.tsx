@@ -2,7 +2,17 @@ import { CardArt } from "../components/CardArt.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { MODES, type ModeSpec } from "../data/modes.ts";
-import { SECTORS, SECTOR_ORDER, bookForSectors, sectorChips, symsOfSector } from "../data/sectors.ts";
+import type { Grade } from "../data/qualify.ts";
+import {
+  GRADE_BLURB,
+  GRADE_COLOR,
+  SECTORS,
+  SECTOR_ORDER,
+  bookForSectors,
+  sectorChips,
+  symsOfSector,
+} from "../data/sectors.ts";
+import { LIVE_SYMS } from "../data/universe.ts";
 import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, wall } from "../theme.ts";
@@ -37,14 +47,55 @@ function chipTitle(key: string, label: string, sectors: readonly SectorKey[]): s
 const shortDuration = (m: ModeSpec): string =>
   m.minutes < 60 ? `${m.minutes}M` : `${m.minutes / 60}H`;
 
+/**
+ * The DEEP/THIN badge, in the one place it is defined.
+ *
+ * Exported because the lobby card and the slice reveal must render the same
+ * grade the same way — a player who learns what THIN means on the board should
+ * not have to learn it again when the reel stops.
+ */
+export function GradeTag({
+  uid,
+  underlying,
+  grade,
+}: {
+  /** Unique per rendered instance — `ChromeTag` mints a gradient id from it,
+   *  and two chips sharing one id share one specular. */
+  uid: string;
+  underlying: string;
+  grade: Grade;
+}) {
+  return (
+    <ChromeTag
+      uid={uid}
+      color={GRADE_COLOR[grade]}
+      size="mini"
+      title={`${underlying} — ${GRADE_BLURB[grade]}`}
+    >
+      {underlying} {grade}
+    </ChromeTag>
+  );
+}
+
 export function LobbyCard({
   lobby,
   onAccept,
   onStart,
+  grades,
 }: {
   lobby: LobbyDef;
   onAccept: () => void;
   onStart: () => void;
+  /**
+   * The live grade of each underlying this lobby would deal, when the caller
+   * has a book to grade them against — `qualifiedAssets()` keyed by symbol.
+   *
+   * Optional, and absent means "we did not read a book", which is a different
+   * statement from "the book is thin" and must not render as one. The seeded
+   * board carries no grade at all: `data/universe.ts`'s eighteen rows are a
+   * replay fixture, and grading a fixture would be inventing depth.
+   */
+  grades?: Readonly<Record<string, Grade>>;
 }) {
   // Straight onto the existing card div: the board is a grid of these and a
   // sweep across it must not add a wrapper (the tests reach for the card's own
@@ -65,6 +116,14 @@ export function LobbyCard({
   // Resting state shows at most two sector chips; the hover pane shows the
   // book in full, so a collapsed `ALL STOCKS` chip is never the whole story.
   const chips = sectorChips(lobby.sectors, 2);
+  // Stable order, so two renders of the same card are the same markup.
+  const graded = Object.entries(grades ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  // Does this lobby's book contain a single name the protocol has a feed for?
+  // Derived from the live board, never listed, so a lobby stops being marked
+  // the moment its assets get a book. A seeded lobby is a real, playable
+  // offline round — it just cannot be filled on Base, and the card says so
+  // rather than letting a player find out at the confirm screen.
+  const seededOnly = !bookForSectors(lobby.sectors).some((sym) => LIVE_SYMS.includes(sym));
   const mode = MODES[lobby.mode];
   const picked = new Set(lobby.sectors);
   const sectorLine = SECTOR_ORDER.filter((k) => picked.has(k))
@@ -173,6 +232,28 @@ export function LobbyCard({
                 >
                   {chip.label}
                 </ChromeTag>
+              ))}
+              {/* The grade, beside the book it grades — how deep the market is
+                  that this lobby is about to deal from, before anyone sits
+                  down. Two at most: the card is 264px wide and the point is the
+                  signal, not the inventory. */}
+              {seededOnly && (
+                <ChromeTag
+                  uid={`${lobby.id}-seeded`}
+                  color={C.amber}
+                  size="mini"
+                  title="Seeded board — Thetanuts has no market for these names, so this round cannot be filled on Base."
+                >
+                  SEEDED
+                </ChromeTag>
+              )}
+              {graded.slice(0, 2).map(([underlying, grade]) => (
+                <GradeTag
+                  key={underlying}
+                  uid={`${lobby.id}-grade-${underlying}`}
+                  underlying={underlying}
+                  grade={grade}
+                />
               ))}
             </div>
             {/* A SECOND `vc-lobby-fade`, nested inside the first, and the fix
