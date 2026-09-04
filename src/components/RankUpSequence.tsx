@@ -285,9 +285,13 @@ export function RankUpSequence(p: RankUpSequenceProps) {
     {
       key: "yield",
       label: "PROJECTED YIELD",
-      value: `≈ ${fmt(lerp(econBefore.daily, econAfter.daily))} PTS / DAY`,
+      // The copy desk is denominated in dollars on every surface that shows it
+      // (`/ranks`, the room dossier, here). It is NOT the PTS ledger and there
+      // is no rate between the two — see the currency note in
+      // `data/leaderboard.ts`. The XP line above this panel stays XP.
+      value: `≈ $${fmt(lerp(econBefore.daily, econAfter.daily))} / DAY`,
       tone: econAfter.unlocked ? C.accent : C.dim,
-      sub: `7D ${fmt(lerp(econBefore.weekly, econAfter.weekly))} · 30D ${fmt(
+      sub: `7D $${fmt(lerp(econBefore.weekly, econAfter.weekly))} · 30D $${fmt(
         lerp(econBefore.monthly, econAfter.monthly),
       )}`,
     },

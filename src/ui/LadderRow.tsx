@@ -1,7 +1,12 @@
 import { useState, type KeyboardEvent } from "react";
 import { MODES } from "../data/modes.ts";
 import { SECTORS } from "../data/sectors.ts";
-import { type LadderFilter, type LeaderPlayer, type Ranked } from "../data/leaderboard.ts";
+import {
+  usdGain,
+  type LadderFilter,
+  type LeaderPlayer,
+  type Ranked,
+} from "../data/leaderboard.ts";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { RANK_COLOR } from "../components/RankBadge.tsx";
 import { useSoundHover } from "../lib/sound/index.ts";
@@ -113,6 +118,55 @@ export function LadderTrend({
   );
 }
 
+/**
+ * The risk chip — eToro's signature reading, 1 (calm) … 10 (hot).
+ *
+ * Exported because the podium plinth and the drawer both want the same object
+ * at three different sizes, and a second hand-rolled chip somewhere would be
+ * the first thing to disagree about where the amber band starts. The colour
+ * ramp is the app's own three-stop vocabulary — green under 4, amber to 7, red
+ * above — so a risk chip reads like every other good/warn/bad signal on screen
+ * without introducing a fourth palette.
+ *
+ * The number is the label, not a bar: a 1–10 integer IS the reading, and a bar
+ * would imply a precision `riskScoreFor` deliberately rounds away.
+ */
+export function RiskChip({ risk, size = 9 }: { risk: number; size?: number }) {
+  const tone = risk <= 3 ? C.green : risk <= 7 ? C.amber : C.red;
+  return (
+    <span
+      title={`RISK ${risk} OF 10`}
+      style={sx(
+        "display:inline-flex;align-items:center;gap:4px;flex:none;padding:2px 5px;border-radius:4px;" +
+          `border:1px solid ${tone}59;background:${tone}1a;color:${tone};` +
+          `font:700 ${size}px/1 ${MONO};letter-spacing:.08em;white-space:nowrap`,
+      )}
+    >
+      RISK {risk}
+    </span>
+  );
+}
+
+/**
+ * The GAIN reading — the trailing-twelve-month return, green up and red down.
+ *
+ * One component rather than a formatting call at each site, because the SIGN
+ * and the COLOUR have to agree everywhere: a `+53.8%` in red would be the kind
+ * of bug a reader trusts a money screen never to have.
+ */
+export function GainText({ gain, size = 9.5 }: { gain: number; size?: number }) {
+  return (
+    <span
+      style={sx(
+        `font:700 ${size}px/1 ${MONO};font-variant-numeric:tabular-nums;white-space:nowrap;` +
+          `color:${gain < 0 ? C.red : C.green}`,
+      )}
+    >
+      {usdGain(gain)}
+    </span>
+  );
+}
+
 export interface LadderRowProps {
   /** The row `rankedBy` produced: position, player, metric, label, sub. */
   row: Ranked;
@@ -154,10 +208,16 @@ export function LadderRow({ row, filter, index, onOpen, open = false }: LadderRo
   const mode = MODES[p.mode];
   const stagger = index ?? row.pos - 1;
 
-  // EARNINGS is signed; nothing else is. `Ranked.label` already carries the
-  // sign glyph, so this is purely the colour.
+  // EARNINGS and GAIN are the two signed metrics; nothing else is. `Ranked.label`
+  // already carries the sign glyph, so this is purely the colour.
   const metricTone =
-    filter === "EARNINGS" ? (row.metric < 0 ? C.red : C.green) : p.you ? C.accent : C.text;
+    filter === "EARNINGS" || filter === "GAIN"
+      ? row.metric < 0
+        ? C.red
+        : C.green
+      : p.you
+        ? C.accent
+        : C.text;
 
   return (
     <div
@@ -234,8 +294,23 @@ export function LadderRow({ row, filter, index, onOpen, open = false }: LadderRo
               </span>
             )}
           </div>
-          <div style={sx(`margin-top:4px;font:400 9.5px/1 ${MONO};color:${C.faint}`)}>
-            {p.battles.toLocaleString("en-US")} BATTLES
+          {/* The compact copy-trader card: the two readings a copier decides
+              on — what it returned and how hot it runs — riding under the name
+              where the battle count already sat. No new grid track, so the
+              header, the rows and the YOU pin still share `LADDER_GRID`
+              character for character. The battle count stays: it is the
+              denominator that makes a GAIN figure mean anything. */}
+          <div
+            style={sx(
+              `margin-top:4px;display:flex;align-items:center;gap:6px;min-width:0;` +
+                `font:400 9.5px/1 ${MONO};color:${C.faint}`,
+            )}
+          >
+            <GainText gain={p.profile.gain12m} />
+            <RiskChip risk={p.profile.risk} size={8} />
+            <span style={sx("white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
+              {p.battles.toLocaleString("en-US")} BATTLES
+            </span>
           </div>
         </div>
       </div>

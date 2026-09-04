@@ -1114,10 +1114,13 @@ describe("the ladder", () => {
   const rowIds = () => rankRows().map((r) => r.dataset.rankRow ?? "");
   const boardSize = () => podium().length + rankRows().length;
   const leader = () => container.querySelector<HTMLElement>('[data-podium="1"]')?.textContent ?? "";
-  /** The metric column's header — the only titled node on the page, and the
-   *  title carries the untruncated text the column may be eliding. */
+  /** The metric column's header. Addressed by its own attribute rather than by
+   *  `[title]`: the risk chips on every row and plinth carry a title too, so
+   *  "the only titled node on the page" stopped being true when the ladder
+   *  grew a copy-trader surface. The title itself still carries the
+   *  untruncated text the column may be eliding. */
   const metricHead = () =>
-    container.querySelector<HTMLElement>("[data-ladder] [title]")?.getAttribute("title") ?? "";
+    container.querySelector<HTMLElement>("[data-metric-head]")?.getAttribute("title") ?? "";
   const nudge = () => container.querySelector<HTMLElement>("[data-you-nudge]")?.textContent ?? "";
   const drawers = () => Array.from(container.querySelectorAll<HTMLElement>("[data-ladder-drawer]"));
 
@@ -1157,7 +1160,11 @@ describe("the ladder", () => {
     expect(text()).toContain("3.5%"); // rank is income, priced on the page
     expect(text()).toContain("RANKED");
     expect(text()).toContain("COPIERS ACTIVE");
-    expect(text()).toContain("PTS / 24H");
+    // The copy desk is denominated in dollars — fee revenue and copy capital,
+    // both of them money, neither of them the PTS ledger.
+    expect(text()).toContain("FEES / 24H");
+    expect(text()).toContain("COPY CAPITAL");
+    expect(text()).toMatch(/\$[\d,.]+[KM]?/);
 
     // Thirteen personas plus your row: three on plinths, the rest in the table.
     expect(podium()).toHaveLength(3);
@@ -1182,7 +1189,7 @@ describe("the ladder", () => {
     const heads: string[] = [];
     const leaders: string[] = [];
 
-    for (const label of ["COPY HEAT", "SECTOR × MODE", "WIN RATE", "EARNINGS"]) {
+    for (const label of ["COPY HEAT", "GAIN 12M", "SECTOR × MODE", "WIN RATE", "EARNINGS"]) {
       pickFilter(label);
       // Nobody is invented and nobody is dropped — the board is re-sorted.
       expect(boardSize()).toBe(14);
@@ -1194,9 +1201,9 @@ describe("the ladder", () => {
       leaders.push(leader());
     }
 
-    // The metric column says which question is being answered, and the four
-    // questions are four different questions.
-    expect(new Set(heads).size).toBe(4);
+    // The metric column says which question is being answered, and the five
+    // questions are five different questions.
+    expect(new Set(heads).size).toBe(5);
     // …and at least two of them have a different answer at #1.
     expect(new Set(leaders).size).toBeGreaterThan(1);
   });

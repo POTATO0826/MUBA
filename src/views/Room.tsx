@@ -9,7 +9,8 @@ import {
   pct1,
   positionOf,
   pts,
-  signed,
+  usd,
+  usdSigned,
   type LeaderPlayer,
 } from "../data/leaderboard.ts";
 import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
@@ -384,9 +385,14 @@ function Dossier({ row }: { row: LeaderPlayer }) {
             `padding-top:12px;border-top:1px solid ${C.line}`,
         )}
       >
+        {/* CAREER and COPIERS are the copy desk's dollars — the same fields
+            `/ranks` prints, in the same units, through the same formatters.
+            The desk's dollars are not the PTS ledger and there is no rate
+            between them (see the currency note in `data/leaderboard.ts`); the
+            unlock line below stays in XP for exactly that reason. */}
         <Line
-          label="CAREER"
-          value={`${signed(row.earnings)} PTS`}
+          label="CAREER P/L"
+          value={usdSigned(row.earnings)}
           sub={`${pts(row.battles)} BATTLES`}
           tone={row.earnings < 0 ? C.red : C.green}
         />
@@ -400,7 +406,7 @@ function Dossier({ row }: { row: LeaderPlayer }) {
           value={e.unlocked ? pts(e.copiers) : "LOCKED"}
           sub={
             e.unlocked
-              ? `≈ ${pts(e.daily)} PTS / DAY`
+              ? `≈ ${usd(e.daily)} / DAY`
               : `${pts(e.nextUnlock?.xpAway ?? 0)} XP TO ${e.nextUnlock?.tier.name ?? "SHARK"}`
           }
           tone={e.unlocked ? C.accent : C.dim}
