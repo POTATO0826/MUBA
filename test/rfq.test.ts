@@ -28,21 +28,33 @@
 import { describe, expect, test } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { calculateReservePrice, validateCondor } from "@thetanuts-finance/thetanuts-client";
 import {
+  BOX_OFFER_WINDOW_SEC,
+  BOX_POLL_MS,
   MAX_RFQ_USDC,
+  OFFER_WINDOW_QUANTUM_SEC,
   POLL_FAILURE_LIMIT,
   RFQ_COPY,
+  RFQ_PATIENCE_MS,
+  RFQ_POLL_MS,
   RFQ_STORAGE_PREFIX,
+  TARGET_RFQ_USDC,
   UNANSWERED_COPY,
   acceptOffer,
   assertZeroCollateral,
   awaitOffers,
+  boxPatienceMs,
   cancelRequest,
   classifyRfqError,
   createKeyring,
   elapsedText,
+  offerWindowMinutes,
+  offerWindowSeconds,
   openRequest,
   rememberRequest,
+  reservePricePerContract,
+  rfqBuilderParams,
   runRfq,
   type RawRfqState,
   type RfqCode,
@@ -53,6 +65,20 @@ import {
   type RfqRequest,
   type RfqStorage,
 } from "../src/desk/rfq.ts";
+import {
+  BOX_CONTRACTS,
+  BOX_UNANSWERED_COPY,
+  MAX_BID_LABEL,
+  boxEconomics,
+  boxRfqInput,
+  boxWaitOptions,
+  defaultMaxBid,
+  offerPremiumUsd,
+  stepMaxBid,
+  suggestMaxBid,
+} from "../src/desk/boxauction.ts";
+import { boxToCondor, type CondorSpec } from "../src/data/condor.ts";
+import { priceToStrike } from "../src/data/box.ts";
 import { RfqPanel, type RfqPanelProps } from "../src/ui/RfqPanel.tsx";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1095,5 +1121,340 @@ describe("RfqUnderlying — the SDK's eight, threaded verbatim", () => {
     const offered = [...decl![1]!.matchAll(/"([A-Z]+)"/g)].map((m) => m[1]!);
     expect(offered.length).toBeGreaterThan(0);
     for (const sym of offered) expect(EIGHT).toContain(sym as (typeof EIGHT)[number]);
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// plan 7 step 5 — the free-draw box, priced by auction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The step-5 path, and the four claims the plan says it has to carry.
+ *
+ * Step 5 exists for one measured reason: **RFQ is the only thing on Base that
+ * mints a `CALL_CONDOR`.** Zero have ever been listed on the OptionBook across
+ * its entire 15,740-position history (`docs/plan7-measurements.md` §3), so a box
+ * that matches no listed `RANGER` zone is priced here or nowhere.
+ *
+ * What is asserted below:
+ *
+ *  1. the reserve is **the player's max bid**, with a *suggested* default that
+ *     is the SDK's own `calculateReservePrice` and nothing invented;
+ *  2. **`settleQuotationEarly` is the path taken** — the reveal window is 60 s
+ *     on chain and the ordinary settle waits it out;
+ *  3. **an unanswered box is a normal outcome**, with its own copy and no error
+ *     shape anywhere near it;
+ *  4. **`collateralAmount` is `0n`** on the request that goes out, on the box
+ *     path exactly as on the desk path.
+ */
+describe("the box auction — four strikes, a player-set max bid", () => {
+  const EXPIRY = Math.floor(Date.UTC(2026, 8, 11, 8) / 1000);
+
+  /** A drawn box: ETH, band 2450–2550, wing 50. Strikes 2400/2450/2550/2600. */
+  const SPEC = (): CondorSpec =>
+    boxToCondor({
+      underlying: "ETH",
+      floor: priceToStrike(2450) as string,
+      ceiling: priceToStrike(2550) as string,
+      wing: priceToStrike(50) as string,
+      expiry: EXPIRY,
+    });
+
+  // ── 1. the max bid ─────────────────────────────────────────────────────────
+
+  test("the reserve is the player's, and the default is a SUGGESTION or nothing", () => {
+    // With a maker price, the suggestion is the SDK's own arithmetic — read from
+    // the shipped package rather than restated, so a formula change fails here.
+    const suggested = suggestMaxBid({ numContracts: BOX_CONTRACTS, mmPrice: 0.0004, spot: 2500 });
+    const sdk = calculateReservePrice(1, 0.0004, 2500, "CALL_CONDOR");
+    expect(suggested).not.toBeNull();
+    expect(Number(suggested) / 1e6).toBeCloseTo(sdk, 6);
+    expect(defaultMaxBid(suggested)).toBe(suggested as bigint);
+
+    // Without one there is no suggestion at all, and the fallback is this
+    // build's smallest bid — a floor, not an estimate dressed up as a default.
+    expect(suggestMaxBid({ numContracts: BOX_CONTRACTS, mmPrice: null, spot: 2500 })).toBeNull();
+    expect(suggestMaxBid({ numContracts: BOX_CONTRACTS, mmPrice: 0.0004, spot: null })).toBeNull();
+    expect(defaultMaxBid(null)).toBe(TARGET_RFQ_USDC);
+  });
+
+  test("the player can move it in both directions, and the cap is code", () => {
+    const start = defaultMaxBid(null);
+    // Bid low → better price, risk nobody takes it. Bid high → filled, worse.
+    expect(stepMaxBid(start, 1)).toBeGreaterThan(start);
+    expect(stepMaxBid(stepMaxBid(start, 1), -1)).toBe(start);
+    // Neither direction can leave the bounds the cap draws.
+    let high = start;
+    for (let i = 0; i < 500; i += 1) high = stepMaxBid(high, 1);
+    expect(high).toBe(MAX_RFQ_USDC);
+    let low = start;
+    for (let i = 0; i < 500; i += 1) low = stepMaxBid(low, -1);
+    expect(low > 0n).toBe(true);
+    // A suggestion above the cap is clamped rather than silently honoured.
+    expect(defaultMaxBid(MAX_RFQ_USDC * 10n)).toBe(MAX_RFQ_USDC);
+  });
+
+  test("the max bid reaches the SDK builder as a per-contract limit price", () => {
+    const input = boxRfqInput(SPEC(), { maxBidUsdc: 1_000_000n });
+    const params = rfqBuilderParams(input, KEYPAIR.compressedPublicKey);
+    // Total $1.00 over one contract is $1.00 per contract. Omitting it entirely
+    // would leave `reservePrice: 0n` on chain, which is not "no limit" — it is
+    // the player's number missing.
+    expect(params.reservePrice).toBe(1);
+    expect(reservePricePerContract(1_000_000n, BOX_CONTRACTS)).toBe(1);
+    expect(reservePricePerContract(500_000n, BOX_CONTRACTS)).toBe(0.5);
+    // No size, no reserve — and no NaN pretending to be one.
+    expect(reservePricePerContract(1_000_000n, 0n)).toBe(0);
+  });
+
+  test("the label is 'Your max bid' and the words 'Est. Quote' appear nowhere", async () => {
+    expect(MAX_BID_LABEL).toBe("Your max bid");
+    const html = await panelHtml({ box: SPEC() });
+    expect(html).toContain("YOUR MAX BID");
+    expect(html).not.toMatch(/est\.?\s*quote/i);
+    // The tradeoff is stated, because it is the trade being made.
+    expect(html).toMatch(/bid low/i);
+    expect(html).toMatch(/risk nobody/i);
+    // The panel never renders the forbidden label under any state, so the string
+    // is not in the component at all. (`boxauction.ts` deliberately quotes the
+    // plan's prohibition in its own docblock, which is why it is not scanned.)
+    const panel = await Bun.file(new URL("../src/ui/RfqPanel.tsx", import.meta.url)).text();
+    expect(panel).not.toMatch(/est\.?\s*quote/i);
+  });
+
+  // ── 2. the instrument, and the invariant on it ─────────────────────────────
+
+  test("a box becomes four ascending strikes, long, CALL — a CALL_CONDOR", () => {
+    const spec = SPEC();
+    const input = boxRfqInput(spec, { maxBidUsdc: TARGET_RFQ_USDC });
+    expect(input.strikes).toEqual([2400, 2450, 2550, 2600]);
+    expect(input.optionType).toBe("CALL");
+    expect(input.isLong).toBe(true);
+    expect(input.underlying).toBe("ETH");
+    expect(input.expiry).toBe(EXPIRY);
+    // The strike count IS the product: `getImplementationForStructure` resolves
+    // four strikes plus CALL to CALL_CONDOR. Four, or a different instrument.
+    const params = rfqBuilderParams(input, KEYPAIR.compressedPublicKey);
+    expect(params.strikes).toEqual([2400, 2450, 2550, 2600]);
+    expect((params.strikes as number[]).length).toBe(4);
+    // And the venue's own validator agrees the wings are equal.
+    expect(validateCondor(params.strikes as number[]).valid).toBe(true);
+  });
+
+  test("collateralAmount is 0 on the request that goes out from a box", async () => {
+    const s = spy();
+    const input = boxRfqInput(SPEC(), { requester: INPUT.requester, maxBidUsdc: TARGET_RFQ_USDC });
+    const outcome = await runRfq(input, s.deps, FAST);
+    expect(outcome.status).toBe("settled");
+    expect(s.requestArgs.length).toBe(1);
+    expect(BigInt(s.requestArgs[0]!.params.collateralAmount)).toBe(0n);
+
+    // And a builder that ever returned a non-zero value cannot reach the wire,
+    // on this path exactly as on the desk one.
+    const bad = spy({ buildRequest: () => makeRequest({ collateralAmount: 1n }) });
+    const refused = await runRfq(input, bad.deps, FAST);
+    expect(refused.status).toBe("failed");
+    expect(refused.status === "failed" && refused.error.code).toBe("COLLATERAL_NOT_ZERO");
+    expect(bad.calls).not.toContain("requestForQuotation");
+  });
+
+  test("a request with no requester never reaches the network", async () => {
+    // The factory pulls collateral from the address the request names, so an
+    // empty one is a request nobody can settle — and the panel is exactly where
+    // that field gets forgotten, which is why the check is in the module.
+    const s = spy();
+    const anonymous = boxRfqInput(SPEC(), { maxBidUsdc: TARGET_RFQ_USDC });
+    expect(anonymous.requester).toBe("");
+    const outcome = await runRfq(anonymous, s.deps, FAST);
+    expect(outcome.status).toBe("failed");
+    expect(outcome.status === "failed" && outcome.error.code).toBe("SIGNER_REQUIRED");
+    expect(s.calls).not.toContain("buildRequest");
+    expect(s.calls).not.toContain("requestForQuotation");
+
+    // Named, it goes through.
+    const named = spy();
+    const signed = boxRfqInput(SPEC(), {
+      requester: INPUT.requester,
+      maxBidUsdc: TARGET_RFQ_USDC,
+    });
+    expect((await runRfq(signed, named.deps, FAST)).status).toBe("settled");
+  });
+
+  test("the offer window is whole seconds, so the SDK's BigInt() cannot throw", () => {
+    // The hazard: every SDK builder computes `BigInt(now + offerDeadlineMinutes
+    // * 60)`, and `BigInt` refuses anything with a fractional part.
+    expect(() => BigInt(1_000_000 + 0.5)).toThrow();
+    // Whether a *particular* fractional minute survives depends on the magnitude
+    // of `now` — at unix-second scale an epsilon below the ulp is rounded away,
+    // which is exactly why "it worked when I tried it" is not a defence. The fix
+    // is to make the product exactly integral rather than to hope it rounds:
+    // every window this module can produce is a multiple of 15 seconds, and
+    // 15k / 60 = k/4 is dyadic, so k/4 × 60 = 15k is exact at any scale.
+    for (const seconds of [1, 8, 13, 20, 30, 45, 60, 100, 3600]) {
+      const minutes = offerWindowMinutes(seconds);
+      expect(Number.isInteger(minutes * 60), `${seconds}s`).toBe(true);
+      expect(() => BigInt(1_000_000 + minutes * 60)).not.toThrow();
+      expect(offerWindowSeconds(seconds) % OFFER_WINDOW_QUANTUM_SEC).toBe(0);
+    }
+    const input = boxRfqInput(SPEC(), { maxBidUsdc: TARGET_RFQ_USDC, offerWindowSec: 20 });
+    const params = rfqBuilderParams(input, KEYPAIR.compressedPublicKey);
+    expect(Number.isInteger((params.offerDeadlineMinutes as number) * 60)).toBe(true);
+    // And it is a short auction, not the desk tool's ten minutes — the measured
+    // design band is 30–60 s (docs/plan7-measurements.md §2).
+    expect(BOX_OFFER_WINDOW_SEC).toBeGreaterThanOrEqual(30);
+    expect(BOX_OFFER_WINDOW_SEC).toBeLessThanOrEqual(60);
+  });
+
+  // ── 3. early settlement ────────────────────────────────────────────────────
+
+  test("settleQuotationEarly is the settle, and settleQuotation is not reachable", async () => {
+    const s = spy();
+    const input = boxRfqInput(SPEC(), { requester: INPUT.requester, maxBidUsdc: TARGET_RFQ_USDC });
+    await runRfq(input, s.deps, FAST);
+    expect(s.calls).toContain("settleQuotationEarly");
+    // The amount and nonce come out of the seal we opened locally — which is the
+    // whole reason the reveal window can be skipped.
+    expect(s.settleArgs).toEqual([["42", 5_000n, 7n, MAKER]]);
+
+    // There is no other settle to call: the dep seam does not name one, and
+    // neither source file mentions it. `getRevealWindow()` is 60 s on chain, and
+    // `settleQuotation` waits out the offer deadline AND that window — a
+    // ~2-minute floor that would put this path outside a duel entirely.
+    for (const src of ["../src/desk/rfq.ts", "../src/desk/boxauction.ts"]) {
+      const body = (await Bun.file(new URL(src, import.meta.url)).text())
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "");
+      expect(body, src).not.toMatch(/settleQuotation\s*\(/);
+      expect(body, src).not.toMatch(/["'`]settleQuotation["'`]/);
+    }
+  });
+
+  test("the box auction polls fast and waits only as long as the auction is open", () => {
+    const wait = boxWaitOptions(BOX_OFFER_WINDOW_SEC);
+    // The answer arrives at a 6-second median, so a 15-second cadence would
+    // spend a third of a 45-second window not knowing.
+    expect(wait.pollMs).toBe(BOX_POLL_MS);
+    expect(wait.pollMs).toBeLessThan(RFQ_POLL_MS);
+    // Patience is the window plus indexer lag, and nothing longer: "nobody
+    // answered" must mean the auction closed, not that our clock ran out first.
+    expect(wait.patienceMs).toBe(boxPatienceMs(BOX_OFFER_WINDOW_SEC));
+    expect(wait.patienceMs).toBeGreaterThan(BOX_OFFER_WINDOW_SEC * 1000);
+    expect(wait.patienceMs).toBeLessThan(RFQ_PATIENCE_MS);
+  });
+
+  // ── 4. nobody answered ─────────────────────────────────────────────────────
+
+  test("an unpriced box is an outcome, not an error", async () => {
+    const s = spy({ readRfq: async () => EMPTY_STATE });
+    const input = boxRfqInput(SPEC(), { requester: INPUT.requester, maxBidUsdc: TARGET_RFQ_USDC });
+    const outcome = await runRfq(input, s.deps, {
+      patienceMs: boxPatienceMs(BOX_OFFER_WINDOW_SEC),
+      pollMs: BOX_POLL_MS,
+    });
+
+    expect(outcome.status).toBe("unanswered");
+    // Not a failure, so it carries no error at all — and it says how long it
+    // actually waited rather than implying a fixed deadline.
+    expect(outcome).not.toHaveProperty("error");
+    expect(outcome.status === "unanswered" && outcome.polls > 0).toBe(true);
+    // Nothing was approved and nothing was settled.
+    expect(s.calls).not.toContain("ensureAllowance");
+    expect(s.calls).not.toContain("settleQuotationEarly");
+
+    // The copy never calls it one either.
+    expect(BOX_UNANSWERED_COPY).toMatch(/ordinary outcome/i);
+    expect(BOX_UNANSWERED_COPY).not.toMatch(/\berror\b|\bfailed\b|went wrong/i);
+    // `unanswered` is not spellable as a code.
+    expect(Object.keys(RFQ_COPY)).not.toContain("unanswered");
+  });
+
+  // ── the panel, in box mode ─────────────────────────────────────────────────
+
+  test("max loss sits above the upside figure, and the upside is not a number yet", async () => {
+    const html = await panelHtml({ box: SPEC() });
+    // The band and the expiry, each once.
+    expect(html).toContain("$2,450 – $2,550");
+    expect(html.match(/Sep 11/g)?.length).toBe(1);
+    // Max loss is printed, and it is printed before any payout figure.
+    const loss = html.indexOf("Max loss");
+    const payout = html.indexOf("Potential payout");
+    expect(loss).toBeGreaterThan(-1);
+    expect(payout).toBeGreaterThan(loss);
+    // And with no bid on the box, there is no multiple to show.
+    expect(html).not.toMatch(/\d+(\.\d+)?×/);
+    expect(html).toMatch(/no desk has bid/i);
+    // The wing is readable even though it is not draggable here (plan7 §4.2).
+    expect(html).toMatch(/wing \$50/);
+  });
+
+  test("the payout multiple is max payout ÷ a decrypted premium, and never invented", () => {
+    const spec = SPEC();
+    // $0.005 of premium on a $50 wing, one contract.
+    const offer: RfqOffer = {
+      quotationId: "42",
+      offeror: MAKER,
+      signingKey: "0x03",
+      offerAmount: 5_000n,
+      nonce: 7n,
+      createdAt: 0,
+      status: "revealed",
+    };
+    const premium = offerPremiumUsd(offer);
+    expect(premium).toBe(0.005);
+    const econ = boxEconomics(spec, premium, BOX_CONTRACTS);
+    expect(econ.maxLoss).toBe(0.005);
+    expect(econ.maxPayout).toBe(50);
+    expect(econ.payoutMultiple).toBe(50 / 0.005);
+
+    // A bid we could not open has no price we are entitled to show — not a mid,
+    // not the reserve, not a placeholder.
+    expect(offerPremiumUsd({ ...offer, unreadable: "sealed to another key" })).toBeNull();
+    expect(offerPremiumUsd({ ...offer, offerAmount: null })).toBeNull();
+    expect(boxEconomics(spec, null, BOX_CONTRACTS).payoutMultiple).toBeNull();
+  });
+
+  test("no hardcoded rate hides in the seam", async () => {
+    // The same tripwire `test/box.test.ts` holds over condor.ts, extended to the
+    // file that carries the box onto the auction. plan7 §4.4: difficulty shading
+    // is styling over the number, never an input to it.
+    const body = (await Bun.file(new URL("../src/desk/boxauction.ts", import.meta.url)).text())
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "")
+      .replace(/\[\s*\d+\s*\]/g, "[]");
+    for (const line of body.split("\n")) {
+      if (!/\b(payout|multiple|multiplier|payback|reward|rate)\b/i.test(line)) continue;
+      expect(line, line.trim()).not.toMatch(/(?<![\w.])\d+(\.\d+)?(?![\w.])/);
+    }
+    expect(body).not.toMatch(/\bTIER_BANDS\b|\bDEGEN\b|\bSHARP\b/);
+  });
+
+  test("the arena is told what happened, and a render alone reports nothing", async () => {
+    const seen: { status: string; premiumUsd: number | null }[] = [];
+    const s = spy();
+    await panelHtml({
+      box: SPEC(),
+      enabled: true,
+      wallet: { id: "injected", getSigner: async () => SIGNER },
+      makeDeps: () => s.deps,
+      onOutcome: (r) => seen.push({ status: r.status, premiumUsd: r.premiumUsd }),
+    });
+    // `onOutcome` is a report of a terminal state, not a lifecycle hook: nothing
+    // was pressed, so nothing happened, so the arena hears nothing — and the
+    // panel has touched no dep at all.
+    expect(seen).toEqual([]);
+    expect(s.calls).toEqual([]);
+  });
+
+  test("box mode drops the chips that are no longer choices", async () => {
+    const desk = await panelHtml({});
+    const boxed = await panelHtml({ box: SPEC() });
+    // The desk tool picks an underlying and a side. A drawn box already did.
+    expect(desk).toContain("BOOK");
+    expect(boxed).not.toContain("BOOK");
+    expect(boxed).not.toMatch(/>PUT</);
+    // And it says why the window is what it is, rather than offering minutes.
+    expect(boxed).toContain(`${BOX_OFFER_WINDOW_SEC}s`);
+    expect(boxed).not.toMatch(/>30m</);
   });
 });

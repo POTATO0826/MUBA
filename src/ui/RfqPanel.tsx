@@ -109,6 +109,17 @@ import { C, MONO, SANS, pill, tag } from "../theme.ts";
 export interface RfqPanelWallet extends RfqWallet {
   connect?(): Promise<void>;
   switchToBase?(): Promise<void>;
+  /**
+   * The connected address, if the wallet publishes one.
+   *
+   * Structurally satisfied by `WalletSource.identity`, and optional so the
+   * read-only render still needs no wallet at all. It is **not** cosmetic: the
+   * request names its own requester and the factory pulls collateral from that
+   * address at settlement, so a request opened without it is one nobody can
+   * settle. `openRequest` refuses such a request before it becomes a
+   * transaction.
+   */
+  readonly identity?: { readonly address: string | null };
 }
 
 export interface RfqPanelProps {
@@ -360,10 +371,22 @@ export function RfqPanel({
   /** A suggestion the cap would refuse is named, not silently substituted. */
   const suggestionOverCap = suggestion !== null && suggestion > MAX_RFQ_USDC;
 
+  /**
+   * The address the request names, and the address the factory pulls collateral
+   * from at settlement. Empty until a wallet publishes one, and `openRequest`
+   * refuses to send a request that still is.
+   */
+  const requester = wallet?.identity?.address ?? "";
+
   const input: RfqInput = box
-    ? boxRfqInput(box, { numContracts, maxBidUsdc: maxBid, offerWindowSec: BOX_OFFER_WINDOW_SEC })
+    ? boxRfqInput(box, {
+        requester,
+        numContracts,
+        maxBidUsdc: maxBid,
+        offerWindowSec: BOX_OFFER_WINDOW_SEC,
+      })
     : {
-        requester: "",
+        requester,
         underlying,
         optionType,
         strike,
@@ -472,7 +495,7 @@ export function RfqPanel({
     keyring.current?.forget();
     keyring.current = ring;
 
-    const opened = await openRequest({ ...input, requester: "" }, ring, d, (s, info) => {
+    const opened = await openRequest(input, ring, d, (s, info) => {
       if (!alive.current) return;
       setStep(s);
       void info;

@@ -52,6 +52,31 @@ import {
  *    chosen bid and settles it in the same call. The option contract is deployed
  *    and collateral is pulled here, at settlement, from both sides.
  *
+ * **Why `settleQuotationEarly` and never `settleQuotation`.** This was a taste
+ * call when the file was written and is now a measurement
+ * (`docs/plan7-measurements.md` §2). `getRevealWindow()` reads **60 seconds** on
+ * the live factory, and `settleQuotation` waits out the offer deadline *and*
+ * that window — which is the whole explanation for the 112-second median settle
+ * observed on 42-second auctions. Early settle skips both, because the requester
+ * already decrypted the sealed bid locally and can hand `(offerAmount, nonce)`
+ * straight back. It is not exotic: 20 of the 58 settlements on the current
+ * factory took it, and the fastest complete request→settle round trip on record
+ * is **16 seconds**. Any path through this file that waited out the reveal
+ * window would inherit a two-minute floor and stop being usable inside a duel.
+ *
+ * ## Two shapes over the same four phases
+ *
+ * **The desk request** — a single strike, a ten-minute window, a 15-second poll.
+ * Something a trader opens and comes back to. `RfqPanel` with no `box` prop.
+ *
+ * **The box auction** (plan 7 step 5) — four strikes off a drawn box, a
+ * {@link BOX_OFFER_WINDOW_SEC}-second window, a {@link BOX_POLL_MS} poll, and a
+ * max bid the player names. `src/desk/boxauction.ts` is the seam, and it exists
+ * because RFQ is the **only** way to obtain the instrument: zero condors have
+ * ever been listed on the OptionBook, so a box that matches no listed `RANGER`
+ * zone can be minted here or not at all. Nothing in the four phases changes
+ * between the two shapes — only the numbers, and which of them the player owns.
+ *
  * `runRfq()` composes all four for the tests and for a caller that wants one
  * function; the panel drives the phases separately because a human sits between
  * phase 3 and phase 4.
@@ -1173,6 +1198,22 @@ export async function openRequest(
   }
   if (!signer) return raise("SIGNER_REQUIRED", "signer");
 
+  // The request names its own requester, and the factory pulls collateral from
+  // that address at settlement. An empty or malformed one is a request nobody
+  // can settle — it costs gas to find that out on chain, and the check costs a
+  // regex here. (This is the field a panel forgets to thread through from the
+  // wallet, which is exactly why it is checked in the module rather than in the
+  // panel.)
+  if (!/^0x[0-9a-fA-F]{40}$/.test(input.requester ?? "")) {
+    return raise("SIGNER_REQUIRED", "signer", {
+      message: "This request carries no requester address.",
+      recovery:
+        "The factory pulls collateral from the requester named in the request, so it must be the " +
+        "connected wallet. Reconnect and open the request again — nothing was sent.",
+      action: "connect",
+    });
+  }
+
   // ── build, and the invariant ────────────────────────────────────────────────
   onStep("build");
   let request: Readonly<RfqRequest>;
@@ -1675,6 +1716,65 @@ export function reservePricePerContract(
   return Number(reserveUsdc) / Number(contracts);
 }
 
+/**
+ * `RfqInput` → the object the SDK's `buildRFQRequest` takes.
+ *
+ * Extracted from the live adapter and exported for one reason: it is where three
+ * separate landmines are defused, and each of them is invisible in a diff unless
+ * a test can hold the result in its hand.
+ *
+ *  1. **The strike count picks the instrument.** `getImplementationForStructure`
+ *     switches on `strikes.length`: 1 vanilla, 2 spread, 3 fly, **4 condor** —
+ *     and with `optionType: "CALL"`, four resolves to `CALL_CONDOR`. There is no
+ *     product field to get wrong; the array length *is* the product. That makes
+ *     "did four strikes actually go out?" the single assertion standing between a
+ *     drawn box and a wrong instrument.
+ *  2. **`offerDeadlineMinutes` is fed to `BigInt(now + minutes * 60)`,** which
+ *     throws `RangeError: Not an integer` for any window that is not exactly
+ *     integral in seconds. Everything on the box path arrives here as seconds and
+ *     leaves snapped to a 15-second quantum, so the product is always exact.
+ *  3. **`reservePrice` is the player's limit, and it is optional in the SDK** —
+ *     omit it and the built request carries `reservePrice: 0n`. A zero reserve is
+ *     not "no limit" to a maker reading the request; it is the absence of the one
+ *     number plan7 §3.2 says the player owns. It is passed as dollars per
+ *     contract because that is the unit the SDK scales from.
+ *
+ * Pure: no client, no signer, no network.
+ */
+export function rfqBuilderParams(
+  input: RfqInput,
+  requesterPublicKey: string,
+  referralId?: bigint,
+): Record<string, unknown> {
+  const offerDeadlineMinutes =
+    input.offerWindowSec === undefined
+      ? (input.offerWindowMin ?? DEFAULT_OFFER_WINDOW_MIN)
+      : offerWindowMinutes(input.offerWindowSec);
+
+  // Four strikes ⇒ the free-draw box. `buildCondorRFQ` is *literally*
+  // `buildRFQRequest` with `strikes: [s1,s2,s3,s4]` (`index.js:6104`), so
+  // passing the array keeps one builder call site — and one place where a strike
+  // count could ever be wrong.
+  const legs = input.strikes ? { strikes: [...input.strikes] } : { strikes: input.strike };
+
+  const reservePrice = reservePricePerContract(input.reserveUsdc, input.numContracts);
+
+  return {
+    requester: input.requester,
+    underlying: input.underlying,
+    optionType: input.optionType,
+    ...legs,
+    expiry: input.expiry,
+    numContracts: input.numContracts,
+    isLong: input.isLong,
+    offerDeadlineMinutes,
+    collateralToken: "USDC",
+    requesterPublicKey,
+    ...(reservePrice > 0 ? { reservePrice } : {}),
+    ...(referralId === undefined ? {} : { referralId }),
+  };
+}
+
 /** Just the wallet seam the RFQ needs. Structurally satisfied by `WalletSource`. */
 export interface RfqWallet {
   readonly id: string;
@@ -1796,49 +1896,13 @@ export function createLiveRfqDeps(
 
     buildRequest(input, requesterPublicKey) {
       if (!client) throw new Error("SIGNER_REQUIRED");
-
-      // Seconds win when given; the minutes field stays for the desk tool.
-      // `offerWindowMinutes` snaps to a 15-second quantum first, which is what
-      // keeps `BigInt(now + minutes * 60)` inside the SDK from throwing
-      // `RangeError: Not an integer` — see OFFER_WINDOW_QUANTUM_SEC.
-      const offerDeadlineMinutes =
-        input.offerWindowSec === undefined
-          ? (input.offerWindowMin ?? DEFAULT_OFFER_WINDOW_MIN)
-          : offerWindowMinutes(input.offerWindowSec);
-
-      // Four strikes ⇒ the free-draw box. `buildCondorRFQ` is *literally*
-      // `buildRFQRequest` with `strikes: [s1,s2,s3,s4]` (`index.js:6104`), and
-      // `getImplementationForStructure` resolves `case 4` + CALL to
-      // `CALL_CONDOR`. Passing the array rather than calling the condor helper
-      // keeps one builder call site — and one place where a strike count could
-      // ever be wrong.
-      const legs = input.strikes
-        ? { strikes: [...input.strikes] }
-        : { strikes: input.strike };
-
-      // The player's limit price goes ON CHAIN. Without it the built request
-      // carries `reservePrice: 0n`, and a reserve of zero is not "no limit" to a
-      // market maker reading the request — it is the absence of the one number
-      // plan7 §3.2 says is the player's decision to make.
-      const reservePrice = reservePricePerContract(input.reserveUsdc, input.numContracts);
-
-      // The SDK's own builder. `RFQBuilderParams` documents that the generated
-      // params ALWAYS carry `collateralAmount = 0`; `assertZeroCollateral` checks
-      // that claim rather than trusting it.
-      return client.optionFactory.buildRFQRequest({
-        requester: input.requester,
-        underlying: input.underlying,
-        optionType: input.optionType,
-        ...legs,
-        expiry: input.expiry,
-        numContracts: input.numContracts,
-        isLong: input.isLong,
-        offerDeadlineMinutes,
-        collateralToken: "USDC",
-        requesterPublicKey,
-        ...(reservePrice > 0 ? { reservePrice } : {}),
-        ...(options.referralId === undefined ? {} : { referralId: options.referralId }),
-      });
+      // The SDK's own builder, over params shaped by one pure exported function
+      // so a test can inspect exactly what goes in. `RFQBuilderParams` documents
+      // that the generated params ALWAYS carry `collateralAmount = 0`;
+      // `assertZeroCollateral` checks that claim rather than trusting it.
+      return client.optionFactory.buildRFQRequest(
+        rfqBuilderParams(input, requesterPublicKey, options.referralId),
+      );
     },
 
     async requestForQuotation(request) {
