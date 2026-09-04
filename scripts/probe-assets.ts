@@ -204,9 +204,23 @@ async function fromNetwork(): Promise<Probe> {
   const at = Date.now();
   const client = new ThetanutsClient({ chainId: CHAIN_ID, provider: new JsonRpcProvider(RPC_URL) });
   const chainConfig = client.chainConfig as unknown as QualifySnapshot["chainConfig"];
-  /** Named in the failure path: "the book is empty" and "the route we asked for
-   *  is gone" are different sentences, and only one of them is about the market. */
-  const bookUrl = (client as unknown as { indexerApiUrl?: string }).indexerApiUrl ?? "(unset)";
+  /**
+   * Named in the failure path: "the book is empty" and "the route we asked for
+   * is gone" are different sentences, and only one of them is about the market.
+   *
+   * ⚠ This MUST be `apiBaseUrl`, not `indexerApiUrl`. `fetchOrders()` issues a
+   * relative `get("/")` against the axios instance built on `apiBaseUrl`
+   * (`dist/index.js:2585`); `indexerApiUrl` is a path *prefix* every other
+   * caller appends a subpath to, so the bare URL 404s by design and always has.
+   *
+   * Printing the wrong field here once cost hours: a transport failure (local
+   * TLS interception) printed an endpoint nobody calls, someone curled it, got
+   * the expected 404, and the two unrelated facts fused into "the venue moved
+   * its book". The book had never moved. A diagnostic that names the wrong
+   * subject does not merely fail to help — it manufactures a false diagnosis
+   * with a URL attached, which is far more convincing than no answer at all.
+   */
+  const bookUrl = (client as unknown as { apiBaseUrl?: string }).apiBaseUrl ?? "(unset)";
 
   /**
    * The order book is the load-bearing feed. Without it there is nothing to

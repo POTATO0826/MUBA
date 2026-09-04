@@ -75,15 +75,22 @@ Two separate things, and only one of them is ours:
    a proxy sitting in front of this network, not a Thetanuts outage. Bun's own
    `fetch` (different CA store) reaches the same host fine. **Run the probe from
    an un-intercepted network before the demo.**
-2. **The SDK's configured book route answers 404.** Independently of the TLS
-   problem, `GET https://indexer.thetanuts.finance/api/v1/book` — the
-   `indexerApiUrl` baked into `@thetanuts-finance/thetanuts-client@0.3.0`'s Base
-   chain config, and the only URL `fetchOrders()` ever asks for — returns
-   `{"error":"Not found"}`, while on the same host `GET /api/state` returns live
-   indexer data (at chain head, zero lag) and `https://pricing.thetanuts.finance`
-   returns live MM quotes. The indexer is up; that one route is not where the SDK
-   thinks it is. **Confirm the current book endpoint with the protocol team**, or
-   pass a corrected `indexerApiUrl` when constructing the client.
+2. ~~**The SDK's configured book route answers 404.**~~ **RETRACTED — this was
+   wrong, and the way it was wrong is worth keeping on the record.**
+
+   `fetchOrders()` does **not** request `indexerApiUrl`. It issues a relative
+   `get("/")` against the axios instance built on `apiBaseUrl`, which for Base
+   8453 is a Cloudflare Worker origin — verified serving 200 with ~382 orders
+   carrying greeks and `availableAmount`. `indexerApiUrl` is a path *prefix*
+   that every other SDK caller appends a subpath to (`/user/{a}/positions`,
+   `/stats`, …), so requesting it bare 404s by design and always did.
+
+   What actually happened: item 1's transport failure printed an endpoint
+   nobody calls (the probe named the wrong field — since fixed), someone
+   curled it, got the expected 404, and two unrelated facts fused into "the
+   venue moved its book". It never moved. Do not ask the protocol team about
+   this; the full teardown, with verbatim requests, is in
+   `docs/book-endpoint.md`.
 
 Neither changes a line of the gate. `probeAssets` never saw a socket.
 
