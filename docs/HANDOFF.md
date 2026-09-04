@@ -17,9 +17,9 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
-## State at last update (post-P0 gate, Thetanuts integration)
+## State at last update (post-P1+P5a gate, Thetanuts integration)
 
-- Tests: 351 pass / 0 fail, 13 files. Typecheck clean. Last commit: 8a494c2.
+- Tests: 433 pass / 0 fail, 16 files. Typecheck clean. Last commit: c6ecf94.
 - SHIPPED (all pushed on zq; main has everything through 051889b):
   7 game waves (sound+CS:GO spin, live news terminal, sectors, BLITZ/QUICK/
   NORMAL modes, duel soundtrack, rank moment + copy-trade fiction, /ranks
@@ -27,14 +27,12 @@
   cursor trail + ticker-only ordered wire + hansen's wallet layer (EIP-6963 +
   AppKit + mock) + Thetanuts P0 (guard regex, SDK 0.3.0 installed, .d.ts gate,
   /api/config, secrets test).
-- IN FLIGHT (two Opus builders, parallel, disjoint):
-  * P1 — live market layer: NEW src/server/thetanuts.ts + src/data/thetanuts.tsx
-    + src/data/board.ts + /api/market + MarketSource widening (meta + spot()) +
-    Footer truth + test/market-*.test.ts + test/fixtures/orders.json.
-  * P5a — contracts/DuelEscrow.sol (owner terms: NO stake cap, RAKE_BPS=400,
-    MIN_STAKE=$0.10, TIMEOUT 6h, app-signed EIP-712 Verdict, no admin) +
-    solc-js build/deploy scripts + test/escrow.test.ts. NOT DEPLOYED — must
-    pass an adversarial review gate first; deploy is owner-gated.
+- SHIPPED additionally: P1 live market layer (/api/market live-verified:
+  OptionBook agreement true, greeksSeen 310/426, multi-collateral decimals
+  fix) + P5a DuelEscrow.sol compiled/tested, NOT deployed.
+- IN FLIGHT: the contract ADVERSARIAL REVIEW (read-only agent; deploy stays
+  blocked until its verdict + the owner's own read), P2 (/desk fully live) and
+  P5b (attest referee: /api/lock + /api/attest) as a parallel pair.
 - NEXT per plan: gate+commit P1/P5a → P2 (/desk fully live) ∥ P5b
   (src/server/attest.ts: /api/lock + /api/attest referee) → contract
   adversarial review → P3 (real fillOrder, ~$0.01 target, $2 code cap,
