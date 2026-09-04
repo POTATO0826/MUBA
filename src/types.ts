@@ -644,7 +644,9 @@ export interface MmQuote {
  * re-previews against a freshly fetched order immediately before it signs.
  */
 export interface FillPreview {
-  /** `numContracts`, 18dp, rendered to 4. */
+  /** `numContracts`, **6dp**, rendered to 4. Collateral-scaled, not
+   *  token-scaled — the SDK divides a USDC 6dp notional by an 8dp price. See
+   *  `CONTRACT_DECIMALS` in `src/server/thetanuts.ts` for the measurement. */
   contracts: string;
   /** `totalCollateral` — the USDC (6dp) actually spent, rendered to 2. This is
    *  the number P3 approves *exactly*, never `MaxUint256`. */

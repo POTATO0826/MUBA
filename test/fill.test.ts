@@ -42,9 +42,11 @@ import {
   TARGET_FILL_USDC,
   cardLabel,
   classifyFillError,
+  contracts as contractText,
   filledLegsFor,
   createLiveFillDeps,
   freezeOrder,
+  hydrateOrder,
   legFromCard,
   looksThrottled,
   orderIdentity,
@@ -126,10 +128,19 @@ const ROW: OrderRow = {
   time: "27 SEP",
 };
 
-/** A preview that fills: 0.15 contracts for $0.0099 of USDC. */
+/**
+ * A preview that fills: 0.15 contracts for $0.0099 of USDC.
+ *
+ * `numContracts` is **6dp** — `previewFillOrder` divides a USDC 6dp notional by
+ * an 8dp price and the quotient is collateral-scaled (the SDK's own `@returns`:
+ * "Number of contracts (6 decimals for USDC collateral)"). This stub used to
+ * say `150_000_000_000_000_000n` and call it 0.15, which is 0.15 only at 18dp —
+ * a scale nothing on this path produces. `150_000n` is what the real SDK
+ * answers for a $0.01 notional against a $0.0667 contract.
+ */
 function preview(over: Partial<RawFillPreview> = {}): RawFillPreview {
   return {
-    numContracts: 150_000_000_000_000_000n,
+    numContracts: 150_000n,
     totalCollateral: 9_900n,
     collateralToken: USDC,
     ...over,
@@ -861,7 +872,7 @@ describe("runParlayFill — the sequence", () => {
     const slip = s.slipArgs[0]!;
     expect(slip.maxLoss).toBe(slip.totalDebit);
     expect(slip.totalDebit).toBe(9_900n * 3n);
-    expect(slip.totalContracts).toBe(150_000_000_000_000_000n * 3n);
+    expect(slip.totalContracts).toBe(150_000n * 3n);
   });
 
   test("runParlayFill never throws, whatever a dep does", async () => {
@@ -1237,6 +1248,185 @@ describe("runParlayFill — the approval is exact, per leg", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rehydration — the browser's strings against the SDK's bigints
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The order exactly as the **browser** holds it.
+ *
+ * Not hand-written: put through the same replacer `/api/market` uses
+ * (`src/server/thetanuts.ts`'s `handle()`), so this is byte-for-byte what a
+ * `PricingRow.order` is by the time `legFromCard` puts it on a slip. JSON has
+ * no bigint, so `price`, `nonce`, `expiry` and `availableAmount` all arrive as
+ * decimal strings — the encoding `FillableOrder` declares.
+ */
+function wireOrder(over: Partial<RawFillOrder["rawApiData"]> = {}): RawFillOrder {
+  return JSON.parse(
+    JSON.stringify(makeOrder(over), (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+  ) as RawFillOrder;
+}
+
+/**
+ * `previewFillOrder`, doing the SDK's own arithmetic.
+ *
+ * The two expressions that decide whether a wire order can be filled at all,
+ * copied from `dist/index.js`: `calculateNumContracts` is
+ * `usdcAmount × 100000000n / order.price` (:1625) and `calculateMaxContracts`
+ * is `availableAmount × 100000000n / strike` (:1645). Both mix a bigint literal
+ * with an order field, so a **string** in either place throws
+ * `TypeError: Cannot mix BigInt and other types`, which is exactly what the
+ * real 0.3.0 client does — measured against `test/fixtures/orders.json`:
+ * "Invalid mix of BigInt and other type in multiplication".
+ *
+ * A stub that just returned a canned preview would pass whether or not the
+ * order was rehydrated, which is the whole reason this one computes.
+ */
+function sdkPreview(order: RawFillOrder, usdcAmount: bigint): RawFillPreview {
+  const strike = BigInt(order.rawApiData!.strikes![0]!);
+  // @ts-expect-error — the point of the test: `string | bigint` against 1e8n is
+  // what the SDK does and what a wire order fails at. TS is right to object.
+  const maxContracts = (order.availableAmount! * 100_000000n) / strike;
+  // @ts-expect-error — see above.
+  const numContracts = (usdcAmount * 100_000000n) / order.order.price;
+  return {
+    numContracts: numContracts < maxContracts ? numContracts : maxContracts,
+    totalCollateral: usdcAmount,
+    collateralToken: USDC,
+  };
+}
+
+describe("runParlayFill — the wire's strings are rehydrated before the SDK sees them", () => {
+  test("a string-encoded order reaches previewFillOrder and fillOrder as bigints", async () => {
+    // Against the pre-fix code this test fails at the first leg: `sdkPreview`
+    // throws on `"7140000" * 100000000n`, the leg drops NO_FILL, and the slip
+    // ends `none` having filled nothing. That was the live parlay path.
+    const s = spy({ confirmSlip: async () => true, previewFillOrder: sdkPreview });
+    const { result } = await runSlip(s, [
+      { ...pleg("a"), order: wireOrder() },
+      { ...pleg("b"), order: wireOrder() },
+    ]);
+
+    expect(result.status).toBe("filled");
+    expect(result.dropped).toHaveLength(0);
+    expect(result.filled).toHaveLength(2);
+
+    for (let i = 0; i < 2; i++) {
+      const [previewed] = s.previewArgs[i]!;
+      const [filled] = s.fillArgs[i]!;
+      // The four fields the SDK multiplies, as bigints and at their exact
+      // values — not `0n`, and not a `Number` that would round a 77-digit
+      // nonce.
+      expect(typeof previewed.order.price).toBe("bigint");
+      expect(previewed.order.price).toBe(7_140_000n);
+      expect(previewed.order.expiry).toBe(BigInt(EXPIRY_S));
+      expect(previewed.order.nonce).toBe(4242n);
+      expect(previewed.availableAmount).toBe(10_000_000n);
+      // Still one object from preview through fill, still frozen.
+      expect(filled).toBe(previewed);
+      expect(Object.isFrozen(previewed)).toBe(true);
+      // Everything else carried through verbatim. `rawApiData`'s numbers stay
+      // strings on purpose: the SDK runs `BigInt()` over them itself.
+      expect(previewed.signature).toBe("0xsignature");
+      expect(previewed.makerAddress).toBe("0xmaker");
+      expect(previewed.rawApiData!.strikes).toEqual(["440000000000"]);
+      expect(previewed.rawApiData!.optionBookAddress).toBe(BOOK);
+      expect(previewed.order.isBuyer).toBe(true);
+    }
+
+    // Both of the SDK's expressions ran, on the rehydrated fields, and the
+    // smaller won — which is the arithmetic, not a canned number:
+    //   numContracts = 10_000 × 1e8 / 7_140_000     = 140_056
+    //   maxContracts = 10_000_000 × 1e8 / 440000000000 =   2_272
+    // The maker has $10 of collateral behind a $4,400 strike, so $0.01 of
+    // notional is capped at 0.002272 contracts. `contracts()` renders that
+    // "0.0023"; at the old 18dp it would have rendered "0.0000".
+    expect(s.previewArgs[0]![1]).toBe(TARGET_FILL_USDC);
+    expect(result.filled[0]!.quote!.numContracts).toBe(2_272n);
+    expect(contractText(result.filled[0]!.quote!.numContracts)).toBe("0.0023");
+  });
+
+  test("an unparseable field drops the leg NO_FILL — it never becomes 0n", async () => {
+    const bad = wireOrder();
+    // A price the wire should never carry. Anything that is not a decimal
+    // integer lands here: `""`, `"0x1f4"`, `"1e10"`, `" 12"`, `null`.
+    (bad.order as { price: string }).price = "7.14e6";
+
+    const s = spy({ confirmSlip: async () => true, previewFillOrder: sdkPreview });
+    const { result } = await runSlip(s, [
+      { ...pleg("a"), order: wireOrder() },
+      { ...pleg("b"), order: bad },
+      { ...pleg("c"), order: wireOrder() },
+    ]);
+
+    const dropped = legState(result, "b");
+    expect(dropped.status).toBe("dropped");
+    expect(dropped.dropped).toBe("NO_FILL");
+    // Nothing was priced for it, so there is no quote to mistake for a zero —
+    // this is the difference between "we could not read the order" and "the
+    // book is thin", which a `?? 0n` would have erased.
+    expect(dropped.quote).toBeUndefined();
+
+    // It never reached the SDK at all: two previews for three legs.
+    expect(s.previewArgs).toHaveLength(2);
+    expect(s.fillArgs).toHaveLength(2);
+    // ...and it was never approved. A leg we cannot price must not spend.
+    expect(s.allowanceArgs).toHaveLength(2);
+
+    // The rest of the slip is untouched, which is the graceful half of today's
+    // behaviour and must stay.
+    expect(result.status).toBe("filled");
+    expect(result.filled.map((l) => l.id)).toEqual(["a", "c"]);
+    expect(result.spent).toBe(TARGET_FILL_USDC * 2n);
+    expect(result.totalDebit).toBe(TARGET_FILL_USDC * 2n);
+  });
+
+  test("every field the SDK multiplies fails closed on its own", () => {
+    for (const mutate of [
+      (o: RawFillOrder) => ((o.order as { price: string }).price = ""),
+      (o: RawFillOrder) => ((o.order as { price: string }).price = "0x1f4"),
+      (o: RawFillOrder) => ((o.order as { expiry: string }).expiry = "tomorrow"),
+      (o: RawFillOrder) => ((o.order as { nonce: string }).nonce = "4_242"),
+      (o: RawFillOrder) => ((o as { availableAmount: string }).availableAmount = "1e10"),
+      (o: RawFillOrder) => ((o as { availableAmount: unknown }).availableAmount = null),
+    ]) {
+      const order = wireOrder();
+      mutate(order);
+      expect(hydrateOrder(order)).toBeNull();
+    }
+  });
+
+  test("an order that is already bigints is returned unchanged, by identity", () => {
+    // The single-leg path never needs rehydrating — `refetchOrder` is
+    // `client.api.fetchOrders()` and hands over the SDK's own bigints — so this
+    // must be a no-op there, and `freezeOrder` must still freeze the caller's
+    // own object rather than a copy nobody else holds.
+    const order = makeOrder();
+    expect(hydrateOrder(order)).toBe(order);
+
+    // Absent optional fields stay absent rather than becoming `0n` or `null`.
+    const minimal: RawFillOrder = { order: { price: "7140000", isBuyer: true } };
+    const live = hydrateOrder(minimal)!;
+    expect(live.order.price).toBe(7_140_000n);
+    expect("expiry" in live.order).toBe(false);
+    expect("nonce" in live.order).toBe(false);
+    expect("availableAmount" in live).toBe(false);
+  });
+
+  test("rehydration cannot move an order's identity — the same string, before and after", () => {
+    // `orderIdentity` is what a fill matches an `OrderRow` on, and `OrderRow.side`
+    // is byte-identical by contract. `units()` is `Number(BigInt(raw))`, so
+    // `BigInt("7140000")` and `7140000n` are the same value and the string it
+    // rebuilds cannot move. If this ever fails, every fill fails closed.
+    const wire = wireOrder();
+    const identity = orderIdentity(makeOrder());
+    expect(identity).not.toBeNull();
+    expect(orderIdentity(wire)).toBe(identity);
+    expect(orderIdentity(hydrateOrder(wire)!)).toBe(identity);
+    expect(rowIdentity(ROW)).toBe(identity);
+  });
+});
+
 describe("runParlayFill — a failed leg keeps what landed and continues", () => {
   test("a mid-slip fill failure does not stop the legs after it, and unwinds nothing", async () => {
     let attempt = 0;
@@ -1353,7 +1543,10 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
     // Character for character. The whole point is that this is an assignment.
     expect(scored[0]!.instrument).toBe(MM_TICKER);
     expect(scored[0]!.entryMark as number).toBe(ENTRY_USD);
-    // 18dp contracts and 6dp USDC, converted to the units `FilledLeg` names.
+    // 6dp contracts and 6dp USDC, converted to the units `FilledLeg` names.
+    // `contracts` is what `duelScore` multiplies the mark move by, so the scale
+    // is not cosmetic: at 18dp this same leg contributed 1.5e11 contracts of
+    // PnL, and before the constant was fixed, 1.5e-13.
     expect(scored[0]!.contracts).toBeCloseTo(0.15, 10);
     expect(scored[0]!.premium as number).toBeCloseTo(0.0099, 10);
   });
@@ -2119,7 +2312,8 @@ describe("the parlay slip, on screen", () => {
     const base = { id: "a", label: "ETH-27SEP-4400-C" };
     const quote: FillQuote = {
       usdcAmount: 10_000n,
-      numContracts: 150_000_000_000_000_000n,
+      // 6dp — see `preview()`. The panel renders this through `contracts()`.
+      numContracts: 150_000n,
       totalCollateral: 9_900n,
       collateralToken: USDC,
     };

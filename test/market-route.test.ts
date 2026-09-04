@@ -526,7 +526,13 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
 
   test("every shipped row gets a quote at the fixed $1.00 notional", async () => {
     process.env[KEY] = "0xReferrer";
-    const fake = withBook(() => ({ numContracts: 4_300_000_000_000_000n, totalCollateral: 999_999n }));
+    // 6dp, the scale `previewFillOrder` actually answers in: `usdcAmount × 1e8
+    // / price` over a USDC 6dp notional and an 8dp price. `4_300n` is 0.0043
+    // contracts — a $1.00 notional against a $232.56 contract, which is an
+    // ordinary BTC level. It used to read `4_300_000_000_000_000n` and be
+    // called 18dp; the rendered figure below is unchanged, the input is now the
+    // number the SDK would have produced.
+    const fake = withBook(() => ({ numContracts: 4_300n, totalCollateral: 999_999n }));
     const env = await createMarketService({ client: fake.client }).snapshot();
 
     expect(env.ok).toBe(true);
@@ -545,7 +551,7 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     // string P3's fill will carry.
     for (const call of fake.seen) expect(call).toEqual({ usdc: 1_000000n, referrer: "0xReferrer" });
     expect(env.orders[0]?.preview).toEqual({
-      contracts: "0.0043", // 18dp
+      contracts: "0.0043", // 6dp
       collateral: "1.00", //  6dp
       fillable: true,
     });
@@ -554,9 +560,10 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
   test("a listed zone carries pricePerContract, verbatim, as its premium", async () => {
     // 33392222284 at 8dp is $333.92 — the price a live BTC RANGER charged for
     // one contract on 2026-09-05, and the number `zoneQuote` hands the arena as
-    // its `premium` prop. The desk's own `contracts` figure for the same order
-    // rounds to "0.0000" at $1.00, which is why the arena reads this field and
-    // not that one.
+    // its `premium` prop. `numContracts: 2994n` is 6dp: $1.00 buys 0.002994 of
+    // a $333.92 contract, and the desk renders that "0.0030". Recovering the
+    // premium from the rendered figure gives $333.33 — fifty-nine cents wrong,
+    // which is why the arena reads `pricePerContract` and not that one.
     const fake = withBook(() => ({
       numContracts: 2994n,
       totalCollateral: 1_000000n,

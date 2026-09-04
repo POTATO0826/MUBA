@@ -127,6 +127,26 @@ export const FILL_LADDER: readonly bigint[] = [10_000n, 100_000n, 1_000_000n];
  */
 export const EXPIRY_BUFFER_MS = 60_000;
 
+/**
+ * The scale of `previewFillOrder`'s `numContracts` — **6**, the collateral's,
+ * not 18.
+ *
+ * The SDK never returns a token-scaled size. `calculateNumContracts` is
+ * `usdcAmount × 1e8 / price` over a USDC 6dp notional and an 8dp price
+ * (`dist/index.js:1625`, whose `@returns` reads "Number of contracts (6 decimals
+ * for USDC collateral)"), and `calculateMaxContracts` divides an 18dp
+ * collateral balance *down* to 6 before returning it — so the field is 6dp for
+ * every order on the book, including the aBasWETH-collateralised ones.
+ *
+ * This was 18 in three places, and at 18 a real fill of $1.00 against a $3.97
+ * contract — 0.2520 contracts — rendered `"0.0000"` and scored as
+ * 2.5 × 10⁻¹³ contracts. Verified against 362 live Base orders and the 30 in
+ * `test/fixtures/orders.json`: `numContracts / 1e6 === 1 / price` on every
+ * uncapped one. `src/server/thetanuts.ts` carries the same constant for the
+ * `/api/market` render.
+ */
+export const CONTRACT_DECIMALS = 6;
+
 /** Receipts get a link, because a hash nobody can open is not evidence. */
 export const BASESCAN_TX = "https://basescan.org/tx/";
 
@@ -226,7 +246,7 @@ export interface OrderRef {
 export interface FillQuote {
   /** The rung of the ladder this quote is for, USDC 6dp. */
   usdcAmount: bigint;
-  /** 18dp. */
+  /** 6dp — the collateral's scale, not a token's. See `CONTRACT_DECIMALS`. */
   numContracts: bigint;
   /** 6dp for USDC — the **exact** amount approved, and the number clicked. */
   totalCollateral: bigint;
@@ -632,6 +652,113 @@ export function orderIdentity(entry: RawFillOrder): string | null {
 export function refFor(row: OrderRow): OrderRef | null {
   const identity = rowIdentity(row);
   return identity === null ? null : { identity, label: row.instrument };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rehydration — the wire's decimal strings, back to the SDK's bigints
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One wire field → the `bigint` it encodes, or `null` when it encodes none.
+ *
+ * Deliberately narrow. A `bigint` passes through untouched, and a bare decimal
+ * string — the *only* thing `/api/market`'s bigint replacer ever emits
+ * (`src/server/thetanuts.ts`, `JSON.stringify(…, (_k, v) => typeof v ===
+ * "bigint" ? v.toString() : v)`) — is parsed. Everything else fails: no
+ * trimming, no `0x`, no `Number()` fallback, no exponent, and above all no
+ * `?? 0n`.
+ *
+ * That last one is the whole point. `0n` is not a missing price, it is a *free*
+ * price: `calculateNumContracts` guards `price === 0n` and throws, but
+ * `availableAmount = 0n` silently prices a zero-size fill, and a zero
+ * `numContracts` reads as "the book is thin" rather than "we could not read the
+ * order". A field we cannot read must stop the leg, not shrink it.
+ */
+function wireBig(raw: string | bigint): bigint | null {
+  if (typeof raw === "bigint") return raw;
+  if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) return null;
+  return BigInt(raw);
+}
+
+/**
+ * An order as the **browser** holds it → an order the SDK can price.
+ *
+ * ## The seam
+ *
+ * JSON has no bigint, so `/api/market` ships every numeric order field as a
+ * decimal string — the encoding `FillableOrder` has always declared
+ * (`string | bigint`). The SDK demands the other half of that union: the first
+ * thing `previewFillOrder` does is `calculateMaxContracts`, which evaluates
+ * `availableAmount × 100000000n`, and `calculateNumContracts` evaluates
+ * `usdcAmount × 100000000n / order.price`. A string on either side is
+ * `TypeError: Cannot mix BigInt and other types` — measured, not inferred: the
+ * frozen capture's first order thrown at the real 0.3.0 `previewFillOrder`
+ * gives exactly that.
+ *
+ * So this is the one place the two halves meet, and it is called exactly once,
+ * in `runParlayFill` step 3, on the way in. `runFill` does not need it — its
+ * order comes back from `refetchOrder`, which is `client.api.fetchOrders()` and
+ * hands over the SDK's own bigints — but calling it there would be a no-op
+ * rather than a mistake, because of the identity rule below.
+ *
+ * ## What it converts, and what it deliberately does not
+ *
+ * The four numeric fields `RawFillOrder` declares: `order.price`,
+ * `order.expiry`, `order.nonce`, and `availableAmount`. Nothing under
+ * `rawApiData` — the SDK runs `BigInt()` over `strikes`, `maxCollateralUsable`
+ * and `orderExpiryTimestamp` itself, so those are correct as strings and
+ * converting them here would be a second opinion about a value the SDK already
+ * has one about. Every other key, declared or not, is carried through verbatim
+ * by the spread: `maker` in particular is read by `buildContractOrder` and is
+ * not on this module's narrowed type.
+ *
+ * ## Identity
+ *
+ * Returns the **same object** when nothing needed converting. That keeps the
+ * "one order is previewed, confirmed, approved and filled" guarantee that
+ * `test/fill.test.ts` asserts by `toBe`, and keeps `freezeOrder` freezing the
+ * caller's own object exactly as it did before this function existed.
+ *
+ * ## Failure
+ *
+ * `null` when any field it must convert is present and unreadable. The caller
+ * drops that leg `NO_FILL` — the same terminal, for the same reason, as the
+ * `TypeError` this replaces. Nothing is coerced, defaulted or signed.
+ *
+ * `orderIdentity` is unaffected either way: it reads `price` through
+ * `units()`, which is `Number(BigInt(raw))`, and `BigInt("396775344")` and
+ * `396775344n` are the same value — so the string it rebuilds is byte-identical
+ * before and after, which is what `OrderRow.side` matching depends on.
+ */
+export function hydrateOrder(order: RawFillOrder): RawFillOrder | null {
+  const price = wireBig(order.order.price);
+  if (price === null) return null;
+
+  // Optional fields: absent is fine, present-and-unreadable is not. `undefined`
+  // from `wireBig` is impossible, so `null` unambiguously means "did not parse".
+  const expiry = order.order.expiry === undefined ? undefined : wireBig(order.order.expiry);
+  if (expiry === null) return null;
+  const nonce = order.order.nonce === undefined ? undefined : wireBig(order.order.nonce);
+  if (nonce === null) return null;
+  const availableAmount =
+    order.availableAmount === undefined ? undefined : wireBig(order.availableAmount);
+  if (availableAmount === null) return null;
+
+  if (
+    price === order.order.price &&
+    expiry === order.order.expiry &&
+    nonce === order.order.nonce &&
+    availableAmount === order.availableAmount
+  ) {
+    return order;
+  }
+
+  const inner: RawFillOrder["order"] = { ...order.order, price };
+  if (expiry !== undefined) inner.expiry = expiry;
+  if (nonce !== undefined) inner.nonce = nonce;
+  const next: RawFillOrder = { ...order, order: inner };
+  if (availableAmount !== undefined) next.availableAmount = availableAmount;
+  return next;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1195,7 +1322,7 @@ export interface ParlaySlipQuote {
    * slip can lose more than what the confirm button says.
    */
   maxLoss: bigint;
-  /** Σ `numContracts`, 18dp. */
+  /** Σ `numContracts`, 6dp — see `CONTRACT_DECIMALS`. */
   totalContracts: bigint;
   /** The collateral token every surviving leg agreed on. */
   collateralToken: string;
@@ -1366,7 +1493,12 @@ export function filledLegsFor(result: ParlayFillResult): readonly FilledLeg[] {
       // cast asserts that provenance; it does not create it, and there is
       // deliberately no spot in scope here with which it could.
       entryMark: leg.entryMarkUsd as UsdPerContract,
-      contracts: Number(leg.quote.numContracts) / 10 ** 18,
+      // 6dp, the collateral's scale — see `CONTRACT_DECIMALS`. This read 18,
+      // which did not merely round: `duelScore` multiplies `contracts` by a
+      // dollar mark difference, so a real 0.25-contract leg contributed
+      // 2.5 × 10⁻¹³ of the PnL it earned. It stayed `> 0`, so `usable()` passed
+      // it and the slate scored — wrongly, and silently.
+      contracts: Number(leg.quote.numContracts) / 10 ** CONTRACT_DECIMALS,
       // USDC 6dp → dollars. The one number in the ratio that was always money.
       premium: (Number(leg.quote.totalCollateral) / 10 ** 6) as Usd,
     });
@@ -1547,13 +1679,42 @@ export async function runParlayFill(
   // an order is an EIP-712 signature over its own fields, and this one now
   // travels through a preview, a confirm screen a human reads, and N approvals.
   emit("preview");
-  const orders = legs.map((leg) => freezeOrder(leg.order));
+  // Rehydrated first, then frozen. These legs came off `/api/market`, which
+  // encodes bigints as decimal strings because JSON has no bigint — and the SDK
+  // multiplies `order.price` and `availableAmount` by bigint literals, which a
+  // string cannot survive. `hydrateOrder` is the one seam that puts the two
+  // halves of `FillableOrder`'s `string | bigint` back together; `null` from it
+  // is an order we could not read, and an unreadable order is not a smaller
+  // fill, so the leg drops. See `hydrateOrder`.
+  const orders = legs.map((leg) => {
+    const live = hydrateOrder(leg.order);
+    return live === null ? null : freezeOrder(live);
+  });
   for (let i = 0; i < legs.length; i++) {
     const state = ladder[i]!;
     const leg = legs[i]!;
+    const order = orders[i];
+    if (!order) {
+      // Same terminal, and for the same reason, as the `TypeError` this
+      // replaces: before rehydration existed a string price reached the SDK and
+      // threw, and the `catch` below dropped the leg `NO_FILL`. Nothing here is
+      // coerced to `0n` to keep the slip alive.
+      drop(state, "NO_FILL", {
+        code: "CONTRACT_REVERT",
+        ...FILL_COPY.CONTRACT_REVERT,
+        message: "That order's numbers could not be read.",
+        recovery:
+          "The book's order arrived with a price, size or expiry this app cannot parse, so it " +
+          "was never priced and never signed. The rest of the slip carried on.",
+        action: "refresh",
+        step: "preview",
+        detail: "order.price / order.expiry / order.nonce / availableAmount is not a decimal integer",
+      });
+      continue;
+    }
     let preview: RawFillPreview;
     try {
-      preview = deps.previewFillOrder(orders[i]!, leg.usdcAmount, deps.referrer);
+      preview = deps.previewFillOrder(order, leg.usdcAmount, deps.referrer);
     } catch (error) {
       // One leg's preview throwing is that leg's problem, not the slip's — the
       // indexer serves orders that `previewFillOrder` rejects, and a slip that
@@ -1575,7 +1736,7 @@ export async function runParlayFill(
     // The BUG-3 check, per leg, and it DROPS rather than refusing the slip: one
     // order carrying a foreign book address says nothing about the other three.
     // What it must never do is reach `ensureAllowance`.
-    const named = orders[i]!.rawApiData?.optionBookAddress;
+    const named = order.rawApiData?.optionBookAddress;
     if (named && named.toLowerCase() !== canonical.toLowerCase()) {
       drop(state, "BOOK_MISMATCH", {
         code: "CONTRACT_REVERT",
@@ -1796,9 +1957,19 @@ export function usdText(amount: bigint): string {
   return `${sign}${whole}.${frac.length <= 2 ? frac.padEnd(2, "0") : frac}`;
 }
 
-/** 18dp contracts → `"0.0123"`. */
+/**
+ * `numContracts` → `"0.0123"`.
+ *
+ * **6dp, not 18.** `previewFillOrder` divides a USDC 6dp notional by an 8dp
+ * price (`usdcAmount × 1e8 / price`), so the field it returns is
+ * collateral-scaled; the SDK's own `@returns` says "6 decimals for USDC
+ * collateral", and for an 18dp collateral token it scales the maximum *down* to
+ * 6 before returning it. At 18 this printed `"0.0000"` for every order on the
+ * live Base book — a real $1.00 fill of a $3.97 contract is 0.2520 contracts,
+ * and 0.2520 at 18dp is 2.5 × 10⁻¹³.
+ */
 export function contracts(amount: bigint): string {
-  return units(amount, 18).toFixed(4);
+  return units(amount, CONTRACT_DECIMALS).toFixed(4);
 }
 
 /** `SPLIT 0 bps — not yet whitelisted`. Attribution, never revenue. */

@@ -113,8 +113,35 @@ const MM_UNDERLYINGS = ["ETH", "BTC"] as const;
  */
 const QUOTE_USDC = 1_000000n;
 
-/** `numContracts` is 18dp. */
-const CONTRACT_DECIMALS = 18;
+/**
+ * `numContracts` is **6dp**, not 18 — it is collateral-scaled, not token-scaled.
+ *
+ * Measured, not assumed. `previewFillOrder` produces the field two ways and
+ * both land on 6:
+ *
+ *  - `calculateNumContracts(usdcAmount, price) = usdcAmount × 1e8 / price`
+ *    (`dist/index.js:1625`). `usdcAmount` is USDC 6dp and `price` is 8dp, so
+ *    the quotient is 6dp — and the SDK's own `@returns` says so in as many
+ *    words: "Number of contracts (6 decimals for USDC collateral)".
+ *  - `calculateMaxContracts` is `availableAmount × 1e8 / strike` (or
+ *    `/ spreadWidth`), same scales, same answer — and for an 18dp collateral
+ *    token it divides the collateral down to 6dp explicitly
+ *    (`maxCollateral / 10 ** (collateralDecimals - 6)`), so the field is 6dp
+ *    for *every* order on the book, not only the USDC-collateralised ones.
+ *
+ * Checked against the live Base book and against `test/fixtures/orders.json`:
+ * on 362 live orders and all 30 frozen ones, `numContracts / 1e6` equals
+ * `1 / price` to four decimals for every order the maker's collateral does not
+ * cap. The capture's first order prices at $3.9678 and answers
+ * `numContracts = 252031` — `0.2520` contracts for a dollar, which is `1/3.9678`.
+ * At 18dp that same order renders `"0.0000"`, and so did every other live row.
+ *
+ * Not to be confused with `CONTRACT_DECIMALS` in `src/engine/parlay.ts`, which
+ * is also 18 and is *correct* there: that one is a private scale the engine
+ * both writes (`toUnits`) and reads (`fromUnits`) with no SDK value in
+ * between — it cancels, and nothing outside the engine sees it.
+ */
+const CONTRACT_DECIMALS = 6;
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -2004,10 +2031,14 @@ function previewer(client: MarketClient): RawMarket["preview"] {
  * Two shapes off one `previewFillOrder` because the two surfaces render
  * different fields of it, and neither can be derived from the other at the
  * precision it needs. `FillPreview.contracts` is rendered to four decimals; a
- * live BTC `RANGER` at $333.92 a contract answers `numContracts` such that one
- * dollar buys 0.002994, which prints `"0.0000"` — a premium recovered from that
- * would be a division by zero. So the arena reads `pricePerContract` verbatim,
- * which is `order.price` and is the number a fill will actually charge.
+ * live BTC `RANGER` at $333.92 a contract answers `numContracts = 2994` (6dp),
+ * so one dollar buys 0.002994 contracts and the desk prints `"0.0030"`.
+ * Recovering the premium from *that* gives `1.00 / 0.0030 = $333.33` — off by
+ * fifty-nine cents on a $333.92 contract, which is the whole spread and then
+ * some. (Before the decimals fix the same figure printed `"0.0000"` and the
+ * recovery was a division by zero; the rounding trap is smaller now, not gone.)
+ * So the arena reads `pricePerContract` verbatim, which is `order.price` and is
+ * the number a fill will actually charge.
  *
  * Called only for orders the registry names `RANGER` — see {@link ladderBook}.
  * `undefined` when the client has no `optionBook`, `null` when the SDK refused
