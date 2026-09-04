@@ -86,7 +86,13 @@ function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: ()
                 "border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 9px",
             )}
           >
-            SEASON 01 · LIVE
+            {/* A season is a real thing that is really running — this says the
+                season is open, not that a venue is streaming. It deliberately
+                does NOT use `stateChip`: the four feed states describe where
+                DATA came from, and borrowing LIVE for anything else is how
+                `/ranks` came to wear a pulsing live dot over a seeded ladder
+                (fixed alongside this). Season, not feed. */}
+            SEASON 01 · OPEN
           </div>
           <h1 style={sx(`margin:16px 0 10px;font:700 36px/1.08 ${SANS};letter-spacing:-.03em`)}>
             Battle the book, not the market.

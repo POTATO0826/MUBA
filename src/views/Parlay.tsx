@@ -344,15 +344,48 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
                 strokeWidth="2.5"
                 strokeLinejoin="round"
               />
-              <line
-                x1={chart.spotX}
-                x2={chart.spotX}
-                y1="18"
-                y2="252"
-                stroke={C.dim}
-                strokeWidth="1.5"
-                strokeDasharray="3 3"
-              />
+              {/* The spot line, drawn only where there is a spot to draw.
+                  `spotX` is clamped into the window, so with live ETH at 2,453
+                  against a 3,200 floor this line used to sit exactly on the
+                  3.2k gridline — a dashed marker parked on a price the asset is
+                  not at, contradicting the honest label beside it. Off scale we
+                  draw the frame edge and an arrow out of it instead: the reader
+                  learns the direction and that the number is outside, which is
+                  the true state of affairs. Nothing rescales; the fixture's
+                  window is fixed. */}
+              {chart.spotOnScale ? (
+                <line
+                  data-spot-line=""
+                  x1={chart.spotX}
+                  x2={chart.spotX}
+                  y1="18"
+                  y2="252"
+                  stroke={C.dim}
+                  strokeWidth="1.5"
+                  strokeDasharray="3 3"
+                />
+              ) : (
+                <g data-spot-offscale={Number(chart.spotX) < 100 ? "low" : "high"}>
+                  <line
+                    x1={chart.spotX}
+                    x2={chart.spotX}
+                    y1="18"
+                    y2="252"
+                    stroke={C.line}
+                    strokeWidth="1"
+                  />
+                  <text
+                    x={Number(chart.spotX) < 100 ? Number(chart.spotX) + 6 : Number(chart.spotX) - 6}
+                    y="252"
+                    textAnchor={Number(chart.spotX) < 100 ? "start" : "end"}
+                    fill={C.faint}
+                    fontFamily={MONO}
+                    fontSize="10"
+                  >
+                    {Number(chart.spotX) < 100 ? "◀ SPOT OFF SCALE" : "SPOT OFF SCALE ▶"}
+                  </text>
+                </g>
+              )}
               {/* The number itself comes from `buildPayoffChart`, which knows
                   whether it is a live print or the reference the structure was
                   written around. This view carries no spot literal of its own —
@@ -385,15 +418,23 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
               )}
             >
               {chart.stats.map((s) => (
-                <div key={s.label}>
+                <div key={s.label} style={sx("min-width:0")}>
                   <div
-                    style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}
+                    style={sx(
+                      `font:500 9px/1.4 ${MONO};letter-spacing:.12em;color:${C.dim};` +
+                        "overflow-wrap:anywhere",
+                    )}
                   >
                     {s.label}
                   </div>
                   <div
                     style={sx(
-                      `margin-top:8px;font:700 18px/1 ${MONO};letter-spacing:-.02em;color:${s.color}`,
+                      `margin-top:8px;font:700 18px/1.15 ${MONO};letter-spacing:-.02em;color:${s.color};` +
+                        // `3,723 / 4,389` is the widest value this strip has
+                        // ever carried. It wraps rather than pushing the grid
+                        // track past its column and taking the page's
+                        // no-horizontal-scroll guarantee with it.
+                        "overflow-wrap:anywhere",
                     )}
                   >
                     {s.value}

@@ -28,7 +28,7 @@ import { seededRandom } from "../engine/spin.ts";
 import { hash } from "../lib/hash.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, pill } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, pill, stateChip, stateDot } from "../theme.ts";
 import type { Mode, SectorKey } from "../types.ts";
 import {
   GainText,
@@ -1152,20 +1152,43 @@ export function Ranking({ you, streak }: RankingProps) {
         )}
       >
         <div style={sx("flex:1 1 420px;min-width:0;display:flex;flex-direction:column;gap:14px")}>
+          {/* The season chip, and the one word on it that was not true.
+              ────────────────────────────────────────────────────────────
+              It read `SEASON 01 · LIVE`, in accent, beside a pulsing dot.
+              Nothing under it is live: `rows`, `copiers`, `daily` and `aum`
+              are all reductions over `leaderboardWith(you)` — fourteen
+              personas generated from a skill scalar plus your own local
+              career. No venue is read on this route at all.
+
+              That matters more here than it would in a vacuum, because this
+              app spends `LIVE` and `SEEDED` as *data-state* words elsewhere
+              (`FEED_STATE`, plan 6 §P7) — the desk's `LIVE · POLL 30s`, the
+              wire's `SEEDED`, the arena footer's age. A decorative `LIVE`
+              standing exactly where a provenance chip stands devalues the
+              ones that are load-bearing. And the pulsing dot made the claim
+              a second time in animation, which is the precise thing
+              `stateDot` exists to stop: it pulses for `live` and nothing
+              else.
+
+              So the chip takes the vocabulary instead of imitating it —
+              SEEDED, grey, unpulsed, carrying `FEED_STATE.seeded.means` as
+              its title. Grey rather than amber because a fixture is a
+              resting state, not a warning. The season *is* running; the
+              numbers under it are a fixture, and the chip now says the
+              second thing because that is the thing a reader of this strip
+              needs to know. Note for `theme.ts`'s own header, which still
+              lists `SEASON 01 · LIVE` among the acceptable non-feed uses of
+              these words: this site no longer is one. */}
           <span
+            title={FEED_STATE.seeded.means}
+            data-ladder-state="seeded"
             style={sx(
-              `display:inline-flex;align-items:center;gap:7px;align-self:flex-start;` +
-                `font:500 10px/1 ${MONO};letter-spacing:.14em;color:${C.accent};` +
-                "border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 9px",
+              `${stateChip("seeded")};gap:7px;align-self:flex-start;` +
+                "font-size:10px;letter-spacing:.14em;padding:6px 9px;border-radius:6px",
             )}
           >
-            <span
-              style={sx(
-                `width:6px;height:6px;border-radius:99px;background:${C.accent};` +
-                  "animation:vcPulse 1.8s ease-in-out infinite",
-              )}
-            />
-            {SEASON.label} · LIVE
+            <span style={sx(stateDot("seeded"))} />
+            {SEASON.label} · {FEED_STATE.seeded.label}
           </span>
 
           <h1 style={sx(`margin:0;font:700 34px/1.04 ${SANS};letter-spacing:-.03em`)}>The ladder</h1>

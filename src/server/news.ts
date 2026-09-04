@@ -1,4 +1,4 @@
-import { UNIVERSE, meta } from "../data/universe.ts";
+import { LIVE_SYMS, UNIVERSE, meta } from "../data/universe.ts";
 import type { WireItem } from "../data/wire.ts";
 import { TAPE_LEN, fmtPx, pctAt, series } from "../engine/tape.ts";
 import { hash } from "../lib/hash.ts";
@@ -174,6 +174,14 @@ export interface NewsOk {
   fetchedAt: number;
   feeds: readonly FeedReport[];
   items: readonly WireItem[];
+  /**
+   * Requested tickers this service has no board row for, so no feed was opened
+   * for them. Non-empty forces `source: "partial"` — the rows on screen are
+   * live and a name the caller asked about is missing from them, which is
+   * exactly what PARTIAL means. Bounded by {@link TICKER_SHAPE}, so echoing it
+   * cannot reflect anything but uppercase alphanumerics.
+   */
+  skipped: readonly string[];
 }
 
 /** The failure envelope. Still served with HTTP 200 — the client reads `ok`. */
@@ -188,9 +196,14 @@ export type NewsEnvelope = NewsOk | NewsFail;
 /** A validated request. `handle()` parses a URL into one of these. */
 export interface NewsQuery {
   matchKey: string;
+  /** The **known** tickers, in request order. Never contains a name `meta()`
+   *  cannot resolve, so no feed is ever built from an unrecognised string. */
   tickers: readonly string[];
   salt: number;
   limit: number;
+  /** Requested-but-unknown tickers, dropped by `parse()`. Optional so a
+   *  hand-built query in a test or a future caller need not carry it. */
+  skipped?: readonly string[];
 }
 
 export interface NewsService {
@@ -554,9 +567,46 @@ function stampOf(pubDate: string, id: string, fallback: number): number {
 // The service
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `meta()` falls back to the first asset for an unknown symbol, so identity —
- *  not truthiness — is how a ticker is validated. */
-const KNOWN = new Set(UNIVERSE.map((u) => u.sym));
+/**
+ * The symbol allowlist: **every name this app has a board row for**, both
+ * boards, in one set.
+ *
+ * `meta()` falls back to the first asset for an unknown symbol, so identity —
+ * not truthiness — is how a ticker is validated, and the set has to be exactly
+ * the set `meta()` resolves. It was `UNIVERSE` alone, which is the frozen
+ * eighteen-row replay fixture and *not the board the app deals from*: plan 6
+ * replaced the dealt universe with `LIVE_BOARD` and this reference survived the
+ * swap. BNB, AVAX and XRP are on the live board and on no other list — they are
+ * declared inline in `universe.ts` precisely because `UNIVERSE` has never held
+ * them — so every match dealt one of the three had its **entire** wire refused
+ * as an unknown ticker and fell back to the seeded 2019 tape. The spin deals 3
+ * of 6 qualified names, of which only ETH/BTC/SOL were on the old list, so live
+ * news reached C(3,3)/C(6,3) = 1 match in 20.
+ *
+ * `UNIVERSE` stays in the union because the offline replay tape still deals
+ * those rows and `feedsFor()` resolves them through the same `meta()`. The set
+ * is still closed, still finite, still checked before a socket opens — the
+ * guarantee this list exists for is "no caller steers our outbound fetches",
+ * and that is a property of the set being enumerated in code, not of which of
+ * the two boards it came from.
+ */
+const KNOWN: ReadonlySet<string> = new Set<string>([
+  ...LIVE_SYMS,
+  ...UNIVERSE.map((u) => u.sym),
+]);
+
+/**
+ * What a ticker token may look like at all, before anyone asks whether we know
+ * it.
+ *
+ * Two different rejections, kept apart on purpose. A token that fails *this* is
+ * junk — it can never be an asset, so it kills the request and is never echoed
+ * anywhere. A token that passes this and is not in {@link KNOWN} is a
+ * plausible symbol we simply do not carry: it costs itself its headlines and is
+ * named in the envelope's `skipped`, which is safe to echo precisely because
+ * this shape has already bounded it to twelve uppercase alphanumerics.
+ */
+const TICKER_SHAPE = /^[A-Z0-9]{1,12}$/;
 
 /** `THETADUEL_NEWS=off` ships a public build on the seeded wire alone. Read at
  *  call time, not at module load, so a test can set and restore it. */
@@ -824,12 +874,15 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     const entries = await readAll(specs);
     const fetchedAt = now();
 
+    const skipped = q.skipped ?? [];
     const feeds: FeedReport[] = [];
     /** Per ticker, the rows that are about it. */
     const byTicker = new Map<string, WireItem[]>();
     /** Per ticker, the rows the relevance filter rejected — the floor's reserve. */
     const spares = new Map<string, WireItem[]>();
-    let degraded = false;
+    // A dropped ticker is a missing source, which is the same shape of harm as
+    // a feed that did not answer: the wire is real and incomplete.
+    let degraded = skipped.length > 0;
 
     const fileUnder = (map: Map<string, WireItem[]>, sym: string, rows: WireItem[]): void => {
       const list = map.get(sym);
@@ -897,6 +950,7 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       fetchedAt,
       feeds,
       items,
+      skipped,
     };
   }
 
@@ -940,9 +994,34 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
 
   /**
    * Strict, because the query string is the one attacker-controlled input on
-   * this surface. `tickers` is checked against the universe *before* a socket
-   * is opened, so no caller can steer the server's outbound fetches at a
-   * hostname or a query of their choosing.
+   * this surface. Every ticker is shape-checked and allowlisted *before* a
+   * socket is opened, so no caller can steer the server's outbound fetches at a
+   * hostname or a query of their choosing. That guarantee is unchanged; what
+   * changed is its blast radius.
+   *
+   * ## An unknown ticker costs itself, not the wire
+   *
+   * This used to `return` on the first miss, so one unrecognised name refused
+   * the *whole* request and the study screen fell back to the seeded tape —
+   * see {@link KNOWN} for how that turned a stale allowlist into a dead wire
+   * for 19 matches in 20. Three tiers now, and they are different failures:
+   *
+   *  1. **Malformed** (`TICKER_SHAPE`) — junk. Refuses the request. A string
+   *     that cannot be a symbol is not a symbol we happen to lack, and it must
+   *     not reach the envelope even as a name.
+   *  2. **Well-formed, unknown** — dropped from `tickers`, named in `skipped`,
+   *     and the response is coloured PARTIAL. Its headlines are gone; the other
+   *     tickers' are not.
+   *  3. **Nothing left** — if every ticker was dropped there is no request to
+   *     make, so it is refused with the first offender named, which is the
+   *     reason string this route has always returned.
+   *
+   * **The frozen-envelope guarantee survives this.** Two players in one room
+   * derive their ticker list from the same `(lobby, seed)` pair, and both the
+   * drop and the ordering here are pure functions of that list — so the two
+   * requests reduce to the same `tickers`, hit the same `matchKey`, and replay
+   * the same frozen envelope in the same order. A partial wire is shared
+   * identically or it is not shared at all, and it is shared identically.
    */
   function parse(url: URL): { q: NewsQuery } | { reason: string } {
     const p = url.searchParams;
@@ -961,9 +1040,15 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     if (tickers.length === 0) return { reason: "missing tickers" };
     if (tickers.length > MAX_TICKERS) return { reason: "too many tickers" };
     for (const t of tickers) {
-      if (!KNOWN.has(t)) return { reason: `unknown ticker: ${t}` };
+      if (!TICKER_SHAPE.test(t)) return { reason: "bad ticker" };
     }
+    // Deduped on what was *asked for*, before anything is dropped, so a
+    // repeated unknown is still a malformed request rather than a silent no-op.
     if (new Set(tickers).size !== tickers.length) return { reason: "duplicate tickers" };
+
+    const known = tickers.filter((t) => KNOWN.has(t));
+    const skipped = tickers.filter((t) => !KNOWN.has(t));
+    if (known.length === 0) return { reason: `unknown ticker: ${skipped[0]}` };
 
     const rawSalt = p.get("salt");
     let salt = 0;
@@ -981,7 +1066,7 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       limit = Math.min(limit, MAX_LIMIT);
     }
 
-    return { q: { matchKey, tickers, salt, limit } };
+    return { q: { matchKey, tickers: known, salt, limit, skipped } };
   }
 
   const json = (body: NewsEnvelope): Response =>

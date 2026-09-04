@@ -71,13 +71,65 @@ describe("payoff", () => {
     expect(payoff(ETH_VOL_BOX, 3200)).toBeCloseTo(capped, 10);
   });
 
-  test("chart geometry reports a breakeven inside the sampled range", () => {
+  test("chart geometry reports every breakeven inside the sampled range", () => {
+    // Was `BREAKEVEN`, singular, and read the first upward crossing only. A
+    // long vol box wins on a move in EITHER direction, so it has two: the put
+    // spread stops covering the debit on the way down and the call spread
+    // starts covering it on the way up. Printing the upper one alone says "you
+    // need ETH above 4,389" about a position that is equally long the downside
+    // — and is in profit at the live 2,453 print. The label is plural because
+    // the arithmetic is.
     const chart = buildPayoffChart();
-    const breakeven = Number(chart.stats.find((s) => s.label === "BREAKEVEN")?.value.replace(/,/g, ""));
-    expect(breakeven).toBeGreaterThan(3200);
-    expect(breakeven).toBeLessThan(5200);
+    const stat = chart.stats.find((s) => s.label === "BREAKEVENS");
+    expect(stat).toBeDefined();
+    const bes = stat!.value.split(" / ").map((v) => Number(v.replace(/,/g, "")));
+    expect(bes).toHaveLength(2);
+    // Ascending, both inside the window, and each one a genuine sign change of
+    // the payoff itself rather than a number this test copied out of the panel.
+    expect(bes[0]).toBeLessThan(bes[1]!);
+    for (const be of bes) {
+      expect(be).toBeGreaterThan(3200);
+      expect(be).toBeLessThan(5200);
+      expect(payoff(ETH_VOL_BOX, be - 1) < 0).not.toBe(payoff(ETH_VOL_BOX, be + 1) < 0);
+    }
+    // The two crossings the fixture has always had, to the dollar the panel
+    // rounds them to: `m·(3900 − s) = debit` and `2m·(s − 4300) = debit`.
+    expect(bes[0]).toBe(3723);
+    expect(bes[1]).toBe(4389);
     expect(chart.gridX).toHaveLength(6);
     expect(chart.strikeMarks).toHaveLength(4);
+  });
+
+  test("the profitable-window stat names its own denominator instead of posing as a probability", () => {
+    // 66.7% is the share of the 81 samples across a HARDCODED 3,200–5,200 axis
+    // that settle above zero. It was labelled `WIN ZONE` and sat beside
+    // `IMPLIED ODDS 4.51×`, where it read as a win probability. It is not one:
+    // widen the axis and the "probability" moves without a fact about the
+    // position changing. The number is unchanged and the label now carries the
+    // window it is a fraction of.
+    const stat = buildPayoffChart().stats.find((s) => s.label.startsWith("IN PROFIT"));
+    expect(stat).toBeDefined();
+    expect(stat!.label).toBe("IN PROFIT · 3.2–5.2k");
+    expect(stat!.value).toBe("66.7%");
+    expect(buildPayoffChart().stats.some((s) => s.label === "WIN ZONE")).toBe(false);
+  });
+
+  test("a spot outside the plotted window is flagged off scale, not drawn on the axis", () => {
+    // The clamp is correct and the drawing that used it was not: with live ETH
+    // at 2,453 the dashed line sat exactly on the 3.2k gridline, reading as
+    // "spot is 3,200" beside a label correctly saying 2,453. `spotOnScale` is
+    // how the view knows `spotX` is a parking spot rather than a reading.
+    expect(buildPayoffChart().spotOnScale).toBe(true); // 4,182 is inside 3.2–5.2k
+    expect(buildPayoffChart(ETH_VOL_BOX, 4182).spotOnScale).toBe(true);
+    for (const off of [2453.03, 3199.9, 5200.1, 9000]) {
+      const chart = buildPayoffChart(ETH_VOL_BOX, off);
+      expect(chart.spotOnScale).toBe(false);
+      // The label never clamps — that half was always right.
+      expect(chart.spotLabel).toContain(off.toLocaleString("en-US", { maximumFractionDigits: 2 }));
+    }
+    // The boundaries are on the scale, because they are on the axis.
+    expect(buildPayoffChart(ETH_VOL_BOX, 3200).spotOnScale).toBe(true);
+    expect(buildPayoffChart(ETH_VOL_BOX, 5200).spotOnScale).toBe(true);
   });
 
   test("with no live spot the chart is byte-identical to the one that predates live spot", () => {

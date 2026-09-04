@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { meta } from "../src/data/universe.ts";
+import { LIVE_SYMS, meta } from "../src/data/universe.ts";
 import { createNewsService, type NewsEnvelope, type NewsOk } from "../src/server/news.ts";
 
 /**
@@ -815,16 +815,85 @@ describe("createNewsService — degradation", () => {
 });
 
 describe("createNewsService — request validation", () => {
-  test("an unknown ticker is rejected before a socket is opened", async () => {
+  test("an unknown ticker costs itself its headlines, never the whole wire", async () => {
     const f = makeFetch();
     const svc = createNewsService({ fetch: f.fetch });
     const env = await ask(svc, q("v1:1", "NVDA,HACKME"));
 
+    // The security half is untouched: the unrecognised string never became a
+    // URL. What it no longer does is take NVDA's wire down with it — that is
+    // the whole-request refusal that left 19 matches in 20 on the seeded tape.
+    expect(f.calls.some((u) => u.includes("HACKME"))).toBe(false);
+    expect(f.calls.length).toBeGreaterThan(0);
+
+    const live = ok(env);
+    expect(live.items.length).toBeGreaterThan(0);
+    expect(live.items.every((i) => i.sym === "NVDA")).toBe(true);
+    // Named, and coloured: a missing source is PARTIAL, exactly like a feed
+    // that did not answer.
+    expect(live.skipped).toEqual(["HACKME"]);
+    expect(live.source).toBe("partial");
+  });
+
+  test("a request of nothing but unknown tickers is still refused, unfetched", async () => {
+    const f = makeFetch();
+    const svc = createNewsService({ fetch: f.fetch });
+    const env = await ask(svc, q("v1b:1", "HACKME,ZZZZ"));
+
     expect(env.ok).toBe(false);
     if (!env.ok) expect(env.reason).toContain("HACKME");
     expect(env.items).toEqual([]);
-    // The important half: no attacker-controlled query reached the network.
     expect(f.calls).toHaveLength(0);
+  });
+
+  test("a malformed ticker is junk, and junk refuses the request", async () => {
+    // The two rejections are different on purpose. `HACKME` is a plausible
+    // symbol this app does not carry; `../evil?x=` is not a symbol at all, and
+    // it must not reach the envelope even as a name in `skipped`.
+    const f = makeFetch();
+    const svc = createNewsService({ fetch: f.fetch });
+    for (const bad of ["NVDA,%2E%2E%2Fevil", "NVDA,A_B", "NVDA,TOOLONGTICKERNAME"]) {
+      const env = await ask(svc, q("v1c:1", bad));
+      expect(env.ok).toBe(false);
+      if (!env.ok) expect(env.reason).toBe("bad ticker");
+    }
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("every live-board asset reaches the wire, including the three the old allowlist refused", async () => {
+    // BNB, AVAX and XRP are on `LIVE_BOARD` and on no other list — they are
+    // declared inline in `universe.ts` precisely because `UNIVERSE` has never
+    // held them. The allowlist was built from `UNIVERSE`, so the board's own
+    // names were rejected as unknown and every match dealt one fell back to a
+    // 2019 seeded tape. The board is the allowlist now.
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    for (const sym of LIVE_SYMS) {
+      const env = ok(await ask(svc, q(`board-${sym}:1`, sym)));
+      expect(env.skipped).toEqual([]);
+      expect(env.items.some((i) => i.sym === sym)).toBe(true);
+    }
+  });
+
+  test("a match dealt the exact live trio that used to kill the request now answers", async () => {
+    // `ETH,AVAX,XRP` — the ticker set of the observed match `kz-semis`, seed
+    // 931252, which returned `ok:false, 0 items` and rendered `WED · 02-13-19`.
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const env = ok(await ask(svc, q("kz-semis:931252", "ETH,AVAX,XRP")));
+    expect(env.source).toBe("live");
+    expect(env.skipped).toEqual([]);
+    expect(new Set(env.items.map((i) => i.sym))).toEqual(new Set(["ETH", "AVAX", "XRP"]));
+  });
+
+  test("a dropped ticker is dropped identically for both seats in a room", async () => {
+    // The frozen-envelope guarantee is the reason a partial answer is allowed
+    // at all: the drop is a pure function of the requested list, so two players
+    // on one `(lobby, seed)` reduce to the same tickers and replay the same
+    // rows in the same order.
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const first = ok(await ask(svc, q("shared:7", "ETH,HACKME,BTC")));
+    const second = ok(await ask(svc, q("shared:7", "ETH,HACKME,BTC")));
+    expect(second).toEqual(first);
+    expect(first.skipped).toEqual(["HACKME"]);
   });
 
   test("missing or malformed params are refused, never fetched", async () => {

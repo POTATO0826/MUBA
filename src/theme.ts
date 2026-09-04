@@ -105,7 +105,7 @@ export const chipStyle = (color: string): string =>
  * The four states are exhaustive over what a feed can be and are deliberately
  * *not* about anything else — a season that is running, a wallet that is a
  * stub, an order that filled halfway, a feature that is switched off. Those all
- * use words that collide with these (`SEASON 01 · LIVE`, `MOCK WALLET`,
+ * use words that collide with these (`MOCK WALLET`,
  * `PARTIAL` on an order row, `SIDE BET · UNAVAILABLE`) and they are correct as
  * they stand; what keeps them from being confusing is that none of them wear
  * one of these four colours. Accent is the brand, and no feed state is accent.
