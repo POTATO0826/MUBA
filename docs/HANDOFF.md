@@ -46,10 +46,17 @@
   deploy.ts must hard-refuse non-canonical USDC + non-8453 chainid, not warn;
   6-1 (LOW): duelId preimage is guessable, add a per-room nonce; 4-1 (LOW):
   UI copy "claim within 6 hours" (refund can front-run a verdict past TIMEOUT).
-- IN FLIGHT next wave: eToro-style dollar-denominated ranking rework (owner
-  request: copy-trade stats header, $ not PTS in copy economics — fiction's
-  own $, NEVER a PTS→$ rate; pinned ladder numbers stay byte-identical) ∥
-  security hardening (X-1 lock auth + 5-1 deploy refusals + 6-1 nonce).
+- SHIPPED next gate (572 pass / 0 fail, 19 files): security wave — X-1
+  CLOSED (/api/lock requires seat a's EIP-191 sig over THETADUEL_LOCK_V1,
+  layout documented in attest.ts; refused locks never burn first-write-wins),
+  5-1 deploy.ts hard-refuses non-canonical USDC/chain, 6-1 nonce grammar live
+  (clients don't mint it yet); residuals stated in attest.ts docstring —
+  counterparty seat-claim (v2 = on-chain seat binding, REQUIRED before P6),
+  EIP-1271 smart wallets fail closed. Plus: eToro dollar ranking (GAIN 12M,
+  RISK 1-10, AUM, COPY-button fiction, all copy economics in the fiction's
+  own $; rank.test.ts passed with ZERO edits) + wallet-row hover sticker
+  (Daniluk transplant in WalletPicker.tsx) + spin landing keeps only the
+  case-open clip (reveal arpeggio cut from MatchSpin, LAND_SAMPLE_GAIN 1.0).
 - NEXT per plan: P3 (real fillOrder, ~$0.01 target, $2 code cap,
   THETADUEL_TRADE=on) ∥ P4 (spotFor at the remaining hardcoded-spot sites +
   honesty chips) → P6 (staking UI; X-1 fix is a hard prerequisite) → P7
