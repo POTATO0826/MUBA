@@ -102,9 +102,11 @@ const server = Bun.serve({
     /**
      * The settlement referee, in two halves — same always-200 envelope again.
      *
-     * `/api/lock` commits `{matchKey, picks, a, b}` FIRST-WRITE-WINS: a second
-     * lock on the same match returns the first payload untouched. That is what
-     * pins a slip before the tape can be watched.
+     * `/api/lock` commits `{matchKey, picks, a, b, sig}` FIRST-WRITE-WINS: a
+     * second lock on the same match returns the first payload untouched. That
+     * is what pins a slip before the tape can be watched. `sig` is seat `a`'s
+     * EIP-191 signature over the canonical lock message (attest.ts documents
+     * the exact layout) — a lock nobody signed for names nobody's seat.
      *
      * `/api/attest` then takes the match key and NOTHING ELSE. It re-derives
      * the winner here, from the seed and the committed picks, and signs the

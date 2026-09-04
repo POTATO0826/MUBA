@@ -3,7 +3,7 @@
  *
  * `contracts/DuelEscrow.sol` pays the winner of a duel against one EIP-712
  * signature from the attestor key. This module is the only thing in the repo
- * that holds that key, and the only thing that decides who won. Two rules
+ * that holds that key, and the only thing that decides who won. Four rules
  * follow from that, and everything below is arranged around them:
  *
  *  1. **The server never reads a winner from a request.** `/api/attest` takes a
@@ -18,17 +18,83 @@
  *     reach the server before they can be settled, and they have to be pinned
  *     before the outcome is knowable: hence **commit-then-derive**.
  *
- *     `POST /api/lock` commits `{matchKey, picks, a, b}` **first-write-wins**.
+ *     `POST /api/lock` commits `{matchKey, picks, a, b, sig}` **first-write-
+ *     wins**.
  *     A second lock on the same match — different picks, different addresses,
  *     any picks at all — returns the FIRST payload untouched and says so. That
  *     one property is what stops a losing player from re-locking a winning slip
  *     after watching the tape. `POST /api/attest` then re-derives and signs.
  *
- *     This is not commit-reveal: the server sees the picks in the clear, so a
- *     dishonest operator could still collude. That residual trust is stated in
- *     the contract's natspec (`TRUST MODEL`, note 1) and in the README, and the
- *     escape hatch is the escrow's unconditional six-hour refund, which needs
- *     no cooperation from this server at all.
+ *  3. **The lock is signed by `a`** — finding X-1 of the adversarial review
+ *     (`docs/reviews/escrow-adversarial-review.md`).
+ *
+ *     Commit-then-derive pins the slip, but for a while nothing proved *whose*
+ *     slip it was: `a`, `b` and `picks` all came straight out of an
+ *     unauthenticated request body. Because the outcome is a pure function of
+ *     `(lobby, seed, picks)` over ≤ 4 096 reachable slips, anyone who knew the
+ *     match key could search offline for a winning slip, `POST` it naming
+ *     **themselves** `a` and a real player `b`, and this module would then
+ *     honestly sign a verdict paying them. The escrow would pay it correctly —
+ *     its only payee constraint is `winner ∈ {a, b}`, and that held.
+ *
+ *     So a lock now carries `sig`: a 65-byte **EIP-191 personal signature** by
+ *     `a` over a canonical message binding the match, the picks and both seats.
+ *     The message is built by `lockMessage()` below and is exactly:
+ *
+ *         THETADUEL_LOCK_V1\n
+ *         matchKey:<matchKey verbatim>\n
+ *         a:<a, EIP-55 checksummed>\n
+ *         b:<b checksummed, or the zero address for an open seat>\n
+ *         picks:<canonicalPicks(picks)>
+ *
+ *     — five `\n`-joined lines, no trailing newline, signed with
+ *     `personal_sign` / `wallet.signMessage`. Every field the server would
+ *     otherwise have taken on trust is inside it, in its **normalised** form
+ *     (the same canonical pick ordering the commit hashes, addresses
+ *     checksummed), so a client can reproduce the string byte for byte and a
+ *     man in the middle cannot re-point a valid signature at other picks,
+ *     another match or a different opponent. `verifyMessage` must recover
+ *     exactly `a` or the lock is refused — and a refused lock writes nothing,
+ *     so it can neither evict a stored commit nor consume first-write-wins for
+ *     a later valid one.
+ *
+ *     What this closes: nobody can lock a match naming an address they do not
+ *     control. **What it does not close, and the P6 work that will:**
+ *
+ *       - *The counterparty can still claim the `a` seat.* `b` is a real
+ *         address with a real key; if `b` learns the match key before `a`'s
+ *         client locks — and in the intended flow `a` hands them the room link
+ *         — `b` can sign a lock of their own, as `a`, over a slip they searched
+ *         for. The v2 fix is not a bigger signature: it is **binding the seats
+ *         to the chain**, reading `a` and `b` out of the escrow's own
+ *         `DuelOpened`/`DuelJoined` events instead of believing the body at
+ *         all. Until then the per-room nonce (point 4) is what keeps the match
+ *         key out of a stranger's hands, and the six-hour refund is what caps
+ *         the damage.
+ *       - *Operator collusion.* This is still not commit-reveal: the server
+ *         sees the picks in the clear and holds the only key that signs
+ *         verdicts, so a dishonest operator can always collude with a player.
+ *         That residual is stated in the contract's natspec (`TRUST MODEL`,
+ *         note 1) and in the README, and the escape hatch is the escrow's
+ *         unconditional six-hour refund, which needs no cooperation from this
+ *         server at all.
+ *       - *Smart-contract wallets.* `verifyMessage` is ECDSA recovery, so an
+ *         EIP-1271 / ERC-6492 signature from a smart-contract wallet is
+ *         refused rather than mis-verified. It fails closed; supporting it
+ *         means an on-chain `isValidSignature` call, which is P6 work.
+ *
+ *  4. **A match key may carry a per-room nonce** — finding 6-1.
+ *
+ *     `matchKey` is `` `${lobbyId}:${seed}` `` (`state/match.ts:429`), which is
+ *     six lobbies × 900 000 seeds: the reviewer recovered a preimage from an
+ *     on-chain `duelId` by brute force in 30 ms, then squatted the id so the
+ *     real room could never `open()`. `parseMatchKey` therefore also accepts an
+ *     optional third segment — `` `${lobbyId}:${seed}:${nonce}` `` — that the
+ *     derivation ignores entirely and that only has to be unguessable. The
+ *     nonce must begin with a letter, which is what keeps the seed segment
+ *     unambiguous: a tail of pure digits is always the seed, never a nonce.
+ *     Minting one belongs to whatever mints a room; the grammar lives here so
+ *     that adopting it needs no change to this module.
  *
  * Shape and style are `src/server/news.ts`'s, deliberately:
  *  - **Injectable.** `createAttestService({ signer, now, escrow })` — the tests
@@ -51,7 +117,7 @@ import { MODES, MODE_SALT } from "../data/modes.ts";
 import { settle } from "../engine/match.ts";
 import { PARLAY_CARDS, cardById, legForCard, type ParlayCard, type ParlayLeg } from "../engine/parlay.ts";
 import { seededRandom, spinCase } from "../engine/spin.ts";
-import { Wallet, ZeroAddress, getAddress, id, keccak256, toUtf8Bytes } from "ethers";
+import { Wallet, ZeroAddress, getAddress, id, keccak256, toUtf8Bytes, verifyMessage } from "ethers";
 import type { LobbyDef } from "../types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,7 +288,13 @@ export interface AttestDeps {
 }
 
 export interface AttestService {
-  /** `POST /api/lock`. Always resolves, always 200. */
+  /**
+   * `POST /api/lock`. Always resolves, always 200.
+   *
+   * Body: `{ matchKey, picks, a, b?, sig }`. `sig` is `a`'s EIP-191 personal
+   * signature over `lockMessage(matchKey, a, b, picks)` — module docstring,
+   * point 3. Without it the lock is refused `"missing signature"`.
+   */
   handleLock(req: Request): Promise<Response>;
   /** `POST /api/attest`. Always resolves, always 200. */
   handleAttest(req: Request): Promise<Response>;
@@ -293,6 +365,62 @@ export function canonicalPicks(picks: Readonly<Record<string, string>>): string 
 
 export const commitOf = (picks: Readonly<Record<string, string>>): string =>
   keccak256(toUtf8Bytes(canonicalPicks(picks)));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The lock authentication message — X-1
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Versioned, so a future field can be added without any chance that a signature
+ * over the old layout verifies against the new one. It is the first line of the
+ * message rather than a separate field precisely so that it cannot be omitted.
+ */
+export const LOCK_MESSAGE_PREFIX = "THETADUEL_LOCK_V1";
+
+/**
+ * The exact string `a` signs with `personal_sign` to authorise a lock.
+ *
+ *     THETADUEL_LOCK_V1
+ *     matchKey:kz-semis:424242
+ *     a:0x2222222222222222222222222222222222222222
+ *     b:0x3333333333333333333333333333333333333333
+ *     picks:{"AMD":"safe-bull","META":"safe-bull","TSLA":"safe-bear"}
+ *
+ * Five lines joined with `\n`, no trailing newline. Three decisions in it are
+ * load-bearing and would each be a hole if they went the other way:
+ *
+ *  - **Every trusted field is bound.** `matchKey`, both seats and the picks are
+ *    all in the message, so a signature captured off one lock cannot be
+ *    replayed onto different picks, another match or a different opponent. The
+ *    prefix line keeps it from ever colliding with some other message this key
+ *    is asked to sign.
+ *  - **The picks are the canonical serialisation**, not the request's key
+ *    order — the same `canonicalPicks` the commit hashes. The client and the
+ *    server therefore agree on the string without agreeing on JSON key order,
+ *    and the thing signed is the thing committed.
+ *  - **Addresses are EIP-55 checksummed** and an open `b` seat is spelled as
+ *    the zero address. Both are normalisations, so `a` sending lower-case, or
+ *    `b` as `""`, `null` or `0x000…0`, all produce one signable string rather
+ *    than four.
+ *
+ * Exported because a client has to reproduce it byte for byte, and
+ * `test/attest.test.ts` signs with it. Throws on an address that is not one —
+ * the callers below have already checksummed theirs.
+ */
+export function lockMessage(
+  matchKey: string,
+  a: string,
+  b: string | null,
+  picks: Readonly<Record<string, string>>,
+): string {
+  return [
+    LOCK_MESSAGE_PREFIX,
+    `matchKey:${matchKey}`,
+    `a:${getAddress(a)}`,
+    `b:${b ? getAddress(b) : ZeroAddress}`,
+    `picks:${canonicalPicks(picks)}`,
+  ].join("\n");
+}
 
 /** What one match's seed deals. `state/match.ts:364-365`: the book is the
  *  lobby's sectors, and `canPlay` is what keeps `spinCase` from throwing. */
@@ -433,11 +561,27 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const CARD_IDS: ReadonlySet<string> = new Set(PARLAY_CARDS.map((c) => c.id));
 
 /**
+ * A per-room nonce, if the key carries one — finding 6-1.
+ *
+ * Leading letter, then 3-31 more of the same alphabet the match key already
+ * allows. The leading letter is the whole disambiguation rule: a final segment
+ * of pure digits is the SEED and can never be read as a nonce, so every key
+ * the app mints today parses exactly as it did before this existed.
+ */
+const NONCE_RE = /^[A-Za-z][A-Za-z0-9_-]{3,31}$/;
+
+/**
  * Parse and validate `matchKey`.
  *
  * Split on the LAST colon: lobby ids are `[a-z-]+` today and the seed is always
  * digits, but splitting from the right means a lobby id that ever grows a colon
  * still parses the seed correctly rather than silently reading a different one.
+ *
+ * An optional trailing `:${nonce}` is stripped first (finding 6-1) and then
+ * ignored: the nonce exists to make the key — and therefore the `duelId` an
+ * outsider would have to squat — unguessable, and nothing about the derivation
+ * may depend on it. `duelId` is `keccak256` over the WHOLE key, nonce included,
+ * so two rooms on one seed are still two different duels.
  */
 function parseMatchKey(raw: unknown): ParsedKey | { reason: string } {
   if (typeof raw !== "string") return { reason: "missing matchKey" };
@@ -446,10 +590,18 @@ function parseMatchKey(raw: unknown): ParsedKey | { reason: string } {
   if (matchKey.length > MAX_MATCHKEY_LEN) return { reason: "matchKey too long" };
   if (!/^[A-Za-z0-9_.:-]+$/.test(matchKey)) return { reason: "bad matchKey" };
 
-  const cut = matchKey.lastIndexOf(":");
-  if (cut <= 0 || cut === matchKey.length - 1) return { reason: "bad matchKey" };
-  const lobbyId = matchKey.slice(0, cut);
-  const seedRaw = matchKey.slice(cut + 1);
+  // Strip a nonce only when what is left still has a colon to split — so a
+  // two-segment key is never mistaken for a lobby and a nonce with no seed.
+  let core = matchKey;
+  const tailCut = matchKey.lastIndexOf(":");
+  if (tailCut > 0 && NONCE_RE.test(matchKey.slice(tailCut + 1)) && matchKey.lastIndexOf(":", tailCut - 1) > 0) {
+    core = matchKey.slice(0, tailCut);
+  }
+
+  const cut = core.lastIndexOf(":");
+  if (cut <= 0 || cut === core.length - 1) return { reason: "bad matchKey" };
+  const lobbyId = core.slice(0, cut);
+  const seedRaw = core.slice(cut + 1);
 
   const lobby = LOBBIES.find((l) => l.id === lobbyId) ?? null;
   // Only board lobbies are settleable. A lobby you published in your own
@@ -619,6 +771,32 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
     if (got.length !== want.length || got.some((s, i) => s !== want[i])) {
       return { ok: false, reason: `picks must cover exactly: ${want.join(",")}` };
     }
+
+    // AUTHENTICATION — X-1. Last, and deliberately so: everything above has
+    // already been normalised, so what is verified is what would be stored,
+    // and nothing an unauthenticated caller sends can be quietly reinterpreted
+    // after the recovery succeeds. A refusal here returns before `put`, so a
+    // bad signature neither evicts a stored commit nor consumes first-write-
+    // wins — the next caller with a good one still gets the seat.
+    const sigRaw = body["sig"];
+    if (sigRaw === undefined || sigRaw === null || sigRaw === "") {
+      return { ok: false, reason: "missing signature" };
+    }
+    if (typeof sigRaw !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sigRaw.trim())) {
+      return { ok: false, reason: "bad signature" };
+    }
+    const message = lockMessage(matchKey, a.address!, b.address, picks);
+    let recovered: string;
+    try {
+      recovered = verifyMessage(message, sigRaw.trim());
+    } catch {
+      // A well-shaped 65 bytes can still be uninvertible (`r`/`s` out of range,
+      // a `v` that is neither 27 nor 28). That is a bad signature, not a crash.
+      return { ok: false, reason: "bad signature" };
+    }
+    // Both sides are checksummed — `getAddress` above, `verifyMessage` by
+    // construction — so this is a value comparison and not a case comparison.
+    if (recovered !== a.address) return { ok: false, reason: "signature is not a's" };
 
     const commit = commitOf(picks);
     put(locks, duelId, {
