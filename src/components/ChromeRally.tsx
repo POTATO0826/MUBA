@@ -13,8 +13,10 @@ import type { MarketFilter } from "../types.ts";
  *
  *   1. **Scale.** The capsules were 26 units wide in a 300 viewBox: a third of
  *      the card tall and thumb-wide, an ornament arguing with the headline.
- *      Bars are `BAR_W` = 11 now, on a 34-unit pitch, so two thirds of the
- *      rally's footprint is empty field. Negative space is most of the effect.
+ *      Bars are `BAR_W` = 10 now, on a 34-unit pitch, so three quarters of
+ *      the rally's footprint is empty field. Negative space is most of the
+ *      effect — and see `VB`, because a width is only a width once the panel
+ *      has stopped scaling with the card.
  *   2. **Material.** The old bodies were milky bands taped onto tubes: plastic.
  *      Polished metal in a dark room is almost entirely dark — you read the
  *      SHAPE from two things only, a hairline where the edge catches the sky
@@ -31,7 +33,7 @@ import type { MarketFilter } from "../types.ts";
  *      the ambient pool, at 0.055 alpha, where it tints the FIELD rather than
  *      the metal. Identity without the chrome going green.
  *   4. **The fast thing.** A watch film has exactly one: the second hand. Here
- *      it is a 1.3-unit polished line with a white core and a blue bloom,
+ *      it is a 1.1-unit polished line with a white core and a blue bloom,
  *      sliding along the composition's own axis on a 9.2s loop, and each bar's
  *      rim brightens as it goes by (`rimPhase` below — the sync is an
  *      approximation by keyframe offset, not a real intersection test, which
@@ -60,11 +62,32 @@ import type { MarketFilter } from "../types.ts";
  * already URL-safe, so it is the better key on both counts.
  */
 
-/** Square, so the crop is only ever vertical: the cards are ≥264px wide and
- *  exactly 300px tall, and `slice` on a square viewBox trims whichever axis is
- *  short. Everything therefore lives inside x 78–260, y 61–198: right of the
- *  host block, above the stats rule, and inside the 18-unit bite `slice` takes
- *  off each side at the board's narrowest card. */
+/**
+ * The drawing's box, and the single most important number in this file.
+ *
+ * The first ship of this used `viewBox="0 0 300 300"` with `slice` on an
+ * `inset:0` svg, which scales to COVER: on a card wider than it is tall the art
+ * scales with the card's WIDTH. The lobby grids are
+ * `repeat(auto-fill, minmax(300px, 1fr))`, so card width is unbounded — the home
+ * board is already ~380px at a 1600px viewport and the owner's browser was
+ * showing ~580. At 580 every number below was rendering at 1.9x: an 11-unit bar
+ * came out 21 CSS pixels wide, the sweep line came out 310px long, and the
+ * ornament that had been tuned as background walked back into the foreground.
+ * It was the v1 "way off" verdict returning, caused entirely by the fit mode.
+ *
+ * So the panel is anchored to the card's FIXED axis instead. `LobbyCard` sets
+ * `height:300px` and nothing else about a card is fixed, so: a square svg,
+ * `height:100%` + `aspect-ratio:1` (300 x 300 CSS px), `meet`, pinned to the
+ * card's right edge. One user unit is one CSS pixel on a 300px card and on a
+ * 700px card alike; a bar is 10px wide at every viewport the board can produce.
+ * The extra width on a wide card becomes empty wall on the LEFT, which is both
+ * what the reference clip is mostly made of and where the card's copy is
+ * left-aligned — the ornament and the headline stop sharing a column.
+ *
+ * Everything therefore lives inside x 78–260, y 61–198 of that panel: right of
+ * the host block, above the stats rule, and clear of the 18-unit bite the
+ * narrowest card takes off each side.
+ */
 const VB = 300;
 
 /** The composition's axis, from the first bar's waist to the last. The streak
@@ -88,7 +111,7 @@ const ICE_DEEP = "#38bdf8";
 
 /** Bar width, on a 34-unit pitch — see point 1. `HAIR_W` is the wick/stem, and
  *  is sub-pixel at card scale on purpose: it is a suggestion, not a line. */
-const BAR_W = 11;
+const BAR_W = 10;
 const HAIR_W = 1.1;
 /** The tape's stroke, and the diameter of the capsules on its vertices. */
 const SEG_W = 4.6;
@@ -99,7 +122,7 @@ const NODE_W = 9;
  *  bar is wide: the first tuning pass gave a 30-unit candle a 12-unit smear
  *  4 wide, whose bright core was a 1-unit dash lying ACROSS the capsule — the
  *  plastic-tape read, back again at a tenth the size. At 0.45 the core (the
- *  gradient's 40–60% plateau below) runs about 4 units along an 11-wide bar:
+ *  gradient's 40–60% plateau below) runs about 4 units along a 10-wide bar:
  *  ~13% of the bar's length, elongated the way a reflection actually is. */
 const specLen = (len: number) => Math.max(20, len * 0.45);
 
@@ -221,8 +244,11 @@ const TICKS: readonly { x: number; y: number; w: number; dur: number; begin: num
 
 const STREAK_DUR = 9.2;
 /** Far enough out that the loop's teleport happens well off the visible field;
- *  the opacity envelope is the belt to that pair of braces. */
-const STREAK_TRAVEL = 210;
+ *  the opacity envelope is the belt to that pair of braces. Pulled in from 210
+ *  along with the line's own length: the travel sets how far the highlight
+ *  swings OFF the composition's axis, and a long swing is what carried it up
+ *  into the title and down onto the stats rule at the far ends. */
+const STREAK_TRAVEL = 172;
 
 /** Where along the sweep a bar sits, 0…1. Used only to offset that bar's rim
  *  flare so the flares chase the streak left to right; it is a projection onto
@@ -279,10 +305,12 @@ export function ChromeRally({
       aria-hidden
       style={sx("position:absolute;inset:0;overflow:hidden;pointer-events:none")}
     >
+      {/* A square panel as tall as the card, pinned to its right edge — NOT a
+          full-bleed `slice`. See `VB` on why the difference is the whole bug. */}
       <svg
         viewBox={`0 0 ${VB} ${VB}`}
-        preserveAspectRatio="xMidYMid slice"
-        style={sx("position:absolute;inset:0;width:100%;height:100%;display:block")}
+        preserveAspectRatio="xMidYMid meet"
+        style={sx("position:absolute;top:0;right:0;height:100%;aspect-ratio:1;display:block")}
       >
         <defs>
           {/* The body. A cylinder that is barely there: two faint shoulders at
@@ -291,9 +319,9 @@ export function ChromeRally({
               the two defs below this one. */}
           <linearGradient id={`${uid}-body`} x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor="#020305" />
-            <stop offset="17%" stopColor="#0d131b" />
+            <stop offset="17%" stopColor="#0b1017" />
             <stop offset="42%" stopColor="#03050a" />
-            <stop offset="74%" stopColor="#090e15" />
+            <stop offset="74%" stopColor="#080c12" />
             <stop offset="100%" stopColor="#020305" />
           </linearGradient>
 
@@ -344,12 +372,16 @@ export function ChromeRally({
             <stop offset="100%" stopColor={ICE} stopOpacity="0.01" />
           </linearGradient>
 
-          {/* The fast line, along its own length: white core, blue shoulders. */}
+          {/* The fast line, along its own length: white core, blue shoulders.
+              Halved in presence from the first ship — 164 units long at 0.92
+              was a BEAM once the panel was rendering at 1.9x, and a beam over
+              the headline is not a reflection, it is a light leak. 120 long,
+              1.1 thick, 0.62 at the core. */}
           <linearGradient id={`${uid}-streak`} x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor={ICE_DEEP} stopOpacity="0" />
-            <stop offset="36%" stopColor={ICE} stopOpacity="0.3" />
-            <stop offset="50%" stopColor={ICE_CORE} stopOpacity="0.92" />
-            <stop offset="64%" stopColor={ICE} stopOpacity="0.3" />
+            <stop offset="38%" stopColor={ICE} stopOpacity="0.19" />
+            <stop offset="50%" stopColor={ICE_CORE} stopOpacity="0.62" />
+            <stop offset="62%" stopColor={ICE} stopOpacity="0.19" />
             <stop offset="100%" stopColor={ICE_DEEP} stopOpacity="0" />
           </linearGradient>
 
@@ -358,7 +390,7 @@ export function ChromeRally({
               price and no per-card filter region to rasterise. */}
           <linearGradient id={`${uid}-bloom`} x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor={ICE_DEEP} stopOpacity="0" />
-            <stop offset="50%" stopColor={ICE_DEEP} stopOpacity="0.13" />
+            <stop offset="50%" stopColor={ICE_DEEP} stopOpacity="0.07" />
             <stop offset="100%" stopColor={ICE_DEEP} stopOpacity="0" />
           </linearGradient>
 
@@ -525,12 +557,12 @@ export function ChromeRally({
                 fill="none"
                 stroke={`url(#${uid}-rim)`}
                 strokeWidth="0.7"
-                strokeOpacity={still ? 1 : 0.6}
+                strokeOpacity={still ? 0.92 : 0.52}
               >
                 {still ? null : (
                   <animate
                     attributeName="stroke-opacity"
-                    values="1;0.6;0.6;1"
+                    values="0.92;0.52;0.52;0.92"
                     keyTimes="0;0.12;0.88;1"
                     dur={`${STREAK_DUR}s`}
                     begin={`${(-STREAK_DUR * (1 - phase)).toFixed(2)}s`}
@@ -563,13 +595,13 @@ export function ChromeRally({
                 />
               </>
             )}
-            <rect x={VB / 2 - 82} y={AXIS_Y - 3} width="164" height="6" rx="3" fill={`url(#${uid}-bloom)`} />
+            <rect x={VB / 2 - 60} y={AXIS_Y - 2.5} width="120" height="5" rx="2.5" fill={`url(#${uid}-bloom)`} />
             <rect
-              x={VB / 2 - 82}
-              y={AXIS_Y - 0.65}
-              width="164"
-              height="1.3"
-              rx="0.65"
+              x={VB / 2 - 60}
+              y={AXIS_Y - 0.55}
+              width="120"
+              height="1.1"
+              rx="0.55"
               fill={`url(#${uid}-streak)`}
             />
           </g>
