@@ -1,11 +1,12 @@
-import { ChromeCandles } from "../components/ChromeCandles.tsx";
+import { CardArt } from "../components/CardArt.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
-import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
+import { MODES, type ModeSpec } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, bookForSectors, sectorChips, symsOfSector } from "../data/sectors.ts";
 import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, miniTag, tag, wall } from "../theme.ts";
+import { C, MONO, SANS, wall } from "../theme.ts";
+import { ChromeTag } from "./ChromeTag.tsx";
 import type { LobbyDef, SectorKey } from "../types.ts";
 
 /** Native `title` for a sector chip: the card face is too dense for the rich
@@ -87,12 +88,15 @@ export function LobbyCard({
           `border-radius:16px;overflow:hidden;background:${C.card}`,
       )}
     >
-      {/* The gradient wall stays: it is the room the chrome is standing in, and
-          without a lit bed behind them the candles read as black on black. The
-          generative pattern art that used to sit on top of it is gone from the
-          board — `Room.tsx` still draws it, where one big card can carry it. */}
+      {/* The wall, then the card's own generative picture — `CardArt`, back
+          where it was. One wave of this board wore a chrome candlestick
+          ornament here instead; seeing it at a wide viewport the owner asked
+          for the background to go back and for the chrome to move onto the
+          LABELS, which is what `ChromeTag` below now is. Nothing was
+          resurrected to do it: `Room.tsx` never stopped drawing these
+          patterns, so only the call site came back. */}
       <div style={sx(wall(a, b, deg))} />
-      <ChromeCandles id={lobby.id} color={color} />
+      <CardArt id={lobby.id} color={color} />
 
       {/* Hover: three lines over the name. */}
       <div
@@ -131,19 +135,22 @@ export function LobbyCard({
                 </div>
               </div>
             </div>
-            {/* The badge column: what window you are playing, then how many legs. */}
+            {/* The badge column: what window you are playing, then how many
+                legs. BLITZ keeps its pulse — that is a `styles.css` keyframe on
+                the chip itself, and it rides through `extra` because
+                `ChromeTag` has no business knowing the mode vocabulary. */}
             <div style={sx("display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none")}>
-              <span style={sx(`${modeTag(lobby.mode)};white-space:nowrap`)}>
-                {mode.label} · {shortDuration(mode)}
-              </span>
-              <div
-                style={sx(
-                  `font:700 9px/1 ${MONO};letter-spacing:.1em;padding:5px 7px;border-radius:5px;flex:none;` +
-                    `border:1px solid ${C.border};background:rgba(0,0,0,.28);color:${C.muted}`,
-                )}
+              <ChromeTag
+                uid={`${lobby.id}-mode`}
+                color={mode.color}
+                size="mini"
+                extra={lobby.mode === "BLITZ" ? ";animation:vcPulse 1.6s ease-in-out infinite" : ""}
               >
+                {mode.label} · {shortDuration(mode)}
+              </ChromeTag>
+              <ChromeTag uid={`${lobby.id}-legs`} color={C.muted} size="mini">
                 {lobby.legs} LEGS
-              </div>
+              </ChromeTag>
             </div>
           </div>
 
@@ -153,18 +160,38 @@ export function LobbyCard({
                 "display:flex;align-items:center;gap:6px;margin-top:16px;flex-wrap:nowrap;overflow:hidden",
               )}
             >
-              <span style={sx(tag(color))}>{MARKET_LABEL[lobby.market]}</span>
+              <ChromeTag uid={`${lobby.id}-mkt`} color={color}>
+                {MARKET_LABEL[lobby.market]}
+              </ChromeTag>
               {chips.map((chip) => (
-                <span
+                <ChromeTag
                   key={chip.key}
+                  uid={`${lobby.id}-${chip.key}`}
+                  color={chip.color}
+                  size="mini"
                   title={chipTitle(chip.key, chip.label, lobby.sectors)}
-                  style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}
                 >
                   {chip.label}
-                </span>
+                </ChromeTag>
               ))}
             </div>
-            <div style={sx(`margin-top:10px;font:700 21px/1.1 ${SANS};letter-spacing:-.02em;text-shadow:0 2px 12px rgba(0,0,0,.6)`)}>
+            {/* A SECOND `vc-lobby-fade`, nested inside the first, and the fix
+                for a real legibility bug: the stylesheet fades this block to
+                0.18 on hover, but the three detail lines land exactly on the
+                title's line, so a ghost of "Majors only" was printing through
+                "mira.base · CRYPTO · 2 legs · MAJORS" and neither read. The
+                chips can survive at 0.18 — they sit above the details and read
+                as texture. The title cannot: it is the same size and weight as
+                nothing else on the card and it is directly underneath. Nesting
+                the class multiplies the two transitions, 0.18 x 0.18 ≈ 0.03,
+                which is gone rather than faint — and it does it with the rule
+                the stylesheet already ships, so no new CSS, no `:hover` that
+                inline styles cannot express, and no pointer state in React
+                re-rendering six cards on every mouse move. */}
+            <div
+              className="vc-lobby-fade"
+              style={sx(`margin-top:10px;font:700 21px/1.1 ${SANS};letter-spacing:-.02em;text-shadow:0 2px 12px rgba(0,0,0,.6)`)}
+            >
               {lobby.name}
             </div>
           </div>
