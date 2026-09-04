@@ -108,11 +108,25 @@ export function summarize(
   return { mult, prob, potentialPoints: Math.round(stakePoints * mult), loud: prob < LOUD_BELOW };
 }
 
-/** "BTC closes above 100,266 (+4.0%) by Fri expiry". */
+/**
+ * "BTC closes above 100,266 (+4.0%) by Fri expiry".
+ *
+ * The percentage is the move **to the strike**, signed the way a reader expects:
+ * `+` when the line sits above spot, `−` when it sits below. For a leg built
+ * here that is `+t` for an over and `−t` for an under, exactly as it always
+ * printed, because `buildLeg` only ever produces `t >= 0`.
+ *
+ * The signed form is written out rather than assumed because a leg's `t` is not
+ * obliged to be positive. `legState` compares `pct >= t` / `pct <= -t` and is
+ * perfectly happy with a negative one — which is what an already-in-the-money
+ * line is: an over leg that wins unless the tape falls to meet it. The old
+ * two-branch sign would have printed that as `(+-1.2%)`.
+ */
 export function conditionText(leg: ParlayLeg): string {
   const verb = leg.dir === "over" ? "closes above" : "closes below";
-  const sign = leg.dir === "over" ? "+" : "−";
-  return `${leg.sym} ${verb} ${fmtPx(leg.strike)} (${sign}${leg.t.toFixed(1)}%) by Fri expiry`;
+  const move = leg.dir === "over" ? leg.t : -leg.t;
+  const sign = move >= 0 ? "+" : "−";
+  return `${leg.sym} ${verb} ${fmtPx(leg.strike)} (${sign}${Math.abs(move).toFixed(1)}%) by Fri expiry`;
 }
 
 // ---------- the cards ----------

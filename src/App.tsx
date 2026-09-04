@@ -12,6 +12,7 @@ import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
 import { useMatch } from "./state/match.ts";
+import { useOptionBook } from "./state/options.ts";
 import { useDuelStake } from "./state/stake.ts";
 import { useRankProgress } from "./state/rank.ts";
 import { useWire } from "./state/wire.ts";
@@ -95,8 +96,25 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    */
   const stake = useDuelStake(active);
 
+  /**
+   * The live option book, behind `THETADUEL_OPTIONS=on`.
+   *
+   * Read here rather than inside the match because `src/state/match.ts` may not
+   * touch a market source — the determinism scan forbids it, and a match that
+   * could read a book at render time would be a match whose legs depend on the
+   * wall clock. What crosses is the plain frozen value, threaded in beside
+   * `liveSeats`; `useMatch` takes one snapshot of it when a match is dealt and
+   * holds that for the life of the match.
+   *
+   * `undefined` with the flag off, on a seeded source, or when neither ETH nor
+   * BTC has both a spot and a chain — and `undefined` deals exactly the legs the
+   * app has always dealt.
+   */
+  const optionBook = useOptionBook(source);
+
   const { state, derived, actions } = useMatch(route ?? currentRoute(), {
     liveSeats: stake.live,
+    book: optionBook,
   });
   const ledger = useLedger();
   // The rank moment's whole input. Derived from the ledger, so by the time
@@ -334,6 +352,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           // the book's delta sits beside a tier as advice. Neither reaches
           // `derived.myLegs`, `summary` or anything that pays out.
           source={source}
+          // The frozen book, and the one prop on this screen that is not merely
+          // additive: where a ticker has a chain, its cards state the venue's
+          // strike, delta and premium-derived payout instead of the tier table's.
+          // It is the SAME object `derived.myLegs` were priced off, so a card
+          // and the leg behind it cannot disagree.
+          book={derived.optionBook ?? undefined}
           mode={derived.mode}
           opponent={opp}
           arena={derived.arena}

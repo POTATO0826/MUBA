@@ -21,6 +21,7 @@ import {
   type ParlayCard,
   type ParlayLeg,
 } from "../engine/parlay.ts";
+import { optionize, type OptionBook } from "../desk/optionize.ts";
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
 import { sfx } from "../lib/sound/index.ts";
 import type { Route } from "../lib/route.ts";
@@ -170,11 +171,56 @@ export interface MatchOptions {
   /** An on-chain seat is held for this duel, so the opponent's ready must come
    *  from `DuelJoined` (via `actions.oppReady`) rather than from a timer. */
   liveSeats?: boolean;
+  /**
+   * The option book this match's cards are priced off, or `undefined` — and
+   * `undefined` is the default, which is every existing caller and every
+   * existing test.
+   *
+   * **Plain data, and that is the whole seam.** This file may not reach for a
+   * market source, a route or an SDK — the source scan in
+   * `test/determinism.test.ts` forbids naming any of them, and rightly: a match
+   * that could *fetch* would be a match whose legs depend on what a remote host
+   * felt like saying at render time. What arrives here instead is a value
+   * somebody else already read, handed in from `App` exactly the way
+   * `liveSeats` is, and frozen below the moment a match is dealt.
+   *
+   * With it absent, `optionize` returns every leg by identity and this file
+   * behaves — line for line, byte for byte — as it did before options existed.
+   */
+  book?: OptionBook;
 }
 
 export function useMatch(route: Route, options: MatchOptions = {}) {
   const [state, setState] = useState<MatchState>(() => initialState(route));
   const liveSeats = options.liveSeats === true;
+
+  /**
+   * The book, frozen at deal time.
+   *
+   * A quote is a moment. The cards on the pick screen state a strike, a
+   * probability and a payout, and those three numbers must not move under a
+   * player between reading a card and pressing it — so the match takes one
+   * snapshot and keeps it, rather than re-reading a book that refreshes every
+   * thirty seconds.
+   *
+   * "Deal time" is the first render of a `(lobby, seed)` pair that actually has
+   * a book to take, which is the second clause below: a link opened cold mounts
+   * before the market read resolves, and freezing the `undefined` it saw on
+   * frame one would hand every such match a seeded slip for no reason. After
+   * that first capture the book is never replaced — only a new deal replaces it.
+   */
+  const [book, setBook] = useState<OptionBook | null>(null);
+  const bookKey = useRef<string>("");
+  const offered = options.book;
+  useEffect(() => {
+    const key = `${state.lobbyId ?? "none"}:${state.seed}`;
+    if (bookKey.current !== key) {
+      bookKey.current = key;
+      setBook(offered ?? null);
+    } else if (book === null && offered) {
+      setBook(offered);
+    }
+  }, [state.lobbyId, state.seed, offered, book]);
 
   // The clock runs outside React's render, so it reads the tab through a ref.
   const stateRef = useRef(state);
@@ -415,14 +461,35 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
     }
     const allPicked = arena.length > 0 && arena.every((sym) => sym in myPicks);
 
+    /**
+     * A dealt leg, re-denominated in the option that stands for it — or handed
+     * straight back when there is no book, which is the default and is fourteen
+     * of the eighteen board names even when there is one.
+     *
+     * `optionize` swaps five numbers on the leg (`t`, `mult`, `prob`, `px`,
+     * `strike`) and touches nothing else: the ticker, the direction and the tier
+     * are still whatever the seed and the pick decided. So the leg that reaches
+     * `settle`, `summarize` and the tape is the same *shape* either way, and
+     * both paths run the same `legState`.
+     *
+     * The mode's `targetScale` is deliberately not applied on the market path.
+     * It shrinks a *seeded* target so a shorter window has a reachable line; a
+     * listed strike is not ours to shrink, and scaling one would put a number on
+     * the card that no venue quotes. The window premium still rides on the odds
+     * (`spec.oddsBoost`, inside `summarize`) exactly as before.
+     */
+    const priced = (leg: ParlayLeg) => optionize(leg, book);
+
     // A ticker without a pick shows at EVEN, bullish — a preview, not a position.
     const myLegs: readonly ParlayLeg[] = arena.map((sym) =>
-      myPicks[sym]
-        ? legForCard(sym, myPicks[sym]!, spec.targetScale)
-        : buildLeg(sym, "over", "EVEN", spec.targetScale),
+      priced(
+        myPicks[sym]
+          ? legForCard(sym, myPicks[sym]!, spec.targetScale)
+          : buildLeg(sym, "over", "EVEN", spec.targetScale),
+      ),
     );
     const oppLegs: readonly ParlayLeg[] = arena.map((sym) =>
-      legForCard(sym, oppPicks[sym]!, spec.targetScale),
+      priced(legForCard(sym, oppPicks[sym]!, spec.targetScale)),
     );
 
     const stakePoints = lobby ? stakePointsFor(lobby) : 0;
@@ -465,6 +532,16 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
       briefs: briefsFor(arena, studySalt, spec.settleAt),
       /** Identity of this match for anything cached per (lobby, seed) — the news wire. Null-safe: `lobby` can be null mid-render. */
       matchKey: `${state.lobbyId ?? "none"}:${state.seed}`,
+      /**
+       * The book this match was dealt against, frozen — `null` on every seeded
+       * path, which is the default.
+       *
+       * Handed to the pick screen so a card can show *where* its numbers came
+       * from. It is the same object `myLegs` were priced off, deliberately: two
+       * reads of one snapshot cannot disagree, and a card claiming a strike the
+       * leg does not hold would be the worst bug this feature could have.
+       */
+      optionBook: book,
       studySalt,
       fightSalt,
       /** This match's mode spec — the window, the targets, the odds, the clock. */
@@ -492,6 +569,9 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
     state.tick,
     state.deadline,
     state.form.prize,
+    // Frozen at deal time, so this changes at most once per match — and never
+    // at all on the seeded path, where it is `null` for the life of the app.
+    book,
   ]);
 
   // Everything the match plays because state MOVED — the beds, the ready
