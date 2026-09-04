@@ -707,6 +707,92 @@ describe("the spin", () => {
     expect(window.location.pathname).toBe("/battles");
   });
 
+  // ── the slice reveal (plan6 §9 item 19, second half) ──────────────────────
+
+  const testid = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+
+  /**
+   * A source that can actually be measured: a qualified asset, and a book with
+   * fillable orders behind it. Everything `spinSlice` reads arrives through
+   * this object — the engine asks a market nothing.
+   */
+  function gatedSource(): MarketSource {
+    const EXPIRY = 1_788_595_200;
+    const srow = (type: "CALL" | "PUT", strike: number, delta: string): PricingRow => ({
+      type,
+      strike: strike.toLocaleString("en-US"),
+      expiry: "12 SEP",
+      bid: "0.09",
+      ask: "0.11",
+      iv: "58.2%",
+      delta,
+      depth: 40,
+      size: "10.0k",
+      structure: type,
+      order: {
+        order: { price: "1", isBuyer: false, expiry: String(EXPIRY) },
+        rawApiData: { strikes: [String(strike * 10 ** 8)], isCall: type === "CALL" },
+      },
+    });
+    const rows = [
+      srow("CALL", 1900, "0.70"),
+      srow("CALL", 2000, "0.55"),
+      srow("CALL", 2100, "0.30"),
+      srow("CALL", 2200, "0.18"),
+      srow("PUT", 1850, "-0.20"),
+    ];
+    return {
+      id: "thetanuts · base 8453",
+      meta: { ok: true, source: "live", fetchedAt: 1_788_500_000_000 },
+      underlyings: () => ["ETH"],
+      pricing: (u) => (u === "ETH" ? rows : []),
+      mmPricing: () => [],
+      orders: () => [],
+      spot: (u) => (u === "ETH" ? 2000 : null),
+      // The asset gate's answer, as a source carries it. ETH has MM pricing on
+      // Base, which is what grades it DEEP — a difficulty label, never a gate.
+      qualified: () => [
+        { underlying: "ETH", grade: "DEEP", spot: 2000, orders: 9, greeked: 6, depthUsd: 1_180_000 },
+      ],
+    };
+  }
+
+  test("the locked board reveals the arena the seed dealt, graded", async () => {
+    mount("/battles", undefined, gatedSource());
+    acceptLobby();
+    await readyBoth();
+
+    // While the reel is still moving the arena is a spoiler, not news.
+    expect(testid("slice-reveal")).toBeNull();
+
+    click("Skip ↦");
+
+    const reveal = testid("slice-reveal")!;
+    expect(reveal).not.toBeNull();
+    // The one qualified name is the only one the reel could deal an arena on.
+    expect(reveal.textContent).toContain("ETH");
+    // The DEEP/THIN badge, from `ui/LobbyCards.tsx`'s own `GradeTag` — the same
+    // chip the lobby card wears, so the word is learned once.
+    expect(reveal.textContent).toContain("ETH DEEP");
+    // An expiry and a strike WINDOW — never a single line, which would be a
+    // strike chosen for the player.
+    expect(reveal.textContent).toContain("exp ");
+    const window_ = testid("slice-window")!.textContent ?? "";
+    expect(window_).toMatch(/^\$[\d,.]+ – \$[\d,.]+$/);
+    const [lo, hi] = window_.split(" – ").map((s) => Number(s.replace(/[$,]/g, "")));
+    expect(hi!).toBeGreaterThan(lo!);
+  });
+
+  test("no qualified book, no reveal — and the reel still locks", async () => {
+    // The seeded source measures nothing (`qualified: () => []`), so there is no
+    // arena to state. Saying nothing is the correct render; an invented arena
+    // would be the house dealing a market that is not there.
+    mount("/battles");
+    await acceptAndSkip();
+    expect(text()).toContain("locked");
+    expect(testid("slice-reveal")).toBeNull();
+  });
+
   test("once the last leg lands the case study opens on its own, on those tickers", async () => {
     mount("/battles");
     await acceptAndSkip();

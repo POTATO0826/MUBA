@@ -471,6 +471,69 @@ function expiryOf(row: PricingRow): number | null {
 }
 
 /**
+ * The widest slice a chain can support: its front expiry, and the whole listed
+ * strike ladder at that expiry.
+ *
+ * ## Why this is not the reel dealing a window
+ *
+ * `spinSlice` deals arenas — an underlying, an expiry, a *narrowed* strike
+ * window, sometimes a constraint — and everything it decides comes off a seed.
+ * This function decides nothing. It is the **identity window**: every strike the
+ * book lists at the nearest expiry, in, and nothing out. A surface that already
+ * knows which ticker it is showing (the pick screen knows: the reel dealt it)
+ * needs a `MarketSlice` to call {@link cardsForSlice} with, and the honest one
+ * to hand it is "all of this ticker's book" rather than a window nobody spun.
+ *
+ * If a spun slice ever reaches that surface, it replaces this — narrowing is the
+ * reel's job and this is the absence of narrowing, so the two compose rather
+ * than compete.
+ *
+ * The front expiry, and not all of them, because `cardsForSlice` matches one:
+ * two expiries in one window would let a SAFE card expire in three days and the
+ * DEGEN beside it in three weeks, which are not the same bet in different
+ * clothes.
+ *
+ * Filters mirror `cardsForSlice` steps 1–3 exactly — a plain vanilla, a fillable
+ * order, one strike, a real option expiry — so the window can never contain rows
+ * that could never become cards.
+ *
+ * @returns `null` when no row in the chain is dealable at all. Ordinary: the
+ *   seeded fixtures carry no `order` and answer `null` here, which is what keeps
+ *   the offline board on the seeded path.
+ */
+export function fullLadderSlice(
+  underlying: string,
+  rows: readonly PricingRow[],
+): MarketSlice | null {
+  const dealable: { strike: bigint; expiry: number }[] = [];
+  for (const row of rows) {
+    if (row.type !== "CALL" && row.type !== "PUT") continue;
+    if (row.structure !== undefined && row.structure !== row.type) continue;
+    if (!row.order) continue;
+    const strike = strikeUnitsOf(row);
+    if (strike === null) continue;
+    const expiry = expiryOf(row);
+    if (expiry === null) continue;
+    dealable.push({ strike, expiry });
+  }
+  if (dealable.length === 0) return null;
+
+  let expiry = dealable[0]!.expiry;
+  for (const d of dealable) if (d.expiry < expiry) expiry = d.expiry;
+
+  let lo: bigint | null = null;
+  let hi: bigint | null = null;
+  for (const d of dealable) {
+    if (d.expiry !== expiry) continue;
+    if (lo === null || d.strike < lo) lo = d.strike;
+    if (hi === null || d.strike > hi) hi = d.strike;
+  }
+  if (lo === null || hi === null) return null;
+
+  return { underlying, expiry, strikeLo: lo.toString(), strikeHi: hi.toString() };
+}
+
+/**
  * The eight cards a slice deals — **or fewer**.
  *
  * For each of the four tiers crossed with the two stances, in `PARLAY_CARDS`

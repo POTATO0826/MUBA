@@ -20,6 +20,7 @@ import {
   cardsForSlice,
   conditionText,
   degeneracyScore,
+  fullLadderSlice,
   impliedProbability,
   legForCard,
   legsForPicks,
@@ -468,6 +469,66 @@ describe("cardsForSlice", () => {
   test("a malformed slice deals nothing rather than throwing", () => {
     const bad = { ...SLICE, strikeLo: "not-a-number" };
     expect(cardsForSlice([row({ strike: 2250, delta: 0.3, ask: 0.02 })], bad, deps).every((c) => c === null)).toBe(true);
+  });
+});
+
+describe("fullLadderSlice — the identity window", () => {
+  test("spans every listed strike at the front expiry, and names the ticker", () => {
+    const slice = fullLadderSlice("ETH", [
+      row({ strike: 2000, delta: 0.7, ask: 0.05 }),
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ type: "PUT", strike: 1800, delta: -0.2, ask: 0.01 }),
+    ])!;
+    expect(slice.underlying).toBe("ETH");
+    expect(slice.expiry).toBe(EXPIRY);
+    expect(slice.strikeLo).toBe(String(1800 * 10 ** PRICE_DECIMALS));
+    expect(slice.strikeHi).toBe(String(2250 * 10 ** PRICE_DECIMALS));
+    // It narrows nothing: no constraint is dealt, because dealing is the reel's
+    // job and this function makes no decisions at all.
+    expect(slice.constraint).toBeUndefined();
+  });
+
+  test("the window it returns re-deals every card the chain can back", () => {
+    // The property that makes it the identity: filtering the chain through its
+    // own slice loses nothing. A narrower window is a decision; this is not.
+    const rows = [
+      row({ strike: 2000, delta: 0.7, ask: 0.05 }),
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ type: "PUT", strike: 1800, delta: -0.2, ask: 0.01 }),
+    ];
+    const cards = cardsForSlice(rows, fullLadderSlice("ETH", rows)!, deps);
+    expect(cards.filter((c) => c !== null)).toHaveLength(3);
+  });
+
+  test("takes the FRONT expiry and leaves the back one out of the window", () => {
+    // Two expiries in one window would let a SAFE card expire in three days and
+    // the DEGEN beside it in three weeks — not the same bet in different
+    // clothes. `cardsForSlice` matches one expiry, and this picks the near one.
+    const slice = fullLadderSlice("ETH", [
+      row({ strike: 3000, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY }),
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+    ])!;
+    expect(slice.expiry).toBe(EXPIRY);
+    expect(slice.strikeHi).toBe(String(2250 * 10 ** PRICE_DECIMALS));
+  });
+
+  test("a chain with nothing dealable in it answers null, not an empty window", () => {
+    // The seeded fixtures are exactly this shape: rendered rows, no orders. A
+    // null here is what keeps the offline board on the seeded path.
+    expect(fullLadderSlice("ETH", [])).toBeNull();
+    expect(
+      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.3, ask: 0.02, fillable: false })]),
+    ).toBeNull();
+    // A spread has no single line to bet on, and a RANGER is not a vanilla —
+    // neither may set the edge of a window it could never be dealt inside.
+    expect(
+      fullLadderSlice("ETH", [
+        row({ strike: 2250, delta: 0.3, ask: 0.02, strikes: ["225000000000", "240000000000"] }),
+      ]),
+    ).toBeNull();
+    expect(
+      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.3, ask: 0.02, structure: "SPREAD" })]),
+    ).toBeNull();
   });
 });
 

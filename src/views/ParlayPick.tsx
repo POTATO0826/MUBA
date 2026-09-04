@@ -15,23 +15,25 @@ import {
   spotFor,
 } from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
+import { OPTIONS_CHIP, SETTLEMENT_NOTE, type OptionBook } from "../desk/optionize.ts";
 import {
-  OPTIONS_CHIP,
-  SETTLEMENT_NOTE,
-  hasBook,
-  quoteFor,
-  type OptionBook,
-  type OptionQuote,
-} from "../desk/optionize.ts";
-import {
+  COLLATERAL_DECIMALS,
+  CONTRACT_DECIMALS,
   PARLAY_CARDS,
+  PRICE_DECIMALS,
+  REFERENCE_MOVE,
+  cardsForSlice,
   conditionText,
+  fromUnits,
+  fullLadderSlice,
   legForCard,
   slipLabel,
-  tierProb,
+  type LiveCard,
   type ParlayCard,
   type ParlayLeg,
   type ParlaySummary,
+  type PayoutCalculator,
+  type PayoutQuery,
   type Stance,
   type Tier,
 } from "../engine/parlay.ts";
@@ -42,7 +44,7 @@ import { sx } from "../lib/sx.ts";
 import { useCardDetail } from "../state/detail.ts";
 import { C, FEED_STATE, MONO, SANS, sectorColor, stateChip, tag } from "../theme.ts";
 import { DetailToggle } from "../ui/DetailToggle.tsx";
-import type { Player } from "../types.ts";
+import type { Player, PricingRow } from "../types.ts";
 
 /**
  * The four tiers ride four pitches: SAFE 880 · EVEN 988 · SHARP 1174 ·
@@ -65,6 +67,94 @@ export const TIER_COLOR: Record<Tier, string> = {
   DEGEN: C.violet,
 };
 
+/**
+ * The payout math the engine is handed, and the reason it is handed anything.
+ *
+ * `src/engine/parlay.ts` prices a live card as `calculatePayout ÷ premium paid`
+ * (`multipleAt`) and takes the payout function as an **argument** — the
+ * determinism guard forbids the engine from naming the SDK, and it is right to.
+ * So a caller has to supply one, and this is the pick screen's.
+ *
+ * ## What it is: the protocol's vanilla arithmetic, restated
+ *
+ * `client.utils.calculatePayout` is, per `tnuts-test/FINDINGS.md` §"0.3.0
+ * delta", **sync local math** — no RPC, no chain read. For a long vanilla it is
+ * `max(0, settlement − strike) × contracts` (and the mirror for a put), in
+ * collateral decimals. That is what is below, against the identical
+ * `PayoutQuery` contract: lowercase type, 8dp strikes and settlement, 18dp
+ * contracts, collateral out.
+ *
+ * ## Why it is not the SDK's own function *yet*
+ *
+ * The package ships one entry point, and it pulls `axios`, `ethers` and `viem`
+ * behind it. Importing it here to reach a pure arithmetic helper would put a
+ * whole HTTP client and two chain libraries in the browser bundle, and would
+ * make this screen unmountable in a DOM test. The SDK lives on the server side
+ * of this app for exactly that reason (`src/server/thetanuts.ts`).
+ *
+ * **This constant is the one line that changes** the day the payout comes off
+ * the wire beside the rows, or the SDK ships a bundle-safe subpath: the seam
+ * stays, the engine stays untouched, and every multiplier on this screen moves
+ * with it. `test/parlay.test.ts` makes the same choice for the same reason and
+ * says so at its `calc`.
+ *
+ * The two spread types are refused rather than guessed. `assertStrikes` and
+ * `STRIKE_COUNT` already make a spread unreachable from this screen — a card is
+ * one strike or it is not dealt — and a wrong spread convention would not throw,
+ * it would quietly print a wrong multiplier, which is the failure mode this
+ * whole file exists to remove.
+ */
+export const vanillaPayout: PayoutCalculator = (q: PayoutQuery) => {
+  if (q.type !== "call" && q.type !== "put") {
+    throw new Error(`vanillaPayout prices 'call' and 'put' only, not '${q.type}'`);
+  }
+  const strike = fromUnits(q.strikes[0] ?? 0n, q.priceDecimals ?? PRICE_DECIMALS);
+  const settlement = fromUnits(q.settlementPrice, q.priceDecimals ?? PRICE_DECIMALS);
+  const contracts = fromUnits(q.numContracts, q.sizeDecimals ?? CONTRACT_DECIMALS);
+  const intrinsic =
+    q.type === "call" ? Math.max(0, settlement - strike) : Math.max(0, strike - settlement);
+  const collateral = q.collateralDecimals ?? COLLATERAL_DECIMALS;
+  return BigInt(Math.round(intrinsic * contracts * 10 ** collateral));
+};
+
+/**
+ * `"58.2%"` → `0.582`; anything else → `null`.
+ *
+ * The `%` is required. `PricingRow.iv` is a display string in percent from every
+ * producer in the tree, and a bare `"0.58"` could not be told from `"58"` — one
+ * of those renders `IV 0%` beside a real strike and the other `IV 5800%`. A dash
+ * is honest about not knowing; a mis-scaled number is not. Same rule, and the
+ * same reasoning, as `parseIv` in `src/desk/optionize.ts`, which is module-local
+ * there and so cannot be shared without exporting a decoder from a module this
+ * screen no longer prices anything off.
+ */
+function ivOf(row: PricingRow): number | null {
+  const t = String(row.iv ?? "").trim();
+  if (!t.endsWith("%")) return null;
+  const n = Number(t.slice(0, -1).replace(/,/g, "").replace("−", "-"));
+  return Number.isFinite(n) && n > 0 ? +(n / 100).toFixed(6) : null;
+}
+
+/** `2600` → `"2,600"`, `1.45` → `"1.45"`. The label's own formatting: `fmtPx`
+ *  rounds hard above 1,000 because it was written for a scrolling tape. */
+function fmtStrike(v: number): string {
+  if (v < 1) return v.toFixed(4);
+  if (v < 1000) return v.toFixed(2);
+  return Math.round(v).toLocaleString("en-US");
+}
+
+/** `"ETH 2,600 CALL · Δ0.28 · exp 12 SEP · payout at ±25%"` — the provenance
+ *  line, and the stated convention printed where the number it produced is.
+ *  `REFERENCE_MOVE` is a convention, not something the market said, so it is on
+ *  the card as well as in the engine's docblock. */
+function provenanceOf(card: LiveCard): string {
+  const side = card.stance === "bull" ? "CALL" : "PUT";
+  return (
+    `${card.underlying} ${fmtStrike(card.strikeAt)} ${side} · Δ${card.prob.toFixed(2)} · ` +
+    `exp ${card.expiry} · payout at ±${Math.round(REFERENCE_MOVE * 100)}%`
+  );
+}
+
 interface ParlayPickProps {
   lobbyName: string;
   /**
@@ -84,11 +174,23 @@ interface ParlayPickProps {
    * the default and is today's screen exactly.
    *
    * The one prop on this component that is **not** additive. Where a ticker has
-   * a chain, its eight cards state the venue's strike, the venue's delta and a
-   * multiplier derived from the venue's premium, and `p.myLegs` were priced off
-   * this same frozen object upstream — so the card and the leg cannot disagree.
-   * Where a ticker has no chain (fourteen of eighteen board names, always) the
-   * card is the seeded card it has always been, and says so.
+   * a chain, its cards are dealt out of it by `cardsForSlice`: the strike is one
+   * the venue lists, the chance is that option's own delta, the max loss is the
+   * ask a buyer pays, and the multiple is the protocol's payout arithmetic over
+   * that ask (`multipleAt`). Where a ticker has no chain (fourteen of eighteen
+   * board names, always) the card is the seeded card it has always been, and
+   * says so.
+   *
+   * **Its cards, and not always eight of them.** A tier crossed with a stance is
+   * dealt only when a resting order backs it inside that tier's `|delta|` band;
+   * where none does, the slot renders dead, in place. A card that always exists
+   * is the tell that the odds are house-set (plan 6 §A4 step 6).
+   *
+   * The rows are read from HERE and never from `p.source`, deliberately. This
+   * object is frozen at deal time and `p.myLegs` were priced off it upstream, so
+   * the card and the leg cannot disagree; re-reading the polling source would
+   * re-deal a player's cards under them every thirty seconds and let a slot they
+   * had already picked vanish.
    *
    * Nothing here reads a market source, and this object cannot fetch: it is a
    * value `App` already read and `useMatch` already froze.
@@ -185,6 +287,44 @@ export function ParlayPick(p: ParlayPickProps) {
   /** No annotations, no chip — and then this screen is byte-identical to the
    *  one that shipped before live data existed. */
   const anyLive = spots.size > 0;
+
+  /**
+   * The cards the frozen book actually deals, per ticker — index-aligned to
+   * `PARLAY_CARDS`, `null` where the book backs no order in that tier's band.
+   *
+   * This is the pick screen's whole live path, and it is one call:
+   * `cardsForSlice(rows, fullLadderSlice(sym, rows), { calculatePayout, spot })`.
+   * Every number on a card built here is the venue's or is derived from it by
+   * the protocol's own payout arithmetic — there is no clamp, no table and no
+   * invented reference in the chain any more.
+   *
+   * **A ticker enters the map only when its book deals at least one card.** The
+   * degenerate cases — no book, a chain with no fillable orders, a chain whose
+   * every delta falls outside all four bands — all leave it out, and a ticker
+   * that is out renders exactly the eight seeded cards it rendered before any of
+   * this existed. That is deliberate and it is the narrower claim: eight dead
+   * slots would say nothing the SEEDED chip does not already say, and would
+   * delete a playable ticker from a duel that still has to settle. A dead slot
+   * carries information precisely when it sits beside a live sibling — *this*
+   * tier is missing and that one is not — which is the case this keeps.
+   *
+   * Memoised on the frozen book, so it is computed once per match rather than
+   * once per pick: `p.book` is captured at deal time and does not move.
+   */
+  const liveCards = useMemo(() => {
+    const out = new Map<string, readonly (LiveCard | null)[]>();
+    if (!p.book) return out;
+    for (const sym of p.arena) {
+      const rows = p.book.chain[sym] ?? [];
+      const spot = p.book.spot[sym] ?? 0;
+      if (rows.length === 0 || !(spot > 0)) continue;
+      const slice = fullLadderSlice(sym, rows);
+      if (slice === null) continue;
+      const dealt = cardsForSlice(rows, slice, { calculatePayout: vanillaPayout, spot });
+      if (dealt.some((c) => c !== null)) out.set(sym, dealt);
+    }
+    return out;
+  }, [p.arena, p.book]);
 
   /**
    * The pick music, on exactly the room's terms.
@@ -291,6 +431,12 @@ export function ParlayPick(p: ParlayPickProps) {
             const color = sectorColor(u.sector);
             const liveSpot = spots.get(sym) ?? null;
             /**
+             * This ticker's eight slots off the frozen book, or `null` for a
+             * ticker the book deals nothing on — which is the ordinary case and
+             * is the seeded ticker, unchanged.
+             */
+            const dealt = liveCards.get(sym) ?? null;
+            /**
              * Whether this ticker's cards are priced off the book.
              *
              * `undefined` — no book at all — is not the same as "this ticker has
@@ -298,9 +444,14 @@ export function ParlayPick(p: ParlayPickProps) {
              * the second draws a LIVE/SEEDED chip on every ticker header, so a
              * player reading a mixed slip can see at a glance which lines the
              * market wrote and which the game did.
+             *
+             * Read off `dealt` and not off `hasBook`: the chip has to say what
+             * the eight cards under it actually are. A chain that exists but
+             * backs no fillable order deals seeded cards, and a LIVE chip over
+             * them would be the chip lying about the grid it labels.
              */
-            const priced = hasBook(p.book, sym);
-            const pickedQuote = picked ? quoteFor(p.book, sym, picked.tier, picked.stance) : null;
+            const priced = dealt !== null;
+            const pickedCard = picked ? cardAt(dealt, picked.id) : null;
             return (
               <section
                 key={sym}
@@ -346,8 +497,8 @@ export function ParlayPick(p: ParlayPickProps) {
                   <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${picked ? TIER_COLOR[picked.tier] : C.faint}`)}>
                     {picked
                       ? `${picked.label} · ×${
-                          pickedQuote
-                            ? pickedQuote.multiplier.toFixed(2)
+                          pickedCard
+                            ? pickedCard.mult.toFixed(2)
                             : legForCard(sym, picked).mult.toFixed(2)
                         }`
                       : "pick one"}
@@ -355,39 +506,42 @@ export function ParlayPick(p: ParlayPickProps) {
                 </div>
 
                 <div style={sx("display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:12px 16px")}>
-                  {PARLAY_CARDS.map((card) => {
+                  {PARLAY_CARDS.map((card, i) => {
                     const leg = legForCard(sym, card);
                     const tc = TIER_COLOR[card.tier];
                     const on = picked?.id === card.id;
                     /**
-                     * The book's own read on this card's line — advisory, and
-                     * only where a book exists.
+                     * This card, dealt off the frozen book — or `null`.
+                     *
+                     * Two different `null`s, and the grid renders them
+                     * differently. `dealt === null` is "this ticker is seeded",
+                     * and every card below is the seeded card it has always
+                     * been. `dealt[i] === null` on a ticker that IS dealt is
+                     * step 6 of `cardsForSlice`: no resting order backs this
+                     * tier on this side, so the card is **not dealt** and the
+                     * slot renders dead, in the position it would have
+                     * occupied.
+                     */
+                    const live = dealt ? (dealt[i] ?? null) : null;
+                    if (dealt && live === null) {
+                      return <DeadSlot key={card.id} sym={sym} card={card} />;
+                    }
+                    /**
+                     * The `book Δ` second opinion — the book's own read on the
+                     * line this seeded card would build, as advice.
                      *
                      * The ratio is `strike / px`, both taken off the leg the
                      * card would build, which is the leg the duel would settle.
-                     * The card's own delta above it is untouched — the advisory
+                     * The card's own chance above it is untouched — the advisory
                      * cannot move the odds, because it never sees them.
-                     */
-                    /**
-                     * This card, priced off the frozen book — or `null`, which
-                     * is the ordinary case and is the seeded card unchanged.
                      *
-                     * Cheap enough to compute in the render: eight cards over at
-                     * most four tickers, each a single pass over a chain of a
-                     * few dozen rows, on a screen that only re-renders on a
-                     * pick. And it is the same pure call `useMatch` made to
-                     * price `p.myLegs`, over the same frozen object, so the two
-                     * are equal by construction rather than by convention.
+                     * Suppressed on a dealt card. It exists to put the book's
+                     * view *beside* an invented probability; where the
+                     * probability already IS the book's delta, printing it twice
+                     * would read as two sources agreeing when it is one source
+                     * quoted once.
                      */
-                    const quote = quoteFor(p.book, sym, card.tier, card.stance);
-                    /**
-                     * The `book Δ` second opinion, suppressed on a market-priced
-                     * card. It exists to put the book's view *beside* an invented
-                     * probability; where the probability already IS the book's
-                     * delta, printing it twice would read as two sources
-                     * agreeing when it is one source quoted once.
-                     */
-                    const advisory = quote
+                    const advisory = live
                       ? null
                       : bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
                     return (
@@ -417,34 +571,26 @@ export function ParlayPick(p: ParlayPickProps) {
 
                             Every number is the same number the leg carries. On
                             a market-priced card the strike is one the venue
-                            lists, the chance is that option's own delta and the
+                            lists, the chance is that option's own delta, the
                             premium is what a buyer pays — which is exactly the
-                            max loss. On a seeded card there is no premium at
-                            all, and the face prints a dash rather than
-                            inventing one: a made-up dollar figure beside a real
-                            one is worse than an absence. */}
+                            max loss — and the payout is that premium under the
+                            protocol's own payout arithmetic. On a seeded card
+                            there is no premium at all, and the face prints a
+                            dash rather than inventing one: a made-up dollar
+                            figure beside a real one is worse than an absence. */}
                         <ParlayCardFace
                           level={detail.level}
-                          values={faceValues(card.stance, leg, quote)}
+                          values={faceValues(card.stance, leg, live, p.book?.spot[sym] ?? 0)}
                           accent={tc}
                           lead={<span style={sx(tag(tc))}>{card.tier}</span>}
                           testKey={`${sym}:${card.id}`}
                         />
-                        {quote && (
+                        {live && (
                           <div
                             data-testid={`option-${sym}:${card.id}`}
                             style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${LIVE_COLOR}`)}
                           >
-                            {quote.label}
-                          </div>
-                        )}
-                        {quote?.offTarget && (
-                          <div
-                            data-testid={`option-offtarget-${sym}:${card.id}`}
-                            style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${C.amber}`)}
-                          >
-                            thin book · nearest strike misses {card.tier}’s ~
-                            {Math.round(tierProb(card.tier) * 100)}%
+                            {provenanceOf(live)}
                           </div>
                         )}
                         {advisory && (
@@ -503,7 +649,26 @@ export function ParlayPick(p: ParlayPickProps) {
 
             <div style={sx("display:flex;flex-direction:column;gap:8px;padding:12px")}>
               {p.myLegs.map((l) => {
-                const has = Boolean(p.picks[l.sym]);
+                const pick = p.picks[l.sym] ?? null;
+                const has = Boolean(pick);
+                /**
+                 * The multiple the slip prints for this leg.
+                 *
+                 * Read off the dealt card wherever the book dealt one, so the
+                 * row and the card the player pressed cannot print two
+                 * different numbers for the same bet. `l.mult` is the seeded
+                 * leg's fair odds on its band, which is the right number on
+                 * every seeded ticker and is what this falls back to.
+                 *
+                 * Upstream, `optionize()` in `src/state/match.ts` still prices
+                 * `l.mult` off `desk/optionize.multiplierFor` on a
+                 * market-priced leg — the clamped ratio plan 6 retired. Fixing
+                 * that at the source is the durable form of this line and it is
+                 * outside this screen; until then the screen reads the number
+                 * it can defend.
+                 */
+                const dealtCard = pick ? cardAt(liveCards.get(l.sym) ?? null, pick.id) : null;
+                const mult = dealtCard ? dealtCard.mult : l.mult;
                 return (
                   <div
                     key={l.sym}
@@ -513,7 +678,7 @@ export function ParlayPick(p: ParlayPickProps) {
                     <div style={sx("display:flex;align-items:center;justify-content:space-between")}>
                       <span style={sx(`font:700 12px/1 ${MONO}`)}>{l.sym}</span>
                       <span style={sx(`font:700 11px/1 ${MONO};color:${has ? TIER_COLOR[l.tier] : C.faint}`)}>
-                        {has ? `${l.tier} ×${l.mult.toFixed(1)}` : "—"}
+                        {has ? `${l.tier} ×${mult.toFixed(1)}` : "—"}
                       </span>
                     </div>
                     <div style={sx(`margin-top:7px;font:400 10px/1.4 ${MONO};color:${has ? C.textSoft : C.faint}`)}>
@@ -613,20 +778,27 @@ export function ParlayPick(p: ParlayPickProps) {
 }
 
 /**
- * One card's numbers, whichever path priced it.
+ * One card's numbers, whichever path dealt it.
  *
  * The two paths are the same six quantities read off two sources, and this is
  * the single place the choice is made — so a face cannot show a live strike
- * beside a seeded delta. Where the book priced the card every figure is the
- * venue's; where it did not, every figure is the seeded leg's and `premium` is
- * `null`, which is what makes the face print `MAX LOSS —` instead of a number
- * nobody quoted.
+ * beside a seeded delta. Where the book dealt the card every figure is the
+ * venue's or is derived from it by the protocol's payout arithmetic; where it
+ * did not, every figure is the seeded leg's and `premium` is `null`, which is
+ * what makes the face print `MAX LOSS —` instead of a number nobody quoted.
  *
- * `iv` now comes from the quote: the desk layer decodes `PricingRow.iv`'s
- * percent string back to the fraction the face wants, so the ÷100 exactly
- * undoes the server's ×100 and recovers the greek's original value rather
- * than inventing a convention. A row without one yields `undefined`, and the
- * face draws a dash.
+ * **`mult` is the item this whole change exists for.** On a dealt card it is
+ * `LiveCard.mult`, which `cardsForSlice` computed as `multipleAt(card, spot,
+ * REFERENCE_MOVE, calculatePayout)` — the payout at the reference move over the
+ * ask a buyer actually pays. Nothing about it is a table, a clamp or a
+ * midpoint. On a seeded card it is `tierOdds(tier)` = `1 / band midpoint`,
+ * which is the fair price of the seeded game and the only defensible number
+ * where there is no book to read.
+ *
+ * `iv` is decoded off the dealt row's own percent string, so the ÷100 exactly
+ * undoes the server's ×100 and recovers the greek's original value rather than
+ * inventing a convention. A row without one yields `null`, and the face draws a
+ * dash.
  *
  * `theta` stays `null`, and that is a data gap rather than a rendering choice:
  * `rawApiData.greeks` carries it on the wire, but nothing between there and
@@ -638,17 +810,70 @@ export function ParlayPick(p: ParlayPickProps) {
  * first. Rendered verbatim it would print `θ −4.5` next to a `0.09` premium,
  * which is exactly the class of mistake the IV decode exists to prevent.
  */
-function faceValues(stance: Stance, leg: ParlayLeg, quote: OptionQuote | null): FaceValues {
+function faceValues(
+  stance: Stance,
+  leg: ParlayLeg,
+  card: LiveCard | null,
+  spot: number,
+): FaceValues {
   return {
     stance,
-    strike: quote ? quote.strike : leg.strike,
-    spot: quote ? quote.spot : leg.px,
-    prob: quote ? quote.impliedProb : leg.prob,
-    mult: quote ? quote.multiplier : leg.mult,
-    premium: quote ? quote.premium : null,
+    strike: card ? card.strikeAt : leg.strike,
+    spot: card ? spot : leg.px,
+    prob: card ? card.prob : leg.prob,
+    mult: card ? card.mult : leg.mult,
+    premium: card ? card.premium : null,
     theta: null,
-    iv: quote?.iv ?? null,
+    iv: card ? ivOf(card.row) : null,
   };
+}
+
+/** The dealt card with this id, or `null` — for a ticker that dealt nothing,
+ *  and for a slot that came back dead. Index-aligned to `PARLAY_CARDS`, so the
+ *  id lookup is the position lookup. */
+function cardAt(
+  slots: readonly (LiveCard | null)[] | null,
+  id: string,
+): LiveCard | null {
+  if (!slots) return null;
+  const i = PARLAY_CARDS.findIndex((c) => c.id === id);
+  return i < 0 ? null : (slots[i] ?? null);
+}
+
+/**
+ * A card the book did not deal, drawn in the place it would have occupied.
+ *
+ * Not a button, not pressable, and not a smaller cell: the grid keeps its shape
+ * so the absence is legible as an absence — *this* tier is missing on this side
+ * and the one beside it is not. A card that always exists is the tell that the
+ * odds are house-set (plan 6 §A4 step 6), and this is the render that stops
+ * this screen making that claim.
+ *
+ * It says why, in the book's terms: no resting order in this tier's `|delta|`
+ * band on this side, at this expiry, inside this window. That is a true
+ * statement about the market at deal time and it is more informative than the
+ * eight cards it replaces one of.
+ */
+function DeadSlot({ sym, card }: { sym: string; card: ParlayCard }) {
+  const tc = TIER_COLOR[card.tier];
+  return (
+    <div
+      data-parlay-dead={`${sym}:${card.id}`}
+      aria-disabled
+      style={sx(
+        "text-align:left;position:relative;padding:12px;border-radius:10px;" +
+          `border:1px dashed ${C.borderMid};background:${C.bg};opacity:.72`,
+      )}
+    >
+      <span style={sx(`${tag(tc)};opacity:.5`)}>{card.tier}</span>
+      <div style={sx(`margin-top:8px;font:700 11px/1.3 ${MONO};color:${C.faint}`)}>
+        {card.stance === "bull" ? "BULLISH" : "BEARISH"} · NOT DEALT
+      </div>
+      <div style={sx(`margin-top:6px;font:400 9.5px/1.4 ${MONO};color:${C.dim}`)}>
+        no resting {card.stance === "bull" ? "call" : "put"} in {card.tier}’s band
+      </div>
+    </div>
+  );
 }
 
 function Stat({ label, value, color, testid }: { label: string; value: string; color?: string; testid: string }) {

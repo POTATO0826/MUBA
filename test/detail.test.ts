@@ -62,8 +62,18 @@ import {
 } from "../src/components/ParlayCardFace.tsx";
 import { mockMarketSource } from "../src/data/market.ts";
 import { MODES } from "../src/data/modes.ts";
-import { PARLAY_CARDS, legForCard, summarize } from "../src/engine/parlay.ts";
-import { ParlayPick } from "../src/views/ParlayPick.tsx";
+import {
+  PARLAY_CARDS,
+  PRICE_DECIMALS,
+  REFERENCE_MOVE,
+  legForCard,
+  multipleAt,
+  summarize,
+  type LiveCard,
+} from "../src/engine/parlay.ts";
+import type { OptionBook } from "../src/desk/optionize.ts";
+import { ParlayPick, vanillaPayout } from "../src/views/ParlayPick.tsx";
+import type { PricingRow } from "../src/types.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const rel = (p: string) => relative(ROOT, p).replaceAll("\\", "/");
@@ -833,6 +843,224 @@ describe("the parlay screen wears the toggle and the faces obey it", () => {
       // eight cards rather than dealing a number the book never quoted.
       expect(card.querySelector('[data-q="maxLoss"]')?.textContent).toBe(`MAX LOSS ${DASH}`);
     }
+    unmount();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// plan6 §9 items 2 and 8 — the live card path, on screen
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The two claims this block exists to make true of the RUNNING SCREEN rather
+ * than of a unit test (`docs/plan6-audit.md` items 2 and 8):
+ *
+ *  - **provenance** — a rendered multiplier is `multipleAt(card, spot,
+ *    REFERENCE_MOVE, calculatePayout)`, i.e. the protocol's payout arithmetic
+ *    over the ask a buyer actually pays. Asserted by *equality with the engine
+ *    function*, not by a copied literal, and additionally against the number the
+ *    retired path would have printed — so this cannot pass by coincidence.
+ *  - **the dead slot** — a tier/stance no resting order backs renders dead, in
+ *    the position it would have occupied, and is not pressable.
+ */
+describe("the live card path — the multiplier's provenance and the dead slot", () => {
+  const OPPONENT = { name: "KZ", initial: "K", bg: "#6366f1" };
+  const SPOT = 2000;
+  const EXPIRY = 1_788_595_200;
+
+  /** One fillable live row, the shape `buildSnapshot` builds. */
+  function liveRow(o: {
+    type: "CALL" | "PUT";
+    strike: number;
+    delta: number;
+    ask: number;
+  }): PricingRow {
+    return {
+      type: o.type,
+      strike: o.strike.toLocaleString("en-US"),
+      expiry: "12 SEP",
+      bid: (o.ask * 0.98).toFixed(4),
+      ask: o.ask.toFixed(4),
+      iv: "58.2%",
+      delta: o.delta.toFixed(2),
+      depth: 40,
+      size: "10.0k",
+      structure: o.type,
+      order: {
+        order: { price: "1", isBuyer: false, expiry: String(EXPIRY) },
+        rawApiData: {
+          strikes: [String(Math.round(o.strike * 10 ** PRICE_DECIMALS))],
+          isCall: o.type === "CALL",
+        },
+      },
+    };
+  }
+
+  /**
+   * Three orders, three tiers, five holes.
+   *
+   * SAFE bull (Δ0.70), SHARP bull (Δ0.30) and DEGEN bear (Δ|0.20|) are backed;
+   * nothing backs EVEN on either side, SAFE/SHARP bear, or DEGEN bull. That is
+   * a completely ordinary shape for a book on Base — one side of a wing is
+   * simply not quoted — and it is the shape the dead slot exists for.
+   */
+  const CHAIN = [
+    liveRow({ type: "CALL", strike: 1900, delta: 0.7, ask: 60 }),
+    liveRow({ type: "CALL", strike: 2100, delta: 0.3, ask: 20 }),
+    liveRow({ type: "PUT", strike: 1850, delta: -0.2, ask: 15 }),
+  ];
+
+  const BOOK: OptionBook = {
+    at: 1_788_500_000_000,
+    source: "live",
+    spot: { ETH: SPOT },
+    chain: { ETH: CHAIN },
+  };
+
+  function pickScreen(book?: OptionBook) {
+    const arena = ["ETH"] as const;
+    const legs = arena.map((s) => legForCard(s, PARLAY_CARDS[0]!));
+    mount(
+      createElement(ParlayPick, {
+        lobbyName: "T",
+        source: mockMarketSource,
+        book,
+        mode: MODES.NORMAL,
+        opponent: OPPONENT,
+        arena,
+        picks: {},
+        allPicked: false,
+        secondsLeft: null,
+        myLegs: legs,
+        summary: summarize(legs, 100),
+        stakePoints: 100,
+        prizeLabel: "1,000",
+        onPick: () => {},
+        onLock: () => {},
+      }),
+    );
+  }
+
+  /** The whole payout row. With a premium on the face it reads `WIN $400` with
+   *  the multiple as its aside; with none it is the multiple alone — so the row
+   *  is the thing to read, and the multiple is asserted inside it. */
+  const payoutOf = (id: string) =>
+    container.querySelector(`[data-testid="payout-ETH:${id}"]`)?.textContent ?? "";
+
+  const slot = (id: string) =>
+    container.querySelector<HTMLElement>(`[data-parlay="ETH:${id}"]`) ??
+    container.querySelector<HTMLElement>(`[data-parlay-dead="ETH:${id}"]`);
+
+  test("a dealt card's payout is exactly `multipleAt` over the live ask — not the retired ratio", () => {
+    pickScreen(BOOK);
+
+    // The engine's own answer, computed here from the same inputs the screen
+    // was handed. Equality with THIS is the provenance claim; a literal would
+    // only pin today's arithmetic.
+    const card: LiveCard = {
+      ...PARLAY_CARDS.find((c) => c.id === "sharp-bull")!,
+      underlying: "ETH",
+      strike: "2,100",
+      strikeAt: 2100,
+      expiry: "12 SEP",
+      expiryAt: EXPIRY,
+      prob: 0.3,
+      premium: 20,
+      mult: 0,
+      mark: null,
+      row: CHAIN[1]!,
+    };
+    const expected = multipleAt(card, SPOT, REFERENCE_MOVE, vanillaPayout);
+    // Worked by hand as well: ETH 2,000 +25% settles at 2,500; a 2,100 call is
+    // worth 400 there; at a 20 premium that is ×20.
+    expect(expected).toBeCloseTo(20, 8);
+    expect(payoutOf("sharp-bull")).toContain(`×${expected.toFixed(2)}`);
+    // The same number in dollars, beside it: 20 of premium at ×20.
+    expect(payoutOf("sharp-bull")).toContain("$400");
+
+    // …and it is NOT what the screen printed before. `desk/optionize`'s
+    // `multiplierFor` reads 0.25 × 2100/2000 ÷ 20 = 0.013, clamped up to its
+    // MULT_MIN floor of 1.05 — the hand-rolled ratio plan 6 §9.2 retired. The
+    // seeded fallback (`tierOdds("SHARP")` = 1/0.35) would print ×2.86.
+    expect(payoutOf("sharp-bull")).not.toContain("×1.05");
+    expect(payoutOf("sharp-bull")).not.toContain("×2.86");
+
+    // The max loss beside it is the ask itself, which is what a bought option
+    // can cost you and not a cent more.
+    expect(text("max-loss-ETH:sharp-bull")).toContain("20");
+    unmount();
+  });
+
+  test("every dealt card carries its own provenance line, with the stated reference move", () => {
+    pickScreen(BOOK);
+    const line = container.querySelector('[data-testid="option-ETH:sharp-bull"]')?.textContent ?? "";
+    expect(line).toContain("ETH 2,100 CALL");
+    expect(line).toContain("Δ0.30");
+    expect(line).toContain("exp 12 SEP");
+    // The convention the multiple was read at, on the card as well as in the
+    // engine's docblock — it is a stated convention, not something the market
+    // said.
+    expect(line).toContain(`±${Math.round(REFERENCE_MOVE * 100)}%`);
+    unmount();
+  });
+
+  test("a tier no resting order backs renders a dead slot, in place, and cannot be pressed", () => {
+    pickScreen(BOOK);
+
+    // The grid still holds exactly eight slots, in `PARLAY_CARDS` order.
+    const grid = [
+      ...container.querySelectorAll<HTMLElement>("[data-parlay],[data-parlay-dead]"),
+    ];
+    expect(grid).toHaveLength(PARLAY_CARDS.length);
+    expect(
+      grid.map((el) => el.dataset.parlay ?? el.dataset.parlayDead),
+    ).toEqual(PARLAY_CARDS.map((c) => `ETH:${c.id}`));
+
+    // Three backed, five dead — and the five are the ones with no order.
+    const dealt = [...container.querySelectorAll("[data-parlay]")].map(
+      (el) => (el as HTMLElement).dataset.parlay,
+    );
+    expect(dealt).toEqual(["ETH:safe-bull", "ETH:sharp-bull", "ETH:degen-bear"]);
+
+    // A missing DEGEN BULLISH is a true statement about the book (plan 6 §A4
+    // step 6): it says so, it is not a button, and pressing is not on offer.
+    const dead = slot("degen-bull")!;
+    expect(dead).not.toBeNull();
+    expect(dead.tagName).not.toBe("BUTTON");
+    expect(dead.querySelector("button")).toBeNull();
+    expect(dead.getAttribute("aria-disabled")).not.toBeNull();
+    expect(dead.textContent).toContain("NOT DEALT");
+    // …and the header chip agrees with the grid under it.
+    expect(text("book-state-ETH")).toBe("LIVE");
+    unmount();
+  });
+
+  test("with no book the screen is the seeded screen — eight cards, no dead slot", () => {
+    pickScreen();
+    expect(container.querySelectorAll("[data-parlay]")).toHaveLength(PARLAY_CARDS.length);
+    expect(container.querySelectorAll("[data-parlay-dead]")).toHaveLength(0);
+    // Seeded fair odds on SHARP's band midpoint: 1/0.35 = ×2.86.
+    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    expect(container.querySelector('[data-testid="option-ETH:sharp-bull"]')).toBeNull();
+    unmount();
+  });
+
+  test("a chain with no fillable order deals nothing, and that ticker stays seeded", () => {
+    // The seeded fixtures are exactly this: rendered rows, no `order`. A book
+    // that cannot back a single card must not empty the grid — it must leave
+    // the ticker exactly where it was, and the chip must say SEEDED rather than
+    // labelling seeded cards LIVE.
+    const unfillable: OptionBook = {
+      at: 1,
+      source: "live",
+      spot: { ETH: SPOT },
+      chain: { ETH: mockMarketSource.pricing("ETH") },
+    };
+    pickScreen(unfillable);
+    expect(container.querySelectorAll("[data-parlay]")).toHaveLength(PARLAY_CARDS.length);
+    expect(container.querySelectorAll("[data-parlay-dead]")).toHaveLength(0);
+    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    expect(text("book-state-ETH")).toBe("SEEDED");
     unmount();
   });
 });

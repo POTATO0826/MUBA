@@ -1,13 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MarketSource } from "../data/market.ts";
+import { gradeIndex, qualifiedNames, sliceBookOf, type MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
 import { LIVE_COLOR, SPOT_CHIP, liveTag, spotChipSx, spotFor, spotPair } from "../data/spot.ts";
-import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
+import { PRICE_DECIMALS, fromUnits } from "../engine/parlay.ts";
+import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, spinSlice, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, tickParams } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
-import type { Asset, Player } from "../types.ts";
+import { GradeTag } from "../ui/LobbyCards.tsx";
+import type { Asset, MarketSlice, Player } from "../types.ts";
+
+/**
+ * `1789113600` → `"12 SEP"`.
+ *
+ * Day then month, because that is the order `PricingRow.expiry` already prints
+ * in and a reveal that said `SEP 12` beside a chain that says `12 SEP` would be
+ * two conventions for one date. UTC, because the expiry is a chain timestamp
+ * and a viewer's timezone must not be able to move an option's expiry by a day.
+ */
+function expiryLabel(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const month = d
+    .toLocaleDateString("en-US", { month: "short", timeZone: "UTC" })
+    .toUpperCase();
+  return `${day} ${month}`;
+}
+
+/** `"$2,000 – $2,800"`. The window the reel dealt, decoded off the slice's own
+ *  8dp integers — the encoding `rawApiData.strikes` uses, so nothing here does a
+ *  float round trip the engine deliberately avoided. */
+function strikeWindow(slice: MarketSlice): string {
+  const lo = fromUnits(BigInt(slice.strikeLo), PRICE_DECIMALS);
+  const hi = fromUnits(BigInt(slice.strikeHi), PRICE_DECIMALS);
+  return `$${fmtPx(lo)} – $${fmtPx(hi)}`;
+}
 
 const SPIN_MS = 3200;
 /** Pause between one landing and the next spin, so each slot registers. */
@@ -21,11 +49,22 @@ const ease = (t: number) => 1 - Math.pow(1 - t, 5);
 interface MatchSpinProps {
   lobbyName: string;
   /**
-   * The live book, read for spot only. The reel's *prices* stay seeded — they
-   * are `Asset.px` from `universe.ts` and the tape settles on them — and a live
-   * print, where Thetanuts publishes one, is annotated beside them under the
-   * `LIVE SPOT · SEEDED TAPE` chip. Most of the board has no live print and
-   * renders exactly as it always has.
+   * The live book. Two reads, both display-only:
+   *
+   *  1. **spot**, beside the reel's seeded prices. The reel's *prices* stay
+   *     seeded — they are `Asset.px` from `universe.ts` and the tape settles on
+   *     them — and a live print, where Thetanuts publishes one, is annotated
+   *     under the `LIVE SPOT · SEEDED TAPE` chip. Most of the board has no live
+   *     print and renders exactly as it always has.
+   *  2. **the arena**, once the board locks: `spinSlice(sliceBookOf(source),
+   *     qualifiedNames(source), seed)` deals an underlying, an expiry and a
+   *     strike window off this book and this match's own seed, and
+   *     `gradeIndex(source)` says how deep that name's book is. Both are
+   *     computed on this side of the engine boundary and handed in as data —
+   *     the engine may not ask a market anything, and does not.
+   *
+   * Neither read touches which tickers the reel deals: that is `spinCase` and
+   * the seed, and it never sees this object.
    */
   source: MarketSource;
   marketLabel: string;
@@ -185,6 +224,37 @@ export function MatchSpin(p: MatchSpinProps) {
   /** The chip only appears once there is something on screen for it to explain. */
   const anyLive = spots.size > 0;
   const shownLive = spots.get(shown.sym) ?? null;
+
+  /**
+   * The arena this seed deals off today's book, or `null`.
+   *
+   * `null` is a **correct render, not an error state**: offline, a dead market
+   * route, a seeded source, or a day the asset gate qualifies nothing all
+   * answer it, and the honest response is to say nothing about a market that is
+   * not there. The reel still spun, the slots are still filled, and the seeded
+   * duel still plays — the reveal is additive and its absence takes nothing
+   * away.
+   *
+   * The seed is the match's own (`p.result.seed`), so the arena replays from a
+   * shared `?seed=N` URL exactly as the tickers do.
+   */
+  const slice = useMemo(
+    () => spinSlice(sliceBookOf(p.source), qualifiedNames(p.source), p.result.seed),
+    [p.source, p.result.seed],
+  );
+  /**
+   * The dealt name's grade, or `null`.
+   *
+   * `gradeIndex` holds **only qualified assets**, so a miss is "not graded",
+   * never "graded THIN" — a `?? "THIN"` here would print a measurement nobody
+   * made. `spinSlice` deals only out of `qualifiedNames`, so the lookup hits in
+   * practice; the `null` branch is what keeps that a consequence rather than an
+   * assumption.
+   */
+  const grade = useMemo(
+    () => (slice ? (gradeIndex(p.source)[slice.underlying] ?? null) : null),
+    [p.source, slice],
+  );
 
   const status = done
     ? "locked"
@@ -403,6 +473,50 @@ export function MatchSpin(p: MatchSpinProps) {
             );
           })}
         </div>
+
+        {/* The slice reveal. Only once the board is locked — while the reel is
+            still moving the arena is not news, it is a spoiler — and only when
+            there is a book to have dealt one. */}
+        {done && slice && (
+          <div
+            data-testid="slice-reveal"
+            style={sx(
+              `display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 18px 0;` +
+                `padding:10px 12px;border:1px solid ${C.border};border-radius:10px;background:${C.panel}`,
+            )}
+          >
+            <span style={sx(`font:500 8.5px/1 ${MONO};letter-spacing:.14em;color:${C.dim}`)}>
+              THE ARENA
+            </span>
+            <span style={sx(`font:700 13px/1 ${MONO};color:${C.text}`)}>{slice.underlying}</span>
+            {/* The same badge the lobby card wears, from the same component —
+                a player who learned what THIN means on the board does not learn
+                it again here. Absent rather than defaulted when the name is not
+                in the graded set. */}
+            {grade && (
+              <GradeTag
+                uid={`spin-grade-${slice.underlying}`}
+                underlying={slice.underlying}
+                grade={grade}
+              />
+            )}
+            <span style={sx(`font:500 10px/1 ${MONO};color:${C.muted}`)}>
+              exp {expiryLabel(slice.expiry)}
+            </span>
+            <span data-testid="slice-window" style={sx(`font:500 10px/1 ${MONO};color:${C.muted}`)}>
+              {strikeWindow(slice)}
+            </span>
+            {slice.constraint && (
+              <span data-testid="slice-constraint" style={sx(tag(C.amber))}>
+                {slice.constraint.replace(/_/g, " ")}
+              </span>
+            )}
+            <div style={sx("flex:1")} />
+            <span style={sx(`font:400 9.5px/1.4 ${MONO};color:${C.faint}`)}>
+              the room · not the line
+            </span>
+          </div>
+        )}
 
         <div style={sx("display:flex;align-items:center;gap:12px;padding:12px 18px 16px")}>
           <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};max-width:380px`)}>
