@@ -3,6 +3,7 @@ import { CursorField } from "../components/CursorField.tsx";
 import { DitherReveal } from "../components/DitherReveal.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
+import type { Grade } from "../data/qualify.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, FEED_STATE, MONO, SANS } from "../theme.ts";
@@ -15,10 +16,14 @@ interface LobbyProps {
   onCreate: () => void;
   onAccept: (id: string) => void;
   onStart: (id: string) => void;
+  /** Today's measured grades, whole — `gradeIndex(source)`. Threaded straight
+   *  to the card, which takes its own names out of it; absent means no book was
+   *  read, which the card renders as no chip rather than as THIN. */
+  grades?: Readonly<Record<string, Grade>>;
 }
 
 /** Home: the hero, the biggest payoffs, and a taste of the board. */
-export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart }: LobbyProps) {
+export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart, grades }: LobbyProps) {
   const featured = lobbies.slice(0, 4);
 
   return (
@@ -46,7 +51,13 @@ export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart }: Lob
         </div>
         <div style={sx("display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px")}>
           {featured.map((l) => (
-            <LobbyCard key={l.id} lobby={l} onAccept={() => onAccept(l.id)} onStart={() => onStart(l.id)} />
+            <LobbyCard
+              key={l.id}
+              lobby={l}
+              onAccept={() => onAccept(l.id)}
+              onStart={() => onStart(l.id)}
+              grades={grades}
+            />
           ))}
         </div>
       </section>

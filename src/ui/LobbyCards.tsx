@@ -8,6 +8,7 @@ import {
   GRADE_COLOR,
   SECTORS,
   SECTOR_ORDER,
+  bookForSectors,
   sectorChips,
   symsOfSector,
 } from "../data/sectors.ts";
@@ -45,11 +46,37 @@ const shortDuration = (m: ModeSpec): string =>
   m.minutes < 60 ? `${m.minutes}M` : `${m.minutes / 60}H`;
 
 /**
+ * What an asset with no measurement behind it says.
+ *
+ * Character for character `CreateLobby.tsx`'s own `UNGRADED_LABEL` /
+ * `UNGRADED_BLURB` (`:226`, `:228`), and deliberately so: the create screen and
+ * the board must make the same statement about the same absence, and a second
+ * wording would be a second treatment. It is **not** a third grade — `Grade` has
+ * two members and both are verdicts about depth; this is the absence of one, so
+ * it wears `C.faint` rather than a grade colour and carries no blurb about
+ * spreads, because nobody looked.
+ *
+ * (It is duplicated rather than imported because the import would point a `ui/`
+ * primitive at a `views/` screen — the wrong direction. This module is the one
+ * both screens already read the badge from, so if the two are ever unified this
+ * is the copy that stays.)
+ */
+export const UNGRADED_LABEL = "NOT GRADED";
+const UNGRADED_BLURB =
+  "not graded — this asset is not in today's measured set, so nothing is known about its depth";
+
+/**
  * The DEEP/THIN badge, in the one place it is defined.
  *
  * Exported because the lobby card and the slice reveal must render the same
  * grade the same way — a player who learns what THIN means on the board should
  * not have to learn it again when the reel stops.
+ *
+ * `grade: null` is the third state and the reason this component takes it at
+ * all: `gradeIndex` holds **only qualified assets**, so a symbol that misses is
+ * "not graded", never "graded THIN". Making the absence renderable here is what
+ * stops a caller reaching for `?? "THIN"` — a measurement nobody made — the way
+ * `CreateLobby` did before `e91d177`.
  */
 export function GradeTag({
   uid,
@@ -60,16 +87,17 @@ export function GradeTag({
    *  and two chips sharing one id share one specular. */
   uid: string;
   underlying: string;
-  grade: Grade;
+  /** The verdict, or `null` for "the gate did not qualify this name". */
+  grade: Grade | null;
 }) {
   return (
     <ChromeTag
       uid={uid}
-      color={GRADE_COLOR[grade]}
+      color={grade ? GRADE_COLOR[grade] : C.faint}
       size="mini"
-      title={`${underlying} — ${GRADE_BLURB[grade]}`}
+      title={`${underlying} — ${grade ? GRADE_BLURB[grade] : UNGRADED_BLURB}`}
     >
-      {underlying} {grade}
+      {underlying} {grade ?? UNGRADED_LABEL}
     </ChromeTag>
   );
 }
@@ -84,13 +112,22 @@ export function LobbyCard({
   onAccept: () => void;
   onStart: () => void;
   /**
-   * The live grade of each underlying this lobby would deal, when the caller
-   * has a book to grade them against — `qualifiedAssets()` keyed by symbol.
+   * Today's grades — `gradeIndex(source)`, i.e. `qualifiedAssets()` keyed by
+   * symbol, **whole**. The card takes its own names out of it rather than
+   * asking the caller to narrow it, so `<LobbyCard grades={assetGrades} />` is
+   * the only wiring at either call site and no screen can hand one card another
+   * card's book.
    *
    * Optional, and absent means "we did not read a book", which is a different
-   * statement from "the book is thin" and must not render as one. The seeded
-   * board carries no grade at all: `data/universe.ts`'s eighteen rows are a
-   * replay fixture, and grading a fixture would be inventing depth.
+   * statement from "the book is thin" and must not render as one — absent
+   * renders no chip at all. `{}` is the other honest answer, "a book was read
+   * and nothing qualified", and it renders NOT GRADED beside the names this
+   * lobby would still deal, exactly as `/create` greys a group *with a reason*
+   * rather than hiding it.
+   *
+   * A miss inside a present map is never `?? "THIN"`: `gradeIndex` holds only
+   * qualified assets, so a missing symbol has not been graded thin, it has not
+   * been graded. See {@link GradeTag}.
    */
   grades?: Readonly<Record<string, Grade>>;
 }) {
@@ -121,8 +158,21 @@ export function LobbyCard({
   // markup that could only ever say "false". What replaces it is the DEEP/THIN
   // grade below: not "does this asset exist" but "how deep is it today".
   const chips = sectorChips(lobby.sectors, 2);
-  // Stable order, so two renders of the same card are the same markup.
-  const graded = Object.entries(grades ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  /**
+   * The two names this lobby leads with, graded.
+   *
+   * **The lobby's own book, not the whole index.** `bookForSectors` is the same
+   * function the spin deals from and `CreateLobby`'s book line prints, so the
+   * card names assets this lobby could actually deal and a MEME-only lobby can
+   * never wear ETH's grade. Its order is `LIVE_BOARD`'s canonical one — stable,
+   * so two renders of the same card are the same markup, and meaningful, unlike
+   * an alphabetical sort that would lead every majors lobby with AVAX.
+   *
+   * Two, because the card is 264px wide and the point is the signal rather than
+   * the inventory; the full six, with their reasons, are one screen away on
+   * /create.
+   */
+  const graded = grades ? bookForSectors(lobby.sectors).slice(0, 2) : [];
   const mode = MODES[lobby.mode];
   const picked = new Set(lobby.sectors);
   const sectorLine = SECTOR_ORDER.filter((k) => picked.has(k))
@@ -236,12 +286,12 @@ export function LobbyCard({
                   that this lobby is about to deal from, before anyone sits
                   down. Two at most: the card is 264px wide and the point is the
                   signal, not the inventory. */}
-              {graded.slice(0, 2).map(([underlying, grade]) => (
+              {graded.map((underlying) => (
                 <GradeTag
                   key={underlying}
                   uid={`${lobby.id}-grade-${underlying}`}
                   underlying={underlying}
-                  grade={grade}
+                  grade={grades?.[underlying] ?? null}
                 />
               ))}
             </div>

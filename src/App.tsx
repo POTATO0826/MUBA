@@ -6,6 +6,7 @@ import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/
 import type { RoomView } from "./data/room.ts";
 import type { WalletSource } from "./data/wallet.ts";
 import {
+  gradeIndex,
   ladderOf,
   qualifiedAssetsOf,
   qualifiedNames,
@@ -151,6 +152,21 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    * never imported.
    */
   const liveAssets = qualifiedAssetsOf(source);
+
+  /**
+   * The same measurement, keyed by symbol — what the lobby board wears.
+   *
+   * `gradeIndex` is a projection of `liveAssets`, not a second reading of the
+   * book, so the grade a card shows and the grade `/create` shows are one
+   * number. Not memoised, for the reason above it: it is a loop over an array
+   * the source already holds, and a `useMemo` would cost more than it saved.
+   *
+   * It contains **only qualified assets**. A lobby name that misses is "not
+   * graded", never `?? "THIN"` — `LobbyCard` and `GradeTag` hold that line, and
+   * this is the third caller (with `CreateLobby` and the slice reveal) reading
+   * the one index rather than inventing a depth per screen.
+   */
+  const assetGrades = gradeIndex(source);
 
   const { state, derived, actions } = useMatch(route ?? currentRoute(), {
     liveSeats: stake.live,
@@ -586,6 +602,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           onCreate={actions.go("create")}
           onAccept={accept}
           onStart={start}
+          grades={assetGrades}
         />
       )}
 
@@ -597,6 +614,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           onAccept={accept}
           onStart={start}
           onCreate={actions.go("create")}
+          grades={assetGrades}
         />
       )}
 

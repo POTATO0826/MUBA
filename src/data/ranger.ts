@@ -517,6 +517,134 @@ export function validateRangerSpec(spec: RangerSpec): { valid: boolean; error?: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The SDK's payout helpers — the only door, and it carries the flag
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ## The 4-strike discriminator trap, closed rather than avoided
+ *
+ * `calculateMaxPayout` and `calculatePayoutAtPrice` take an *order*, and an
+ * order carries no payout type. The SDK recovers one from the strike count
+ * (`getPayoutTypeFromOptionType`, `index.js:11553`): four strikes and no flag is
+ * `call_condor`. Four strikes plus `isRanger: true` is `ranger`. Nothing else
+ * distinguishes them — `validateRanger` and `validateCondor` accept the
+ * identical arrays, so no validator will ever catch the mistake, and the number
+ * that comes back looks entirely reasonable.
+ *
+ * **It is a factor of two.** Read `calculateCollateral` (`index.js:11017`): a
+ * condor's maximum is `K2 - K1`, one wing; a ranger's is `2 * (cU - cL)`, two.
+ * A zone priced as a condor therefore reports **half** its collateral, silently,
+ * on a number that is used to size money.
+ *
+ * Until now this repo satisfied plan7 §1 by never calling either helper at all,
+ * which is a guarantee that lasts exactly as long as nobody adds a call. These
+ * three functions are that guarantee made structural instead: the order shape
+ * below cannot be spelled without `isRanger: true` (it is the literal type, the
+ * same lock `RangerSpec.isLong` uses), and it is built from a `RangerSpec` by a
+ * function that sets the flag itself. `test/box.test.ts` greps `src/` to keep
+ * this the only place either helper is named.
+ *
+ * ## What these are NOT for
+ *
+ * They are not the arena's economics. `zoneEconomics` stays the source of the
+ * numbers a player is shown, because the SDK's "max payout" for a ranger is the
+ * **maker's collateral** (two wings) and not the taker's ceiling (one wing) —
+ * its own `calculatePayout` never returns more than one wing at any settlement
+ * price. Two different questions; this file answers the second and shows its
+ * arithmetic ({@link zonePayoff}), and `test/box.test.ts` pins that our answer
+ * and the SDK's agree at every price.
+ */
+
+/**
+ * `optionType` for a zone.
+ *
+ * `0` is CALL. Under `isRanger: true` the value is **inert** — the SDK reads it
+ * only to choose between the call and put variants of a type, and `ranger` has
+ * neither — so this is a well-formed constant rather than a claim about the
+ * instrument. `test/box.test.ts` pins the inertness against the shipped 0.3.0
+ * instead of trusting this paragraph.
+ */
+export const RANGER_OPTION_TYPE = 0;
+
+/**
+ * The order shape the SDK's payout helpers take, with the discriminator
+ * **required and `true`** rather than optional and forgettable.
+ *
+ * Mirrored structurally rather than imported, like every other SDK shape this
+ * repo touches outside `desk/` — the whole seam is structural so a fixture is
+ * assignable without the package present.
+ */
+export interface RangerPayoutOrder {
+  readonly optionType: number;
+  /** Units, 8dp — the same encoding `settlementPrice` uses. */
+  readonly strikes: bigint[];
+  /** The literal `true`. This is the whole point of the type. */
+  readonly isRanger: true;
+}
+
+/**
+ * The two helpers, structurally. `client.utils` satisfies this exactly
+ * (`index.d.ts:6866`, `:6889`), and a test fake satisfies it in three lines.
+ */
+export interface RangerPayoutUtils {
+  calculateMaxPayout(
+    order: { optionType: number; strikes?: bigint[]; isIronCondor?: boolean; isRanger?: boolean },
+    numContracts: bigint,
+  ): bigint;
+  calculatePayoutAtPrice(
+    order: { optionType: number; strikes?: bigint[]; isIronCondor?: boolean; isRanger?: boolean },
+    numContracts: bigint,
+    settlementPrice: bigint,
+  ): bigint;
+}
+
+/**
+ * `RangerSpec` → the order the SDK prices, flag set.
+ *
+ * The only constructor of a {@link RangerPayoutOrder} in the repo, and the
+ * reason a caller cannot reach the helpers with an unflagged four-strike order
+ * by accident: to get the argument they have to come through here, and coming
+ * through here sets the flag.
+ */
+export function rangerPayoutOrder(spec: RangerSpec): RangerPayoutOrder {
+  return {
+    optionType: RANGER_OPTION_TYPE,
+    strikes: spec.strikes.map((s) => parseStrike(s) ?? 0n),
+    isRanger: true,
+  };
+}
+
+/**
+ * The SDK's maximum payout for a zone — i.e. its **collateral**, two wings.
+ *
+ * `numContracts` is 18dp (`DECIMALS.SIZE`), the result 6dp USDC. Not what the
+ * panel prints; see the section note above.
+ */
+export function rangerMaxPayout(
+  utils: RangerPayoutUtils,
+  spec: RangerSpec,
+  numContracts: bigint,
+): bigint {
+  return utils.calculateMaxPayout(rangerPayoutOrder(spec), numContracts);
+}
+
+/**
+ * The SDK's payout for a zone at one settlement price, in 6dp USDC.
+ *
+ * Agrees with {@link zonePayoff} at every price — that equality is a test, not
+ * a comment, and it is the cross-check that says our own trapezoid is the
+ * venue's and not a lookalike.
+ */
+export function rangerPayoutAtPrice(
+  utils: RangerPayoutUtils,
+  spec: RangerSpec,
+  numContracts: bigint,
+  settlementPrice: bigint,
+): bigint {
+  return utils.calculatePayoutAtPrice(rangerPayoutOrder(spec), numContracts, settlementPrice);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The economics — the market's numbers, never ours
 // ─────────────────────────────────────────────────────────────────────────────
 

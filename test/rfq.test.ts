@@ -748,6 +748,56 @@ describe("the error map: one case per code, and every code covered", () => {
     if (outcome.status === "failed") expect(outcome.error.code).toBe(note("COLLATERAL_NOT_ZERO"));
   });
 
+  test("SHORT_REFUSED — a short input dies above every dep", async () => {
+    // plan7 §5. `isLong` is the literal `true` in the type, so this cast is what
+    // an `any`, a hand-built input or a JSON payload looks like from in here —
+    // and the point of the runtime check is that the type is not what stands
+    // between a player and an unbounded loss.
+    const s = spy();
+    const outcome = await openRequest(
+      { ...INPUT, isLong: false } as unknown as RfqInput,
+      createKeyring(KEYPAIR),
+      s.deps,
+    );
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed") {
+      expect(outcome.error.code).toBe(note("SHORT_REFUSED"));
+      expect(outcome.error.step).toBe("cap");
+      expect(outcome.error.action).toBe("none");
+    }
+    // Nothing was built, nothing was signed, nothing was sent.
+    expect(s.calls).toEqual([]);
+  });
+
+  test("SHORT_REFUSED — and again on the built tuple, whoever built it", async () => {
+    // The input was long; the builder returned a short request. That is the
+    // hand-assembled tuple / helpful-builder case `assertZeroCollateral` exists
+    // for, applied to the other invariant, and it must not reach calldata.
+    const s = spy({
+      buildRequest: () => makeRequest({ isRequestingLongPosition: false }),
+    });
+    const outcome = await openRequest(INPUT, createKeyring(KEYPAIR), s.deps);
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed") {
+      expect(outcome.error.code).toBe("SHORT_REFUSED");
+      expect(outcome.error.step).toBe("build");
+    }
+    expect(s.calls).not.toContain("requestForQuotation");
+  });
+
+  test("SHORT_REFUSED — a missing flag is not a long one", async () => {
+    // `undefined` is not `true`. Same coercion trap `assertZeroCollateral`
+    // refuses on `collateralAmount`, where `BigInt(null)` is `0n`.
+    const s = spy({
+      buildRequest: () =>
+        makeRequest({ isRequestingLongPosition: undefined as unknown as boolean }),
+    });
+    const outcome = await openRequest(INPUT, createKeyring(KEYPAIR), s.deps);
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed") expect(outcome.error.code).toBe("SHORT_REFUSED");
+    expect(s.calls).not.toContain("requestForQuotation");
+  });
+
   test("SIZE — the cap runs before any dep is touched", async () => {
     const s = spy();
     const outcome = await openRequest(
@@ -895,7 +945,8 @@ describe("the error map: one case per code, and every code covered", () => {
 
   test("every code in the union was reached by a real sequence", () => {
     const all = Object.keys(RFQ_COPY) as RfqCode[];
-    expect(all.length).toBe(12);
+    // Thirteen since plan7 §5 got a runtime refusal of its own: `SHORT_REFUSED`.
+    expect(all.length).toBe(13);
     // A code with no test is a panel state nobody has ever seen. There is no
     // tenth-code escape hatch here for the same reason `fill.ts` has none: a
     // code the UI has no copy for is a spinner that never resolves.
@@ -1240,6 +1291,12 @@ describe("the box auction — four strikes, a player-set max bid", () => {
     expect((params.strikes as number[]).length).toBe(4);
     // And the venue's own validator agrees the wings are equal.
     expect(validateCondor(params.strikes as number[]).valid).toBe(true);
+
+    // plan7 §5 at compile time, the same lock `CondorSpec`/`RangerSpec` carry —
+    // and now at the boundary they used to stop short of. `tsc` proves it.
+    // @ts-expect-error an RfqInput cannot ask for the sell side
+    const short: RfqInput = { ...input, isLong: false };
+    void short;
   });
 
   test("collateralAmount is 0 on the request that goes out from a box", async () => {

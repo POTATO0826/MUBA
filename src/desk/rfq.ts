@@ -444,8 +444,27 @@ export interface RfqInput {
   strikes?: readonly [number, number, number, number];
   /** Unix **seconds**. */
   expiry: number;
-  /** True to buy (long). */
-  isLong: boolean;
+  /**
+   * The literal `true`, not `boolean` — plan7 §5 at the type level, the same
+   * lock `CondorSpec.isLong` and `RangerSpec.isLong` already carry.
+   *
+   * **Every box is a buy.** A short leg is not a variation on this flow, it is a
+   * different product with a different risk: the requester would be *selling*
+   * the structure, posting collateral the factory pulls at settlement, and
+   * carrying a loss that is not bounded by anything this app measures or shows.
+   * Max loss is the premium in every screen, every economics function and every
+   * piece of copy in the repo, and that sentence is only true while this is
+   * `true`.
+   *
+   * The box specs held this line and the RFQ input did not: it was `boolean`
+   * here with no runtime refusal anywhere in the four-phase flow, so the type
+   * lock ended at the boundary where the money starts. It is now narrowed here
+   * **and** checked twice at runtime — {@link openRequest}'s cap phase refuses a
+   * short input above every dep, and {@link assertLongOnly} refuses a short
+   * *built tuple* immediately before it becomes calldata, so a hand-assembled
+   * request or a builder change cannot slip past the type.
+   */
+  isLong: true;
   /** Contracts, on-chain units (6dp against USDC collateral). */
   numContracts: string | bigint;
   /**
@@ -602,6 +621,7 @@ export const RFQ_PHASE_COPY: Record<RfqPhase, { label: string; means: string }> 
 export type RfqCode =
   | "SIGNER_REQUIRED"
   | "COLLATERAL_NOT_ZERO"
+  | "SHORT_REFUSED"
   | "SIZE"
   | "KEY_LOST"
   | "OFFER_UNREADABLE"
@@ -645,6 +665,14 @@ export const RFQ_COPY: Record<RfqCode, { message: string; recovery: string; acti
     recovery:
       "collateralAmount must be 0 in an RFQ — the factory pulls collateral at settlement, from " +
       "both parties. A non-zero value here is a malformed request, so nothing was sent.",
+    action: "none",
+  },
+  SHORT_REFUSED: {
+    message: "This build only buys. Refusing to request a short position.",
+    recovery:
+      "Selling the structure posts collateral and carries a loss this app neither measures nor " +
+      "shows — every screen here says max loss is the premium, which is only true of a buy. " +
+      "Nothing was sent.",
     action: "none",
   },
   SIZE: {
@@ -751,6 +779,7 @@ export function classifyRfqError(error: unknown, step: RfqStep): RfqError {
   if (/DECRYPTION|DecryptionError|decrypt|unable to authenticate|bad decrypt/i.test(text))
     return at("OFFER_UNREADABLE");
   if (/COLLATERAL_NOT_ZERO|collateralAmount/i.test(text)) return at("COLLATERAL_NOT_ZERO");
+  if (/SHORT_REFUSED|isRequestingLongPosition/i.test(text)) return at("SHORT_REFUSED");
   if (/SIGNER_REQUIRED|no signer|signer is required|unknown account/i.test(text))
     return at("SIGNER_REQUIRED");
   if (/offer\s*(period|window)|offerEnd|not\s*active|quotation\s*(closed|ended|expired)/i.test(text))
@@ -834,6 +863,45 @@ export function assertZeroCollateral<T extends RfqRequest>(request: T): Readonly
     );
   }
   return freezeRequest(request);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The invariant: isRequestingLongPosition === true, always
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Refuse any request that asks for the sell side. plan7 §5, on the built tuple.
+ *
+ * Exactly `assertZeroCollateral`'s pattern, for exactly its reason. §5 is
+ * absolute — *every box is a buy, no short legs ever* — because a short means
+ * posting collateral and carrying a downside nothing in this app bounds, while
+ * every economics function, every panel and every line of copy states max loss
+ * as the premium. `CondorSpec.isLong` and `RangerSpec.isLong` are the literal
+ * `true`, and {@link RfqInput.isLong} now is too; this is the runtime half,
+ * because a type lock ends at the first `any`, the first hand-assembled tuple
+ * and the first builder that decides to be helpful.
+ *
+ * On the **built** object, at the last moment before it becomes calldata, so it
+ * holds regardless of who built it — the SDK's builder, a future helper, or an
+ * MCP tool. `isRequestingLongPosition` is the factory's own name for the field
+ * (`QuotationParameters`, `index.d.ts:2837`), and it must be the boolean `true`:
+ * a missing or truthy-but-not-true value is the same class of coercion bug
+ * `assertZeroCollateral` refuses on `collateralAmount`.
+ *
+ * Throws a plain `Error` whose message `classifyRfqError` maps to
+ * `SHORT_REFUSED`. Returns the request unchanged — freezing belongs to
+ * `assertZeroCollateral`, which runs after it, so there is still exactly one
+ * place a request becomes immutable.
+ */
+export function assertLongOnly<T extends RfqRequest>(request: T): T {
+  const raw = request.params?.isRequestingLongPosition;
+  if (raw !== true) {
+    throw new Error(
+      `SHORT_REFUSED: isRequestingLongPosition is ${String(raw)}, must be true — this build only ` +
+        "buys, and a short would post collateral against an unbounded loss",
+    );
+  }
+  return request;
 }
 
 /**
@@ -1153,6 +1221,11 @@ export async function openRequest(
   // Nothing above this line touches `deps`. Same property `fill.ts` pins: a UI
   // clamp is a suggestion to a caller, a check above the network is a bound.
   onStep("cap");
+  // plan7 §5, above every dep: the sell side is not a variation on this flow.
+  // `isLong` is the literal `true` in the type, so reaching this line means a
+  // caller crossed an `any` — and the type is not the thing standing between a
+  // player and an unbounded loss. It is checked again on the built tuple.
+  if (input.isLong !== true) return raise("SHORT_REFUSED", "cap");
   if (typeof input.reserveUsdc !== "bigint" || input.reserveUsdc <= 0n) {
     return raise("SIZE", "cap", { message: "A quote request needs a positive reserve." });
   }
@@ -1220,9 +1293,11 @@ export async function openRequest(
   try {
     const built = deps.buildRequest(input, keyring.publicKey);
     // On the BUILT object, at the last moment before it becomes calldata. The
-    // SDK's builder guarantees `collateralAmount === 0n`; this holds whether or
-    // not the builder was the SDK's.
-    request = assertZeroCollateral(built);
+    // SDK's builder guarantees `collateralAmount === 0n` and threads `isLong`
+    // straight through; both hold here whether or not the builder was the SDK's.
+    // Long first, because a short request is the one that could cost money the
+    // app never showed.
+    request = assertZeroCollateral(assertLongOnly(built));
   } catch (error) {
     return { status: "failed", error: classifyRfqError(error, "build") };
   }

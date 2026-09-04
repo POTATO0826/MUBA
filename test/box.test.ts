@@ -26,8 +26,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { validateCondor, validateRanger } from "@thetanuts-finance/thetanuts-client";
+import { UtilsModule, validateCondor, validateRanger } from "@thetanuts-finance/thetanuts-client";
 import {
   MIN_LADDER_STRIKES,
   boxProblem,
@@ -87,7 +88,13 @@ import {
   zoneToRanger,
   zoneWingUsd,
   zonesFor,
+  RANGER_OPTION_TYPE,
+  rangerMaxPayout,
+  rangerPayoutAtPrice,
+  rangerPayoutOrder,
   type ListedZone,
+  type RangerPayoutOrder,
+  type RangerPayoutUtils,
   type RangerSpec,
 } from "../src/data/ranger.ts";
 import type { FillableOrder } from "../src/types.ts";
@@ -1303,5 +1310,131 @@ describe("a listed zone's economics", () => {
     expect(zoneCoversSpot(z, FIXTURE.prices.BTC as number)).toBe(false);
     expect(zoneCoversSpot(z, 80_500)).toBe(true);
     expect(zoneCoversSpot(z, null)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The 4-strike discriminator trap — plan7 §1, row 12 of the audit
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The audit's finding: "`grep -rn "isRanger" src/` is comments only, and there
+// is no `calculatePayoutAtPrice`/`calculateMaxPayout` call in `src/` at all, so
+// the claim is vacuous." True, and it was a guarantee that lasted exactly as
+// long as nobody added a call. These pin the seam that replaced it: the ONLY
+// constructor of an order for those helpers sets the flag itself, the shipped
+// SDK is run to show what the flag is worth, and `src/` is grepped so a second
+// door cannot be cut.
+
+describe("a ranger cannot reach an SDK payout helper unflagged", () => {
+  const zone = (): ListedZone => listedZones(booked())[0] as ListedZone;
+  /** One contract, 18dp (`DECIMALS.SIZE`). Payouts come back 6dp USDC. */
+  const ONE = 10n ** 18n;
+  const at = (usd: number): bigint => BigInt(usd) * 10n ** 8n;
+  const usdc = (n: number): bigint => BigInt(n) * 10n ** 6n;
+  /** The shipped 0.3.0's own utils. Its constructor ignores the client it is
+   *  handed (`index.js:10694`), so the arithmetic is reachable offline. */
+  const utils = new UtilsModule(null as never);
+
+  test("the order is built with the flag, and cannot be spelled without it", () => {
+    const order = rangerPayoutOrder(zoneToRanger(zone()));
+    expect(order.isRanger).toBe(true);
+    expect(order.optionType).toBe(RANGER_OPTION_TYPE);
+    // 8dp units, the same encoding `settlementPrice` uses — not dollars.
+    expect(order.strikes).toEqual([79_500, 80_000, 81_000, 81_500].map((s) => BigInt(s) * 10n ** 8n));
+
+    // @ts-expect-error plan7 §1 at compile time: the flag is the literal `true`
+    const unflagged: RangerPayoutOrder = { ...order, isRanger: false };
+    void unflagged;
+  });
+
+  test("both wrappers hand the flag to the helper — every call, not the first", () => {
+    const seen: { isRanger?: boolean }[] = [];
+    const spy: RangerPayoutUtils = {
+      calculateMaxPayout: (order) => {
+        seen.push(order);
+        return 0n;
+      },
+      calculatePayoutAtPrice: (order) => {
+        seen.push(order);
+        return 0n;
+      },
+    };
+    const spec = zoneToRanger(zone());
+    rangerMaxPayout(spy, spec, ONE);
+    rangerPayoutAtPrice(spy, spec, ONE, at(80_500));
+    rangerPayoutAtPrice(spy, spec, ONE, at(79_000));
+    expect(seen).toHaveLength(3);
+    for (const order of seen) expect(order.isRanger).toBe(true);
+  });
+
+  test("the flag is worth a factor of two, in the shipped SDK's own arithmetic", () => {
+    // This is the trap with a number on it. `getPayoutTypeFromOptionType`
+    // (`index.js:11553`) reads four strikes and no flag as `call_condor`, whose
+    // collateral is one wing (`K2 - K1`); a `ranger`'s is two (`2 * (cU - cL)`).
+    // Same four strikes, same validator verdict, half the money.
+    const spec = zoneToRanger(zone());
+    const flagged = rangerMaxPayout(utils, spec, ONE);
+    const unflagged = utils.calculateMaxPayout(
+      { optionType: RANGER_OPTION_TYPE, strikes: rangerPayoutOrder(spec).strikes },
+      ONE,
+    );
+    expect(flagged).toBe(usdc(1_000)); // two 500-wide wings
+    expect(unflagged).toBe(usdc(500)); // one — the wrong answer, silently
+    expect(flagged).toBe(unflagged * 2n);
+    // And neither validator would have objected to the mislabelled order.
+    expect(validateRanger(rangerStrikeNumbers(spec)).valid).toBe(true);
+    expect(validateCondor(rangerStrikeNumbers(spec)).valid).toBe(true);
+  });
+
+  test("our trapezoid is the venue's, at every price", () => {
+    // `zonePayoff` is this repo's own arithmetic and `calculatePayoutAtPrice`
+    // under the flag is the SDK's. They agree exactly, which is what makes the
+    // offline number a quote rather than a lookalike.
+    const z = zone();
+    const spec = zoneToRanger(z);
+    for (const price of [79_000, 79_500, 79_750, 80_000, 80_500, 81_000, 81_250, 81_500, 82_000]) {
+      const ours = zonePayoff(z, price);
+      expect(rangerPayoutAtPrice(utils, spec, ONE, at(price)), `$${price}`).toBe(usdc(ours));
+    }
+    // The ceiling a LONG taker can ever receive is one wing, which is why
+    // `zoneEconomics` keeps using `zoneWingUsd` and not `calculateMaxPayout`:
+    // the SDK's "max payout" for a ranger is the maker's collateral.
+    expect(zonePayoff(z, 80_500)).toBe(zoneWingUsd(z));
+    expect(rangerMaxPayout(utils, spec, ONE)).toBe(usdc(zoneWingUsd(z)) * 2n);
+  });
+
+  test("optionType is inert under the flag, so the constant claims nothing", () => {
+    const spec = zoneToRanger(zone());
+    const call = rangerPayoutOrder(spec);
+    const put = { ...call, optionType: 1 };
+    expect(utils.calculateMaxPayout(call, ONE)).toBe(utils.calculateMaxPayout(put, ONE));
+    expect(utils.calculatePayoutAtPrice(call, ONE, at(80_500))).toBe(
+      utils.calculatePayoutAtPrice(put, ONE, at(80_500)),
+    );
+  });
+
+  test("no other file in src/ names an SDK payout helper", () => {
+    // The structural half of the guarantee: one door, and it is the one above.
+    // A new call site anywhere else in the tree fails this test rather than
+    // waiting for a third audit to find it.
+    const root = join(import.meta.dir, "..", "src");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory()
+          ? walk(join(dir, e.name))
+          : /\.tsx?$/.test(e.name)
+            ? [join(dir, e.name)]
+            : [],
+      );
+    const files = walk(root);
+    expect(files.length).toBeGreaterThan(20);
+    for (const file of files) {
+      const body = code(readFileSync(file, "utf8"));
+      if (!/calculateMaxPayout|calculatePayoutAtPrice/.test(body)) continue;
+      // Only `data/ranger.ts`, and only inside the two wrappers, which take a
+      // `RangerSpec` and build the order themselves.
+      expect(file, file).toBe(join(root, "data", "ranger.ts"));
+      expect(body).toMatch(/isRanger:\s*true/);
+    }
   });
 });

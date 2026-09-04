@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MARKET_LABEL } from "../data/lobbies.ts";
+import type { Grade } from "../data/qualify.ts";
 import { SEASON } from "../data/rewards.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
@@ -28,10 +29,14 @@ interface BattlesProps {
   onAccept: (id: string) => void;
   onStart: (id: string) => void;
   onCreate: () => void;
+  /** Today's measured grades, whole — `gradeIndex(source)`. Threaded straight
+   *  to the card, which takes its own names out of it; absent means no book was
+   *  read, which the card renders as no chip rather than as THIN. */
+  grades?: Readonly<Record<string, Grade>>;
 }
 
 /** The board: every open lobby as a card, yours first. */
-export function Battles({ lobbies, points, onAccept, onStart, onCreate }: BattlesProps) {
+export function Battles({ lobbies, points, onAccept, onStart, onCreate, grades }: BattlesProps) {
   const [filter, setFilter] = useState<MarketFilter | "ALL">("ALL");
   const shown = lobbies.filter((l) => filter === "ALL" || l.market === filter);
   const open = lobbies.filter((l) => l.status === "open").length;
@@ -102,7 +107,13 @@ export function Battles({ lobbies, points, onAccept, onStart, onCreate }: Battle
 
         <div style={sx(GRID)}>
           {shown.map((l) => (
-            <LobbyCard key={l.id} lobby={l} onAccept={() => onAccept(l.id)} onStart={() => onStart(l.id)} />
+            <LobbyCard
+              key={l.id}
+              lobby={l}
+              onAccept={() => onAccept(l.id)}
+              onStart={() => onStart(l.id)}
+              grades={grades}
+            />
           ))}
         </div>
       </section>
