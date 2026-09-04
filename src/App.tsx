@@ -6,6 +6,7 @@ import { MARKET_COLOR, MARKET_LABEL, YOU, bookFor, stakePointsFor } from "./data
 import type { MarketSource } from "./data/market.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
+import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
 import { useMatch } from "./state/match.ts";
@@ -42,6 +43,10 @@ function currentRoute(): Route {
  * tape, settle. `lobby` (home), `create` and `desk` sit beside it.
  */
 export function App({ source, route }: { source: MarketSource; route?: Route }) {
+  // First hook in the tree: the audio context is built inside the very first
+  // gesture, capture-phase, so the click that starts the session is audible.
+  useSoundUnlock();
+
   const { state, derived, actions } = useMatch(route ?? currentRoute());
   const ledger = useLedger();
   const [wallet, setWallet] = useState(false);

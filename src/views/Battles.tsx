@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MARKET_LABEL } from "../data/lobbies.ts";
 import { SEASON } from "../data/rewards.ts";
+import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, pill } from "../theme.ts";
 import { LobbyCard } from "../ui/LobbyCards.tsx";
@@ -63,7 +64,10 @@ export function Battles({ lobbies, points, onAccept, onStart, onCreate }: Battle
           {SEASON.label} · ENDS IN {SEASON.endsIn}
         </span>
         <button
-          onClick={onCreate}
+          onClick={() => {
+            sfx("ui.click.primary");
+            onCreate();
+          }}
           style={sx(
             `height:36px;padding:0 16px;border:none;border-radius:8px;background:${C.accent};` +
               `color:${C.bg};font:700 12.5px/1 ${SANS};cursor:pointer`,
@@ -78,7 +82,14 @@ export function Battles({ lobbies, points, onAccept, onStart, onCreate }: Battle
           <h3 style={sx(`margin:0;font:700 16px/1 ${SANS};letter-spacing:-.02em`)}>Lobbies</h3>
           <div style={sx("display:flex;gap:6px;flex-wrap:wrap")}>
             {FILTERS.map((f) => (
-              <button key={f.k} onClick={() => setFilter(f.k)} style={sx(pill(filter === f.k))}>
+              <button
+                key={f.k}
+                onClick={() => {
+                  sfx("ui.toggle.on");
+                  setFilter(f.k);
+                }}
+                style={sx(pill(filter === f.k))}
+              >
                 {f.label}
               </button>
             ))}

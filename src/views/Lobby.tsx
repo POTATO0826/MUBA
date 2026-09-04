@@ -1,5 +1,6 @@
 import { DitherReveal } from "../components/DitherReveal.tsx";
 import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
+import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import { LobbyCard } from "../ui/LobbyCards.tsx";
@@ -28,7 +29,10 @@ export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart }: Lob
           <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>{lobbies.filter((l) => l.status === "open").length} waiting for a second seat</span>
           <div style={sx("flex:1")} />
           <button
-            onClick={onFindMatch}
+            onClick={() => {
+              sfx("ui.click");
+              onFindMatch();
+            }}
             style={sx(
               `height:28px;padding:0 12px;border-radius:99px;cursor:pointer;font:500 11px/1 ${MONO};` +
                 `border:1px solid ${C.border};background:transparent;color:${C.muted}`,
@@ -83,13 +87,19 @@ function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: ()
           </p>
           <div style={sx("display:flex;gap:10px")}>
             <button
-              onClick={onFindMatch}
+              onClick={() => {
+                sfx("ui.click.primary");
+                onFindMatch();
+              }}
               style={sx(`height:40px;padding:0 18px;border:none;border-radius:8px;background:${C.accent};color:${C.bg};font:700 13px/1 ${SANS};cursor:pointer`)}
             >
               Find a match
             </button>
             <button
-              onClick={onCreate}
+              onClick={() => {
+                sfx("ui.click.primary");
+                onCreate();
+              }}
               style={sx(`height:40px;padding:0 18px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;color:${C.text};font:500 13px/1 ${SANS};cursor:pointer`)}
             >
               Create lobby

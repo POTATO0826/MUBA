@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { seededRandom } from "../engine/spin.ts";
+import { hash } from "../lib/hash.ts";
 import { sx } from "../lib/sx.ts";
 
 /**
@@ -12,23 +13,6 @@ import { sx } from "../lib/sx.ts";
  * turns, and a CSS dash-offset keyframe where a line should read as flowing.
  * `prefers-reduced-motion` stills the CSS half from `styles.css`.
  */
-
-/**
- * A small string hash, so an id becomes a seed. FNV-1a, then murmur3's final
- * mix: FNV alone leaves its low bits weak, and on ids sharing a suffix a plain
- * `% 8` handed several lobbies the same pattern. The mix spreads every input
- * bit across the word, so the remainder is fair.
- */
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  h ^= h >>> 16;
-  h = Math.imul(h, 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  h ^= h >>> 16;
-  return h >>> 0;
-}
 
 /** Salts the pattern choice so the six lobbies on the board each get a
  *  different one. Chosen by search; any created lobby is still a fair draw. */

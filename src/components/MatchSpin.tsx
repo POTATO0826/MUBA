@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
+import { sfx, tickParams } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
 import type { Asset, Player } from "../types.ts";
@@ -41,6 +42,12 @@ interface MatchSpinProps {
 export function MatchSpin(p: MatchSpinProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
+  /**
+   * When the reel last crossed a tile, so the tick can be voiced from the gap
+   * the reel actually travelled rather than from the frame clock. Dropped
+   * frames widen the gap honestly; the quintic ease does the rest.
+   */
+  const lastCrossAt = useRef(0);
 
   const n = p.result.plans.length;
   /** Which plan is on the reel. Equals `n` once every slot has landed. */
@@ -84,6 +91,7 @@ export function MatchSpin(p: MatchSpinProps) {
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
     setSpinning(true);
+    lastCrossAt.current = 0;
     const frame = () => {
       const t = Math.min(1, (performance.now() - start) / SPIN_MS);
       const offset = ease(t) * finalOffset;
@@ -93,6 +101,14 @@ export function MatchSpin(p: MatchSpinProps) {
       if (idx !== lastUnder) {
         lastUnder = idx;
         setUnder(idx);
+        // The CS:GO click, voiced from the measured gap between crossings —
+        // dark and dense off the line, sparse and bright into the settle. It
+        // lives here and not in an effect on `under`: React would batch the
+        // state update and the tick would drift off the tile it belongs to.
+        const now = performance.now();
+        const gap = lastCrossAt.current === 0 ? 0 : now - lastCrossAt.current;
+        lastCrossAt.current = now;
+        sfx("spin.tick", tickParams(gap));
       }
       // Small price wobble while the reel is moving — settles to the true print.
       setFlicker(t < 1 ? (Math.random() - 0.5) * 0.006 * (1 - t) : 0);
@@ -102,6 +118,8 @@ export function MatchSpin(p: MatchSpinProps) {
         return;
       }
       setSpinning(false);
+      sfx("spin.land");
+      sfx("spin.reveal", { leg: step });
       // Hold on the landing, then either the next leg or lock.
       settleTimer = setTimeout(() => setStep((s) => s + 1), SETTLE_MS);
     };
@@ -115,6 +133,7 @@ export function MatchSpin(p: MatchSpinProps) {
   // Locked: hold so the board registers, then move on without a click.
   useEffect(() => {
     if (!done) return;
+    sfx("spin.lock");
     const t = setTimeout(p.onDone, LOCK_MS);
     return () => clearTimeout(t);
   }, [done, p.onDone]);
@@ -142,7 +161,10 @@ export function MatchSpin(p: MatchSpinProps) {
       role="dialog"
       aria-modal
       aria-label={`${p.lobbyName} spin`}
-      onClick={p.onClose}
+      onClick={() => {
+        sfx("ui.back");
+        p.onClose();
+      }}
       style={sx(
         "position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:24px;" +
           "background:rgba(9,9,11,.82);backdrop-filter:blur(10px)",
@@ -175,7 +197,10 @@ export function MatchSpin(p: MatchSpinProps) {
           <div style={sx("flex:1")} />
           <span style={sx(`font:500 10px/1 ${MONO};color:${done ? C.accent : C.dim}`)}>{status}</span>
           <button
-            onClick={p.onClose}
+            onClick={() => {
+              sfx("ui.back");
+              p.onClose();
+            }}
             aria-label="Close"
             style={sx(
               `width:28px;height:28px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
@@ -319,7 +344,10 @@ export function MatchSpin(p: MatchSpinProps) {
           <div style={sx("flex:1")} />
           {!done && (
             <button
-              onClick={() => setSkipped(true)}
+              onClick={() => {
+                sfx("spin.skip");
+                setSkipped(true);
+              }}
               style={sx(
                 `height:36px;padding:0 14px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
                   `color:${C.text};font:500 12px/1 ${SANS};cursor:pointer;white-space:nowrap`,

@@ -1,5 +1,6 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
+import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, tag } from "../theme.ts";
 import type { LobbyDef, Player } from "../types.ts";
@@ -123,7 +124,10 @@ export function Room(p: RoomProps) {
           Leave lobby
         </button>
         <button
-          onClick={p.onBegin}
+          onClick={() => {
+            sfx("spin.open");
+            p.onBegin();
+          }}
           disabled={!both}
           style={sx(
             `height:36px;padding:0 16px;border:none;border-radius:8px;font:700 12.5px/1 ${SANS};white-space:nowrap;` +

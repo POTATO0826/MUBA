@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type MouseEventHandler,
 } from "react";
+import { sfx } from "../lib/sound/index.ts";
 
 /**
  * Starfield Button — Originkit.
@@ -477,9 +478,12 @@ export function StarfieldButton(props: StarfieldButtonProps) {
       <button
         ref={buttonRef}
         type="button"
-        onClick={props.onClick}
+        onClick={(e) => {
+          sfx("wallet.connect");
+          props.onClick?.(e);
+        }}
         aria-label={label || undefined}
-        onPointerEnter={() => { revealTarget.current = 1; }}
+        onPointerEnter={() => { sfx("ui.hover"); revealTarget.current = 1; }}
         onPointerLeave={() => { revealTarget.current = 0; scaleTo(1); }}
         onPointerDown={() => scaleTo(0.97)}
         onPointerUp={() => scaleTo(1)}

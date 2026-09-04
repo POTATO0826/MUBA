@@ -1,0 +1,167 @@
+import { describe, expect, test } from "bun:test";
+import { briefsFor } from "../src/data/briefs.ts";
+import { bookFor } from "../src/data/lobbies.ts";
+import { DOWN_WORDS, UP_WORDS, WIRE_PER_SYM, mockWire } from "../src/data/wire.ts";
+import { spinCase } from "../src/engine/spin.ts";
+import { TAPE_LEN, fmtPx, pctAt, series } from "../src/engine/tape.ts";
+
+/** Real books, real deals — the same call the study screen makes. */
+function deal(market: "STOCK" | "CRYPTO" | "MIXED", legs: number, seed: number): readonly string[] {
+  return spinCase(bookFor(market), legs, seed).syms;
+}
+
+const wireFor = (syms: readonly string[], salt: number) => mockWire(syms, salt, briefsFor(syms, salt));
+
+const STOCKS = deal("STOCK", 3, 424242);
+const CRYPTO = deal("CRYPTO", 3, 918273);
+const MIXED = deal("MIXED", 4, 100001);
+
+const upRe = new RegExp(`\\b(${UP_WORDS.join("|")})\\b`);
+const downRe = new RegExp(`\\b(${DOWN_WORDS.join("|")})\\b`);
+
+describe("mockWire — determinism", () => {
+  test("the same syms and salt produce a deep-equal wire", () => {
+    expect(wireFor(MIXED, 424242)).toEqual(wireFor(MIXED, 424242));
+    expect(wireFor(STOCKS, 7)).toEqual(wireFor(STOCKS, 7));
+  });
+
+  test("a different salt produces a different wire", () => {
+    expect(wireFor(MIXED, 424242)).not.toEqual(wireFor(MIXED, 424243));
+    const a = wireFor(STOCKS, 11).map((i) => i.headline).join("|");
+    const b = wireFor(STOCKS, 12).map((i) => i.headline).join("|");
+    expect(a).not.toBe(b);
+  });
+
+  test("every id is unique", () => {
+    const items = wireFor(MIXED, 555);
+    expect(new Set(items.map((i) => i.id)).size).toBe(items.length);
+  });
+});
+
+describe("mockWire — shape", () => {
+  const boards: readonly (readonly string[])[] = [STOCKS, CRYPTO, MIXED];
+
+  test("no item ever has an empty body, dateline or signature", () => {
+    for (const syms of boards) {
+      for (const salt of [1, 424242, 918273, 999983]) {
+        for (const it of wireFor(syms, salt)) {
+          expect(it.body.length).toBeGreaterThan(40);
+          expect(it.dateline.length).toBeGreaterThan(10);
+          expect(it.headline.length).toBeGreaterThan(10);
+          expect(it.publisher.length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  test("the signature reads as a wire sign-off", () => {
+    for (const it of wireFor(MIXED, 424242)) {
+      expect(it.signature).toMatch(
+        /^\(END\) .+ \/ \d{2}-\d{2}-\d{2} \d{4}ET \/ Copyright \(c\) \d{4} .+\.$/,
+      );
+      expect(it.signature).toContain(it.publisher);
+    }
+  });
+
+  test("every time is a session clock stamp", () => {
+    for (const syms of boards) {
+      for (const it of wireFor(syms, 424242)) expect(it.time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    }
+  });
+
+  test("the dateline carries the item's own date, time and subject", () => {
+    for (const it of wireFor(MIXED, 424242)) {
+      expect(it.dateline).toMatch(/^\d{1,2}\/\d{1,2}\/\d{2} \d{2}:\d{2}:\d{2}: /);
+      expect(it.dateline).toContain(it.time);
+      expect(it.dateline).toContain(it.headline);
+      if (it.kind === "news") expect(it.dateline).toContain(`: ${it.sym}: `);
+    }
+  });
+
+  test("ts is strictly descending", () => {
+    for (const syms of boards) {
+      for (const salt of [3, 424242, 777777]) {
+        const items = wireFor(syms, salt);
+        for (let i = 1; i < items.length; i++) {
+          expect(items[i]!.ts).toBeLessThan(items[i - 1]!.ts);
+        }
+      }
+    }
+  });
+});
+
+describe("mockWire — composition", () => {
+  test("the desk exchange is pinned on top, exactly one pair", () => {
+    const briefs = briefsFor(MIXED, 424242);
+    expect(briefs.filter((b) => b.kind === "desk")).toHaveLength(2);
+
+    const items = mockWire(MIXED, 424242, briefs);
+    const desk = items.filter((i) => i.kind === "desk");
+    expect(desk).toHaveLength(2);
+    expect(items.slice(0, 2)).toEqual(desk);
+    expect(desk.map((d) => d.who)).toEqual(["DESK", "COACH"]);
+    expect(desk.every((d) => d.sym === null && d.bodyKind === "desk-note")).toBe(true);
+  });
+
+  test("every dealt ticker gets at least three filed stories", () => {
+    for (const syms of [STOCKS, CRYPTO, MIXED]) {
+      const items = wireFor(syms, 424242);
+      for (const sym of syms) {
+        const mine = items.filter((i) => i.kind === "news" && i.sym === sym);
+        expect(mine.length).toBeGreaterThanOrEqual(3);
+        expect(mine).toHaveLength(WIRE_PER_SYM);
+        // No template repeats inside one ticker.
+        expect(new Set(mine.map((i) => i.headline)).size).toBe(mine.length);
+      }
+    }
+  });
+
+  test("news rows carry a seeded body and no link", () => {
+    const items = wireFor(CRYPTO, 424242);
+    const news = items.filter((i) => i.kind === "news");
+    expect(news.length).toBe(CRYPTO.length * WIRE_PER_SYM);
+    expect(news.every((i) => i.bodyKind === "seeded" && i.link === null)).toBe(true);
+  });
+});
+
+describe("mockWire — the wire never contradicts the chart", () => {
+  test("a ticker that rose over the study window never draws a bearish headline", () => {
+    let sawUp = 0;
+    let sawDown = 0;
+    for (const syms of [STOCKS, CRYPTO, MIXED]) {
+      for (const salt of [1, 2, 3, 424242, 918273, 100001, 777777]) {
+        const items = wireFor(syms, salt);
+        for (const it of items) {
+          if (it.kind !== "news" || it.sym === null) continue;
+          const up = pctAt(it.sym, salt, TAPE_LEN) >= 0;
+          if (up) {
+            sawUp++;
+            expect(it.headline).toMatch(upRe);
+            expect(it.headline).not.toMatch(downRe);
+          } else {
+            sawDown++;
+            expect(it.headline).toMatch(downRe);
+            expect(it.headline).not.toMatch(upRe);
+          }
+        }
+      }
+    }
+    // The sweep is only meaningful if it actually saw both directions.
+    expect(sawUp).toBeGreaterThan(0);
+    expect(sawDown).toBeGreaterThan(0);
+  });
+
+  test("bodies quote the tape the chart is drawn from", () => {
+    for (const syms of [STOCKS, CRYPTO]) {
+      for (const it of wireFor(syms, 424242)) {
+        if (it.kind !== "news" || it.sym === null) continue;
+        const s = series(it.sym, 424242);
+        const last = fmtPx(s[s.length - 1]!);
+        const lo = fmtPx(Math.min(...s));
+        expect(it.body).toContain(it.sym);
+        // Every body prints at least one figure read straight off the window.
+        expect(it.body.includes(last) || it.body.includes(lo)).toBe(true);
+      }
+    }
+  });
+});

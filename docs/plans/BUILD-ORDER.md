@@ -516,3 +516,7 @@ Run in order. A wave is not done until all nine pass. Do not open the next wave 
 - `details.children.length === 3` on lobby cards; the `"3 LEGS"`, `"most legs wins"`, `"STOCKS"` and `"NEWS WIRE · DESK CHATTER"` strings survive verbatim.
 - No button labelled exactly `"+"` is added before the prize stepper; no second `<input>` without `inputmode`.
 - `[data-brief="desk"]` still selects exactly 2 rows on the study screen.
+
+## E. Owner directives (override plan priorities)
+- LIVE NEWS IS MANDATORY: Wave 2 items 2C-2F (rss.ts, server/news.ts, /api/news, liveNewsSource in client.tsx) are MUST-have, not "should". The live wire is the default experience; the seeded wire exists ONLY as offline/rate-limit fallback and as the test fixture. Wave 2 is not complete until Study shows LIVE headlines with the dev server running and network up.
+- All commits on branch zq (never main). Push origin/zq after each wave commit.

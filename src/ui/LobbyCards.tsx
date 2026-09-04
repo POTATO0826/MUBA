@@ -1,5 +1,6 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
+import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, tag, wall } from "../theme.ts";
 import type { LobbyDef } from "../types.ts";
@@ -24,6 +25,11 @@ export function LobbyCard({
   onAccept: () => void;
   onStart: () => void;
 }) {
+  // Straight onto the existing card div: the board is a grid of these and a
+  // sweep across it must not add a wrapper (the tests reach for the card's own
+  // button and count `[data-lobby]` nodes). The hover budget thins the sweep.
+  const hover = useSoundHover("card.hover");
+
   const color = MARKET_COLOR[lobby.market];
   const [a, b, deg] = MARKET_WALL[lobby.market];
   const waiting = lobby.mine && lobby.status === "open";
@@ -46,6 +52,7 @@ export function LobbyCard({
     <div
       className="vc-lobby"
       data-lobby={lobby.id}
+      onPointerEnter={hover.onPointerEnter}
       style={sx(
         `position:relative;height:300px;border:1px solid ${lobby.mine ? "rgba(99,102,241,.45)" : C.border};` +
           `border-radius:16px;overflow:hidden;background:${C.card}`,
@@ -140,7 +147,10 @@ export function LobbyCard({
               </div>
             ) : (
               <button
-                onClick={ready ? onStart : onAccept}
+                onClick={() => {
+                  sfx(ready ? "card.start" : "card.accept");
+                  (ready ? onStart : onAccept)();
+                }}
                 style={sx(
                   `height:36px;width:100%;border:none;border-radius:8px;font:700 12px/1 ${SANS};cursor:pointer;` +
                     `background:${C.accent};color:${C.bg}`,
