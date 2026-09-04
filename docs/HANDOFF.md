@@ -17,27 +17,43 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
-## State at last update (post-P1+P5a gate, Thetanuts integration)
+## State at last update (post-P2+P5b gate + UI wave + escrow review)
 
-- Tests: 433 pass / 0 fail, 16 files. Typecheck clean. Last commit: c6ecf94.
+- Tests: 530 pass / 0 fail, 18 files. Typecheck clean repo-wide.
 - SHIPPED (all pushed on zq; main has everything through 051889b):
   7 game waves (sound+CS:GO spin, live news terminal, sectors, BLITZ/QUICK/
   NORMAL modes, duel soundtrack, rank moment + copy-trade fiction, /ranks
   ladder) + room music + 4 EX.O button clips + case-open spin samples + hero
-  cursor trail + ticker-only ordered wire + hansen's wallet layer (EIP-6963 +
-  AppKit + mock) + Thetanuts P0 (guard regex, SDK 0.3.0 installed, .d.ts gate,
-  /api/config, secrets test).
-- SHIPPED additionally: P1 live market layer (/api/market live-verified:
-  OptionBook agreement true, greeksSeen 310/426, multi-collateral decimals
-  fix) + P5a DuelEscrow.sol compiled/tested, NOT deployed.
-- IN FLIGHT: the contract ADVERSARIAL REVIEW (read-only agent; deploy stays
-  blocked until its verdict + the owner's own read), P2 (/desk fully live) and
-  P5b (attest referee: /api/lock + /api/attest) as a parallel pair.
-- NEXT per plan: gate+commit P1/P5a → P2 (/desk fully live) ∥ P5b
-  (src/server/attest.ts: /api/lock + /api/attest referee) → contract
-  adversarial review → P3 (real fillOrder, ~$0.01 target, $2 code cap,
-  THETADUEL_TRADE=on) ∥ P4 (spotFor at the FIVE hardcoded-spot sites +
-  honesty chips) → P6 (staking UI, PTS∥USDC parallel non-convertible) → P7.
+  cursor trail + ticker-only ordered wire + hansen's wallet layer + Thetanuts
+  P0 (guard, SDK 0.3.0, .d.ts gate) + P1 live market layer + P5a DuelEscrow.sol
+  compiled/tested, NOT deployed.
+- SHIPPED this gate: P2 /desk fully live (mmPricing MM chain in the snapshot,
+  live spot label · LIVE/· REFERENCE, $1 previewFillOrder quote line +
+  numContracts 0n depth guard, payoff.ts moved src/engine→src/desk, engine
+  floor now exactly 6) + P5b attest referee (src/server/attest.ts wired at
+  /api/lock, /api/attest, /api/duel-status; test/attest.test.ts's digest test
+  rebuilds the EIP-712 hash from the contract source) + owner UI wave (study
+  wire sym filter; PlayerMark pixel-glyph identicons replace ALL initials
+  avatars; Room seat dossiers off LeaderPlayer; parlay-pick music seam →
+  owner drops src/assets/parlay-pick.mp3).
+- ESCROW ADVERSARIAL REVIEW: DONE — verdict SHIP WITH NOTES, full report at
+  docs/reviews/escrow-adversarial-review.md (371 executed assertions vs the
+  committed bytecode; reentrancy/replay/rake/races/USDC/griefing all clean).
+  Deploy still blocked on the owner's own read. Action items from it:
+  X-1 (HIGH, server not contract): /api/lock is unauthenticated and takes
+  a/b/picks from the body — MUST be fixed before THETADUEL_STAKE ever turns
+  on (sign the lock as `a`, or read seats from chain events); 5-1 (MED):
+  deploy.ts must hard-refuse non-canonical USDC + non-8453 chainid, not warn;
+  6-1 (LOW): duelId preimage is guessable, add a per-room nonce; 4-1 (LOW):
+  UI copy "claim within 6 hours" (refund can front-run a verdict past TIMEOUT).
+- IN FLIGHT next wave: eToro-style dollar-denominated ranking rework (owner
+  request: copy-trade stats header, $ not PTS in copy economics — fiction's
+  own $, NEVER a PTS→$ rate; pinned ladder numbers stay byte-identical) ∥
+  security hardening (X-1 lock auth + 5-1 deploy refusals + 6-1 nonce).
+- NEXT per plan: P3 (real fillOrder, ~$0.01 target, $2 code cap,
+  THETADUEL_TRADE=on) ∥ P4 (spotFor at the remaining hardcoded-spot sites +
+  honesty chips) → P6 (staking UI; X-1 fix is a hard prerequisite) → P7
+  (truth pass: README live table + residual-trust statement, still owed).
 
 ## Ground truth documents (in-repo, read before building)
 
@@ -72,7 +88,8 @@ Thetanuts referrer whitelisting.
 ## Local-only artifacts a fresh clone will miss
 
 - src/assets/*.mp3 are GITIGNORED on purpose (game-ripped audio): the owner
-  has room-inspect.mp3 (Spectrum Guardian), exo-kill-1..4.mp3, case-tick.mp3 +
+  has room-inspect.mp3 (Spectrum Guardian), parlay-pick.mp3 (hero-pick theme,
+  the bed behind the parlay pick screen), exo-kill-1..4.mp3, case-tick.mp3 +
   case-land.mp3 (sliced from csgo-case-open.mp3 in repo root via
   src/assets/slice-case-open.sh). Missing files = silence, never errors.
 - .env (gitignored): currently empty of secrets; .env.example lists the

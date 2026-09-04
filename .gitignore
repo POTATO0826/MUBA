@@ -39,3 +39,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # operator-supplied audio: licensed tracks stay out of the repo
 *.mp3
 src/assets/*.mp3
+
+# Reviewer scratch (attack harnesses, node_modules junction) — never committed
+.rev/
