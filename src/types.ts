@@ -4,6 +4,14 @@ export type Market = "STOCK" | "CRYPTO";
 export type MarketFilter = Market | "MIXED";
 export type Direction = "over" | "under";
 
+/** The six sector groups the 12 raw `Asset.sector` values roll up into.
+ *  Defined in `src/data/sectors.ts`; the groups partition the board. */
+export type SectorKey = "SEMIS" | "TECH" | "MACRO" | "MAJORS" | "DEFI" | "MEME";
+
+/** How much of the 200-print walk a duel actually runs for.
+ *  Specs live in `src/data/modes.ts`. */
+export type Mode = "BLITZ" | "QUICK" | "NORMAL";
+
 /**
  * Screens in the app.
  *
@@ -71,7 +79,12 @@ export interface LobbyDef {
   id: string;
   name: string;
   host: Player;
-  /** Which book the spin deals from. */
+  /** The sector groups the spin deals from. THE source of the book:
+   *  `bookOf(lobby)` = `bookForSectors(sectors)`, in canonical board order. */
+  sectors: readonly SectorKey[];
+  /** Derived at construction from `sectors` (`marketOf(sectors)`) and kept on
+   *  the lobby for presentation only — labels, colours, card art and the
+   *  Battles filter. Never read it to build a book; read `sectors`. */
   market: MarketFilter;
   /** How many legs the spin fills — both slips run on the same tickers. */
   legs: number;

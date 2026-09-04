@@ -1,5 +1,5 @@
 import { CardArt } from "../components/CardArt.tsx";
-import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
+import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, tag } from "../theme.ts";
@@ -53,7 +53,7 @@ export function Room(p: RoomProps) {
               {p.lobby.name}
             </h2>
             <div style={sx(`margin-top:10px;font:400 12px/1.5 ${SANS};color:${C.textSoft};max-width:520px;text-wrap:pretty`)}>
-              The book is {bookFor(p.lobby.market).length} names. The spin deals {p.lobby.legs} of them and both slips run
+              The book is {bookOf(p.lobby).length} names. The spin deals {p.lobby.legs} of them and both slips run
               on exactly those — neither of you picks a ticker.
             </div>
           </div>

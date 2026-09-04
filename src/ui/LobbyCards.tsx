@@ -1,8 +1,9 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
+import { SECTORS, SECTOR_ORDER, sectorChips } from "../data/sectors.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, tag, wall } from "../theme.ts";
+import { C, MONO, SANS, avatarStyle, miniTag, tag, wall } from "../theme.ts";
 import type { LobbyDef } from "../types.ts";
 
 /**
@@ -41,9 +42,17 @@ export function LobbyCard({
       ? { text: `MATCHED · VS ${lobby.opponent?.name.toUpperCase() ?? "?"}`, color: C.green, pulse: false }
       : { text: "OPEN · WAITING FOR P2", color: C.green, pulse: true };
 
+  // Resting state shows at most two sector chips; the hover pane shows the
+  // book in full, so a collapsed `ALL STOCKS` chip is never the whole story.
+  const chips = sectorChips(lobby.sectors, 2);
+  const picked = new Set(lobby.sectors);
+  const sectorLine = SECTOR_ORDER.filter((k) => picked.has(k))
+    .map((k) => SECTORS[k].label)
+    .join(" + ");
+
   /** Three lines on hover. Enough to know what you are sitting down to. */
   const details = [
-    `${lobby.host.name} · ${MARKET_LABEL[lobby.market]} · ${lobby.legs} legs`,
+    `${lobby.host.name} · ${MARKET_LABEL[lobby.market]} · ${lobby.legs} legs · ${sectorLine}`,
     `${lobby.prize.toFixed(2)} Ξ pool · ${(lobby.prize / 2).toFixed(2)} Ξ each`,
     "Spin deals the tickers · most legs wins",
   ];
@@ -104,9 +113,17 @@ export function LobbyCard({
           </div>
 
           <div className="vc-lobby-fade">
-            <div style={sx("display:flex;align-items:center;gap:8px;margin-top:16px")}>
+            <div
+              style={sx(
+                "display:flex;align-items:center;gap:6px;margin-top:16px;flex-wrap:nowrap;overflow:hidden",
+              )}
+            >
               <span style={sx(tag(color))}>{MARKET_LABEL[lobby.market]}</span>
-              <span style={sx(tag(C.muted))}>1V1</span>
+              {chips.map((chip) => (
+                <span key={chip.key} style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}>
+                  {chip.label}
+                </span>
+              ))}
             </div>
             <div style={sx(`margin-top:10px;font:700 21px/1.1 ${SANS};letter-spacing:-.02em;text-shadow:0 2px 12px rgba(0,0,0,.6)`)}>
               {lobby.name}

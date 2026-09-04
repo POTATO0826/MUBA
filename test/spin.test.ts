@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { LOBBIES, bookFor, opponentOf, stakePointsFor } from "../src/data/lobbies.ts";
+import { LOBBIES, bookFor, bookOf, canPlay, opponentOf, stakePointsFor } from "../src/data/lobbies.ts";
+import { marketOf } from "../src/data/sectors.ts";
 import { nextTier, tierFor } from "../src/data/rewards.ts";
 import { UNIVERSE } from "../src/data/universe.ts";
 import { STRIP_LEN, planSpin, seededRandom, spinCase } from "../src/engine/spin.ts";
@@ -82,15 +83,46 @@ describe("lobbies and their books", () => {
     expect(bookFor("MIXED")).toHaveLength(UNIVERSE.length);
   });
 
-  test("every lobby can fill its legs from its book, and its id is unique", () => {
+  test("every lobby can fill its legs from its own sector book, and its id is unique", () => {
     expect(new Set(LOBBIES.map((l) => l.id)).size).toBe(LOBBIES.length);
     for (const l of LOBBIES) {
-      expect(bookFor(l.market).length).toBeGreaterThanOrEqual(l.legs);
+      // The book is the SECTORS' book now, not the market's — a themed lobby
+      // deals from a narrower list than its market label suggests.
+      expect(bookOf(l).length).toBeGreaterThanOrEqual(l.legs);
+      expect(canPlay(l)).toBe(true);
+      expect(l.sectors.length).toBeGreaterThan(0);
       expect(l.legs).toBeGreaterThanOrEqual(2);
       expect(l.legs).toBeLessThanOrEqual(4);
       expect(l.status).toBe("open");
       expect(l.mine).toBe(false);
     }
+  });
+
+  test("every lobby's market literal is exactly what its sectors derive", () => {
+    // `market` is presentation only (labels, colours, card art, the Battles
+    // filter) and is written out on the fixture — this is the guard that it
+    // never drifts from the sectors that actually build the book.
+    for (const l of LOBBIES) expect(marketOf(l.sectors)).toBe(l.market);
+  });
+
+  test("the spin only ever deals names from the lobby's own book", () => {
+    for (const l of LOBBIES) {
+      const book = bookOf(l);
+      for (let seed = 1; seed <= 50; seed++) {
+        const dealt = spinCase(book, l.legs, seed).syms;
+        expect(dealt).toHaveLength(l.legs);
+        for (const sym of dealt) expect(book).toContain(sym);
+      }
+    }
+  });
+
+  test("kz-semis keeps the full stock book — its dealt tickers are pinned", () => {
+    // test/app.test.tsx and test/determinism.test.ts derive kz-semis' expected
+    // tickers from `bookFor("STOCK")` at seed 424242, and `spinCase` indexes
+    // into the book, so narrowing this fixture would silently re-deal them.
+    const kz = LOBBIES.find((l) => l.id === "kz-semis")!;
+    expect(bookOf(kz)).toEqual([...bookFor("STOCK")]);
+    expect(spinCase(bookOf(kz), kz.legs, 424242).syms).toEqual(["TSLA", "AMD", "META"]);
   });
 
   test("on someone else's lobby the host is the opponent; on yours the joiner is", () => {

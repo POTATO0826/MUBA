@@ -1,8 +1,11 @@
+import { useCallback, useRef } from "react";
 import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
+import { SECTORS, SECTOR_ORDER, bookForSectors, symsOfSector } from "../data/sectors.ts";
+import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, pill, tag } from "../theme.ts";
 import type { LobbyForm } from "../state/match.ts";
-import type { MarketFilter } from "../types.ts";
+import type { MarketFilter, SectorKey } from "../types.ts";
 
 const STEP_BTN =
   `width:34px;height:34px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
@@ -12,7 +15,20 @@ const LABEL = `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`;
 const NOTE = `margin-top:8px;font:400 10.5px/1.4 ${MONO};color:${C.faint}`;
 const CARD = `border:1px solid ${C.border};border-radius:12px;background:${C.panel};padding:18px`;
 
+/** The live book strip: one line, ellipsised — a long book must not reflow the card. */
+const BOOK_LINE =
+  `margin-top:10px;font:400 10.5px/1.5 ${MONO};color:${C.dim};` +
+  `white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
+
 const MARKETS: readonly MarketFilter[] = ["STOCK", "CRYPTO", "MIXED"];
+
+/** Legs run 2–4, so the stepper's pitch walks that span. */
+const legsPitch = (legs: number) => 1 + ((Math.max(2, Math.min(4, legs)) - 2) / 2) * 0.35;
+/** The prize has no useful ceiling, so the walk saturates at a sane pool. */
+const prizePitch = (prize: number) => 1 + Math.min(1, Math.max(0, (prize - 0.1) / 19.9)) * 0.35;
+
+/** How long the prize field waits before it will click again while typing. */
+const TYPE_SFX_MS = 250;
 
 interface CreateLobbyProps {
   form: LobbyForm;
@@ -20,6 +36,7 @@ interface CreateLobbyProps {
   prizeLabel: string;
   onName: (v: string) => void;
   onMarket: (m: MarketFilter) => void;
+  onToggleSector: (k: SectorKey) => void;
   onLegsUp: () => void;
   onLegsDown: () => void;
   onPrizeInput: (raw: string) => void;
@@ -30,15 +47,45 @@ interface CreateLobbyProps {
   onBack: () => void;
 }
 
-/** Four fields, then a card on the board: name, book, legs, prize. */
+/** Four fields, then a card on the board: name, book, legs, prize.
+ *
+ *  The book is chosen twice over: three presets that select whole markets, and
+ *  six sector chips underneath that compose any subset. Both write the same
+ *  `sectors` field — the presets are just the common combinations — and the
+ *  header tag reflects the market the selection derives to. */
 export function CreateLobby(p: CreateLobbyProps) {
   const color = MARKET_COLOR[p.form.market];
+  const hover = useSoundHover();
+
+  // The book the spin would deal from, recomputed each render — it is a
+  // filter over the universe, not state.
+  const book = bookForSectors(p.form.sectors);
+  const tooSmall = p.form.sectors.length === 0 || book.length < p.form.legs;
+
+  // Keystrokes get one click per quarter second at most: a held key must not
+  // machine-gun the mixer, and R11 forbids per-character sounds outright.
+  const lastTypeSfx = useRef(0);
+  const onPrizeInput = useCallback(
+    (raw: string) => {
+      const now = Date.now();
+      if (now - lastTypeSfx.current > TYPE_SFX_MS) {
+        lastTypeSfx.current = now;
+        sfx("ui.step");
+      }
+      p.onPrizeInput(raw);
+    },
+    [p.onPrizeInput],
+  );
 
   return (
     <div style={sx("padding:24px 28px;max-width:940px;margin:0 auto")}>
       <div style={sx("display:flex;align-items:center;gap:16px;margin-bottom:20px")}>
         <button
-          onClick={p.onBack}
+          onClick={() => {
+            sfx("ui.back");
+            p.onBack();
+          }}
+          {...hover}
           style={sx(
             `height:32px;padding:0 12px;border:1px solid ${C.borderMid};border-radius:8px;` +
               `background:transparent;color:${C.muted};font:500 12px/1 ${SANS};cursor:pointer`,
@@ -68,7 +115,15 @@ export function CreateLobby(p: CreateLobbyProps) {
           <div style={sx(`${LABEL};margin-top:20px`)}>BOOK</div>
           <div style={sx("display:flex;gap:6px;margin-top:10px;flex-wrap:wrap")}>
             {MARKETS.map((m) => (
-              <button key={m} onClick={() => p.onMarket(m)} style={sx(pill(p.form.market === m))}>
+              <button
+                key={m}
+                onClick={() => {
+                  sfx("ui.toggle.on");
+                  p.onMarket(m);
+                }}
+                {...hover}
+                style={sx(pill(p.form.market === m))}
+              >
                 {MARKET_LABEL[m]}
                 <span style={sx(`margin-left:6px;color:${C.faint}`)}>{bookFor(m).length}</span>
               </button>
@@ -78,11 +133,50 @@ export function CreateLobby(p: CreateLobbyProps) {
             The spin deals both players' legs from this book. Neither of you picks a ticker.
           </div>
 
+          <div style={sx(`${LABEL};margin-top:20px`)}>SECTORS</div>
+          <div style={sx("display:flex;gap:6px;margin-top:10px;flex-wrap:wrap")}>
+            {SECTOR_ORDER.map((k) => (
+              <button
+                key={k}
+                data-sector={k}
+                aria-pressed={p.form.sectors.includes(k)}
+                onClick={() => {
+                  sfx("ui.toggle.on");
+                  p.onToggleSector(k);
+                }}
+                {...hover}
+                style={sx(pill(p.form.sectors.includes(k)))}
+              >
+                {SECTORS[k].label}
+                <span style={sx(`margin-left:6px;color:${C.faint}`)}>{symsOfSector(k).length}</span>
+              </button>
+            ))}
+          </div>
+          <div data-book style={sx(BOOK_LINE)} title={book.join(" · ")}>
+            book: {book.length} names{book.length > 0 ? ` — ${book.join(" · ")}` : ""}
+          </div>
+
           <div style={sx(`${LABEL};margin-top:20px`)}>LEGS</div>
           <div style={sx("display:flex;align-items:center;gap:10px;margin-top:10px")}>
-            <button onClick={p.onLegsDown} style={sx(STEP_BTN)}>−</button>
+            <button
+              onClick={() => {
+                sfx("ui.step", { pitch: legsPitch(p.form.legs - 1) });
+                p.onLegsDown();
+              }}
+              style={sx(STEP_BTN)}
+            >
+              −
+            </button>
             <span style={sx(`min-width:40px;text-align:center;font:700 20px/1 ${MONO}`)}>{p.form.legs}</span>
-            <button onClick={p.onLegsUp} style={sx(STEP_BTN)}>+</button>
+            <button
+              onClick={() => {
+                sfx("ui.step", { pitch: legsPitch(p.form.legs + 1) });
+                p.onLegsUp();
+              }}
+              style={sx(STEP_BTN)}
+            >
+              +
+            </button>
             <span style={sx(`font:400 10.5px/1 ${MONO};color:${C.faint}`)}>2 to 4 · both slips run on the same {p.form.legs}</span>
           </div>
         </div>
@@ -90,18 +184,34 @@ export function CreateLobby(p: CreateLobbyProps) {
         <div style={sx(CARD)}>
           <div style={sx(LABEL)}>PRIZE POOL (ETH)</div>
           <div style={sx("display:flex;align-items:center;gap:10px;margin-top:10px")}>
-            <button onClick={p.onPrizeDown} style={sx(STEP_BTN)}>−</button>
+            <button
+              onClick={() => {
+                sfx("ui.step", { pitch: prizePitch(p.form.prize - 0.5) });
+                p.onPrizeDown();
+              }}
+              style={sx(STEP_BTN)}
+            >
+              −
+            </button>
             <input
               value={p.form.prizeText}
               inputMode="decimal"
-              onChange={(e) => p.onPrizeInput(e.target.value)}
+              onChange={(e) => onPrizeInput(e.target.value)}
               onBlur={p.onPrizeBlur}
               style={sx(
                 `flex:1;height:38px;padding:0 12px;border:1px solid ${C.borderMid};border-radius:8px;text-align:center;` +
                   `background:${C.raised};color:${C.accent};font:700 18px/1 ${MONO};outline:none`,
               )}
             />
-            <button onClick={p.onPrizeUp} style={sx(STEP_BTN)}>+</button>
+            <button
+              onClick={() => {
+                sfx("ui.step", { pitch: prizePitch(p.form.prize + 0.5) });
+                p.onPrizeUp();
+              }}
+              style={sx(STEP_BTN)}
+            >
+              +
+            </button>
           </div>
           <div style={sx(NOTE)}>
             Adjustable until the lobby is published. Once public the prize is locked for whoever
@@ -117,14 +227,26 @@ export function CreateLobby(p: CreateLobbyProps) {
           <div style={sx(NOTE)}>Spin → case study → parlay → duel. Winner on legs, conviction breaks ties.</div>
 
           <button
-            onClick={p.onPublish}
+            onClick={() => {
+              sfx("lobby.publish");
+              p.onPublish();
+            }}
+            disabled={tooSmall}
             style={sx(
               `width:100%;height:40px;margin-top:22px;border:none;border-radius:8px;` +
-                `background:${C.accent};color:${C.bg};font:700 13px/1 ${SANS};cursor:pointer`,
+                `font:700 13px/1 ${SANS};` +
+                (tooSmall
+                  ? `background:${C.line};color:${C.faint};cursor:not-allowed`
+                  : `background:${C.accent};color:${C.bg};cursor:pointer`),
             )}
           >
             Publish lobby · {p.prizeLabel}
           </button>
+          {tooSmall && (
+            <div data-gate style={sx(`${NOTE};color:${C.red}`)}>
+              book too small for {p.form.legs} legs — add a sector
+            </div>
+          )}
         </div>
       </div>
     </div>

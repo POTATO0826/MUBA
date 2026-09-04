@@ -69,6 +69,11 @@ export const tag = (color: string): string =>
   `display:inline-flex;align-items:center;font:500 9px/1 ${MONO};letter-spacing:.12em;` +
   `padding:6px 8px;border-radius:6px;border:1px solid ${color}55;background:${color}1f;color:${color}`;
 
+/** Tighter monospace tag for sector / mode chips. */
+export const miniTag = (color: string): string =>
+  `font:700 8.5px/1 ${MONO};letter-spacing:.1em;padding:4px 6px;border-radius:5px;` +
+  `border:1px solid ${color}4d;background:${color}1a;color:${color}`;
+
 export const avatarStyle = (bg: string, size = 26): string =>
   `width:${size}px;height:${size}px;border-radius:8px;background:${bg};display:grid;place-items:center;` +
   `font:700 10px/1 ${SANS};color:${C.bg}`;

@@ -3,11 +3,13 @@ import { briefsFor } from "../data/briefs.ts";
 import {
   LOBBIES,
   YOU,
-  bookFor,
+  bookOf,
+  canPlay,
   opponentOf,
   randomOpponent,
   stakePointsFor,
 } from "../data/lobbies.ts";
+import { PRESETS, SECTOR_ORDER, bookForSectors, marketOf } from "../data/sectors.ts";
 import { settle } from "../engine/match.ts";
 import {
   PARLAY_CARDS,
@@ -21,7 +23,7 @@ import {
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
 import { TAPE_LEN } from "../engine/tape.ts";
 import type { Route } from "../lib/route.ts";
-import type { LobbyDef, MarketFilter, Tab } from "../types.ts";
+import type { LobbyDef, MarketFilter, SectorKey, Tab } from "../types.ts";
 
 /**
  * One match: which lobby, which seed, who is ready, which parlay card, and
@@ -35,6 +37,10 @@ import type { LobbyDef, MarketFilter, Tab } from "../types.ts";
  */
 export interface LobbyForm {
   name: string;
+  /** The groups the published lobby's spin will deal from. `market` is
+   *  `marketOf(sectors)` — the two are kept in step by every action that
+   *  touches either. */
+  sectors: readonly SectorKey[];
   market: MarketFilter;
   legs: number;
   /** Prize pool in ETH. */
@@ -69,6 +75,7 @@ export const OPP_READY_MS = 1100;
 
 const INITIAL_FORM: LobbyForm = {
   name: "Room #4471",
+  sectors: PRESETS.MIXED,
   market: "MIXED",
   legs: 3,
   prize: 5,
@@ -97,7 +104,14 @@ export function initialState(route: Route): MatchState {
 type Patch = Partial<MatchState> | ((s: MatchState) => Partial<MatchState>);
 
 const clampPrize = (v: number) => Math.max(0.1, Math.min(999, +v.toFixed(2)));
-const clampLegs = (n: number) => Math.max(2, Math.min(4, n));
+
+/** Ceiling on legs for a selection: four, or the book if it is shorter. A
+ *  selection can be empty — Publish is what refuses it, not this. */
+const legsMax = (sectors: readonly SectorKey[]) => Math.min(4, bookForSectors(sectors).length);
+
+/** Two is always the floor, even when the book cannot fill it: the form stays
+ *  legal-looking and the gated Publish explains why it will not go. */
+const clampLegs = (n: number, max: number) => Math.max(2, Math.min(max, n));
 
 export function useMatch(route: Route) {
   const [state, setState] = useState<MatchState>(() => initialState(route));
@@ -172,9 +186,32 @@ export function useMatch(route: Route) {
       start: enterRoom,
 
       setFormName: (name: string) => patch((s) => ({ form: { ...s.form, name } })),
-      setFormMarket: (market: MarketFilter) => patch((s) => ({ form: { ...s.form, market } })),
-      formLegsUp: () => patch((s) => ({ form: { ...s.form, legs: clampLegs(s.form.legs + 1) } })),
-      formLegsDown: () => patch((s) => ({ form: { ...s.form, legs: clampLegs(s.form.legs - 1) } })),
+      /** The BOOK presets. Selects that market's groups, so `sectors` and
+       *  the derived `market` never drift apart. */
+      setFormMarket: (market: MarketFilter) =>
+        patch((s) => ({ form: { ...s.form, sectors: PRESETS[market], market } })),
+      /** Add or drop one group. `market` is recomputed from what is left, so
+       *  the header tag never drifts from the selection.
+       *
+       *  `legs` is deliberately left alone: dropping to a book too short for
+       *  the legs already set is the state the gated Publish exists to
+       *  explain, and silently rewriting the number would hide it. The legs
+       *  stepper re-clamps on its next press. An empty selection is allowed
+       *  here too — again, Publish is the gate. */
+      toggleFormSector: (k: SectorKey) =>
+        patch((s) => {
+          const had = s.form.sectors.includes(k);
+          // Rebuilt in canonical order so the stored selection never depends
+          // on the order the chips were pressed in.
+          const sectors = SECTOR_ORDER.filter((x) =>
+            x === k ? !had : s.form.sectors.includes(x),
+          );
+          return { form: { ...s.form, sectors, market: marketOf(sectors) } };
+        }),
+      formLegsUp: () =>
+        patch((s) => ({ form: { ...s.form, legs: clampLegs(s.form.legs + 1, legsMax(s.form.sectors)) } })),
+      formLegsDown: () =>
+        patch((s) => ({ form: { ...s.form, legs: clampLegs(s.form.legs - 1, legsMax(s.form.sectors)) } })),
       onPrizeInput: (raw: string) => {
         const cleaned = raw.replace(/[^0-9.]/g, "");
         const f = parseFloat(cleaned);
@@ -202,7 +239,9 @@ export function useMatch(route: Route) {
             id: `mine-${s.lobbies.filter((l) => l.mine).length + 1}`,
             name: s.form.name.trim() || "Untitled lobby",
             host: YOU,
-            market: s.form.market,
+            sectors: s.form.sectors,
+            // Presentation only, and always derived — never the form's own field.
+            market: marketOf(s.form.sectors),
             legs: s.form.legs,
             prize: s.form.prize,
             status: "open",
@@ -247,7 +286,9 @@ export function useMatch(route: Route) {
   const derived = useMemo(() => {
     const lobby = state.lobbies.find((l) => l.id === state.lobbyId) ?? null;
     const opponent = lobby ? opponentOf(lobby) : null;
-    const spin = lobby ? spinCase(bookFor(lobby.market), lobby.legs, state.seed) : null;
+    // The book comes from the lobby's sectors, and `canPlay` is what keeps
+    // `spinCase` from throwing mid-render on a book too small for the legs.
+    const spin = lobby && canPlay(lobby) ? spinCase(bookOf(lobby), lobby.legs, state.seed) : null;
     const arena = spin ? spin.syms : [];
 
     // The opponent's pick per ticker is drawn from the same seed, so it

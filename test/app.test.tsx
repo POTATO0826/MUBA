@@ -5,9 +5,11 @@ import { App } from "../src/App.tsx";
 import { bookFor } from "../src/data/lobbies.ts";
 import { mockMarketSource } from "../src/data/market.ts";
 import type { NewsSource, WireItem } from "../src/data/news.ts";
+import { bookForSectors } from "../src/data/sectors.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS } from "../src/state/match.ts";
+import type { SectorKey } from "../src/types.ts";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -223,6 +225,99 @@ describe("the board", () => {
     act(() => plus[1]!.click()); // the second "+" is the prize
     expect(text()).toContain("2.75 ETH");
     expect(container.querySelector<HTMLInputElement>('input[inputmode="decimal"]')?.value).toBe("5.50");
+  });
+});
+
+describe("sectors", () => {
+  /** The chips are addressed by key, the same way CreateLobby stamps them. */
+  const sectorChip = (k: SectorKey) =>
+    container.querySelector<HTMLButtonElement>(`[data-sector="${k}"]`)!;
+  const clickSector = (k: SectorKey) => act(() => sectorChip(k).click());
+  /** The market the builder derives from the current selection — the tag
+   *  sitting next to the "Create lobby" heading. */
+  const marketTag = () => container.querySelector("h2")?.nextElementSibling?.textContent ?? "";
+  const bookLine = () => container.querySelector("[data-book]")?.textContent ?? "";
+  const gateNote = () => container.querySelector("[data-gate]")?.textContent ?? "";
+  const publish = () => buttons().find((b) => (b.textContent ?? "").includes("Publish lobby"))!;
+
+  test("composing MEME + BIG TECH derives MIXED and publishes that book", () => {
+    // The book is whatever the two groups gather out of the universe — read it
+    // off the data rather than pinning a number by hand.
+    const book = bookForSectors(["TECH", "MEME"]);
+
+    mount("/create");
+    clickContaining("CRYPTO"); // preset first, so MIXED is a real change
+    expect(marketTag()).toBe("CRYPTO");
+    clickSector("MAJORS");
+    clickSector("DEFI"); // MEME alone
+    expect(marketTag()).toBe("CRYPTO");
+    clickSector("TECH"); // …plus a stock group
+
+    expect(marketTag()).toBe("MIXED");
+    expect(sectorChip("TECH").getAttribute("aria-pressed")).toBe("true");
+    expect(sectorChip("MEME").getAttribute("aria-pressed")).toBe("true");
+    expect(sectorChip("MAJORS").getAttribute("aria-pressed")).toBe("false");
+    expect(bookLine()).toContain(`book: ${book.length} names`);
+    for (const sym of book) expect(bookLine()).toContain(sym);
+
+    act(() => publish().click());
+
+    expect(text()).toContain("Open battles");
+    const mine = lobbyCards()[0]!;
+    expect(mine.dataset.lobby).toBe("mine-1");
+    expect(mine.textContent).toContain("MIXED"); // the derived market, not the preset
+    expect(mine.textContent).toContain("BIG TECH");
+    expect(mine.textContent).toContain("MEME");
+  });
+
+  test("the room counts the lobby's own sector book", () => {
+    mount("/battles");
+    acceptLobby(); // kz-semis: SEMIS + BIG TECH + OLD WORLD
+    expect(text()).toContain(`The book is ${bookForSectors(["SEMIS", "TECH", "MACRO"]).length} names`);
+  });
+
+  test("a book too small for the legs gates Publish until a sector is added", () => {
+    mount("/create");
+    click("+"); // legs 3 → 4, while the full board is still selected
+    expect(text()).toContain("2 to 4");
+    expect(publish().disabled).toBe(false);
+
+    // Dropping groups never re-clamps the legs, so the selection can undershoot.
+    for (const k of ["SEMIS", "TECH", "MACRO", "MAJORS", "DEFI"] as const) clickSector(k);
+    expect(bookLine()).toContain(`book: ${bookForSectors(["MEME"]).length} names`);
+    expect(publish().disabled).toBe(true);
+    expect(gateNote()).toContain("4 legs");
+
+    clickSector("DEFI"); // back over the line
+    expect(publish().disabled).toBe(false);
+    expect(container.querySelector("[data-gate]")).toBeNull();
+  });
+
+  test("cards wear their book: a preset collapses to one chip, a composition spells itself out", () => {
+    mount("/battles");
+    // Resting face only — the hover pane below carries the full book, so the
+    // chip assertions have to look at the body or they prove nothing.
+    const face = (id: string) =>
+      lobbyCards().find((c) => c.dataset.lobby === id)!.querySelector(".vc-lobby-body")!.textContent ?? "";
+
+    expect(face("kz-semis")).toContain("ALL STOCKS"); // SEMIS + TECH + MACRO is the STOCK preset
+    expect(face("kz-semis")).not.toContain("OLD WORLD");
+
+    expect(face("lx-degen")).toContain("DEFI");
+    expect(face("lx-degen")).toContain("MEME");
+    expect(face("lx-degen")).not.toContain("ALL CRYPTO");
+
+    // Hover still spells the whole book out, still in three lines.
+    const details = container.querySelector<HTMLElement>('[data-details="kz-semis"]')!;
+    expect(details.children).toHaveLength(3);
+    expect(details.children[0]!.textContent).toContain("SEMIS + BIG TECH + OLD WORLD");
+  });
+
+  test("the sector book feeds the reel: kz-semis at 424242 still deals TSLA · AMD · META", () => {
+    const dealt = spinCase(bookForSectors(["SEMIS", "TECH", "MACRO"]), 3, 424242).syms;
+    expect(dealt).toEqual(["TSLA", "AMD", "META"]);
+    mount("/match/kz-semis/parlay?seed=424242");
+    expect(slipLegs()).toEqual([...dealt]);
   });
 });
 

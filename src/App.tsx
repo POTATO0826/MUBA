@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { MatchSpin } from "./components/MatchSpin.tsx";
 import { scoreOf } from "./engine/match.ts";
 import { slipLabel } from "./engine/parlay.ts";
-import { MARKET_COLOR, MARKET_LABEL, YOU, bookFor, stakePointsFor } from "./data/lobbies.ts";
+import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/lobbies.ts";
 import type { MarketSource } from "./data/market.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
@@ -150,6 +150,7 @@ export function App({ source, newsSource = mockNewsSource, route }: {
           prizeLabel={derived.formPrizeLabel}
           onName={actions.setFormName}
           onMarket={actions.setFormMarket}
+          onToggleSector={actions.toggleFormSector}
           onLegsUp={actions.formLegsUp}
           onLegsDown={actions.formLegsDown}
           onPrizeInput={actions.onPrizeInput}
@@ -182,7 +183,7 @@ export function App({ source, newsSource = mockNewsSource, route }: {
           marketLabel={MARKET_LABEL[lobby.market]}
           color={MARKET_COLOR[lobby.market]}
           opponent={opp}
-          assets={bookFor(lobby.market).map(meta)}
+          assets={bookOf(lobby).map(meta)}
           result={derived.spin}
           onDone={actions.claim}
           onClose={actions.closeSpin}
