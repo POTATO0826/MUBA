@@ -49,7 +49,7 @@ import { SETTLED_CASES } from "./fixtures.ts";
  *
  * That shared first draw is the whole point: the Result panel calls
  * `copyEconomicsFor("lexa", xp)` knowing only an id and an XP total, and gets
- * the same `avgTicket` — and therefore the same PTS/DAY — that lexa's ladder
+ * the same `avgTicket` — and therefore the same $/DAY — that lexa's ladder
  * row prints. Two surfaces, one number, no plumbing. Never insert a draw
  * before `skill` in either stream.
  */
@@ -111,7 +111,9 @@ export interface CopyEconomics {
   /** Followers. 0 while locked; never falls as XP rises. */
   copiers: number;
   txPerCopierPerDay: number;
-  /** Average size of a copied transaction, in points. */
+  /** Average size of a copied transaction, in the desk's dollars — see the
+   *  currency note above `CopyProfile`. Never a PTS figure, never converted
+   *  from one. */
   avgTicket: number;
   /** `COPY_FEE` — 3.5%, the literal the panel prints. */
   feePct: number;
@@ -236,6 +238,238 @@ export interface LeaderPlayer extends Persona {
   trend: readonly number[];
   /** True only for the synthetic YOU row. */
   you: boolean;
+  /** The copy-trader profile — GAIN %, RISK, AUM and the rest of the eToro
+   *  surface. Purely derived from the fields above (see `copyProfileFor`), so
+   *  it costs no seeded draw and moves no pinned number. */
+  profile: CopyProfile;
+}
+
+// ── The copy-trader profile (the eToro surface) ─────────────────────────────
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE DESK'S CURRENCY IS DOLLARS, AND IT ALWAYS WAS
+ * ────────────────────────────────────────────────────────────────────────────
+ * `CopyEconomics` above prices a copy desk: a ticket size, a fee, a daily take.
+ * Not one of those numbers comes off the PTS ledger — they are drawn fresh from
+ * `hash(id)` in `copyEconomicsFor`, which is why the Result panel can compute
+ * them from an id and an XP total alone. Plan 4 labelled them "PTS" because at
+ * the time the app had only one unit; that label was always the wrong noun for
+ * a fee-bearing book, and the display layer now calls them what they are.
+ *
+ * The rule that follows from that, and it is not negotiable:
+ *
+ *   THERE IS NO EXCHANGE RATE. The desk's dollars and the game's PTS are two
+ *   separate quantities, never two denominations of one. Nothing in this file
+ *   or any view multiplies a PTS figure by a rate to get a dollar, no surface
+ *   prints the same quantity twice in two units, and XP stays XP everywhere —
+ *   on rank lines, on unlock lines, in the nudge. `stakePointsFor` and the real
+ *   ledger are untouched by every line below.
+ *
+ * Everything in this section is DERIVED — no new seeded draws, so the LCG draw
+ * order documented at the top of the file is byte-for-byte what it was, and
+ * every value `test/rank.test.ts` pins is unmoved. A profile is a pure function
+ * of fields the persona already carries.
+ */
+export interface CopyProfile {
+  /**
+   * The headline: a trailing-twelve-month return, signed, as a fraction.
+   * See `gain12mFor` for the derivation and why it lands in the tens of %.
+   */
+  gain12m: number;
+  /** eToro's signature chip, 1 (calm) … 10 (hot). `riskScoreFor`. */
+  risk: number;
+  /** Copy capital under management, in dollars. `aumFor`. */
+  aum: number;
+  /** The smallest sleeve that can carry one ticket at this trader's size. */
+  minCopy: number;
+  /** Signed 30-day move in the copier book, as a fraction. `copierDelta30d`. */
+  copierDelta: number;
+  /** Months in the black out of twelve. `profitableMonthsFor`. */
+  profitableMonths: number;
+  /** The same reading as a fraction, for the bar. */
+  profitableMonthsPct: number;
+  /** `econ.avgTicket`, named in the desk's own noun. One field, one number —
+   *  this is an alias, NOT a conversion. */
+  avgTrade: number;
+  /** `earnings`, ditto: career profit and loss on the desk, in dollars. */
+  career: number;
+}
+
+/** Break-even hit rate at the demo's odds — the same 0.42 `earnings` prices. */
+const BREAK_EVEN = 0.42;
+/** Return on a ticket at break-even+1: the same 3.6 `earnings` prices. */
+const TICKET_EDGE = 3.6;
+/** A trading year. A duel every three or four days is 96 tickets; a persona
+ *  with a 298-battle career did not run all of it in the last twelve months. */
+const TRADES_PER_YEAR = 96;
+/** The desk's sizing rule: 0.9% of the book rides on one ticket. This is the
+ *  ONE tuned constant here, and it is tuned against the roster — see below. */
+const RISK_PER_TRADE = 0.009;
+
+/**
+ * GAIN % — the trailing twelve months, the number a copier actually shops on.
+ *
+ *   gain = min(battles, 96) · 0.009 · 3.6 · (winRate − 0.42)
+ *
+ * Read it right to left. `3.6 · (winRate − 0.42)` is the edge ON ONE TICKET,
+ * and it is not a new invention: it is character-for-character the factor
+ * `earnings` already multiplies by, so a trader cannot have a positive career
+ * and a negative twelve months. `0.009` is the sizing rule — 0.9% of the book
+ * on a ticket, which is where a real copy desk sits. `min(battles, 96)` is how
+ * many tickets that edge got applied to inside the year.
+ *
+ * Note what is NOT in it: `avgTicket`. A return is a RATE, and a trader who
+ * runs $2,594 tickets on a $2.6M book returns exactly what one running $1,292
+ * tickets on a $1.3M book does. Size lives in AUM, where size belongs.
+ *
+ * Against the thirteen personas this yields +3.5% (0xdrift, a 43.1% hit rate
+ * grinding a small edge) through +70.0% (arlo.eth, 64.5% over a long career) —
+ * tens of percent, which is the band a plausible copy leaderboard lives in, not
+ * the four-figure nonsense a naive earnings/ticket ratio produces. Clamped at
+ * −95% because a book can be lost but not more than lost; the ceiling is there
+ * for the same reason, and neither end is reachable by a persona.
+ */
+export function gain12mFor(battles: number, winRate: number): number {
+  const trades = Math.min(Math.max(0, battles), TRADES_PER_YEAR);
+  const raw = trades * RISK_PER_TRADE * TICKET_EDGE * (winRate - BREAK_EVEN);
+  const clamped = Math.max(-0.95, Math.min(2.5, raw));
+  // An unplayed ledger multiplies zero trades by a negative edge and lands on
+  // −0, which a signed formatter is entitled to render as a minus. There is no
+  // such thing as a negative-zero year.
+  return clamped === 0 ? 0 : clamped;
+}
+
+/** How much of the score the clock owns, and how much concentration owns. */
+const RISK_TEMPO = 0.62;
+const RISK_CONC = 0.38;
+/** A perfectly spread book's Herfindahl index over six sectors. */
+const FLAT_CONC = 1 / SECTOR_ORDER.length;
+
+/**
+ * RISK 1–10 — eToro's chip, and the one stat on the profile that is about HOW
+ * a trader trades rather than how well.
+ *
+ *   tempo = modeShare.BLITZ + 0.45 · modeShare.QUICK        the clock
+ *   conc  = (Σ sectorShare² − 1/6) / (1 − 1/6)              the book's spread
+ *   risk  = 1 + round(9 · (0.62·tempo + 0.38·conc))
+ *
+ * Both halves are the app's own vocabulary. BLITZ is the shortest window and
+ * the fullest weight; QUICK carries under half of it; NORMAL contributes
+ * nothing, which is exactly the ordering `data/modes.ts` already asserts. The
+ * concentration half is a Herfindahl index normalised so a flat six-sector book
+ * scores 0 and a single-sector book scores 1 — the standard measure, and the
+ * one a reader can recompute off the SECTOR SHARE bars in the drawer.
+ *
+ * Stable per persona because `modeShare` and `sectorShare` are, and integral
+ * because a 6.4/10 risk chip would imply a precision nobody has.
+ */
+export function riskScoreFor(
+  modeShare: Record<Mode, number>,
+  sectorShare: Record<SectorKey, number>,
+): number {
+  const tempo = clamp01((modeShare.BLITZ ?? 0) + 0.45 * (modeShare.QUICK ?? 0));
+  const herf = SECTOR_ORDER.reduce((a, k) => a + (sectorShare[k] ?? 0) ** 2, 0);
+  const conc = clamp01((herf - FLAT_CONC) / (1 - FLAT_CONC));
+  return 1 + Math.round(clamp01(RISK_TEMPO * tempo + RISK_CONC * conc) * 9);
+}
+
+/** A copier funds a sleeve deep enough to carry a fortnight of the trader's
+ *  own flow before it needs topping up. */
+const COPY_SLEEVE_DAYS = 14;
+
+/**
+ * AUM — the copy capital riding behind a trader.
+ *
+ *   aum = copiers · txPerCopierPerDay · avgTicket · 14
+ *
+ * i.e. every copier's sleeve holds two weeks of that trader's ticket flow.
+ * Locked traders have no copiers, so their AUM is 0 by arithmetic rather than
+ * by a branch — the same shape `daily` already has.
+ */
+export function aumFor(econ: CopyEconomics): number {
+  return econ.copiers * econ.txPerCopierPerDay * econ.avgTicket * COPY_SLEEVE_DAYS;
+}
+
+/** The floor on a sleeve: it has to clear one ticket at this trader's size,
+ *  rounded up to a round hundred, and never under the desk's $200 minimum. */
+export function minCopyFor(avgTicket: number): number {
+  return Math.max(200, Math.ceil(Math.max(0, avgTicket) / 100) * 100);
+}
+
+/** How hard the copier book chases form. A 20% better half-year of form pulls
+ *  an 11% bigger book, which is a follow, not a stampede. */
+const COPIER_CHASE = 0.55;
+
+/**
+ * The 30-day move in the copier count, ▲ or ▼.
+ *
+ * Read off `trend` — the eight form windows the persona already owns — and not
+ * from a new seeded stream, because a second stream would be a second story
+ * about the same trader and the two would eventually disagree. Specifically it
+ * is the BACK HALF against the FRONT HALF, which is the identical read
+ * `LadderTrend` uses to decide whether to draw the sparkline bright or dim. So
+ * a row whose line reads bright shows a ▲ and one that reads dim shows a ▼,
+ * always, on every surface.
+ *
+ * Geared by `COPIER_CHASE` and clamped to ±60%: copiers arrive and leave, they
+ * do not teleport.
+ */
+export function copierDelta30d(trend: readonly number[]): number {
+  if (trend.length < 2) return 0;
+  const half = Math.floor(trend.length / 2);
+  const front = trend.slice(0, half).reduce((a, b) => a + b, 0) / half;
+  const back = trend.slice(half).reduce((a, b) => a + b, 0) / (trend.length - half);
+  if (front <= 0) return 0;
+  const raw = ((back - front) / front) * COPIER_CHASE;
+  return Math.max(-0.6, Math.min(0.6, raw));
+}
+
+/**
+ * PROFITABLE MONTHS — how many of the last twelve closed in the black.
+ *
+ *   base = (winRate − 0.30) / 0.42            the latent, inverted back out
+ *   up   = rising windows / (windows − 1)      the form line's own slope
+ *   green = round(12 · clamp01(0.30 + 0.55·base + 0.20·(up − 0.5)))
+ *
+ * Two thirds of it is the base rate and a third is recent form, which is the
+ * only honest split available: a persona has a career hit rate and an eight-
+ * point form line, and nothing else that could possibly say which MONTHS went
+ * well. Reported over twelve rather than over the eight windows so it reads the
+ * way a copy platform reports it, and so it cannot be mistaken for a claim that
+ * the app simulated twelve months of results.
+ *
+ * Coherent with GAIN by construction — both lean on `winRate` — so the profile
+ * never shows a +70% year alongside four green months.
+ */
+export function profitableMonthsFor(winRate: number, trend: readonly number[]): number {
+  let rising = 0;
+  for (let i = 1; i < trend.length; i++) if ((trend[i] ?? 0) > (trend[i - 1] ?? 0)) rising++;
+  const up = trend.length > 1 ? rising / (trend.length - 1) : 0.5;
+  const base = clamp01((winRate - 0.3) / 0.42);
+  return Math.round(12 * clamp01(0.3 + 0.55 * base + 0.2 * (up - 0.5)));
+}
+
+/**
+ * The whole profile, from a row that has everything but the profile.
+ *
+ * Takes the row rather than the id so it can be a pure derivation with no
+ * second seeded stream — `build` and `buildYou` each assemble their row, then
+ * hand it here. Nothing below draws; nothing below can move a pinned number.
+ */
+export function copyProfileFor(p: Omit<LeaderPlayer, "profile">): CopyProfile {
+  const months = profitableMonthsFor(p.winRate, p.trend);
+  return {
+    gain12m: gain12mFor(p.battles, p.winRate),
+    risk: riskScoreFor(p.modeShare, p.sectorShare),
+    aum: aumFor(p.econ),
+    minCopy: minCopyFor(p.econ.avgTicket),
+    copierDelta: p.econ.unlocked ? copierDelta30d(p.trend) : 0,
+    profitableMonths: months,
+    profitableMonthsPct: months / 12,
+    avgTrade: p.econ.avgTicket,
+    career: p.earnings,
+  };
 }
 
 /**
@@ -336,7 +570,9 @@ export function build(persona: Persona): LeaderPlayer {
 
   const econ = copyEconomicsFor(persona.id, xp);
 
-  return {
+  // Assembled in two steps only because the profile is a function OF the row.
+  // No draw happens between them, so the stream is exactly what it was.
+  const row: Omit<LeaderPlayer, "profile"> = {
     ...persona,
     skill,
     battles,
@@ -355,6 +591,7 @@ export function build(persona: Persona): LeaderPlayer {
     trend,
     you: false,
   };
+  return { ...row, profile: copyProfileFor(row) };
 }
 
 /**
@@ -386,6 +623,20 @@ export interface YouInput {
 
 /** Id for the synthetic row. Seeds your `avgTicket`, so it is pinned. */
 export const YOU_ID = "you";
+
+/**
+ * Your display identity, pinned as constants rather than inlined into
+ * `buildYou` below.
+ *
+ * `components/PlayerMark.tsx` seeds a player's glyph off their NAME, and the
+ * parlay slip renders your mark from a screen that never sees a `LeaderPlayer`
+ * — it only knows that the seat is yours. Exporting the two strings is what
+ * stops that screen from hard-coding a second "You"/"YO" pair that could drift
+ * from this one and hand you a different glyph on the slip than on the ladder.
+ * Values unchanged; this is a name for what was already there.
+ */
+export const YOU_NAME = "You";
+export const YOU_INITIALS = "YO";
 
 /** Counts → shares, with a uniform prior so an empty ledger yields a flat
  *  split rather than NaN. */
@@ -436,10 +687,10 @@ export function buildYou(input: YouInput): LeaderPlayer {
   }
 
   const econ = copyEconomicsFor(YOU_ID, xp);
-  return {
+  const row: Omit<LeaderPlayer, "profile"> = {
     id: YOU_ID,
-    name: "You",
-    initials: "YO",
+    name: YOU_NAME,
+    initials: YOU_INITIALS,
     bg: C.indigo,
     skill,
     battles,
@@ -456,6 +707,9 @@ export function buildYou(input: YouInput): LeaderPlayer {
     trend,
     you: true,
   };
+  // Your profile comes off the same derivation as everyone else's — an empty
+  // ledger is a 0.0% year at risk 4, not a blank.
+  return { ...row, profile: copyProfileFor(row) };
 }
 
 /** The ladder with your row folded in. A plain concat — `rankedBy` sorts it,
@@ -466,11 +720,21 @@ export function leaderboardWith(you: LeaderPlayer): readonly LeaderPlayer[] {
 
 // ── Filtering and ranking ───────────────────────────────────────────────────
 
-export type LadderFilter = "COPY" | "SECTOR_MODE" | "WINRATE" | "EARNINGS";
+export type LadderFilter = "COPY" | "GAIN" | "SECTOR_MODE" | "WINRATE" | "EARNINGS";
 
-/** Row A's four options, in render order. */
+/**
+ * Row A's five options, in render order.
+ *
+ * GAIN sits second rather than first on purpose. It is the headline number on
+ * a copy-trader's CARD — the thing you read once you have found them — but the
+ * page's thesis is still "rank is income", so COPY HEAT stays the board's
+ * opening question and the default. Adding the option cost nothing structural:
+ * `measure` gained one arm, and `rankedBy` sorts descending by a metric it has
+ * never needed to understand.
+ */
 export const LADDER_FILTERS: readonly LadderFilter[] = [
   "COPY",
+  "GAIN",
   "SECTOR_MODE",
   "WINRATE",
   "EARNINGS",
@@ -478,6 +742,7 @@ export const LADDER_FILTERS: readonly LadderFilter[] = [
 
 export const FILTER_LABEL: Record<LadderFilter, string> = {
   COPY: "COPY HEAT",
+  GAIN: "GAIN 12M",
   SECTOR_MODE: "SECTOR × MODE",
   WINRATE: "WIN RATE",
   EARNINGS: "EARNINGS",
@@ -503,9 +768,101 @@ export interface Ranked {
   sub: string;
 }
 
-const pct1 = (n: number): string => `${(n * 100).toFixed(1)}%`;
-const pts = (n: number): string => Math.round(n).toLocaleString("en-US");
-const signed = (n: number): string => `${n < 0 ? "−" : "+"}${pts(Math.abs(n))}`;
+/**
+ * The ladder's number vocabulary.
+ *
+ * Exported — additively, the implementations are untouched — because the room's
+ * seat dossier (`views/Room.tsx`) prints the SAME four figures a ladder row
+ * prints, and a second `toLocaleString` call site with its own rounding would
+ * be the first thing to drift. `signed` in particular uses U+2212, not a
+ * hyphen: the minus has to line up under the plus in a tabular column.
+ */
+export const pct1 = (n: number): string => `${(n * 100).toFixed(1)}%`;
+export const pts = (n: number): string => Math.round(n).toLocaleString("en-US");
+export const signed = (n: number): string => `${n < 0 ? "−" : "+"}${pts(Math.abs(n))}`;
+
+/**
+ * The copy desk's money, formatted the way a money app formats money.
+ *
+ * `usd` is the exact figure — `$2,206`, `$63,698` — and it is what a panel
+ * prints when the reader might reasonably care about the last three digits.
+ * `usdCompact` is the glance version, and it only kicks in where the exact
+ * figure has stopped being readable: six digits become `$452.5K`, seven become
+ * `$1.9M`. Below that it defers to `usd`, so there is exactly one place where
+ * `$63,698` could ever come out as `$63.7K` and it is a decision made per call
+ * site rather than by a threshold nobody can see.
+ *
+ * `usdSigned` always carries a sign, because the one figure that can be
+ * negative (career P/L) sits in a tabular column where the minus must line up
+ * under the plus — the same reason `signed` above uses U+2212 rather than a
+ * hyphen. `usdGain` is the profile's percentage, signed for the same reason.
+ *
+ * These format DOLLARS. `pts` formats POINTS. No call site converts between
+ * them, and nothing here knows a rate, because there is none.
+ */
+export const usd = (n: number): string =>
+  `${n < 0 ? "−" : ""}$${Math.round(Math.abs(n)).toLocaleString("en-US")}`;
+
+export const usdSigned = (n: number): string =>
+  `${n < 0 ? "−" : "+"}$${Math.round(Math.abs(n)).toLocaleString("en-US")}`;
+
+export function usdCompact(n: number): string {
+  const sign = n < 0 ? "−" : "";
+  const v = Math.abs(n);
+  if (v >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 100_000) return `${sign}$${(v / 1_000).toFixed(1)}K`;
+  return usd(n);
+}
+
+/** `0.538` → `+53.8%`. The GAIN column, and the copier delta. */
+export const usdGain = (n: number): string =>
+  `${n < 0 ? "−" : "+"}${(Math.abs(n) * 100).toFixed(1)}%`;
+
+/**
+ * The trailing run in a player's form line.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS A FORM RUN AND NOT A WIN STREAK
+ * ────────────────────────────────────────────────────────────────────────────
+ * A `LeaderPlayer` has no notion of RECENCY. `wins` and `battles` are career
+ * totals; nothing in this file records the ORDER of a persona's results, and
+ * nothing could — the personas have no match history, only a latent skill and
+ * the numbers that fall out of it. The one ordered sequence a persona owns is
+ * `trend`: eight form windows, drawn as a skill-shaped random walk, which is
+ * already what the ladder's TREND column draws.
+ *
+ * So this counts the consecutive rising (or falling) windows at the END of that
+ * walk and says exactly that. It is a true statement about data that already
+ * exists. Calling the same number "W4 STREAK" would be an invention: it would
+ * read as four match results the app has never simulated. `state/ledger.ts`
+ * owns the only real streak in the app — YOUR consecutive wins — and that one
+ * comes from an actual history.
+ *
+ * Purely derived and purely additive: it draws nothing from the seeded stream,
+ * so no existing value moves.
+ */
+export interface FormRun {
+  dir: "up" | "down" | "flat";
+  /** Windows in the run. 0 when the last two prints are level. */
+  length: number;
+}
+
+export function formRun(trend: readonly number[]): FormRun {
+  if (trend.length < 2) return { dir: "flat", length: 0 };
+  const step = (i: number): number => (trend[i] ?? 0) - (trend[i - 1] ?? 0);
+  const last = trend.length - 1;
+  const head = step(last);
+  if (head === 0) return { dir: "flat", length: 0 };
+
+  const dir = head > 0 ? "up" : "down";
+  let length = 0;
+  for (let i = last; i >= 1; i--) {
+    const d = step(i);
+    if (dir === "up" ? d > 0 : d < 0) length++;
+    else break;
+  }
+  return { dir, length };
+}
 
 /**
  * Wins inside a sector × mode selection (plan 4 §6, invariant 3).
@@ -561,9 +918,18 @@ function measure(p: LeaderPlayer, filter: LadderFilter, sel: Selection): Omit<Ra
         player: p,
         metric: p.econ.copiers,
         label: p.econ.unlocked ? `${pts(p.econ.copiers)} COPIERS` : "LOCKED",
+        // Fee revenue, in the desk's dollars. The locked arm stays in XP — the
+        // unlock is a RANK fact, and rank is measured in XP on every screen.
         sub: p.econ.unlocked
-          ? `≈ ${pts(p.econ.daily)} PTS / DAY`
+          ? `≈ ${usd(p.econ.daily)} / DAY`
           : `${pts(p.econ.nextUnlock?.xpAway ?? 0)} XP TO ${p.econ.nextUnlock?.tier.name ?? "SHARK"}`,
+      };
+    case "GAIN":
+      return {
+        player: p,
+        metric: p.profile.gain12m,
+        label: usdGain(p.profile.gain12m),
+        sub: `RISK ${p.profile.risk}/10 · ${pts(p.battles)} TRADES`,
       };
     case "SECTOR_MODE": {
       const n = winsIn(p, sel.sectors, sel.modes);
@@ -580,7 +946,7 @@ function measure(p: LeaderPlayer, filter: LadderFilter, sel: Selection): Omit<Ra
       return {
         player: p,
         metric: p.earnings,
-        label: `${signed(p.earnings)} PTS`,
+        label: usdSigned(p.earnings),
         sub: `${pts(p.battles)} BATTLES`,
       };
   }

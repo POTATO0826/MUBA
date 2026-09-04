@@ -1,5 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { PlayerMark } from "../components/PlayerMark.tsx";
+import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
+import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
+import { SPOT_CHIP, bookDeltaNote, liveTag, seededTag, spotChipSx, spotFor } from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
 import {
   PARLAY_CARDS,
@@ -13,9 +17,9 @@ import {
   type Tier,
 } from "../engine/parlay.ts";
 import { fmtPx } from "../engine/tape.ts";
-import { sfx } from "../lib/sound/index.ts";
+import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, sectorColor, tag } from "../theme.ts";
+import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
 
 /**
@@ -41,6 +45,18 @@ export const TIER_COLOR: Record<Tier, string> = {
 
 interface ParlayPickProps {
   lobbyName: string;
+  /**
+   * The live book. Two strictly additive uses, and no third:
+   *
+   *  1. a spot annotation beside each ticker's seeded reference price;
+   *  2. the book's delta beside a tier's implied probability, as advice.
+   *
+   * Nothing here reaches `myLegs`, `summary`, `TIERS` or the odds. The slip is
+   * built from the seed and settles on the seeded tape; if that ever stopped
+   * being true, `/match/:id/parlay?seed=N` would stop replaying and the
+   * determinism locks would say so.
+   */
+  source: MarketSource;
   /** This match's window. Its `oddsBoost` is already inside `summary.mult`;
    *  the slip only has to say where the premium came from. */
   mode: ModeSpec;
@@ -69,6 +85,18 @@ interface ParlayPickProps {
 /** The last five seconds are the loud ones. */
 const HOT = 5;
 
+/**
+ * The pick phase's bed — the hero-select music.
+ *
+ * Served by `index.ts` from `src/assets/` when the operator has dropped a file
+ * there, and 404'd cleanly when they have not, exactly like the room's
+ * `room-inspect.mp3`. The whole directory is gitignored on purpose (the audio
+ * is game-ripped and licensed to someone else), so a fresh clone plays this
+ * screen in silence and nothing about that is an error path — see
+ * `docs/HANDOFF.md`, "Local-only artifacts".
+ */
+const PICK_TRACK = "/assets/parlay-pick.mp3";
+
 /** `0:18` — a clock reads as a clock, and the monospace stops it juddering. */
 const clockText = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
 
@@ -77,6 +105,52 @@ export function ParlayPick(p: ParlayPickProps) {
   const s = p.summary;
   const counting = p.secondsLeft !== null;
   const hot = p.secondsLeft !== null && p.secondsLeft <= HOT;
+
+  /**
+   * Live spot for the dealt tickers, `null` for most of them. Three to five
+   * names on screen and a fresh `source` object on every 30s poll, so this is
+   * cheap either way — it is memoised because the card grid below re-renders on
+   * every pick and the answer cannot have changed.
+   */
+  const spots = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const sym of p.arena) {
+      const px = spotFor(sym, p.source);
+      if (px !== null) m.set(sym, px);
+    }
+    return m;
+  }, [p.arena, p.source]);
+  /** No annotations, no chip — and then this screen is byte-identical to the
+   *  one that shipped before live data existed. */
+  const anyLive = spots.size > 0;
+
+  /**
+   * The pick music, on exactly the room's terms.
+   *
+   * The UNMOUNT is the general case and it covers every exit there is: the
+   * clock running out, the lock button, a rematch, the back arrow, a reload.
+   * The pick screen is only ever mounted by `App` for the pick phase, so
+   * leaving the phase unmounts it and the cleanup fades the bed out — there is
+   * no exit path that needs its own call.
+   *
+   * `stopTrack("room")` on the way IN is the belt to that braces. The room's
+   * own cleanup already stops its bed when `App` swaps the view, and React runs
+   * that cleanup before this effect; the explicit stop makes "the pick bed and
+   * the room bed never sound together" a property of this file rather than a
+   * property of two files and an ordering guarantee between them. Stopping a
+   * track that is not playing is a no-op.
+   *
+   * Levels, fades and the reduced-motion opt-out are all the engine's
+   * (`TRACK_GAIN` 0.22 on the ambience bus, 800ms in, 600ms out) — the same
+   * numbers the room gets, because it is the same call.
+   */
+  useEffect(() => {
+    stopTrack("room");
+    startTrack("parlay", PICK_TRACK);
+    return () => {
+      stopTrack("parlay");
+    };
+  }, []);
 
   // One beep per distinct second of the last five. The clock re-renders far
   // more often than once a second, so the ref — not the render — is what makes
@@ -109,6 +183,13 @@ export function ParlayPick(p: ParlayPickProps) {
         <span style={sx(modeTag(p.mode.key))}>
           {p.mode.label} · {p.mode.duration}
         </span>
+        {/* The board legend for this surface. Only when something below is
+            actually annotated. */}
+        {anyLive && (
+          <span data-testid="spot-chip" style={sx(spotChipSx)}>
+            {SPOT_CHIP}
+          </span>
+        )}
         {p.secondsLeft !== null && (
           <span
             data-testid="pick-clock"
@@ -134,6 +215,7 @@ export function ParlayPick(p: ParlayPickProps) {
             const u = meta(sym);
             const picked = p.picks[sym] ?? null;
             const color = sectorColor(u.sector);
+            const liveSpot = spots.get(sym) ?? null;
             return (
               <section
                 key={sym}
@@ -143,7 +225,20 @@ export function ParlayPick(p: ParlayPickProps) {
                 <div style={sx(`display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
                   <span style={sx(`font:700 16px/1 ${MONO}`)}>{sym}</span>
                   <span style={sx(tag(color))}>{u.sector}</span>
-                  <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
+                  {/* C4 site: the ticker's reference price.
+                      With no live print this is the line it has always been.
+                      With one, the seeded number stays exactly where it was and
+                      gains the word that was always implied — the live print
+                      joins it, named, in the live colour. The legs below are
+                      struck off `u.px` either way. */}
+                  {liveSpot === null ? (
+                    <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
+                  ) : (
+                    <span data-testid={`spot-${sym}`} style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>
+                      {seededTag(u.px)} · <span style={sx(`color:${C.green}`)}>{liveTag(liveSpot)}</span> · base ±
+                      {u.t.toFixed(1)}%
+                    </span>
+                  )}
                   <div style={sx("flex:1")} />
                   <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${picked ? TIER_COLOR[picked.tier] : C.faint}`)}>
                     {picked ? `${picked.label} · ×${picked && TIERS[picked.tier].mult.toFixed(1)}` : "pick one"}
@@ -156,6 +251,17 @@ export function ParlayPick(p: ParlayPickProps) {
                     const tc = TIER_COLOR[card.tier];
                     const on = picked?.id === card.id;
                     const bull = card.stance === "bull";
+                    /**
+                     * The book's own read on this card's line — advisory, and
+                     * only where a book exists.
+                     *
+                     * The moneyness is `strike / px`, both taken off the leg the
+                     * card would build, which is the leg the duel would settle.
+                     * The tier's `~n%` above it is untouched, and `TIERS` is not
+                     * imported for this — the advisory cannot move the odds
+                     * because it never sees them.
+                     */
+                    const advisory = bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
                     return (
                       <button
                         key={card.id}
@@ -185,6 +291,14 @@ export function ParlayPick(p: ParlayPickProps) {
                         <div style={sx(`margin-top:6px;font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
                           {bull ? "above" : "below"} {fmtPx(leg.strike)} · ~{Math.round(leg.prob * 100)}%
                         </div>
+                        {advisory && (
+                          <div
+                            data-testid={`book-delta-${sym}:${card.id}`}
+                            style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${C.green}`)}
+                          >
+                            {advisory}
+                          </div>
+                        )}
                         {on && (
                           <div
                             style={sx(
@@ -213,7 +327,7 @@ export function ParlayPick(p: ParlayPickProps) {
         <div style={sx("display:flex;flex-direction:column;gap:16px;position:sticky;top:76px")}>
           <div style={sx(`border:1px solid ${s.loud && p.allPicked ? C.violet : C.border};border-radius:12px;background:${C.panel};overflow:hidden`)}>
             <div style={sx(`display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
-              <div style={sx(avatarStyle(C.indigo, 26))}>YO</div>
+              <PlayerMark name={YOU_NAME} initials={YOU_INITIALS} bg={C.indigo} size={26} />
               <span style={sx(`font:700 13px/1 ${SANS}`)}>Your slip</span>
               <div style={sx("flex:1")} />
               <span style={sx(`font:500 10px/1 ${MONO};color:${p.allPicked ? C.text : C.dim}`)}>
@@ -267,6 +381,11 @@ export function ParlayPick(p: ParlayPickProps) {
             <div style={sx("padding:12px")}>
               <button
                 onClick={() => {
+                  // Eagerly, on the room's pattern: the 600ms fade is already
+                  // running under the lock sound rather than starting when the
+                  // duel takes the screen. The unmount cleanup is what actually
+                  // guarantees it; this only decides when the fade begins.
+                  stopTrack("parlay");
                   sfx("parlay.lock");
                   p.onLock();
                 }}
@@ -298,7 +417,12 @@ export function ParlayPick(p: ParlayPickProps) {
             )}
           >
             <div style={sx(`display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
-              <div style={sx(avatarStyle(p.opponent.bg, 26))}>{p.opponent.initial}</div>
+              <PlayerMark
+                name={p.opponent.name}
+                initials={p.opponent.initial}
+                bg={p.opponent.bg}
+                size={26}
+              />
               <div>
                 <div style={sx(`font:700 13px/1 ${SANS}`)}>{p.opponent.name}</div>
                 <div style={sx(`margin-top:4px;font:400 10px/1 ${MONO};color:${C.red}`)}>picking…</div>

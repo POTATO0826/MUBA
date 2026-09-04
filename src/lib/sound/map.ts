@@ -155,13 +155,15 @@ export const CASE_LAND_URL = "/assets/case-land.mp3";
 const TICK_SAMPLE_GAIN = 0.7;
 
 /**
- * Land — 0.71 x 0.5 x `TIER_GAIN.event` (0.38) is a ~0.135 peak, deliberately
- * under `spin.reveal`'s ~0.30 through the same tier. The two fire together on
- * every landing and they are not equals: the sting is the bed, and the reveal's
- * per-leg arpeggio — the one thing a fixed recording cannot supply, since it
- * climbs with the leg — has to sit clearly on top of it.
+ * Land — 0.71 x 1.0 x `TIER_GAIN.event` (0.38) is a ~0.27 peak: the whole
+ * landing, alone. It used to sit at 0.5 (~0.135), tucked under `spin.reveal`'s
+ * ~0.30 arpeggio, back when the two fired together on every settle — the owner
+ * cut the reveal from the landing (two voices read as a doubled transient), so
+ * the recording now carries the moment at roughly the old combined level.
+ * `spin.reveal` stays registered: the budget tests exercise it, and nothing
+ * says the arpeggio can never find another home.
  */
-const LAND_SAMPLE_GAIN = 0.5;
+const LAND_SAMPLE_GAIN = 1.0;
 
 /**
  * Play `url` as a one-shot into `dest`, or report that it is not available yet

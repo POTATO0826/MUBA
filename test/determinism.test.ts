@@ -45,6 +45,36 @@ const MATCH_STATE = join(ROOT, "src", "state", "match.ts");
  */
 const LIVE_NEWS_RE = /data\/news|data\/wire|\/api\/news/;
 
+/**
+ * The forbidden references, part two: the live *market*.
+ *
+ * The Thetanuts integration makes the app HYBRID — live Base-chain option
+ * prices, greeks and spot anchor everything *visible*, while the duel itself
+ * stays the seeded, replayable sim. Live market data is therefore
+ * DISPLAY ONLY, exactly as live news is: it may reach `/desk`, the footer, a
+ * spot annotation beside a seeded number — and it may never reach the engine
+ * or `src/state/match.ts`. One `import` of `data/thetanuts.tsx` into
+ * `src/engine/` would make what a seed deals — or what a duel pays — depend on
+ * the Base book at wall-clock time, and `/match/:id/parlay?seed=N` would stop
+ * replaying identically. No other test catches that.
+ *
+ * Like LIVE_NEWS_RE this regex is DELIBERATELY NARROW. It names the live
+ * market reach-throughs and nothing else:
+ *   - `data/thetanuts`   — the client market source / LiveMarket provider
+ *   - `server/thetanuts` — the server-side market service
+ *   - `/api/market`      — the market route
+ *   - `/api/attest`      — the settlement-signature route
+ *   - `/api/lock`        — the pick-commit route
+ *   - `thetanuts-client` — the SDK package itself
+ *
+ * It must NOT be broadened. In particular the engine and the match state may
+ * keep referring to seeded market *concepts* — `data/universe.ts`, a
+ * `MARKET_LABEL` constant, a comment mentioning an SDK helper — because none of
+ * those carries a live value. Widening this to /thetanuts|market/ would fail
+ * those legitimate references and would be a gate failure, not a fix.
+ */
+const LIVE_MARKET_RE = /data\/thetanuts|server\/thetanuts|\/api\/market|\/api\/attest|\/api\/lock|thetanuts-client/;
+
 /** Every engine module, globbed at runtime so a NEW engine file is covered the
  *  moment it lands — no test edit required. */
 function engineFiles(): readonly string[] {
@@ -58,7 +88,7 @@ function guardedFiles(): readonly string[] {
 
 const rel = (p: string) => relative(ROOT, p).replaceAll("\\", "/");
 
-describe("determinism boundary — live news never reaches settlement", () => {
+describe("determinism boundary — live news and live market never reach settlement", () => {
   test("the guard actually covers the engine and the match state", () => {
     const files = engineFiles().map(rel);
     // A broken glob returning [] would make the scan below pass vacuously.
@@ -69,15 +99,16 @@ describe("determinism boundary — live news never reaches settlement", () => {
     expect(files).toContain("src/engine/parlay.ts");
   });
 
-  test("no engine module and no state/match.ts touches data/news, data/wire or /api/news", async () => {
+  test("no engine module and no state/match.ts touches the live news wire or the live market", async () => {
     const offenders: string[] = [];
     for (const path of guardedFiles()) {
       const text = await Bun.file(path).text();
-      const hit = text.match(LIVE_NEWS_RE);
+      const hit = text.match(LIVE_NEWS_RE) ?? text.match(LIVE_MARKET_RE);
       if (hit) offenders.push(`${rel(path)} → ${hit[0]}`);
     }
-    // Presentation-only rule: live news informs the Study wire, never the deal
-    // and never the settle. `(lobby, seed)` is the whole input to settlement.
+    // Presentation-only rule: live news informs the Study wire and live market
+    // data informs /desk and the spot annotations — never the deal and never
+    // the settle. `(lobby, seed)` is the whole input to settlement.
     expect(offenders).toEqual([]);
   });
 
@@ -94,6 +125,28 @@ describe("determinism boundary — live news never reaches settlement", () => {
     expect(LIVE_NEWS_RE.test(`import { briefsFor } from "../data/briefs.ts";`)).toBe(false);
     expect(LIVE_NEWS_RE.test(`// the wire never contradicts the chart`)).toBe(false);
     expect(LIVE_NEWS_RE.test(`const newsy = "news";`)).toBe(false);
+  });
+
+  test("the live-market regex stays narrow — it must not swallow legitimate references", () => {
+    // The six live-market reach-throughs it exists to catch…
+    expect(LIVE_MARKET_RE.test(`import { useLiveMarket } from "../data/thetanuts.tsx";`)).toBe(true);
+    expect(LIVE_MARKET_RE.test(`import { createMarketService } from "../server/thetanuts.ts";`)).toBe(true);
+    expect(LIVE_MARKET_RE.test(`await fetch("/api/market");`)).toBe(true);
+    expect(LIVE_MARKET_RE.test(`await fetch("/api/attest", { method: "POST" });`)).toBe(true);
+    expect(LIVE_MARKET_RE.test(`await fetch("/api/lock", { method: "POST" });`)).toBe(true);
+    expect(
+      LIVE_MARKET_RE.test(`import { ThetanutsClient } from "@thetanuts-finance/thetanuts-client";`),
+    ).toBe(true);
+
+    // …and these are references that are legitimate and must keep passing.
+    // A comment naming an SDK helper carries no live value into settlement.
+    expect(LIVE_MARKET_RE.test(`// mirrors client.utils.calculatePayout for the seeded tape`)).toBe(
+      false,
+    );
+    // The seeded universe is the engine's own data and stays importable.
+    expect(LIVE_MARKET_RE.test(`import { UNIVERSE } from "../data/universe.ts";`)).toBe(false);
+    expect(LIVE_MARKET_RE.test(`const label = MARKET_LABEL[sector];`)).toBe(false);
+    expect(LIVE_MARKET_RE.test(`const marketish = "market";`)).toBe(false);
   });
 });
 

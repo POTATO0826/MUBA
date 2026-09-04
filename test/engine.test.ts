@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { UNIVERSE, meta } from "../src/data/universe.ts";
-import { buildPayoffChart, ETH_VOL_BOX, payoff } from "../src/engine/payoff.ts";
+import { buildPayoffChart, ETH_VOL_BOX, payoff } from "../src/desk/payoff.ts";
 import { edgeOf, legState, scoreOf, settle } from "../src/engine/match.ts";
 import { TAPE_LEN, fmtPx, geom, pctAt, series } from "../src/engine/tape.ts";
 import type { Leg } from "../src/types.ts";
@@ -78,6 +78,42 @@ describe("payoff", () => {
     expect(breakeven).toBeLessThan(5200);
     expect(chart.gridX).toHaveLength(6);
     expect(chart.strikeMarks).toHaveLength(4);
+  });
+
+  test("with no live spot the chart is byte-identical to the one that predates live spot", () => {
+    // `buildPayoffChart` gained a second parameter when /desk went live. The
+    // whole defence of that change is that the no-argument call did not move:
+    // the reference spot survives as an explicit FALLBACK, not as a fact, and
+    // these are the exact coordinates it drew before the parameter existed.
+    const chart = buildPayoffChart();
+    expect(chart).toEqual(buildPayoffChart(ETH_VOL_BOX, null));
+    expect(chart.spotIsLive).toBe(false);
+    expect(chart.spotX).toBe("458.5"); // X(4182)
+    expect(chart.spotLabelX).toBe("466.5");
+    expect(chart.spotLabel).toBe("SPOT 4,182 · REFERENCE");
+  });
+
+  test("a live spot moves the line and flips the label", () => {
+    // 2,375.76 is the real ETH print from the FINDINGS capture — below this
+    // chart's 3,200 floor, which is the case the clamp exists for. The LINE is
+    // clamped to the axis; the LABEL always prints the true number, because a
+    // clamped label would be a wrong price rather than a drawing artefact.
+    const live = buildPayoffChart(ETH_VOL_BOX, 2375.76);
+    expect(live.spotIsLive).toBe(true);
+    expect(live.spotLabel).toBe("SPOT 2,375.76 · LIVE");
+    expect(live.spotX).toBe("52.0");
+    // Everything that is not the spot line is the same drawing.
+    expect(live.path).toBe(buildPayoffChart().path);
+    expect(live.stats).toEqual(buildPayoffChart().stats);
+  });
+
+  test("a spot that is not a number is not a spot", () => {
+    // `MarketSource.spot` answers `null` for every asset Thetanuts does not
+    // publish — 11 of the board's 18 — so the miss path is the common one.
+    for (const bad of [NaN, Infinity]) {
+      expect(buildPayoffChart(ETH_VOL_BOX, bad).spotIsLive).toBe(false);
+      expect(buildPayoffChart(ETH_VOL_BOX, bad).spotLabel).toContain("REFERENCE");
+    }
   });
 });
 

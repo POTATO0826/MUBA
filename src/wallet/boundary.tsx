@@ -1,12 +1,16 @@
-import { EthersAdapter } from "@reown/appkit-adapter-ethers";
-import { AppKitProvider } from "@reown/appkit/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import type { WalletSource } from "../data/wallet.ts";
 import { WalletPicker } from "../ui/WalletPicker.tsx";
-import { useAppKitWallet } from "./appkit.tsx";
-import { METADATA, NETWORKS, THEME_VARIABLES, fetchWalletConfig } from "./config.ts";
+import { fetchWalletConfig } from "./project.ts";
 import { useInjectedWallet, useInjectedWallets } from "./injected.ts";
 import { mockRequested, useMockWallet } from "./mock.ts";
+
+/**
+ * Keep AppKit out of the mock/injected wallet's startup module graph. Reown's
+ * universal adapter can fail while Bun evaluates it, before this boundary has
+ * a chance to select the mock. The live tier is loaded only when configured.
+ */
+const LiveWallet = lazy(() => import("./live.tsx"));
 
 /**
  * Decides which wallet the app runs on, and is the only module that knows
@@ -69,7 +73,13 @@ export function WalletBoundary({
   if (asMock) return <MockWallet>{children}</MockWallet>;
 
   if (projectId === null) return null;
-  if (projectId !== "") return <LiveWallet projectId={projectId}>{children}</LiveWallet>;
+  if (projectId !== "") {
+    return (
+      <Suspense fallback={null}>
+        <LiveWallet projectId={projectId}>{children}</LiveWallet>
+      </Suspense>
+    );
+  }
   // Waiting on discovery avoids a flash of the mock tier — and a pointless
   // remount — while the extensions announce themselves.
   if (!injectedSettled) return null;
@@ -98,47 +108,5 @@ function InjectedWallet({ children }: { children: (w: WalletSource) => ReactNode
 /** Tier 3: no wallet installed anywhere. */
 function MockWallet({ children }: { children: (w: WalletSource) => ReactNode }) {
   const wallet = useMockWallet();
-  return <>{children(wallet)}</>;
-}
-
-/** Tier 1: AppKit, which brings its own modal and the QR flow. */
-function LiveWallet({
-  projectId,
-  children,
-}: {
-  projectId: string;
-  children: (w: WalletSource) => ReactNode;
-}) {
-  // `AppKitProvider` memoises the client on first render, so the adapter is
-  // built once whatever React does with this subtree.
-  const adapters = useMemo(() => [new EthersAdapter()], []);
-
-  return (
-    <AppKitProvider
-      adapters={adapters}
-      networks={[...NETWORKS]}
-      projectId={projectId}
-      metadata={METADATA}
-      themeMode="dark"
-      themeVariables={THEME_VARIABLES}
-      features={{
-        analytics: false,
-        // Email and social logins mint their own embedded wallets. A duel
-        // settles between two addresses the players control, so the only
-        // connector that makes sense here is a real wallet.
-        email: false,
-        socials: false,
-        swaps: false,
-        onramp: false,
-      }}
-    >
-      <ConnectedWallet>{children}</ConnectedWallet>
-    </AppKitProvider>
-  );
-}
-
-/** Sits inside the provider, which is the only place the AppKit hooks work. */
-function ConnectedWallet({ children }: { children: (w: WalletSource) => ReactNode }) {
-  const wallet = useAppKitWallet();
   return <>{children(wallet)}</>;
 }

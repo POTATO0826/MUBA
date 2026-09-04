@@ -74,9 +74,10 @@ export const miniTag = (color: string): string =>
   `font:700 8.5px/1 ${MONO};letter-spacing:.1em;padding:4px 6px;border-radius:5px;` +
   `border:1px solid ${color}4d;background:${color}1a;color:${color}`;
 
-export const avatarStyle = (bg: string, size = 26): string =>
-  `width:${size}px;height:${size}px;border-radius:8px;background:${bg};display:grid;place-items:center;` +
-  `font:700 10px/1 ${SANS};color:${C.bg}`;
+/* `avatarStyle` lived here — a flat colour square with two initials on it. Every
+   call site now renders `components/PlayerMark.tsx` instead, which seeds a
+   procedural pixel glyph off the player's name, so the builder is dead and gone
+   rather than left as a second, drifting way to draw a player. */
 
 export const chipStyle = (color: string): string =>
   `flex:none;font:500 10px/1 ${MONO};padding:6px 8px;border-radius:6px;border:1px solid ${C.border};` +

@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
 import { bookFor } from "../src/data/lobbies.ts";
-import { mockMarketSource } from "../src/data/market.ts";
+import { mockMarketSource, type MarketSource } from "../src/data/market.ts";
 import type { NewsSource, WireItem } from "../src/data/news.ts";
 import { MODES, MODE_SALT } from "../src/data/modes.ts";
 import { bookForSectors } from "../src/data/sectors.ts";
@@ -13,20 +13,22 @@ import { xpForMatch } from "../src/engine/rank.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS, TAPE_STEP } from "../src/state/match.ts";
-import type { Mode, SectorKey } from "../src/types.ts";
+import type { Mode, PricingRow, SectorKey } from "../src/types.ts";
 
 let container: HTMLDivElement;
 let root: Root;
 
 /** Mount at a path. The app reads its route once, on mount. Passing no news
- *  source leaves the App on its seeded default, so nothing here hits a network. */
-function mount(path = "/", newsSource?: NewsSource) {
+ *  source leaves the App on its seeded default, so nothing here hits a network.
+ *  `source` likewise defaults to the seeded book — every test that does not name
+ *  one is asserting the app as it renders with no live data at all. */
+function mount(path = "/", newsSource?: NewsSource, source: MarketSource = mockMarketSource) {
   window.history.replaceState(null, "", path);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<App source={mockMarketSource} newsSource={newsSource} />);
+    root.render(<App source={source} newsSource={newsSource} />);
   });
 }
 
@@ -163,8 +165,9 @@ describe("the board", () => {
     expect(art).toHaveLength(6);
     expect(new Set(art.map((a) => a.dataset.art)).size).toBe(6);
     for (const a of art) {
-      // A real drawing, not an empty frame…
-      expect(a.querySelectorAll("path, circle, polygon").length).toBeGreaterThanOrEqual(9);
+      // A real drawing, not an empty frame… (`rect` since the ornament became
+      // ChromeCandles: capsules are rounded rects, not paths.)
+      expect(a.querySelectorAll("path, circle, polygon, rect").length).toBeGreaterThanOrEqual(9);
       // …and it moves: SMIL on the shapes, or a CSS flow on the strokes.
       const smil = a.querySelectorAll("animate, animateTransform").length;
       const css = Array.from(a.querySelectorAll<SVGElement>("path")).filter((p) => (p.getAttribute("style") ?? "").includes("vcFlow")).length;
@@ -178,6 +181,81 @@ describe("the board", () => {
     expect(kz()).toBe(before);
     // No tilt on the cards any more; the picture moves, the card does not.
     expect(container.querySelector("[data-tilt]")).toBeNull();
+  });
+
+  // The ornament is `ChromeCandles`: a rally of chrome capsules with a sheen
+  // travelling down each one. It is decoration and nothing else, so what these
+  // guard is that it stays inert, stays deterministic, and never collides with
+  // the identical ornament on the card beside it.
+  test("the chrome rally draws on every card, on both surfaces, and stays inert", () => {
+    mount("/battles");
+    const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
+    expect(art).toHaveLength(6);
+    for (const a of art) {
+      expect(a.dataset.pattern).toBe("chrome-candles");
+      // Never in the way of a click, never in the accessibility tree.
+      expect(a.getAttribute("aria-hidden")).not.toBeNull();
+      expect(a.style.pointerEvents).toBe("none");
+      // Six bodies + six rims + twelve wicks + three ticks + the streak.
+      expect(a.querySelectorAll("rect").length).toBeGreaterThanOrEqual(28);
+      // Six falling sheens, plus the streak and its pool.
+      expect(a.querySelectorAll("animateTransform").length).toBeGreaterThanOrEqual(8);
+    }
+    // The home board renders the same card, so it gets the same ornament.
+    remount("/");
+    const home = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
+    expect(home).toHaveLength(4);
+    expect(home.every((a) => a.dataset.pattern === "chrome-candles")).toBe(true);
+  });
+
+  test("two cards never share a gradient id, and neither redraws differently", () => {
+    mount("/battles");
+    const idsOf = (lobby: string) =>
+      Array.from(container.querySelectorAll<SVGElement>(`[data-art="${lobby}"] defs [id]`)).map((n) => n.id);
+
+    const a = idsOf("kz-semis");
+    const b = idsOf("mi-majors");
+    expect(a.length).toBeGreaterThanOrEqual(11); // 7 gradients + 6 clip paths
+    expect(new Set(a).size).toBe(a.length);
+    expect(a.some((id) => b.includes(id))).toBe(false);
+    // Each card points only at its own defs.
+    const markup = container.querySelector<HTMLElement>('[data-art="kz-semis"]')!.innerHTML;
+    expect(markup).toContain("url(#cc-kz-semis-body)");
+    expect(markup).not.toContain("url(#cc-mi-majors-");
+
+    // Two renders, identical DOM — no `useId`, no `Math.random`, no clock.
+    const before = container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.innerHTML;
+    remount("/battles");
+    expect(container.querySelector<HTMLElement>('[data-art="mi-majors"]')!.innerHTML).toBe(before);
+
+    // …and the card it decorates still says everything it said before.
+    const kz = lobbyCards().find((c) => c.dataset.lobby === "kz-semis")!;
+    expect(kz.textContent).toContain("Semis sprint");
+    expect(kz.textContent).toContain("PRIZE POOL");
+    expect(kz.textContent).toContain("ENTRY");
+    expect(kz.textContent).toContain("Accept match · 2.40 Ξ");
+  });
+
+  test("under reduced motion the rally ships as one parked frame", () => {
+    const real = globalThis.matchMedia;
+    try {
+      globalThis.matchMedia = ((q: string) => ({ matches: true, media: q })) as unknown as typeof real;
+      mount("/battles");
+      const art = Array.from(container.querySelectorAll<HTMLElement>("[data-art]"));
+      expect(art).toHaveLength(6);
+      for (const a of art) {
+        // Nothing to still: the clocks were never rendered. (CSS cannot stop
+        // SMIL, so the stylesheet's reduced-motion block is no help here.)
+        expect(a.querySelectorAll("animate, animateTransform")).toHaveLength(0);
+        // The light is parked at each bar's waist rather than left at a bar's
+        // head, so the still frame is the lit frame, not a dark one.
+        const parked = Array.from(a.querySelectorAll("g[clip-path] > rect"));
+        expect(parked).toHaveLength(6);
+        expect(parked.every((r) => (r.getAttribute("transform") ?? "").startsWith("translate(0 "))).toBe(true);
+      }
+    } finally {
+      globalThis.matchMedia = real;
+    }
   });
 
   test("each card carries three lines of match details it reveals on hover", () => {
@@ -596,6 +674,32 @@ describe("the case study", () => {
   const wireSyms = () => wireRows().map((r) => r.dataset.wireSym);
   const pane = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.textContent ?? "";
 
+  // ── the wire filter ───────────────────────────────────────────────────────
+  // One piece of state, two handles: the case card above the terminal and the
+  // sym chip on a wire row inside it.
+  const caseCard = (sym: string) => container.querySelector<HTMLElement>(`[data-case="${sym}"]`)!;
+  const clickCase = (sym: string) => act(() => caseCard(sym).click());
+  const pressed = (sym: string) => caseCard(sym).getAttribute("aria-pressed");
+  /** The row's own sym chip — the handle that sits inside the click target. */
+  const chipIn = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-wire-chip]")!;
+  const rowById = (id: string) => container.querySelector<HTMLElement>(`[data-wire-id="${id}"]`)!;
+  const filterChip = () => container.querySelector<HTMLElement>('[data-testid="wire-filter"]');
+  /** The whole terminal's markup — the detail pane's parent is the panel. */
+  const terminal = () => container.querySelector<HTMLElement>('[data-testid="wire-detail"]')!.parentElement!.innerHTML;
+
+  /** A live source held open, so the swap can be released inside `act()`. */
+  function heldWire(items: readonly WireItem[]): { source: NewsSource; release: () => void } {
+    let release: (() => void) | null = null;
+    const source: NewsSource = {
+      id: "live-stub",
+      wire: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, source: "live", fetchedAt: 1_700_000_100_000, items });
+        }),
+    };
+    return { source, release: () => release!() };
+  }
+
   test("shows the dealt charts, a news line per ticker, and the desk talking", () => {
     mount(STUDY);
     expect(text()).toContain("Case study");
@@ -649,7 +753,6 @@ describe("the case study", () => {
   test("a live news source swaps the feed in and flips the chip to LIVE", async () => {
     // Held open until the test releases it, so the seeded first paint can be
     // asserted before the swap — and so the swap lands inside act().
-    let release: (() => void) | null = null;
     const items: readonly WireItem[] = [
       {
         id: "live-1",
@@ -680,24 +783,155 @@ describe("the case study", () => {
         signature: "(END) BLOOMBERG / 09-01-26 0926ET / Copyright (c) 2026 Bloomberg L.P.",
       },
     ];
-    const liveSource: NewsSource = {
-      id: "live-stub",
-      wire: () =>
-        new Promise((resolve) => {
-          release = () => resolve({ ok: true, source: "live", fetchedAt: 1_700_000_100_000, items });
-        }),
-    };
+    const live = heldWire(items);
 
-    mount(STUDY, liveSource);
+    mount(STUDY, live.source);
     expect(pane("wire-status")).toBe("SEEDED"); // seeded until the live one answers
     expect(wireRows("news").length).toBeGreaterThanOrEqual(dealt.length);
 
-    await act(async () => release!());
+    await act(async () => live.release());
 
     expect(pane("wire-status")).toBe("LIVE");
     expect(wireRows("news")).toHaveLength(2);
     expect(text()).toContain("Wire Desk Confirms The Live Feed Is Up");
     expect(wireSyms()).toContain("MKT");
+  });
+
+  test("a case card narrows the wire to its own ticker, and a second press hands it back", () => {
+    mount(STUDY);
+    const whole = wireSyms();
+    // A wire worth filtering: more than one name on it, and the desk talking.
+    expect(new Set(whole).size).toBeGreaterThan(1);
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(2);
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[0]!)).toBe("false");
+
+    clickCase(dealt[0]!);
+
+    expect(wireRows().length).toBeGreaterThan(0);
+    // The asset, full stop: no other ticker, no desk chatter, no MKT rows.
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[0]]));
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(0);
+    // …and the terminal says so, in the header, next to the source chip.
+    expect(pane("wire-filter")).toContain(dealt[0]!);
+    expect(pane("wire-status")).toBe("SEEDED");
+    expect(pressed(dealt[0]!)).toBe("true");
+    // The pane is still filed — the first surviving row took over.
+    expect(pane("wire-dateline")).toContain(dealt[0]!);
+
+    clickCase(dealt[0]!);
+
+    expect(wireSyms()).toEqual(whole);
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[0]!)).toBe("false");
+  });
+
+  test("the sym chip is the other handle on the same switch, and it never moves the open story", () => {
+    mount(STUDY);
+    // Two rows on the SAME ticker: open the first, then press the SECOND one's
+    // chip. Both rows survive the filter, so if the chip's click reached the
+    // row under it the pane would swing to the other story — which is exactly
+    // what the assertion below would catch. Pressing the open row's own chip
+    // would prove nothing, since re-selecting it is a no-op.
+    const news = wireRows("news");
+    const sym = news[0]!.dataset.wireSym!;
+    const same = news.filter((r) => r.dataset.wireSym === sym);
+    expect(same.length).toBeGreaterThan(1);
+    const openerId = same[0]!.dataset.wireId!;
+    const otherId = same[1]!.dataset.wireId!;
+
+    act(() => rowById(openerId).click());
+    const opened = pane("wire-dateline");
+    expect(opened).toContain(sym);
+
+    act(() => chipIn(rowById(otherId)).click());
+
+    // The chip filtered the wire…
+    expect(new Set(wireSyms())).toEqual(new Set([sym]));
+    expect(pane("wire-filter")).toContain(sym);
+    // …and the card above it knows, because there is only one piece of state.
+    expect(pressed(sym)).toBe("true");
+    // …but the click stopped at the chip: the row under it never selected.
+    expect(pane("wire-dateline")).toBe(opened);
+    expect(rowById(openerId).getAttribute("aria-selected")).toBe("true");
+    expect(rowById(otherId).getAttribute("aria-selected")).toBe("false");
+
+    act(() => chipIn(rowById(otherId)).click());
+
+    expect(filterChip()).toBeNull();
+    expect(pressed(sym)).toBe("false");
+    expect(pane("wire-dateline")).toBe(opened);
+  });
+
+  test("switching tickers switches the wire, and the header chip is the way out", () => {
+    mount(STUDY);
+    clickCase(dealt[0]!);
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[0]]));
+
+    clickCase(dealt[1]!);
+
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[1]]));
+    expect(pressed(dealt[0]!)).toBe("false");
+    expect(pressed(dealt[1]!)).toBe("true");
+    // The story that was open belonged to the old ticker, so the pane fell
+    // through to the new ticker's top row rather than blanking.
+    expect(pane("wire-dateline")).toContain(dealt[1]!);
+
+    act(() => filterChip()!.click());
+
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[1]!)).toBe("false");
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(2);
+  });
+
+  test("a ticker the feed filed nothing on says so rather than going blank", async () => {
+    // One live row, on the first dealt name only — the other two cards are
+    // filtering a wire that has nothing to give them.
+    const live = heldWire([
+      {
+        id: "live-1",
+        kind: "news",
+        sym: dealt[0]!,
+        ts: 1_700_000_100_000,
+        time: "09:28:00",
+        headline: "Wire Desk Confirms The Live Feed Is Up",
+        publisher: "REUTERS",
+        body: "The live source answered, so these rows replaced the seeded ones.",
+        bodyKind: "wire",
+        link: null,
+        dateline: `9/1/26 09:28:00: ${dealt[0]}: Wire Desk Confirms The Live Feed Is Up`,
+        signature: "(END) REUTERS / 09-01-26 0928ET / Copyright (c) 2026 Thomson Reuters.",
+      },
+    ]);
+
+    mount(STUDY, live.source);
+    await act(async () => live.release());
+    expect(wireRows("news")).toHaveLength(1);
+
+    clickCase(dealt[1]!);
+
+    expect(wireRows()).toHaveLength(0);
+    expect(pane("wire-empty")).toBe(`NO ${dealt[1]} STORIES ON THE WIRE`);
+    // The detail pane draws its own quiet line rather than throwing on a
+    // story that is not there.
+    expect(pane("wire-detail")).toContain("The wire is quiet");
+    expect(container.querySelector('[data-testid="wire-dateline"]')).toBeNull();
+
+    // …and the wire that does have stories is one press away.
+    clickCase(dealt[0]!);
+    expect(container.querySelector('[data-testid="wire-empty"]')).toBeNull();
+    expect(wireRows()).toHaveLength(1);
+  });
+
+  test("clearing the filter puts the terminal back node for node", () => {
+    mount(STUDY);
+    const before = terminal();
+
+    clickCase(dealt[0]!);
+    expect(terminal()).not.toBe(before);
+
+    clickCase(dealt[0]!);
+    expect(terminal()).toBe(before);
   });
 });
 
@@ -825,8 +1059,15 @@ describe("the rank moment", () => {
     expect(labels()).not.toContain("View the full ladder →");
     expect(sequence()).toBeNull();
     expect(container.querySelector("[data-rank-exits]")).toBeNull();
+    expect(container.querySelector("[data-rank-overlay]")).toBeNull();
 
-    throughRank();
+    click("Next → your rank");
+    const overlay = container.querySelector<HTMLElement>("[data-rank-overlay]");
+    expect(overlay).not.toBeNull();
+    expect(overlay?.getAttribute("role")).toBe("dialog");
+    expect(overlay?.getAttribute("aria-modal")).toBe("true");
+    expect(overlay?.style.position).toBe("fixed");
+    click("Skip ↦");
 
     expect(sequence()).not.toBeNull();
     expect(container.querySelector("[data-rank-exits]")).not.toBeNull();
@@ -958,10 +1199,13 @@ describe("the ladder", () => {
   const rowIds = () => rankRows().map((r) => r.dataset.rankRow ?? "");
   const boardSize = () => podium().length + rankRows().length;
   const leader = () => container.querySelector<HTMLElement>('[data-podium="1"]')?.textContent ?? "";
-  /** The metric column's header — the only titled node on the page, and the
-   *  title carries the untruncated text the column may be eliding. */
+  /** The metric column's header. Addressed by its own attribute rather than by
+   *  `[title]`: the risk chips on every row and plinth carry a title too, so
+   *  "the only titled node on the page" stopped being true when the ladder
+   *  grew a copy-trader surface. The title itself still carries the
+   *  untruncated text the column may be eliding. */
   const metricHead = () =>
-    container.querySelector<HTMLElement>("[data-ladder] [title]")?.getAttribute("title") ?? "";
+    container.querySelector<HTMLElement>("[data-metric-head]")?.getAttribute("title") ?? "";
   const nudge = () => container.querySelector<HTMLElement>("[data-you-nudge]")?.textContent ?? "";
   const drawers = () => Array.from(container.querySelectorAll<HTMLElement>("[data-ladder-drawer]"));
 
@@ -1001,7 +1245,11 @@ describe("the ladder", () => {
     expect(text()).toContain("3.5%"); // rank is income, priced on the page
     expect(text()).toContain("RANKED");
     expect(text()).toContain("COPIERS ACTIVE");
-    expect(text()).toContain("PTS / 24H");
+    // The copy desk is denominated in dollars — fee revenue and copy capital,
+    // both of them money, neither of them the PTS ledger.
+    expect(text()).toContain("FEES / 24H");
+    expect(text()).toContain("COPY CAPITAL");
+    expect(text()).toMatch(/\$[\d,.]+[KM]?/);
 
     // Thirteen personas plus your row: three on plinths, the rest in the table.
     expect(podium()).toHaveLength(3);
@@ -1026,7 +1274,7 @@ describe("the ladder", () => {
     const heads: string[] = [];
     const leaders: string[] = [];
 
-    for (const label of ["COPY HEAT", "SECTOR × MODE", "WIN RATE", "EARNINGS"]) {
+    for (const label of ["COPY HEAT", "GAIN 12M", "SECTOR × MODE", "WIN RATE", "EARNINGS"]) {
       pickFilter(label);
       // Nobody is invented and nobody is dropped — the board is re-sorted.
       expect(boardSize()).toBe(14);
@@ -1038,9 +1286,9 @@ describe("the ladder", () => {
       leaders.push(leader());
     }
 
-    // The metric column says which question is being answered, and the four
-    // questions are four different questions.
-    expect(new Set(heads).size).toBe(4);
+    // The metric column says which question is being answered, and the five
+    // questions are five different questions.
+    expect(new Set(heads).size).toBe(5);
     // …and at least two of them have a different answer at #1.
     expect(new Set(leaders).size).toBeGreaterThan(1);
   });
@@ -1146,5 +1394,198 @@ describe("the ladder", () => {
     expect(text()).toContain("The ladder");
     expect(container.querySelectorAll("[data-rank-row]")).toHaveLength(11);
     expect(container.querySelectorAll("[data-you]")).toHaveLength(1);
+  });
+});
+
+/**
+ * Hybrid anchoring (plan5 §P4): live spot ANNOTATES the seeded board.
+ *
+ * Every assertion here is one of two shapes — "the live number appeared beside
+ * the seeded one", or "with no live number the screen is precisely the screen it
+ * always was". There is deliberately no test asserting that a live number
+ * replaced a seeded one, because that must never happen: the tape the duel
+ * settles on is `universe.ts`, and `test/determinism.test.ts` pins four of its
+ * prices absolutely.
+ */
+describe("hybrid anchoring — live spot beside the seeded tape", () => {
+  const testid = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+  const legPicker = (sym: string) =>
+    container.querySelector<HTMLElement>(`[data-leg-picker="${sym}"]`);
+
+  /** Six priced assets — the shape a real `/api/market` snapshot arrives in. */
+  const LIVE_SPOT: Record<string, number> = {
+    ETH: 2522.13,
+    BTC: 81004.04,
+    SOL: 104.0853111,
+    XRP: 1.4517,
+    BNB: 718.17701211,
+    AVAX: 7.498,
+  };
+
+  const prow = (type: PricingRow["type"], strike: string, delta: string): PricingRow => ({
+    type,
+    strike,
+    expiry: "27 SEP",
+    bid: "0.1",
+    ask: "0.11",
+    iv: "55.0%",
+    delta,
+    depth: 50,
+    size: "1.0k",
+  });
+
+  /** Live ETH levels, on the LIVE scale — 2,400s, not 4,000s. */
+  const ETH_ROWS = [
+    prow("CALL", "2,400", "0.62"),
+    prow("CALL", "2,600", "0.38"),
+    prow("CALL", "2,800", "0.21"),
+    prow("PUT", "2,400", "-0.31"),
+  ];
+
+  function live(
+    spot: Record<string, number> = LIVE_SPOT,
+    pricing: Record<string, PricingRow[]> = { ETH: ETH_ROWS },
+  ): MarketSource {
+    return {
+      id: "thetanuts · base 8453",
+      meta: { ok: true, source: "live", fetchedAt: 1_788_500_000_000 },
+      underlyings: () => Object.keys(pricing),
+      pricing: (u) => pricing[u] ?? [],
+      mmPricing: () => [],
+      orders: () => [],
+      spot: (u) => {
+        const px = spot[u];
+        return typeof px === "number" && Number.isFinite(px) ? px : null;
+      },
+    };
+  }
+
+  // ── the pick screen ───────────────────────────────────────────────────────
+
+  test("a ticker header carries both numbers, named, and the chip says which is which", () => {
+    // `mi-majors` deals ETH and BTC on this seed — both priced, both books.
+    mount("/match/mi-majors/parlay?seed=1", undefined, live());
+
+    expect(testid("spot-chip")?.textContent).toBe("LIVE SPOT · SEEDED TAPE");
+    expect(testid("spot-ETH")?.textContent).toContain("$4,182.60 seeded · $2,522.13 live");
+    expect(testid("spot-BTC")?.textContent).toContain("$96,410.00 seeded · $81,004.04 live");
+    // The seeded target is still the seeded target — the annotation is additive.
+    expect(testid("spot-ETH")?.textContent).toContain("base ±5.0%");
+  });
+
+  test("a name with no live print renders the line it has always rendered", () => {
+    // `dr-mixed` deals AMD, SOL, NVDA and ETH: two equities Thetanuts has never
+    // heard of, beside two assets it prices.
+    mount("/match/dr-mixed/parlay?seed=424242", undefined, live());
+
+    expect(testid("spot-ETH")).not.toBeNull();
+    expect(testid("spot-SOL")).not.toBeNull();
+    expect(testid("spot-NVDA")).toBeNull();
+    expect(testid("spot-AMD")).toBeNull();
+    // No dash, no placeholder, no "—": the old line, unchanged.
+    expect(legPicker("NVDA")?.textContent).toContain("$118.40 · base ±4.0%");
+    expect(legPicker("NVDA")?.textContent).not.toContain("live");
+    expect(legPicker("NVDA")?.textContent).not.toContain("seeded");
+  });
+
+  test("with nothing priced on the board the pick screen is byte-identical", () => {
+    // `kz-semis` is three equities. A live source that prices none of them must
+    // produce exactly the DOM the seeded source does — same markup, same order.
+    mount("/match/kz-semis/parlay?seed=424242", undefined, live());
+    const syms = slipLegs() as string[];
+    const withLive = syms.map((s) => legPicker(s!)!.innerHTML);
+    expect(testid("spot-chip")).toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+    mount("/match/kz-semis/parlay?seed=424242");
+    expect(syms.map((s) => legPicker(s!)!.innerHTML)).toEqual(withLive);
+  });
+
+  // ── the second opinion ────────────────────────────────────────────────────
+
+  test("the book's delta sits beside the tier's percentage without touching it", () => {
+    mount("/match/mi-majors/parlay?seed=1", undefined, live());
+
+    // ETH SHARP bull asks for +9%: 4,559.03 seeded, and the same +9% of the
+    // live 2,522.13 is 2,749.12 — nearest live call is the 2,800 at Δ0.21.
+    const card = container.querySelector<HTMLElement>('[data-parlay="ETH:sharp-bull"]')!;
+    expect(card.textContent).toContain("~25%");
+    expect(card.textContent).toContain("book Δ 0.21 (second opinion)");
+    // The tier's own multiplier is untouched — the advisory is a sibling line,
+    // not an input.
+    expect(card.textContent).toContain("×3.6");
+  });
+
+  test("no book, no advisory — spot alone is not enough", () => {
+    // BTC is priced here and has no pricing rows: annotated, unadvised.
+    mount("/match/mi-majors/parlay?seed=1", undefined, live());
+    expect(testid("spot-BTC")).not.toBeNull();
+    expect(testid("book-delta-BTC:sharp-bull")).toBeNull();
+  });
+
+  test("an unscoreable book degrades to silence, and the spot line survives it", () => {
+    // Every row quoted, no greeks — `rawApiData.greeks` is undocumented and
+    // sometimes simply absent.
+    mount("/match/mi-majors/parlay?seed=1", undefined, live(LIVE_SPOT, { ETH: [prow("CALL", "2,800", "—")] }));
+    expect(testid("spot-ETH")).not.toBeNull();
+    expect(testid("spot-chip")).not.toBeNull();
+    expect(container.querySelector("[data-testid^='book-delta-']")).toBeNull();
+  });
+
+  test("the seeded book carries deltas and still shows no advisory", () => {
+    // The mock's ETH chain has a full delta column. It has no spot, and that is
+    // the whole gate — a seeded delta must never read as the book's opinion.
+    mount("/match/mi-majors/parlay?seed=1");
+    expect(container.querySelector("[data-testid^='book-delta-']")).toBeNull();
+    expect(testid("spot-chip")).toBeNull();
+  });
+
+  test("the pinned slip prices the same with the book live as without it", () => {
+    const price = (source?: MarketSource) => {
+      mount("/match/kz-semis/parlay?seed=424242", undefined, source);
+      const syms = slipLegs() as string[];
+      const cards = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-parlay]"));
+      const pick = (sym: string, id: string) =>
+        act(() => cards.find((c) => c.dataset.parlay === `${sym}:${id}`)!.click());
+      pick(syms[0]!, "sharp-bear");
+      pick(syms[1]!, "safe-bull");
+      pick(syms[2]!, "degen-bull");
+      const out = testid("combined-mult")?.textContent;
+      act(() => root.unmount());
+      container.remove();
+      return out;
+    };
+    // `×47.52` is the fixture the whole odds engine is pinned on.
+    expect(price()).toBe("×47.52");
+    expect(price(live())).toBe("×47.52");
+    // Remounted so `afterEach` has something to tear down.
+    mount("/");
+  });
+
+  // ── the reel ──────────────────────────────────────────────────────────────
+
+  test("the reel annotates the pointer and its tiles, and says nothing about the rest", () => {
+    mount("/match/mi-majors?seed=1", undefined, live());
+    const d = dialog()!;
+
+    expect(d.querySelector('[data-testid="spot-chip"]')?.textContent).toBe("LIVE SPOT · SEEDED TAPE");
+    // BTC is under the pointer on the first frame: the seeded headline keeps its
+    // wobble above, and the pair is stated underneath.
+    expect(testid("pointer-spot")?.textContent).toBe("$96,410.00 seeded · $81,004.04 live");
+    // The 124px tiles take the right half only — the accent price above them is
+    // the seeded one and the chip has said so.
+    expect(d.textContent).toContain("$2,522.13 live");
+    expect(d.textContent).toContain("$104.09 live");
+  });
+
+  test("an unpriced reel is the reel that always shipped", () => {
+    // `kz-semis` again: three equities, no live prints anywhere on the strip.
+    mount("/match/kz-semis?seed=424242", undefined, live());
+    const d = dialog()!;
+    expect(d.querySelector('[data-testid="spot-chip"]')).toBeNull();
+    expect(testid("pointer-spot")).toBeNull();
+    expect(d.textContent).not.toContain("live");
+    expect(d.textContent).not.toContain("seeded");
   });
 });

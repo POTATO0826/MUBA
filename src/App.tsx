@@ -49,7 +49,7 @@ function currentRoute(): Route {
  * both of you play on, read the case, pick a parlay card, hold through the
  * tape, settle. `lobby` (home), `create`, `desk` and `ranks` sit beside it.
  */
-export function App({ source, newsSource = mockNewsSource, route, wallet }: {
+export function App({ source, newsSource = mockNewsSource, route, wallet, marketError }: {
   source: MarketSource;
   /** The study wire's feed. Defaults to the seeded one, so tests and the
    *  offline build touch no network; `client.tsx` injects the live source. */
@@ -61,6 +61,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
    * mock below stands in. `client.tsx` always passes one.
    */
   wallet?: WalletSource;
+  /**
+   * Why the live book is degraded, threaded straight to the footer and read by
+   * nothing else. Optional so the tests keep mounting `App` with a mock source
+   * and no market layer at all.
+   */
+  marketError?: string | null;
 }) {
   // First hook in the tree: the audio context is built inside the very first
   // gesture, capture-phase, so the click that starts the session is audible.
@@ -207,6 +213,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
         <Room
           lobby={lobby}
           you={YOU}
+          youRow={rank.you}
           opponent={opp}
           ready={state.ready}
           entryLabel={derived.entryLabel}
@@ -221,6 +228,11 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
         <MatchSpin
           key={state.seed}
           lobbyName={lobby.name}
+          // Display only, and only ever additive: the reel annotates the four
+          // board names Thetanuts actually prices and is silent about the other
+          // fourteen. What the reel *deals* comes from `spinCase` and the seed,
+          // which never see this.
+          source={source}
           marketLabel={MARKET_LABEL[lobby.market]}
           mode={derived.mode}
           color={MARKET_COLOR[lobby.market]}
@@ -249,6 +261,10 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
       {state.tab === "parlay" && lobby && opp && (
         <ParlayPick
           lobbyName={lobby.name}
+          // Same contract as the reel's: spot annotates the ticker headers and
+          // the book's delta sits beside a tier as advice. Neither reaches
+          // `derived.myLegs`, `summary` or anything that pays out.
+          source={source}
           mode={derived.mode}
           opponent={opp}
           arena={derived.arena}
@@ -313,7 +329,14 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
         />
       )}
 
-      {state.tab === "desk" && <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />}
+      {/* `wallet` is what lets /desk sign a real fill behind `THETADUEL_TRADE=on`
+          — the first screen in the app that needs a signer rather than an
+          address. It is optional on `Parlay`, and with the flag off (or on the
+          mock tier, which must never approve or fill) the desk renders exactly
+          the DOM it rendered before the fill flow existed. */}
+      {state.tab === "desk" && (
+        <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} wallet={active} />
+      )}
 
       {/* The ladder. `rank.you` is the same `LeaderPlayer` the rank moment
           reasons about, so the row that climbs on the Result screen is
@@ -326,7 +349,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet }: {
           mock tier won. Say so, rather than letting it pass for a wallet. */}
       {active.id === "mock" && <MockWalletBanner />}
 
-      <Footer source={source} />
+      <Footer source={source} marketError={marketError ?? null} />
     </div>
   );
 }

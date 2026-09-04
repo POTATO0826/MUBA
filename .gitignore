@@ -3,6 +3,9 @@ node_modules
 
 # output
 out
+# ...except the committed solc artifact: contracts/out/DuelEscrow.json is the
+# reviewed, deployed bytecode and contracts/deploy.ts refuses to run without it.
+!contracts/out/
 dist
 *.tgz
 
@@ -36,3 +39,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # operator-supplied audio: licensed tracks stay out of the repo
 *.mp3
 src/assets/*.mp3
+
+# Reviewer scratch (attack harnesses, node_modules junction) — never committed
+.rev/

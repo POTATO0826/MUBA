@@ -14,6 +14,10 @@ import {
   positionOf,
   rankedBy,
   selectionLabel,
+  usd,
+  usdCompact,
+  usdGain,
+  usdSigned,
   type LadderFilter,
   type LeaderPlayer,
   type Ranked,
@@ -26,7 +30,14 @@ import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, pill } from "../theme.ts";
 import type { Mode, SectorKey } from "../types.ts";
-import { LADDER_GRID, LADDER_ROW_PAD, LadderRow, LadderTrend } from "../ui/LadderRow.tsx";
+import {
+  GainText,
+  LADDER_GRID,
+  LADDER_ROW_PAD,
+  LadderRow,
+  LadderTrend,
+  RiskChip,
+} from "../ui/LadderRow.tsx";
 
 /**
  * `/ranks` — the ladder (plan 4 §5).
@@ -41,10 +52,11 @@ import { LADDER_GRID, LADDER_ROW_PAD, LadderRow, LadderTrend } from "../ui/Ladde
  * NOTHING ON THIS PAGE IS AUTHORED
  * ────────────────────────────────────────────────────────────────────────────
  * Every figure is a reduction over `leaderboardWith(you)`: the ranked count is
- * the array length, COPIERS ACTIVE is Σ `econ.copiers`, PTS/24H is Σ
- * `econ.daily`. Add a lobby host and the ladder gains a rung and the strip
- * moves, with no edit here. There is no constant in this file that a reader
- * could not recompute from `data/leaderboard.ts`.
+ * the array length, COPIERS ACTIVE is Σ `econ.copiers`, FEES/24H is Σ
+ * `econ.daily` and COPY CAPITAL is Σ `profile.aum`. Add a lobby host and the
+ * ladder gains a rung and the strip moves, with no edit here. There is no
+ * constant in this file that a reader could not recompute from
+ * `data/leaderboard.ts`.
  *
  * ────────────────────────────────────────────────────────────────────────────
  * THE TWO FILTER ROWS (§5.3)
@@ -109,13 +121,8 @@ function stillMotion(): boolean {
   }
 }
 
-/** `442065` → `442.1K`. The strip is a glance, not a ledger. */
-function compact(n: number): string {
-  const v = Math.round(n);
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-  return String(v);
-}
+/* The strip's compacting now goes through `usdCompact` in `leaderboard.ts` —
+   the figures it shows are money, and money has one formatter in this app. */
 
 // ── LadderField ─────────────────────────────────────────────────────────────
 
@@ -303,6 +310,146 @@ function Chip({
   );
 }
 
+// ── The copy-trader surface ─────────────────────────────────────────────────
+
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE DOLLARS ARE THE DESK'S, AND THERE IS NO RATE
+ * ────────────────────────────────────────────────────────────────────────────
+ * Every `$` on this page comes out of `data/leaderboard.ts` already denominated
+ * — `econ.avgTicket`, `econ.daily`, `earnings`, `profile.aum` — and every one of
+ * them is drawn fresh from `hash(id)` rather than lifted off the PTS ledger.
+ * This view multiplies nothing by anything: it picks a formatter (`usd`,
+ * `usdCompact`, `usdSigned`) and prints. So there is no conversion rate on the
+ * page and no quantity that appears in two units.
+ *
+ * XP is the exception that proves it. The unlock lines, the nudge and the hero
+ * chip stay in XP, because rank is measured in XP everywhere in this app and a
+ * dollar figure there would be exactly the kind of blend this note forbids.
+ */
+
+/** The copier count with its 30-day move — eToro's "N copiers ▲ 5.8%". The
+ *  delta comes off `profile.copierDelta`, which is read from the same trend
+ *  line the sparkline beside it draws, so an up-arrow here and a bright line
+ *  there are the same statement. */
+function CopierDelta({ delta }: { delta: number }) {
+  // Under a tenth of a percent the arrow would be pointing at rounding noise.
+  if (Math.abs(delta) < 0.001) return <span style={sx(`font:500 9px/1 ${MONO};color:${C.faint}`)}>— 30D</span>;
+  const up = delta > 0;
+  return (
+    <span
+      style={sx(
+        `font:700 9px/1 ${MONO};font-variant-numeric:tabular-nums;white-space:nowrap;` +
+          `color:${up ? C.green : C.red}`,
+      )}
+    >
+      {up ? "▲" : "▼"} {usdGain(delta).slice(1)} 30D
+    </span>
+  );
+}
+
+/**
+ * The COPY button — fiction, and it says so.
+ *
+ * The whole copy-trade layer of this app is a fiction: the copiers are seeded,
+ * the fee revenue is seeded, and no wallet anywhere is party to any of it. So
+ * this control does what the fiction can honestly do — it acknowledges the
+ * click, names the minimum sleeve the desk would want, and then states plainly
+ * that nothing moved. It is deliberately NOT wired to the ledger, to a wallet,
+ * or to `stakePointsFor`; there is no code path from here to money, real or
+ * in-game, and there must never be one.
+ *
+ * `MIN COPY` is `profile.minCopy` — one ticket at this trader's own size,
+ * rounded up to a round hundred — so the number on the button is a fact about
+ * the trader rather than a marketing round figure.
+ *
+ * A locked trader gets the unlock line instead, in XP, because that is what
+ * stands between the reader and the button.
+ */
+function CopyButton({ player, compact: small = false }: { player: LeaderPlayer; compact?: boolean }) {
+  const [armed, setArmed] = useState(false);
+  const e = player.econ;
+  const f = player.profile;
+
+  if (!e.unlocked) {
+    return (
+      <span
+        data-copy-locked={player.id}
+        style={sx(
+          `display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;` +
+            `padding:${small ? "7px 9px" : "9px 11px"};border-radius:8px;` +
+            `border:1px dashed ${C.border};background:transparent;color:${C.dim};` +
+            `font:700 ${small ? 9 : 9.5}px/1 ${MONO};letter-spacing:.12em;text-align:center`,
+        )}
+      >
+        LOCKED · {num(e.nextUnlock?.xpAway ?? 0)} XP TO {e.nextUnlock?.tier.name ?? "SHARK"}
+      </span>
+    );
+  }
+
+  return (
+    <div style={sx("display:flex;flex-direction:column;gap:5px;width:100%;min-width:0")}>
+      <button
+        data-copy-trader={player.id}
+        aria-pressed={armed}
+        onClick={(ev) => {
+          ev.stopPropagation();
+          sfx("rank.copyPanel");
+          setArmed((v) => !v);
+        }}
+        style={sx(
+          `display:inline-flex;align-items:center;justify-content:center;gap:7px;width:100%;` +
+            `padding:${small ? "7px 9px" : "9px 11px"};border-radius:8px;cursor:pointer;` +
+            `font:700 ${small ? 9 : 10}px/1 ${MONO};letter-spacing:.12em;` +
+            "transition:background .16s ease,border-color .16s ease,color .16s ease;" +
+            (armed
+              ? `border:1px solid rgba(200,255,0,.6);background:rgba(200,255,0,.18);color:${C.accent}`
+              : `border:1px solid rgba(200,255,0,.42);background:rgba(200,255,0,.07);color:${C.accent}`),
+        )}
+      >
+        {armed ? "COPYING ✓" : "COPY"}
+        <span style={sx(`font:500 ${small ? 8 : 8.5}px/1 ${MONO};opacity:.72`)}>
+          MIN {usd(f.minCopy)}
+        </span>
+      </button>
+      <span
+        style={sx(
+          `font:500 8px/1.3 ${MONO};letter-spacing:.1em;color:${C.faint};text-align:center`,
+        )}
+      >
+        {armed ? "DEMO ONLY · NO FUNDS MOVED" : `${usdCompact(f.aum)} COPY CAPITAL`}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The compact profile strip: GAIN, RISK, and the copier book's 30-day move.
+ *
+ * Three readings, because three is what fits on a plinth without the card
+ * becoming a table — and because they are the three a copier actually decides
+ * on. Everything else lives one click down, in the drawer.
+ */
+function ProfileStrip({ player }: { player: LeaderPlayer }) {
+  const f = player.profile;
+  return (
+    <div
+      data-copy-strip={player.id}
+      style={sx(
+        "display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;width:100%;" +
+          `padding-top:9px;border-top:1px solid ${C.line}`,
+      )}
+    >
+      <span style={sx("display:inline-flex;align-items:baseline;gap:5px")}>
+        <span style={sx(`font:500 8px/1 ${MONO};letter-spacing:.12em;color:${C.faint}`)}>12M</span>
+        <GainText gain={f.gain12m} size={12} />
+      </span>
+      <RiskChip risk={f.risk} />
+      {player.econ.unlocked && <CopierDelta delta={f.copierDelta} />}
+    </div>
+  );
+}
+
 // ── The podium (§5.2) ───────────────────────────────────────────────────────
 
 const PODIUM_TREND_W = 118;
@@ -327,7 +474,13 @@ function Plinth({ row, filter, delayMs }: { row: Ranked; filter: LadderFilter; d
   const badge = first ? 74 : 54;
 
   const metricTone =
-    filter === "EARNINGS" ? (row.metric < 0 ? C.red : C.green) : p.you ? C.accent : C.text;
+    filter === "EARNINGS" || filter === "GAIN"
+      ? row.metric < 0
+        ? C.red
+        : C.green
+      : p.you
+        ? C.accent
+        : C.text;
 
   return (
     <div
@@ -406,6 +559,11 @@ function Plinth({ row, filter, delayMs }: { row: Ranked; filter: LadderFilter; d
         width={first ? PODIUM_TREND_W : PODIUM_TREND_W - 22}
         height={first ? PODIUM_TREND_H : PODIUM_TREND_H - 6}
       />
+
+      {/* The plinth IS a copy-trader card, so it carries the card's two
+          controls: the three-reading profile strip, and the button. */}
+      <ProfileStrip player={p} />
+      <CopyButton player={p} compact={!first} />
     </div>
   );
 }
@@ -478,15 +636,19 @@ function ShareBars({
 
 /**
  * What a row is hiding: the two share splits the SPECIALTY column only had
- * room to name the winner of, and the copy economics the COPY HEAT column only
- * had room for the headline of.
+ * room to name the winner of, the copy-trader profile the row could only show
+ * two readings of, and the copy economics the COPY HEAT column only had room
+ * for the headline of.
  *
  * Every figure is read straight off the player object — `sectorShare`,
- * `modeShare` and `econ` are already there. The drawer computes nothing, which
- * is why it is this cheap and why it cannot disagree with the row above it.
+ * `modeShare`, `econ` and `profile` are already there. The drawer computes
+ * nothing, which is why it is this cheap and why it cannot disagree with the
+ * row above it: the `+53.8%` in this panel and the `+53.8%` under the name in
+ * the row are literally the same field, formatted by the same component.
  */
 function RowDrawer({ player }: { player: LeaderPlayer }) {
   const e = player.econ;
+  const f = player.profile;
   return (
     <div
       data-ladder-drawer={player.id}
@@ -515,25 +677,76 @@ function RowDrawer({ player }: { player: LeaderPlayer }) {
           share: player.modeShare[k] ?? 0,
         }))}
       />
+      {/* The copy-trader card, expanded. GAIN leads because it is the number a
+          copier shops on; RISK sits beside it because a return with no risk
+          beside it is half a sentence. Both are `profile` fields, derived — the
+          drawer still computes nothing. */}
+      <div style={sx("display:flex;flex-direction:column;gap:8px;min-width:0")}>
+        <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.16em;color:${C.faint}`)}>
+          COPY-TRADER PROFILE
+        </span>
+        <div style={sx("display:flex;align-items:baseline;justify-content:space-between;gap:12px")}>
+          <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.faint}`)}>
+            GAIN 12M
+          </span>
+          <GainText gain={f.gain12m} size={19} />
+        </div>
+        <div style={sx("display:flex;align-items:center;justify-content:space-between;gap:12px")}>
+          <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.faint}`)}>RISK</span>
+          <RiskChip risk={f.risk} size={10} />
+        </div>
+        <Cell
+          label="PROFITABLE MONTHS"
+          value={`${f.profitableMonths} / 12 · ${pct(f.profitableMonthsPct)}`}
+        />
+        <Cell label="WIN RATIO" value={`${pct(player.winRate)} · ${num(player.wins)} / ${num(player.battles)}`} />
+        <Cell label="AVG TRADE" value={usd(f.avgTrade)} />
+        <Cell
+          label="CAREER P/L"
+          value={usdSigned(f.career)}
+          tone={f.career < 0 ? C.red : C.green}
+        />
+        <div style={sx("margin-top:4px")}>
+          <CopyButton player={player} />
+        </div>
+      </div>
+
       <div style={sx("display:flex;flex-direction:column;gap:8px;min-width:0")}>
         <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.16em;color:${C.faint}`)}>
           COPY ECONOMICS
         </span>
         {e.unlocked ? (
           <>
-            <Cell label="COPIERS" value={num(e.copiers)} />
-            <Cell label="TX / COPIER / DAY" value={num(e.txPerCopierPerDay)} />
-            <Cell label="AVG TICKET" value={`${num(e.avgTicket)} PTS`} />
-            <Cell
-              label={`FEE @ ${(e.feePct * 100).toFixed(1)}%`}
-              value={`${e.perTx.toFixed(1)} PTS`}
-            />
-            <Cell label="PTS / DAY" value={num(e.daily)} tone={C.accent} />
-            <Cell label="PTS / MONTH" value={num(e.monthly)} tone={C.accent} />
+            <div
+              style={sx("display:flex;align-items:baseline;justify-content:space-between;gap:12px")}
+            >
+              <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.faint}`)}>
+                COPIERS
+              </span>
+              <span style={sx("display:inline-flex;align-items:baseline;gap:7px")}>
+                <span
+                  style={sx(
+                    `font:700 11.5px/1 ${MONO};font-variant-numeric:tabular-nums;color:${C.text}`,
+                  )}
+                >
+                  {num(e.copiers)}
+                </span>
+                <CopierDelta delta={f.copierDelta} />
+              </span>
+            </div>
+            <Cell label="COPY CAPITAL" value={usdCompact(f.aum)} />
+            <Cell label="TRADES / COPIER / DAY" value={num(e.txPerCopierPerDay)} />
+            <Cell label="AVG TRADE" value={usd(e.avgTicket)} />
+            <Cell label={`FEE @ ${(e.feePct * 100).toFixed(1)}%`} value={usd(e.perTx)} />
+            <Cell label="$ / DAY" value={usd(e.daily)} tone={C.accent} />
+            <Cell label="$ / MONTH" value={usdCompact(e.monthly)} tone={C.accent} />
           </>
         ) : (
           <>
             <Cell label="COPY-TRADE" value="LOCKED" tone={C.dim} />
+            {/* The distance to the unlock is a RANK distance, so it is quoted
+                in XP. This is the one line in the panel that is not money, and
+                it must stay that way — see the currency note above. */}
             <Cell
               label={`TO ${e.nextUnlock?.tier.name ?? "SHARK"}`}
               value={`${num(e.nextUnlock?.xpAway ?? 0)} XP`}
@@ -543,6 +756,7 @@ function RowDrawer({ player }: { player: LeaderPlayer }) {
               value={`≈ ${num(e.nextUnlock?.copiersAt ?? 0)}`}
               tone={C.dim}
             />
+            <Cell label="AVG TRADE" value={usd(e.avgTicket)} tone={C.dim} />
           </>
         )}
         <Cell label="RECORD" value={`${num(player.wins)} / ${num(player.battles)}`} />
@@ -590,16 +804,24 @@ function nudgeText(rows: readonly Ranked[], idx: number, filter: LadderFilter): 
 
   const gap = above.metric - you.metric;
 
-  if (filter === "WINRATE") {
+  // The two percentage metrics. GAIN is a return, so the gap is in percentage
+  // points of return — never in dollars, which would be a different quantity
+  // dressed as the same one.
+  if (filter === "WINRATE" || filter === "GAIN") {
     const shown = (gap * 100).toFixed(1);
     return shown === "0.0" ? level : `▲ ${shown}% TO OVERTAKE ${name}`;
+  }
+
+  // EARNINGS is the desk's dollars, so the gap is quoted in them.
+  if (filter === "EARNINGS") {
+    const n = Math.round(gap);
+    return n <= 0 ? level : `▲ ${usd(n)} TO OVERTAKE ${name}`;
   }
 
   const n = Math.round(gap);
   if (n <= 0) return level;
   const unit =
     filter === "COPY" ? (n === 1 ? "COPIER" : "COPIERS")
-    : filter === "EARNINGS" ? (n === 1 ? "PT" : "PTS")
     : n === 1 ? "WIN"
     : "WINS";
   return `▲ ${num(n)} ${unit} TO OVERTAKE ${name}`;
@@ -648,7 +870,11 @@ function YouPin({
 }) {
   const tint = RANK_COLOR[player.rank.tier.name];
   const metricTone =
-    row && filter === "EARNINGS" ? (row.metric < 0 ? C.red : C.green) : C.accent;
+    row && (filter === "EARNINGS" || filter === "GAIN")
+      ? row.metric < 0
+        ? C.red
+        : C.green
+      : C.accent;
 
   return (
     <div
@@ -904,6 +1130,10 @@ export function Ranking({ you, streak }: RankingProps) {
 
   const copiers = board.reduce((a, p) => a + p.econ.copiers, 0);
   const daily = board.reduce((a, p) => a + p.econ.daily, 0);
+  // The board's total copy capital — Σ `profile.aum`, which is itself Σ over
+  // each trader's copiers. Another reduction over the roster, so it moves when
+  // the roster does and there is still no constant on this page.
+  const aum = board.reduce((a, p) => a + p.profile.aum, 0);
   // The SEASON ladder position — your standing by career XP, which is what the
   // rank moment counts out (`#9 → #7`). Not the same number as your row in the
   // table below, and it should not be: that one is your standing under the
@@ -941,7 +1171,8 @@ export function Ranking({ you, streak }: RankingProps) {
           <h1 style={sx(`margin:0;font:700 34px/1.04 ${SANS};letter-spacing:-.03em`)}>The ladder</h1>
 
           <p style={sx(`margin:0;max-width:52ch;font:400 13.5px/1.55 ${SANS};color:${C.muted}`)}>
-            Rank is income. Copiers pay {(COPY_FEE * 100).toFixed(1)}% per copied transaction.
+            Rank is income. Copy a trader, or be copied: {(COPY_FEE * 100).toFixed(1)}% of every
+            copied transaction is paid to the trader who called it.
           </p>
 
           <div
@@ -952,7 +1183,8 @@ export function Ranking({ you, streak }: RankingProps) {
           >
             <Stat value={num(rows.length)} label="RANKED" />
             <Stat value={num(copiers)} label="COPIERS ACTIVE" />
-            <Stat value={compact(daily)} label="PTS / 24H" tone={C.accent} />
+            <Stat value={usdCompact(daily)} label="FEES / 24H" tone={C.accent} />
+            <Stat value={usdCompact(aum)} label="COPY CAPITAL" tone={C.accent} />
           </div>
 
           {/* Your chip. The last slot is the only MOVEMENT reading on the page,
@@ -1131,6 +1363,10 @@ export function Ranking({ you, streak }: RankingProps) {
               it spells the selection out, so the column and the chips above it
               can never be read as answering different questions. */}
           <span
+            // Named as well as titled: `title` is the untruncated text for a
+            // reader, but it is no longer the ONLY title on the page (the risk
+            // chips carry one too), so the header identifies itself.
+            data-metric-head=""
             title={metricHead}
             style={sx("text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}
           >

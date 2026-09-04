@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { WireItem } from "../data/wire.ts";
 import { meta } from "../data/universe.ts";
 import { sfx } from "../lib/sound/index.ts";
@@ -10,6 +10,21 @@ interface NewsWireProps {
   items: readonly WireItem[];
   /** Where the feed came from — drawn as the header chip. */
   status: "mock" | "live" | "partial";
+  /**
+   * The one ticker the wire is narrowed to, or `null` for the whole feed.
+   *
+   * The state lives in `Study`, not here, because the case cards above the
+   * terminal are the other handle on it — a card and a sym chip are two ways
+   * of pressing the same switch, so neither may own it. Left off entirely,
+   * this component draws exactly the DOM it drew before the filter existed.
+   */
+  filterSym?: string | null;
+  /**
+   * Toggle that switch from inside the wire: a row's sym chip, and the header's
+   * clear chip. Omitted means the wire is not a control surface — the chips
+   * render as the inert labels they always were, attribute for attribute.
+   */
+  onSymToggle?: (sym: string) => void;
 }
 
 /** Header chip copy and colour per source. `partial` = live, but a feed dropped. */
@@ -53,8 +68,15 @@ const symChip = (color: string): string =>
  * resolves; selection is therefore held as an *id*, not an index, and re-found
  * on every render. The fallback to the first row means the detail pane cannot
  * be empty, which is why nothing here has an "unselected" branch to draw.
+ *
+ * `filterSym` narrows the same feed to one ticker. It is DISPLAY ONLY, like
+ * everything else on this screen: the filter never reaches `data/wire.ts`, so
+ * the feed's order, its ids and its bytes are the same whether a filter is on
+ * or off, and clearing one restores the terminal node for node. It is also why
+ * the tick effect below is keyed on `items` and not on `rows` — narrowing the
+ * view is not the wire receiving, and must not sound like it.
  */
-export function NewsWire({ items, status }: NewsWireProps) {
+export function NewsWire({ items, status, filterSym = null, onSymToggle }: NewsWireProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const [selId, setSelId] = useState<string | null>(null);
 
@@ -65,12 +87,21 @@ export function NewsWire({ items, status }: NewsWireProps) {
    * strictly ts-descending.
    */
   const rows = useMemo(
-    () => [...items.filter((i) => i.kind === "desk"), ...items.filter((i) => i.kind === "news")],
-    [items],
+    () =>
+      filterSym
+        ? // A filter is a single-asset read of the wire: only that name's filed
+          // stories survive it. Desk chatter and market-wide rows are not that
+          // asset, so they go with everything else — a filtered wire shows the
+          // asset, full stop, and the pin-to-top rule has nothing left to pin.
+          items.filter((i) => i.kind === "news" && i.sym === filterSym)
+        : [...items.filter((i) => i.kind === "desk"), ...items.filter((i) => i.kind === "news")],
+    [items, filterSym],
   );
 
   /** Selection survives a mock → live swap: the id is looked up again, and a
-   *  miss falls through to the top row rather than blanking the pane. */
+   *  miss falls through to the top row rather than blanking the pane. A filter
+   *  is just another way for the id to go missing, so switching tickers files
+   *  the new top story on its own — no special case, and no blank pane. */
   const selected = rows.find((i) => i.id === selId) ?? rows[0];
 
   /**
@@ -115,6 +146,23 @@ export function NewsWire({ items, status }: NewsWireProps) {
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.14em;color:${C.amber}`)}>NEWS WIRE · DESK CHATTER</span>
         <div style={sx("flex:1")} />
         <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>SAME WIRE ON BOTH SCREENS</span>
+        {/* The wire says out loud that it is narrowed, and the way out of the
+            filter is the same chip that reports it — one click, no hunting
+            back up to the card that set it. */}
+        {filterSym ? (
+          <button
+            data-testid="wire-filter"
+            data-wire-filter={filterSym}
+            title={`The wire is showing ${filterSym} only — clear the filter`}
+            onClick={() => onSymToggle?.(filterSym)}
+            style={sx(
+              `font:700 9px/1 ${MONO};letter-spacing:.12em;padding:5px 7px;border-radius:5px;cursor:pointer;` +
+                `border:1px solid ${C.accent}55;background:${C.accent}1f;color:${C.accent}`,
+            )}
+          >
+            FILTER · {filterSym} ×
+          </button>
+        ) : null}
         <span
           data-testid="wire-status"
           title={`Wire source: ${status}`}
@@ -141,9 +189,27 @@ export function NewsWire({ items, status }: NewsWireProps) {
         }}
         style={sx(`height:${LIST_H}px;overflow-y:auto;background:${C.panel};outline:none`)}
       >
+        {/* A ticker the feed has filed nothing on yet — a live source that came
+            back thin, most often. The terminal says so in its own voice rather
+            than drawing an empty box, and the detail pane below draws its own
+            quiet line, so neither pane can throw on a missing story. */}
+        {rows.length === 0 ? (
+          <div
+            data-testid="wire-empty"
+            style={sx(
+              `padding:22px 16px;text-align:center;font:500 10px/1.6 ${MONO};letter-spacing:.14em;color:${C.faint}`,
+            )}
+          >
+            NO {filterSym ?? "MKT"} STORIES ON THE WIRE
+          </div>
+        ) : null}
         {rows.map((item) => {
           const desk = item.kind === "desk";
           const on = item.id === selected?.id;
+          // Hoisted out of the JSX so the narrowing survives into the chip's
+          // own click handler — `item.sym` is a property, and a closure would
+          // widen it straight back to `string | null`.
+          const sym = item.sym;
           return (
             <div
               key={item.id}
@@ -171,8 +237,36 @@ export function NewsWire({ items, status }: NewsWireProps) {
                 >
                   {item.who ?? "DESK"}
                 </span>
-              ) : item.sym ? (
-                <span style={sx(symChip(sectorColor(meta(item.sym).sector)))}>{item.sym}</span>
+              ) : sym ? (
+                // The chip is the wire's own handle on the filter. It sits
+                // inside a row that is itself a click target, so the toggle
+                // stops the event dead: pressing SOL narrows the feed, it does
+                // not also file SOL's story into the pane underneath. Handed no
+                // `onSymToggle`, it renders as the inert label it always was.
+                <span
+                  style={sx(symChip(sectorColor(meta(sym).sector)) + (onSymToggle ? ";cursor:pointer" : ""))}
+                  {...(onSymToggle
+                    ? {
+                        "data-wire-chip": sym,
+                        role: "button",
+                        // Off the tab order on purpose: the row already answers
+                        // ↑/↓, and forty chips ahead of the detail pane would
+                        // make the terminal unkeyboardable.
+                        tabIndex: -1,
+                        "aria-pressed": sym === filterSym,
+                        title:
+                          sym === filterSym
+                            ? `Showing ${sym} only — click to clear the filter`
+                            : `Filter the wire to ${sym}`,
+                        onClick: (e: MouseEvent<HTMLSpanElement>) => {
+                          e.stopPropagation();
+                          onSymToggle(sym);
+                        },
+                      }
+                    : {})}
+                >
+                  {sym}
+                </span>
               ) : (
                 <span style={sx(`font:500 8px/1 ${MONO};letter-spacing:.06em;text-align:center;color:${C.dim};${CLIP}`)}>
                   MKT

@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
+import { SPOT_CHIP, liveTag, spotChipSx, spotFor, spotPair } from "../data/spot.ts";
 import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, tickParams } from "../lib/sound/index.ts";
@@ -18,6 +20,14 @@ const ease = (t: number) => 1 - Math.pow(1 - t, 5);
 
 interface MatchSpinProps {
   lobbyName: string;
+  /**
+   * The live book, read for spot only. The reel's *prices* stay seeded — they
+   * are `Asset.px` from `universe.ts` and the tape settles on them — and a live
+   * print, where Thetanuts publishes one, is annotated beside them under the
+   * `LIVE SPOT · SEEDED TAPE` chip. Most of the board has no live print and
+   * renders exactly as it always has.
+   */
+  source: MarketSource;
   marketLabel: string;
   /** The window this lobby runs on — the chip beside the market tag. */
   mode: ModeSpec;
@@ -121,8 +131,10 @@ export function MatchSpin(p: MatchSpinProps) {
         return;
       }
       setSpinning(false);
+      // The landing is the case-open clip alone — the per-leg reveal arpeggio
+      // used to fire here too, and the owner cut it: two voices on one landing
+      // read as a doubled transient, and the recording is the one that sells it.
       sfx("spin.land");
-      sfx("spin.reveal", { leg: step });
       // Hold on the landing, then either the next leg or lock.
       settleTimer = setTimeout(() => setStep((s) => s + 1), SETTLE_MS);
     };
@@ -152,6 +164,27 @@ export function MatchSpin(p: MatchSpinProps) {
   const live = tiles[under] ?? tiles[plan.target]!;
   const shown = spinning ? live : tiles[plan.target]!;
   const price = shown.px * (1 + flicker);
+
+  /**
+   * Live spot per name in this lobby's book, `null` for most of them.
+   *
+   * Built once per book rather than per tile: the strip repeats the book across
+   * 64 tiles, so a per-tile lookup would ask the same question sixty-four times
+   * a render — and this renders on every animation frame while the reel is
+   * moving. `p.source` is a new object on each poll, which is exactly when the
+   * numbers should be re-read.
+   */
+  const spots = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const a of p.assets) {
+      const px = spotFor(a.sym, p.source);
+      if (px !== null) m.set(a.sym, px);
+    }
+    return m;
+  }, [p.assets, p.source]);
+  /** The chip only appears once there is something on screen for it to explain. */
+  const anyLive = spots.size > 0;
+  const shownLive = spots.get(shown.sym) ?? null;
 
   const status = done
     ? "locked"
@@ -199,6 +232,14 @@ export function MatchSpin(p: MatchSpinProps) {
           <span style={sx(modeTag(p.mode.key))}>
             {p.mode.label} · {p.mode.duration}
           </span>
+          {/* The board legend for this surface. Present only when at least one
+              tile is actually annotated — a badge promising live spot over a
+              reel of pure fiction would be the opposite of honest. */}
+          {anyLive && (
+            <span data-testid="spot-chip" style={sx(spotChipSx)}>
+              {SPOT_CHIP}
+            </span>
+          )}
           <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>you vs {p.opponent.name}</span>
           <div style={sx("flex:1")} />
           <span style={sx(`font:500 10px/1 ${MONO};color:${done ? C.accent : C.dim}`)}>{status}</span>
@@ -233,6 +274,18 @@ export function MatchSpin(p: MatchSpinProps) {
               ${fmtPx(price)}
             </span>
           </div>
+          {/* C4 site: the pointer price. The headline above keeps its wobble and
+              its seeded number — that is the tape the duel settles on — and the
+              live print is stated underneath, named, beside it. No live spot
+              and this line does not exist at all. */}
+          {shownLive !== null && (
+            <div
+              data-testid="pointer-spot"
+              style={sx(`margin-top:9px;font:500 10px/1 ${MONO};letter-spacing:.04em;color:${C.green}`)}
+            >
+              {spotPair(shown.px, shownLive)}
+            </div>
+          )}
         </div>
 
         <div
@@ -249,6 +302,7 @@ export function MatchSpin(p: MatchSpinProps) {
             {tiles.map((a, i) => {
               const color = sectorColor(a.sector);
               const hit = !spinning && i === plan.target;
+              const tileLive = spots.get(a.sym) ?? null;
               return (
                 <div
                   key={i}
@@ -272,6 +326,15 @@ export function MatchSpin(p: MatchSpinProps) {
                     <div style={sx(`margin-top:5px;font:500 10px/1 ${MONO};color:${C.accent}`)}>
                       ${fmtPx(a.px)}
                     </div>
+                    {/* C4 site: the reel tile. 124px is not enough room for the
+                        full `seeded · live` pair, so the tile takes the right
+                        half only — the accent line directly above is the seeded
+                        one, and the header chip says so. */}
+                    {tileLive !== null && (
+                      <div style={sx(`margin-top:4px;font:500 9px/1 ${MONO};color:${C.green}`)}>
+                        {liveTag(tileLive)}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
