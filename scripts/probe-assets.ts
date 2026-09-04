@@ -140,8 +140,29 @@ function render(reports: readonly AssetReport[], mmProbed: boolean): string {
 // The probe
 // ─────────────────────────────────────────────────────────────────────────────
 
-const message = (e: unknown): string =>
-  e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+/**
+ * The whole cause chain, not just the top of it.
+ *
+ * The SDK wraps transport failures as `ThetanutsError: HTTP request failed`,
+ * which is true and useless: a 404 on a moved route, a DNS failure and a TLS
+ * chain the Node agent will not trust all print identically. The thing that
+ * decides whether the demo is broken or the market is closed lives one or two
+ * `cause` links down, so unwrap it. Depth-capped so a self-referential cause
+ * cannot spin.
+ */
+function message(e: unknown, depth = 4): string {
+  if (!(e instanceof Error)) return String(e);
+  const head = `${e.name}: ${e.message}`;
+  const status = (e as { meta?: { status?: unknown } }).meta?.status;
+  const withStatus = typeof status === "number" ? `${head} (HTTP ${status})` : head;
+  const cause = (e as { cause?: unknown }).cause;
+  if (depth <= 0 || !(cause instanceof Error)) return withStatus;
+  // A wrapper that re-states its own cause verbatim adds a line and no
+  // information. `undici` wraps TLS failures exactly like that.
+  const below = message(cause, depth - 1);
+  if (below === head || below.startsWith(`${head}\n`)) return withStatus;
+  return `${withStatus}\n    caused by ${below}`;
+}
 
 const FIXTURE_MODE = Bun.argv.includes("--fixture");
 
@@ -183,6 +204,9 @@ async function fromNetwork(): Promise<Probe> {
   const at = Date.now();
   const client = new ThetanutsClient({ chainId: CHAIN_ID, provider: new JsonRpcProvider(RPC_URL) });
   const chainConfig = client.chainConfig as unknown as QualifySnapshot["chainConfig"];
+  /** Named in the failure path: "the book is empty" and "the route we asked for
+   *  is gone" are different sentences, and only one of them is about the market. */
+  const bookUrl = (client as unknown as { indexerApiUrl?: string }).indexerApiUrl ?? "(unset)";
 
   /**
    * The order book is the load-bearing feed. Without it there is nothing to
@@ -196,7 +220,8 @@ async function fromNetwork(): Promise<Probe> {
     console.error("");
     console.error("BOOK UNREACHABLE — fetchOrders() failed. No table: this is a network");
     console.error("result, not a market result, and an empty table would say the wrong thing.");
-    console.error(`  ${message(e)}`);
+    console.error(`  endpoint  ${bookUrl}`);
+    console.error(`  error     ${message(e)}`);
     console.error("");
     console.error("Re-run with --fixture to show the same gate over the frozen capture.");
     process.exit(1);

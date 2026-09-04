@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   CONDITION_REASON,
@@ -531,5 +532,126 @@ describe("a garbage snapshot degrades to [] — it never throws", () => {
     // asset playable rather than silently dropping it when config goes missing.
     expect(eth.depthUsd).toBeGreaterThan(0);
     expect(Number.isFinite(eth.depthUsd)).toBe(true);
+  });
+});
+
+// ─── the probe script, offline ───────────────────────────────────────────────
+
+/**
+ * `scripts/probe-assets.ts --fixture` — the demo artefact, tested.
+ *
+ * The script is the plan's §7.3 deliverable and the thing that gets run in a
+ * room, so "it compiles" is not the bar. `--fixture` exists precisely so it can
+ * be exercised without a socket: the identical gate over the identical frozen
+ * capture, printed by the identical formatter. What is asserted here is the
+ * table's *shape* and its verdicts, not its prose — a table that quietly stops
+ * naming which condition failed is the failure mode that matters, because the
+ * verdict column is the entire reason anyone believes the gate is a measurement.
+ *
+ * These spawn a subprocess, which is slower than the rest of this file by two
+ * orders of magnitude. That is the price of testing the artefact rather than a
+ * re-implementation of it, and three runs is where it stops being worth paying.
+ */
+describe("scripts/probe-assets.ts --fixture", () => {
+  const ROOT = join(import.meta.dir, "..");
+  const SCRIPT = join(ROOT, "scripts", "probe-assets.ts");
+
+  /** `process.execPath` is the running bun, so this needs nothing on PATH. */
+  const run = (...args: string[]) => {
+    const r = spawnSync(process.execPath, ["run", SCRIPT, ...args], {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    return { status: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
+  };
+
+  const FIXTURE_RUN = run("--fixture");
+  /** The ETH row, split on runs of spaces — the table is space-padded. */
+  const cellsOf = (out: string, asset: string): string[] =>
+    out
+      .split("\n")
+      .find((l) => l.startsWith(`${asset} `))!
+      .trim()
+      .split(/\s{2,}/);
+
+  test("it exits 0 and never touches the network", () => {
+    expect(FIXTURE_RUN.status).toBe(0);
+    // The live path's failure banners must not appear on a run that read a file.
+    expect(FIXTURE_RUN.err).not.toContain("BOOK UNREACHABLE");
+    expect(FIXTURE_RUN.err).not.toContain("SPOT UNREACHABLE");
+  });
+
+  test("a frozen table can never be mistaken for a live one", () => {
+    // The one thing that would turn this script from evidence into a lie.
+    expect(FIXTURE_RUN.out).toContain("SOURCE: FROZEN FIXTURE — NOT THE LIVE BOOK");
+    expect(FIXTURE_RUN.out).toContain("test/fixtures/orders.json");
+  });
+
+  test("every column the plan asks for is printed", () => {
+    // §7.3: order count, greeked count, summed depth, MM pricing, grade, verdict.
+    for (const head of ["ASSET", "SPOT", "ORDERS", "GREEKED", "DEPTH USD", "MM", "GRADE", "VERDICT"]) {
+      expect(FIXTURE_RUN.out).toContain(head);
+    }
+  });
+
+  test("one row per asset, in the gate's own order — ETH once, not twice", () => {
+    const rows = FIXTURE_RUN.out
+      .split("\n")
+      // A table row is a symbol plus a verdict. The footer prose also starts
+      // with capitals, and it is not a row.
+      .filter((l) => /^[A-Z]{2,5} /.test(l) && /\b(QUALIFIED|REJECTED)\b/.test(l))
+      .map((l) => l.split(" ")[0]);
+    expect(rows).toEqual(["ETH", "BTC", "SOL", "DOGE", "XRP", "BNB", "PAXG", "AVAX"]);
+  });
+
+  test("the numbers on the row are the numbers the gate measured", () => {
+    const eth = cellsOf(FIXTURE_RUN.out, "ETH");
+    expect(eth[0]).toBe("ETH");
+    expect(eth[2]).toBe("16"); // orders
+    expect(eth[3]).toBe("16"); // greeked
+    expect(eth[4]).toBe("$159,970"); // depth, valued not counted
+    expect(eth[7]).toBe("QUALIFIED");
+    expect(cellsOf(FIXTURE_RUN.out, "BTC")[3]).toBe("9");
+  });
+
+  test("a rejection names WHICH condition failed, not just that it failed", () => {
+    // The whole argument of §10.3 is that the lobby can say *why* a sector is
+    // greyed. A bare "REJECTED" would make the probe an assertion again.
+    const paxg = FIXTURE_RUN.out.split("\n").find((l) => l.startsWith("PAXG "))!;
+    expect(paxg).toContain(CONDITION_REASON.SPOT);
+    expect(paxg).toContain(CONDITION_REASON.ORDERS);
+    expect(paxg).toContain(CONDITION_REASON.DEPTH);
+    // SOL is priced and empty — a different sentence, and the difference is the
+    // point of collecting all four conditions instead of short-circuiting.
+    const sol = FIXTURE_RUN.out.split("\n").find((l) => l.startsWith("SOL "))!;
+    expect(sol).not.toContain(CONDITION_REASON.SPOT);
+    expect(sol).toContain(CONDITION_REASON.ORDERS);
+  });
+
+  test("an unread MM feed prints '?', never 'no'", () => {
+    // The capture carries no mmPricing. "no MM pricing" would be a claim about
+    // a market maker; the truth is that nobody asked.
+    expect(cellsOf(FIXTURE_RUN.out, "ETH")[5]).toBe("?");
+    expect(cellsOf(FIXTURE_RUN.out, "ETH")[6]).toBe("?");
+    expect(FIXTURE_RUN.out).toContain("MM pricing grades, it never gates");
+  });
+
+  test("the footer names the qualified set", () => {
+    expect(FIXTURE_RUN.out).toContain("QUALIFIED: ETH, BTC");
+  });
+
+  test("the table is stable across runs — same capture, same table", () => {
+    // Everything but the wall clock on the header line, which is the only thing
+    // in the output that is allowed to move.
+    const stable = (s: string) => s.replace(/^ {2}run .*$/m, "  run <clock>");
+    expect(stable(run("--fixture").out)).toBe(stable(FIXTURE_RUN.out));
+  });
+
+  test("--help documents --fixture and reads no book at all", () => {
+    const help = run("--help");
+    expect(help.status).toBe(0);
+    expect(help.out).toContain("--fixture");
+    expect(help.out).not.toContain("ASSET");
   });
 });
