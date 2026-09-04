@@ -981,8 +981,15 @@ describe("the rank moment", () => {
     expect(labels()).not.toContain("View the full ladder →");
     expect(sequence()).toBeNull();
     expect(container.querySelector("[data-rank-exits]")).toBeNull();
+    expect(container.querySelector("[data-rank-overlay]")).toBeNull();
 
-    throughRank();
+    click("Next → your rank");
+    const overlay = container.querySelector<HTMLElement>("[data-rank-overlay]");
+    expect(overlay).not.toBeNull();
+    expect(overlay?.getAttribute("role")).toBe("dialog");
+    expect(overlay?.getAttribute("aria-modal")).toBe("true");
+    expect(overlay?.style.position).toBe("fixed");
+    click("Skip ↦");
 
     expect(sequence()).not.toBeNull();
     expect(container.querySelector("[data-rank-exits]")).not.toBeNull();

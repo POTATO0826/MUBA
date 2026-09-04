@@ -258,24 +258,46 @@ export function Result(p: ResultProps) {
       )}
 
       {phase !== "debrief" && (
-        <RankUpSequence
-          xpGain={p.xpGain}
-          xpBefore={p.xpBefore}
-          xpAfter={p.xpAfter}
-          streak={p.streak}
-          posBefore={p.posBefore}
-          posAfter={p.posAfter}
-          onDone={onSequenceDone}
-          onOpenLadder={p.onOpenLadder}
-        />
-      )}
+        <div
+          data-rank-overlay=""
+          role="dialog"
+          aria-modal="true"
+          aria-label="Rank progress"
+          style={sx(
+            "position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:24px;" +
+              "background:rgba(9,9,11,.78);backdrop-filter:blur(5px)",
+          )}
+        >
+          {/* Keep the rank moment's existing UI intact; this shell only moves
+              it from the bottom of the result into a compact post-result
+              screen. The internal scroller keeps every stage reachable on a
+              short viewport without scrolling the debrief behind it. */}
+          <div
+            style={sx(
+              "width:min(760px,100%);max-height:calc(100vh - 48px);overflow-y:auto;" +
+                "padding:0 2px 18px;overscroll-behavior:contain",
+            )}
+          >
+            <RankUpSequence
+              xpGain={p.xpGain}
+              xpBefore={p.xpBefore}
+              xpAfter={p.xpAfter}
+              streak={p.streak}
+              posBefore={p.posBefore}
+              posAfter={p.posAfter}
+              onDone={onSequenceDone}
+              onOpenLadder={p.onOpenLadder}
+            />
 
-      {phase === "done" && (
-        <ExitRow
-          onBackToBattles={p.onBackToBattles}
-          onRematch={p.onRematch}
-          onOpenLadder={p.onOpenLadder}
-        />
+            {phase === "done" && (
+              <ExitRow
+                onBackToBattles={p.onBackToBattles}
+                onRematch={p.onRematch}
+                onOpenLadder={p.onOpenLadder}
+              />
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -128,7 +128,7 @@ const server = Bun.serve({
     "/api/duel-status": (req: Request) => attest.handleStatus(new URL(req.url)),
 
     /**
-     * The WalletConnect project id, read at boot by `src/wallet/config.ts`.
+     * The WalletConnect project id, read at boot by `src/wallet/project.ts`.
      *
      * It goes over the wire rather than into the bundle because Bun's HTML
      * bundler does not inline `process.env` for `Bun.serve` routes — a
