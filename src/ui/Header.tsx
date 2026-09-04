@@ -1,4 +1,5 @@
 import { StarfieldButton } from "../components/StarfieldButton.tsx";
+import { shortAddress, type WalletIdentity } from "../data/wallet.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tabBtn } from "../theme.ts";
@@ -22,15 +23,55 @@ const NAV: readonly { key: Tab; label: string; pitch: number }[] = [
 
 interface HeaderProps {
   tab: Tab;
-  wallet: boolean;
+  /** Whoever the wallet layer says you are. `DISCONNECTED` until you connect. */
+  wallet: WalletIdentity;
   onNavigate: (tab: Tab) => void;
-  onToggleWallet: () => void;
+  onConnect: () => void;
+  /** The connected-wallet panel — on the mock and on injected, a disconnect. */
+  onManage: () => void;
+  onSwitchNetwork: () => void;
 }
 
-export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps) {
+/**
+ * The four states the one button carries, in the order they're checked.
+ *
+ * Wrong-network outranks the address on purpose: someone connected on Ethereum
+ * can draft a whole duel and only discover at signing that Base isn't where
+ * they are, so the header says so first and the accent goes amber to match.
+ */
+function walletButton(wallet: WalletIdentity) {
+  if (wallet.connecting) return { label: "Connecting…", mono: false, tone: C.accent };
+  if (wallet.wrongNetwork) return { label: "Switch to Base", mono: false, tone: C.amber };
+  if (wallet.address) return { label: shortAddress(wallet.address), mono: true, tone: C.accent };
+  return { label: "Connect wallet", mono: false, tone: C.accent };
+}
+
+export function Header({
+  tab,
+  wallet,
+  onNavigate,
+  onConnect,
+  onManage,
+  onSwitchNetwork,
+}: HeaderProps) {
   // One stable handler shared by every nav button — the row re-renders on each
   // tab change and a fresh listener per render would churn the DOM.
   const hover = useSoundHover();
+
+  const btn = walletButton(wallet);
+
+  /**
+   * One button, three destinations — and only the connect leg is a connect, so
+   * only it gets `wallet.connect`. `StarfieldButton` used to fire that sound on
+   * every click of itself, which meant "Switch to Base" and the account panel
+   * both played a connect chime.
+   */
+  const onWalletClick = () => {
+    if (wallet.wrongNetwork) return onSwitchNetwork();
+    if (wallet.address) return onManage();
+    sfx("wallet.connect");
+    onConnect();
+  };
 
   return (
     <header
@@ -78,25 +119,31 @@ export function Header({ tab, wallet, onNavigate, onToggleWallet }: HeaderProps)
       <div style={sx("display:flex;align-items:center;gap:14px")}>
         <SoundToggle />
         <StarfieldButton
-          label={wallet ? "0x71c…4Af2" : "Connect wallet"}
-          onClick={onToggleWallet}
+          label={btn.label}
+          onClick={onWalletClick}
           rounded={47}
           padding="9px 15px"
           fill="#0f0f11"
           textColor={C.text}
-          border={{ borderWidth: 1, borderStyle: "solid", borderColor: "rgba(200,255,0,.22)" }}
-          font={{ fontFamily: wallet ? MONO : SANS, fontWeight: 700, fontSize: 12, lineHeight: "1.35em", letterSpacing: "0.01em" }}
-          lightColor={C.accent}
+          border={{
+            borderWidth: 1,
+            borderStyle: "solid",
+            // Amber rim while the wallet is on the wrong chain, so the button
+            // reads as a warning before the label is.
+            borderColor: wallet.wrongNetwork ? "rgba(245,158,11,.38)" : "rgba(200,255,0,.22)",
+          }}
+          font={{ fontFamily: btn.mono ? MONO : SANS, fontWeight: 700, fontSize: 12, lineHeight: "1.35em", letterSpacing: "0.01em" }}
+          lightColor={btn.tone}
           lightSize={46}
           lightThickness={2}
           lightCount={2}
           speed={58}
           movement="continuous"
           direction="ccw"
-          glowColor={C.accent}
+          glowColor={btn.tone}
           glowSize={12}
           glowOpacity={70}
-          pixelColor={C.accent}
+          pixelColor={btn.tone}
           pixelSize={4}
           pixelDensity={46}
           pixelBrightness={100}

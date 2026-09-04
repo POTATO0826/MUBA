@@ -478,10 +478,10 @@ export function StarfieldButton(props: StarfieldButtonProps) {
       <button
         ref={buttonRef}
         type="button"
-        onClick={(e) => {
-          sfx("wallet.connect");
-          props.onClick?.(e);
-        }}
+        // No click sound of its own: the button is generic, and the caller
+        // knows which of its states the click actually means. `Header` fires
+        // `wallet.connect` on the connect leg only.
+        onClick={props.onClick}
         aria-label={label || undefined}
         onPointerEnter={() => { sfx("ui.hover"); revealTarget.current = 1; }}
         onPointerLeave={() => { revealTarget.current = 0; scaleTo(1); }}

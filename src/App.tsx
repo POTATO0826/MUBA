@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { MatchSpin } from "./components/MatchSpin.tsx";
 import { scoreOf } from "./engine/match.ts";
 import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/lobbies.ts";
+import type { WalletSource } from "./data/wallet.ts";
 import type { MarketSource } from "./data/market.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
@@ -15,6 +16,7 @@ import { useRankProgress } from "./state/rank.ts";
 import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
+import { MockWalletBanner } from "./ui/MockWalletBanner.tsx";
 import { Battles } from "./views/Battles.tsx";
 import { CreateLobby } from "./views/CreateLobby.tsx";
 import { Live } from "./views/Live.tsx";
@@ -25,6 +27,7 @@ import { Ranking } from "./views/Ranking.tsx";
 import { Result } from "./views/Result.tsx";
 import { Room } from "./views/Room.tsx";
 import { Study } from "./views/Study.tsx";
+import { useMockWallet } from "./wallet/mock.ts";
 
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
@@ -46,12 +49,18 @@ function currentRoute(): Route {
  * both of you play on, read the case, pick a parlay card, hold through the
  * tape, settle. `lobby` (home), `create`, `desk` and `ranks` sit beside it.
  */
-export function App({ source, newsSource = mockNewsSource, route }: {
+export function App({ source, newsSource = mockNewsSource, route, wallet }: {
   source: MarketSource;
   /** The study wire's feed. Defaults to the seeded one, so tests and the
    *  offline build touch no network; `client.tsx` injects the live source. */
   newsSource?: NewsSource;
   route?: Route;
+  /**
+   * Whichever wallet `WalletBoundary` picked. Optional on purpose: AppKit
+   * cannot initialise under happy-dom, so the tests mount `App` bare and the
+   * mock below stands in. `client.tsx` always passes one.
+   */
+  wallet?: WalletSource;
 }) {
   // First hook in the tree: the audio context is built inside the very first
   // gesture, capture-phase, so the click that starts the session is audible.
@@ -75,7 +84,10 @@ export function App({ source, newsSource = mockNewsSource, route }: {
     deskLines: derived.briefs,
   });
 
-  const [wallet, setWallet] = useState(false);
+  // The headless fallback. A hook, so it must run unconditionally even when a
+  // real source was injected — cheap, and it keeps the rules of hooks honest.
+  const fallback = useMockWallet();
+  const active = wallet ?? fallback;
 
   // The address follows the match, so a spin can be shared with its seed in it.
   useEffect(() => {
@@ -141,7 +153,14 @@ export function App({ source, newsSource = mockNewsSource, route }: {
 
   return (
     <div style={sx(PAGE)}>
-      <Header tab={state.tab} wallet={wallet} onNavigate={(t) => actions.go(t)()} onToggleWallet={() => setWallet((w) => !w)} />
+      <Header
+        tab={state.tab}
+        wallet={active.identity}
+        onNavigate={(t) => actions.go(t)()}
+        onConnect={() => void active.connect()}
+        onManage={() => void active.openAccount()}
+        onSwitchNetwork={() => void active.switchToBase()}
+      />
 
       {state.tab === "lobby" && (
         <Lobby
@@ -302,6 +321,10 @@ export function App({ source, newsSource = mockNewsSource, route }: {
           along from the same hook because it is the one movement reading the
           ledger actually samples — the hero chip's `↑ W3 STREAK`. */}
       {state.tab === "ranks" && <Ranking you={rank.you} streak={rank.streak} />}
+
+      {/* The address in the header is a plausible-looking fake whenever the
+          mock tier won. Say so, rather than letting it pass for a wallet. */}
+      {active.id === "mock" && <MockWalletBanner />}
 
       <Footer source={source} />
     </div>
