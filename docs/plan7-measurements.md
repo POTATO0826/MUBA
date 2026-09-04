@@ -560,18 +560,18 @@ execution paths, and the entire asset gate, rest on one bot. Worth one sentence
 in the README and worth knowing before the demo.
 
 **Flagged for the owner of `src/`, not acted on (this investigation is
-read-only): the bid/ask polarity in `src/server/thetanuts.ts:1252` looks
-inverted.** It reads `const isBid = entry.order.isBuyer;`, then files those
-prices into `bestBid` and takes `askEntry` from the complement. The settled
-position data in §3.2 shows `order.isBuyer === true` (i.e. `isLong === false`)
-is the side where **the taker buys** — an offer, not a bid. If that reading is
-right, `bestBid`/`bestAsk` are swapped and `askEntry` — the order
-`src/desk/fill.ts` would actually fill — points at the sell side, which plan §5
-forbids outright. The row-level `side: isBid ? "BUY" : "SELL"` label is
-*correct* under the corrected reading, which is what makes the bug quiet. No
-fill has ever executed from this repo (`docs/plan6-audit.md` item 20), so
-nothing has tested it. Worth thirty seconds from whoever owns that file before
-any signature is sent.
+read-only): the bid/ask polarity at `src/server/thetanuts.ts` was inverted.
+**CONFIRMED AND FIXED** in `37f0c37` — do not re-report it. It was settled by
+measurement, not by reading: 142 live orders joined to the venue's own two-sided
+quotes showed `isBuyer=true` resting at 1.58-1.66x the MM mark and NEVER at or
+below its bid, while `isBuyer=false` rests at 0.69-0.72x and never at or above
+the ask. Total separation, zero counterexamples. `isBuyer === true` is the
+maker's ASK — the side a player can buy. The code now splits `takerBuys` (which
+labels `OrderRow.side`, byte-identical, because `fill.ts` rebuilds that exact
+string to match an order) from `isBid` (the maker's side, which picks the fill
+target). Before the fix, `askEntry` pointed at the maker's bid — filling one
+would have made the player the writer.
+
 
 ---
 
