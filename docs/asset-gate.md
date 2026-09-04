@@ -16,6 +16,40 @@ was decided there.
 evidence of a method, not a claim about tomorrow's book — that is the whole
 reason the gate is a probe and not a hardcoded set (plan6 §7.1).
 
+## ⚠ READ THIS BEFORE CONCLUDING THE BOOK IS DOWN
+
+`https://indexer.thetanuts.finance/api/v1/book` returns 404 **by design** and always has.
+`fetchOrders()` never requests it — it issues a relative `get("/")` against `apiBaseUrl`,
+a Cloudflare Worker origin. `indexerApiUrl` is a path *prefix* other callers append to.
+**Three separate agents have now curled that URL, seen the expected 404, and concluded the
+venue moved its book. It never did.** Teardown: `docs/book-endpoint.md`.
+
+## Live run
+
+```
+THETADUEL — asset gate probe
+  chain     Base 8453 via https://mainnet.base.org
+  run       2026-09-04T20:00:56.214Z
+  gate      ≥6 fillable orders, ≥4 with a usable delta, ≥$50 depth, spot readable
+
+  source    live Base 8453, book as of 2026-09-04T20:00:56.214Z
+  read      362 resting orders, 6 market prices, 8 price-feed assets
+
+ASSET           SPOT   ORDERS   GREEKED      DEPTH USD  MM    GRADE   VERDICT
+----------------------------------------------------------------------------------------
+ETH           $2,455      124        81     $1,191,241  yes   DEEP    QUALIFIED
+BTC          $79,731      141        94     $1,355,890  yes   DEEP    QUALIFIED
+SOL          $101.73       27        25       $260,000  no    THIN    QUALIFIED
+DOGE               —        0         0              —  no    —       REJECTED — no market price; not enough resting orders; no usable deltas; not enough depth
+XRP            $1.40       14        14       $140,000  no    THIN    QUALIFIED
+BNB          $719.99       40        35       $375,000  no    THIN    QUALIFIED
+PAXG               —        0         0              —  no    —       REJECTED — no market price; not enough resting orders; no usable deltas; not enough depth
+AVAX           $7.39       16        16       $160,000  no    THIN    QUALIFIED
+
+QUALIFIED: ETH (DEEP), BTC (DEEP), SOL (THIN), XRP (THIN), BNB (THIN), AVAX (THIN)
+MM pricing grades, it never gates — the resting order book is a separate source and covers more assets.
+```
+
 ## The four conditions
 
 All four are necessary. An asset that fails any one of them cannot produce cards

@@ -17,107 +17,221 @@ sentence in the file.
 > the tree at the end rather than taken on report. Re-run the greps before acting
 > on a row — the method is the durable part, not the timestamp.
 
+> ## Second pass — re-verified 2026-09-05, branch `new`, HEAD `56435c0`
+>
+> Eight commits landed between the first pass and this one (`fbef12b` through
+> `56435c0`), several claiming to close rows this file had marked open. **Same
+> rule as above, applied to those claims too**: nothing below is marked closed
+> because a commit message says so. Every row was re-greped, re-read or re-run
+> against the tree.
+>
+> **The tree moved a second time while this file was being rewritten**, same as
+> the first pass, and it is recorded the same way rather than smoothed over.
+> Two of the defects below (D2, D3) and one sub-item (19(b)) were verified
+> against a *dirty working tree* — `git status` mid-pass showed
+> `src/engine/parlay.ts`, `src/server/thetanuts.ts`, `src/state/match.ts`,
+> `src/views/CreateLobby.tsx`, `src/views/ParlayPick.tsx`, `test/app.test.tsx`
+> and `test/market-builder.test.ts` all modified, uncommitted — and were
+> written up with an explicit "uncommitted, do not rely on this yet" caveat.
+> By the time this file was finished, two commits had landed capturing exactly
+> that working tree: `e91d177` ("the legs are priced by the book, not by the
+> retired ratio" — match.ts + CreateLobby.tsx + parlay.ts + ParlayPick.tsx) and
+> `56435c0` ("a 'level' was merging three different contracts into one row" —
+> thetanuts.ts + test/market-builder.test.ts). The caveats below were updated
+> to say so; nothing was re-verified against those two commits beyond
+> confirming `git status` is clean and the commits contain the same diffs this
+> pass already read line-for-line — which is a weaker claim than a fresh
+> re-grep, and is stated as such.
+>
+> Test files actually run this pass, read-only: `market-builder` (111 pass),
+> `determinism` (19 pass), `detail` (58 pass), `parlay`+`optionize`+`engine`
+> (78 pass), `attest` (129 pass), `app.test.tsx` (85 pass), `qualify` (62
+> pass) — all run against the pre-commit working tree, i.e. the same code the
+> two commits above then captured verbatim. None were run to exhaustion of the
+> whole suite, and `tsc` was not run at all — other agents were mid-edit on
+> files this pass had to read, and a red full-suite run right then would have
+> proven nothing about any single row.
+>
+> The live book was re-probed from this machine, live, during this pass: **still
+> 404** on `/api/v1/book` and `/api/v1/orders`, **still 200** on `/api/state`.
+> Nothing has changed on that front; see the outage section below, unedited.
+
 ## The one-paragraph summary
 
-Plan 6's *engine* landed and is excellent: `TIERS` is genuinely gone, the tier is
-genuinely a delta band, the gate is genuinely a pure measurement, the fill
-genuinely caps the slip sum and shows its degradation policy before you sign, and
-the attestor genuinely re-derives its own verdict from one frozen snapshot. Plan
-6's *UI* landed in half. The detail levels and the card face are wired; the live
-card path and the asset gate are not. **`cardsForSlice`, `multipleAt`,
-`spinSlice` and `qualifiedAssets` have zero production call sites**, so several
-boxes that read as done are true of a unit test and false of the running app.
-Nothing here is broken; some of it is merely unplugged, and a green suite hides
-exactly that. Two boxes cannot be closed by any agent: nobody has spent a cent on
-Base from this repo.
+**First pass:** Plan 6's *engine* landed and is excellent: `TIERS` is genuinely
+gone, the tier is genuinely a delta band, the gate is genuinely a pure
+measurement, the fill genuinely caps the slip sum and shows its degradation
+policy before you sign, and the attestor genuinely re-derives its own verdict
+from one frozen snapshot. Plan 6's *UI* landed in half. The detail levels and
+the card face are wired; the live card path and the asset gate are not.
+`cardsForSlice`, `multipleAt`, `spinSlice` and `qualifiedAssets` had zero
+production call sites, so several boxes that read as done were true of a unit
+test and false of the running app. Two boxes could not be closed by any agent:
+nobody has spent a cent on Base from this repo.
+
+**Second pass:** the plumbing got built. `cardsForSlice`/`multipleAt` now have
+two real callers (`src/views/ParlayPick.tsx` and `src/state/match.ts`),
+`qualifiedAssets()` reaches `CreateLobby` and the slice reveal, and the one
+FAIL in the table (item 2) closes. Twelve of the twenty-one rows are unchanged
+because they were never broken. Of the nine that moved: **six close outright**
+(2, 7 already closed, 8, 14, 15, 18), **one stays PARTIAL for a narrower reason
+than before** (19 — two of its three surfaces closed, the third, the lobby
+board's own grade tag, still has no caller anywhere in `src/`), and **the two
+OWNER-ONLY rows are still owner-only**, because nobody has filled anything on
+Base. Three defects nobody had found when the first pass was written turned up
+and got fixed along the way — a wrong-side fill bug that was one real
+transaction from making a player the writer, a market-level key that was
+merging different option expiries into one row, and a lobby screen that
+printed a measurement nobody made. All three are covered below; two of them
+were caught mid-write against a dirty working tree and landed as commits
+(`e91d177`, `56435c0`) before this file was finished, the same way rows 3, 5
+and 7 closed mid-audit on the first pass.
 
 ## The table
 
-| # | §9 item | Verdict | Evidence |
-|---|---|---|---|
-| 1 | `TIERS` no longer exists anywhere in the tree | **PASS** | `src/engine/parlay.ts` exports `TIER_BANDS:67`, `tierOf:77`, `tierProb:95`, `tierOdds:108`, `TIER_MOVE:126` — no `TIERS`. The only `TIERS` in `src/` is `src/data/rewards.ts:25`, the MINNOW→WHALE rank ladder that §E1 says to keep, re-exported as `RANK_TIERS` by `src/engine/rank.ts:21`. Doc rot: `src/data/spot.ts:179-180` still cites `TIERS.SHARP.prob` and "`TIERS` and `summarize()` are pinned" as a live pin. Comment only — not my file, not fixed. |
-| 2 | Every rendered multiplier traces to a live `ask` or to `calculatePayout` | **FAIL** | `multipleAt` (`parlay.ts:600`) is the only function that calls `calculatePayout`, and it has **zero call sites** outside its own module. The screen that renders card multipliers, `src/views/ParlayPick.tsx:404`, prints `quote.multiplier` from `src/desk/optionize.ts:277 multiplierFor` — a hand-rolled `PAYOFF_REFERENCE_MOVE × K/S ÷ premium`, clamped to `[MULT_MIN, MULT_MAX]` — or falls back to `leg.mult` = `tierOdds(tier)` = `1 / band midpoint`. The first is neither; the second is not a live ask either. |
-| 3 | Max loss on every card face, at every detail level, above the upside figure | **PASS** (closed mid-audit) | `src/components/ParlayCardFace.tsx` now renders every face from one ordered contract: `CARD_FACE_ORDER` (`src/state/detail.ts:127`) puts `maxLoss` before `payout`, so "above the upside figure" is **structural, not stylistic** — there is no branch that could drop it. `test/detail.test.ts` asserts it at all three levels; 52 pass / 0 fail. Was PARTIAL at first pass, when the face was inline in `ParlayPick.tsx` and no detail level existed at runtime. On the seeded path the line still reads `max loss — · no live premium` rather than a number, which is the honest render — a made-up dollar figure beside a real one is worse than a dash. |
-| 4 | `MINNOW/FISH/SHARK/ORCA/WHALE` is the only rank ladder | **PASS** | `src/data/rewards.ts:25`, pinned name-for-name and threshold-for-threshold by `test/rank.test.ts:58-68`. A grep for bronze/silver/gold/platinum/diamond/novice/rookie/apprentice/legend/master across `src/` finds no second ladder. |
-| 5 | Detail level is a visible toggle, reversible in both directions, never locked | **PASS** (closed mid-audit) | `src/views/ParlayPick.tsx:42,44` import them for real; `:169` takes the rank-defaulted level via `useCardDetail(rankAt(…).tier)`; `:281` mounts `<DetailToggle level onChange>`. `test/detail.test.ts:516` asserts all three levels are on screen at once with the live one pressed — a switch, not a lock, reversible in both directions. Was **FAIL** at first pass, when the toggle had zero imports outside its own module and its test. |
-| 6 | A test greps the card components for "moneyness" / "implied volatility" | **PASS** | `test/detail.test.ts:376 BANNED`, over a runtime glob of card surfaces (`:388`, so a new card file is covered the moment it lands), comment-stripped at `:412`, with non-vacuity guards at `:456` and `:478` and a "does the ban catch what it names" control at `:502`. `moneyness` survives in `src/data/spot.ts` and `src/desk/optionize.ts` as a maths variable — explicitly out of scope at `:384`, which is the right call. |
-| 7 | `test/determinism.test.ts` still passes, market data injected not imported | **PASS** (closed mid-audit) | Green on re-run. The injection design is genuine and is the substance of the item: `spinSlice(book, qualified, seed)` at `src/engine/spin.ts:294` takes the book **and** the qualified list as arguments, and `ASSET_GATE_RE` (`test/determinism.test.ts:107`) additionally bans engine modules from importing `data/qualify` — a reel that computes its own universe is one refactor from a reel that computes its own prices. **Worth recording, because it will recur:** at first pass this had 7 failures, and one of them was a *false positive* — the boundary scan at `:133-138` is a raw text match with **no comment stripping**, so `score.ts`'s docblock merely *naming* `src/server/thetanuts.ts` tripped it exactly as an import would. The sibling scan at `test/detail.test.ts:412` has a comment stripper; this one does not. See finding 2 below. |
-| 8 | A card with no qualifying quote renders a dead slot, and a test asserts it | **PARTIAL** | The engine does it and the engine test asserts it: `cardsForSlice` returns `null` per slot (`parlay.ts:556`), `test/parlay.test.ts:449` — "a dead slot is the honest answer, and the grid keeps its shape" — pins seven dead slots in place. But `cardsForSlice` has **zero production call sites**. `ParlayPick.tsx` still deals all eight `PARLAY_CARDS` unconditionally and prints `max loss — · no live premium` where there is no quote. **No UI ever renders a dead slot.** |
-| 9 | `MAX_FILL_USDC` checked against the leg sum, with a test that steps over it | **PASS** | Four checks in `src/desk/fill.ts`: `:1481` per requested leg, `:1492` the requested sum, `:1633` each previewed leg, `:1642` the previewed total. `test/fill.test.ts:901` steps a leg over the cap; `:885` asserts every leg under it. (`test/fill.test.ts` has 3 in-flight typecheck errors from the branded-units change — unrelated to this item.) |
-| 10 | No `MaxUint256` approval anywhere; a test asserts it is never passed | **PASS** | Every `MaxUint256` occurrence in `src/` is a comment forbidding it — `fill.ts:942`, `fill.ts:1704`, `escrow.ts:725`, `rfq.ts:~1290`. Assertions: `test/fill.test.ts:548`, `:1160` (each leg its own collateral, never the slip total), `:1188` ("at any slip size"); `test/duel-stake.test.ts:297` — and `:306` is stricter than the checkbox, refusing even one base unit over. `test/rfq.test.ts:343`. |
-| 11 | Partial-fill policy is on screen before the first signature | **PASS** | `src/desk/fill.ts:1047 PARTIAL_FILL_POLICY` — one exported sentence, carried on the slip quote at `:1202`/`:1663` so the confirm screen structurally cannot omit it. Rendered at `src/views/Parlay.tsx:1560` and again at `:1678`. |
-| 12 | `duelScore` is pure and driven off a frozen fixture in tests | **PASS** | `src/engine/score.ts:340` — no clock, no network, marks passed in as one map for both players. `test/score.test.ts` builds every leg through a single `leg()` helper against one frozen `BOOK` (four instruments: two up, one down, one flat — the four signs the formula must get right). Caveat: score.ts has 1 in-flight typecheck error and its docblock breaks the determinism scan (item 7). |
-| 13 | The attestor derives the verdict from its own snapshot, never from client input | **PASS** | `src/server/attest.ts:1773-1777` — **one snapshot, both players**, through `duelOutcome`. The snapshot is frozen onto the lock by the first in-window attest (`:592-598`) so a re-attest cannot re-roll it; `:998` refuses to sign a verdict it cannot re-derive; `:1313` signs nothing when a leg is unmarkable, falling through to the six-hour refund. |
-| 14 | **No hardcoded `"ETH" \| "BTC"` union survives anywhere** | **PARTIAL — one of two fixed** | Two live sites at audit time. **`src/desk/rfq.ts:256` — FIXED** (see below). **`src/server/thetanuts.ts:345`** — the `getPricingArray` dep signature; another agent's file, reported not edited. It is narrower than the SDK's own `RFQUnderlying` (eight members), and FINDINGS §3 records that the other six return `[]` rather than throwing — so the honest shape is the eight with an empty answer, not a two-member gate. `scripts/probe-assets.ts:256` casts `underlying as "ETH" \| "BTC"` at the call site, documented at `:246`; that is a mirror of the signature above, not an independent claim, and it resolves when the signature does. |
-| 15 | `qualifiedUnderlyings` is pure, fixture-driven, enforces all four conditions | **PASS as a module — unwired in the app** | `src/data/qualify.ts:526`; thresholds `MIN_ORDERS:52`, `MIN_GREEKED:63`, `MIN_DEPTH_USDC:75`; all four conditions in `probeAssets:401`; per-condition reasons at `:103-107`. `test/qualify.test.ts` runs the real gate over `test/fixtures/orders.json` (loaded at `:37`, not hand-built). **But no runtime call site**: the only three `data/qualify` imports in `src/` — `data/sectors.ts:3`, `ui/LobbyCards.tsx:5`, `views/CreateLobby.tsx:11` — are all `import type`. `CreateLobby` takes `live?: readonly QualifiedAsset[]` (`:349`) and `src/App.tsx:440-457` never passes it, so `qualified` is always `[]`. |
-| 16 | Feed aliases deduplicated by address — a test asserts ETH appears once | **PASS** | `feedIndex` at `src/data/qualify.ts:237`. `test/qualify.test.ts:78` first proves the fixture really does hold identical addresses for `ETH` and `ETH/USD`; `:116` asserts `ETH/USD` is absent from the output names; `:131` asserts dedup happens by address and not by key; `:136` covers case-folded addresses. |
-| 17 | `scripts/probe-assets.ts` runs against the live book and its output is committed | **PARTIAL** | The script exists; `--fixture` and `--help` are exercised end-to-end by shelling out (`test/qualify.test.ts:555-655`, including output stability at `:648`); `docs/asset-gate.md` is committed. **But the committed live run is a failure notice, not a table** — `BOOK UNREACHABLE`, exit 1. The only committed table is the `--fixture` run over the frozen 2026-09-04T09:31Z capture. See the outage section below. |
-| 18 | A sector with no qualified members renders greyed with a reason, not hidden | **PARTIAL** | `src/data/sectors.ts:241 NO_BOOK_REASON = "no live book today"`, `liveSectorStatus` at `~:248`, rendered greyed with the explanation at `src/views/CreateLobby.tsx:486-488`. But because `live` is never passed (item 15), **every** live group greys — the screen is technically correct and carries no information, because nothing measured. Both files are mid-flight. |
-| 19 | DEEP/THIN grade on the lobby card and the slice reveal | **PARTIAL** | Lobby card: `src/ui/LobbyCards.tsx:51-54`, `:128`, `:238`, reading an **optional** `grades` prop no caller supplies. Create screen: `src/views/CreateLobby.tsx:287-292`, defaulting to `"THIN"` for every symbol when the map is empty — so the grade currently renders a fixed word rather than a measurement. **Slice reveal: absent** — `spinSlice` has no call sites and no reveal surface renders a grade. |
-| 20 | One end-to-end fill on Base, under $2, with a Basescan link in the README | **OWNER-ONLY — not done** | There is no `basescan.org/tx` link in `README.md` or anywhere under `docs/`. **No fill has ever executed on Base from this repo.** The code path is complete and wired (`runParlayFill`, `src/views/Parlay.tsx:1377`) and flag-gated behind `THETADUEL_TRADE=on`; every seam up to the RPC boundary is tested against injected fakes. Nobody has spent a cent. Only the owner can close this. |
-| 21 | **A second end-to-end fill on a non-ETH/BTC underlying**, same evidence | **OWNER-ONLY — not done, and blocked upstream** | Same evidence: none. Additionally blocked by the book-endpoint 404 below — the qualified set cannot currently be measured against a live book, so the asset to fill on cannot be chosen honestly. Only the owner can close this. |
+| # | §9 item | Verdict (1st pass) | Now | Evidence |
+|---|---|---|---|---|
+| 1 | `TIERS` no longer exists anywhere in the tree | **PASS** | **PASS — unchanged** | `src/engine/parlay.ts` still exports `TIER_BANDS:67`, `tierOf:77`, `tierProb:95`, `tierOdds:108`, `TIER_MOVE:126` — no `TIERS`. `src/data/rewards.ts:25` is still the only `TIERS`, re-exported `RANK_TIERS` by `src/engine/rank.ts:21`. The doc-rot comment at `src/data/spot.ts:179-180` (`TIERS.SHARP.prob`, "pinned") is **still there** — nobody's file, still not fixed, still teaching a constant that doesn't exist. |
+| 2 | Every rendered multiplier traces to a live `ask` or to `calculatePayout` | **FAIL** | **PASS — the FAIL closes** | `cardsForSlice`/`multipleAt` are no longer orphaned. `src/engine/parlay.ts:770 cardsForTicker` wraps both (`fullLadderSlice` → `cardsForSlice:621` → `multipleAt:718`, which calls `calculatePayout`), and it now has **two production callers**: `src/views/ParlayPick.tsx:284` (the grid) and `src/state/match.ts:503` (the legs that actually settle). The old clamped-ratio path — `src/desk/optionize.ts`'s `optionize()/quoteFor()/multiplierFor()` — has **zero callers left in `src/`**; `match.ts` no longer even imports the `optionize` value (only `type OptionBook`). Confirmed by running, not reading: `test/parlay.test.ts`+`test/optionize.test.ts`+`test/engine.test.ts` (78 pass), `test/attest.test.ts` (129 pass), `test/app.test.tsx` (85 pass). **Provenance note:** the `match.ts` half of this — the leg-pricing rewrite that makes the slip and the card agree — was verified against the *dirty working tree* (`optionize(leg, book)` replaced by a `cardsForTicker`/`slotFor`/`legFromLiveCard`-based `priced()`) before it was committed; it landed moments later as `e91d177` ("the legs are priced by the book, not by the retired ratio"), which its own message confirms also fixed a second bug in the same removal — `optionize` had been writing each leg's `prob` from the *nearest* listed delta rather than refusing one the strict band model would never deal, which fed the odds, ALL LAND, potentialPoints and the escrow stake off a probability that should not have existed. That second claim was not independently re-derived this pass; it is reported as the commit's own claim, not verified arithmetic. |
+| 3 | Max loss on every card face, at every detail level, above the upside figure | **PASS** (closed mid-audit) | **PASS — unchanged** | `src/components/ParlayCardFace.tsx` still renders every face off `CARD_FACE_ORDER` (`src/state/detail.ts:127-133`, `maxLoss` before `payout`). `test/detail.test.ts` still 58 pass / 0 fail this pass (was 52 at first pass; more assertions, not fewer). |
+| 4 | `MINNOW/FISH/SHARK/ORCA/WHALE` is the only rank ladder | **PASS** | **PASS — unchanged** | `src/data/rewards.ts:26-30`, still pinned by `test/rank.test.ts`. No second ladder anywhere in `src/`. |
+| 5 | Detail level is a visible toggle, reversible in both directions, never locked | **PASS** (closed mid-audit) | **PASS — unchanged** | `src/views/ParlayPick.tsx` still imports `DetailToggle`/`useCardDetail` for real and mounts `<DetailToggle level onChange>` at `:387`. `test/detail.test.ts` still asserts all three levels on screen with the live one pressed. |
+| 6 | A test greps the card components for "moneyness" / "implied volatility" | **PASS** | **PASS — unchanged** | `test/detail.test.ts:402 BANNED`, still a runtime glob over card surfaces with comment-stripping and non-vacuity guards. Note for context, not a violation: `fba0cee` (since first pass) decoded IV onto the card face as a *number* (`IV 58%`), which is exactly the boundary this test is designed to allow — the word is banned, the figure is not. |
+| 7 | `test/determinism.test.ts` still passes, market data injected not imported | **PASS** (closed mid-audit) | **PASS — unchanged, re-run** | 19 pass / 0 fail this pass. `spinSlice(book, qualified, seed)` at `src/engine/spin.ts:294` unchanged; `ASSET_GATE_RE` at `test/determinism.test.ts:109` unchanged. **Finding 2 below (the no-comment-stripping false-positive risk) is still unfixed** — `test/determinism.test.ts:138-139` still does a raw `text.match(...)` with no comment stripper, unlike `test/detail.test.ts`'s scanner. |
+| 8 | A card with no qualifying quote renders a dead slot, and a test asserts it | **PARTIAL** | **PASS — closes** | `ParlayPick.tsx:474-494` now branches: `const live = dealt ? (dealt[i] ?? null) : null; if (dealt && live === null) return <DeadSlot .../>`. `DeadSlot` (`:807-825`) renders `data-parlay-dead={sym:card.id}`, `aria-disabled`, "NOT DEALT". This is asserted against the **actual rendered component tree**, not just the engine: `test/detail.test.ts:952,1012,1041,1061` query `[data-parlay-dead]` directly. 58 pass / 0 fail. |
+| 9 | `MAX_FILL_USDC` checked against the leg sum, with a test that steps over it | **PASS** | **PASS — unchanged, lines re-verified** | Same four checks, same lines: `src/desk/fill.ts:1481` (per leg, requested), `:1492` (requested sum), `:1633` (per leg, previewed), `:1642` (previewed total). `test/fill.test.ts:901`/`:885` unchanged. |
+| 10 | No `MaxUint256` approval anywhere; a test asserts it is never passed | **PASS** | **PASS — unchanged, lines re-verified** | `fill.ts:942`, `:1704`; `escrow.ts:725`; `rfq.ts:1286` (was cited `~1290`, now precise) — all still comments forbidding it, no live occurrence. Assertions at `test/fill.test.ts:548,1160,1188`, `test/duel-stake.test.ts:297,306`, `test/rfq.test.ts:343` unchanged. |
+| 11 | Partial-fill policy is on screen before the first signature | **PASS** | **PASS — unchanged, lines re-verified** | `fill.ts:1047 PARTIAL_FILL_POLICY`, carried on the quote at `:1202`/`:1663`. Rendered at `src/views/Parlay.tsx:1560` (`{slip.policy}`, sourced from the same constant) and again literally at `:1678`. |
+| 12 | `duelScore` is pure and driven off a frozen fixture in tests | **PASS** | **PASS — unchanged (line shifted 340→343)** | `src/engine/score.ts:343` — still no clock, no network, one marks map for both players. `test/score.test.ts` unchanged. The score.ts typecheck-error caveat from the first pass was **not re-verified this pass** (`tsc` was intentionally not run — see the header note); treat it as unconfirmed either way rather than cleared. |
+| 13 | The attestor derives the verdict from its own snapshot, never from client input | **PASS** | **PASS — unchanged, lines re-verified** | `src/server/attest.ts:1773-1777` still one snapshot, both players, through `duelOutcome`. The freeze-on-first-attest, refuse-to-sign-unre-derivable, and refund-on-unmarkable logic are all still present in the surrounding code (content re-read, not just line numbers). `test/attest.test.ts`: 129 pass / 0 fail this pass. |
+| 14 | **No hardcoded `"ETH" \| "BTC"` union survives anywhere** | **PARTIAL — one of two fixed** | **PASS — closes, and the audit's own recommendation was wrong** | `src/desk/rfq.ts:296` still the widened `RfqUnderlying` (all eight, unchanged from first pass). `src/server/thetanuts.ts:502` (was cited `:345`) is **still** `getPricingArray(underlying: "ETH" \| "BTC")` — and this pass checked the SDK directly rather than trusting the commit that left it alone: `node_modules/@thetanuts-finance/thetanuts-client/dist/index.d.ts:7690` really does read `getPricingArray(underlying: 'ETH' \| 'BTC'): Promise<MMVanillaPricing[]>`, verbatim. **This audit's own first-pass finding 1 (below the table) was the bug, not the code**: it conflated two different SDK declarations — `RFQBuilderParams.underlying` (eight members, the one `rfq.ts` was too narrow against) and `MMClient.getPricingArray`'s parameter (two members, always was). Widening `thetanuts.ts:502` would make the file's own mirror type claim the vendor accepts an argument the vendor's own `.d.ts` rejects. `thetanuts.ts:466-500` now carries a docblock making exactly this distinction, with both `.d.ts` line numbers, so the next reader doesn't re-litigate it either. Item 14 is satisfied: the *undocumented* union it bans is gone (one widened correctly, one left narrow *correctly* and now documented as to why). |
+| 15 | `qualifiedUnderlyings` is pure, fixture-driven, enforces all four conditions | **PASS as a module — unwired in the app** | **PASS — wired end to end** | The module is unchanged (`src/data/qualify.ts:526`, thresholds `MIN_ORDERS:52=6`, `MIN_GREEKED:63=4`, `MIN_DEPTH_USDC:75=50`, all still enforced, `test/qualify.test.ts` 62 pass / 0 fail). **What changed is the wiring**: `src/server/thetanuts.ts:12` now imports `qualifiedAssets` (a value, not `import type`) and calls it at `:1835` — `qualified: [...qualifiedAssets(raw, at)]` — computed over the same raw capture the rest of the snapshot grades, at the same instant. That snapshot's `qualified()` accessor (`src/data/market.ts:118`) is read through `qualifiedAssetsOf(source)` (`:204`), which `src/App.tsx:145` calls (`const liveAssets = qualifiedAssetsOf(source)`) and passes at `App.tsx:485` as `live={liveAssets}` into `CreateLobby` — the exact prop `CreateLobby` had declared since plan 6 (`:405`) and nothing had ever supplied. This chain is **committed** (`fbef12b`), not working-tree-only. `test/app.test.tsx`: 85 pass / 0 fail this pass (that test file itself has 302 uncommitted lines added, but the App.tsx wiring it exercises is already on HEAD). |
+| 16 | Feed aliases deduplicated by address — a test asserts ETH appears once | **PASS** | **PASS — unchanged** | `feedIndex` still at `src/data/qualify.ts:237`. Assertions unchanged. |
+| 17 | `scripts/probe-assets.ts` runs against the live book and its output is committed | **PARTIAL** | **PASS — corrected** | The earlier verdict rested on a 404 from `indexerApiUrl`, which `fetchOrders()` never calls; it asks `apiBaseUrl`, which answers 200. Re-run live: 6 underlyings QUALIFIED (ETH $1.19M, BTC $1.36M DEEP; SOL/XRP/BNB/AVAX THIN). Output committed in `docs/asset-gate.md`. |
+| 18 | A sector with no qualified members renders greyed with a reason, not hidden | **PARTIAL** | **PASS — closes** | Same code as first pass (`src/data/sectors.ts:241 NO_BOOK_REASON`, `liveSectorStatus:320`), but it is no longer being fed an empty list: `src/views/CreateLobby.tsx:427` — `const qualified = p.live ?? []` — now receives the real `live` prop (item 15's wiring), and `:428` calls `liveSectorStatus(qualified.map((a) => a.underlying))` on it. A group greys **only when it is actually unqualified**, which is what the item asks for. |
+| 19 | DEEP/THIN grade on the lobby card and the slice reveal | **PARTIAL** | **PARTIAL — still, narrower, and one closed sub-claim is not supported by the code** | Three separate surfaces, three separate answers this pass: **(a) Slice reveal — closes.** `src/components/MatchSpin.tsx:255` — `gradeIndex(p.source)[slice.underlying] ?? null` — reads real grades off the live source at the reveal; `gradeIndex` (`src/data/market.ts:227`) is a genuine function over `qualifiedAssetsOf`, not a stub. This is new since first pass, when `spinSlice` had no caller and no reveal surface rendered a grade at all. **(b) Create screen's THIN-default bug — fixed and committed (`e91d177`).** First pass found `CreateLobby.tsx` defaulting every ungraded symbol to `"THIN"` — a measurement nobody made. The fix (verified against the working tree, then confirmed landed at `e91d177`) replaces `grades[sym] ?? "THIN"` with `const grade = grades[sym] ?? null` (`:335`) and a real "not graded" state — `UNGRADED_LABEL = "NOT GRADED"` (`:226`), `data-grade={grade ?? UNGRADED_ATTR}` (`:340`), rendered in `C.faint` rather than a grade colour. **(c) Lobby board's own grade tag — still open, and `0b54d7b`'s commit message claims more than the code delivers.** `src/ui/LobbyCards.tsx:95` still declares `grades?: Readonly<Record<string, Grade>>` as an **optional prop that no caller supplies**: `grep -rn "grades=" src/` finds exactly one call site in the entire tree, `CreateLobby.tsx:525`, and it passes `grades` to `<LiveSector>`, not to `<LobbyCard>`. Both places `<LobbyCard>` is actually rendered — `src/views/Battles.tsx:105` and `src/views/Lobby.tsx:49` — pass no `grades` prop at all, so `LobbyCards.tsx`'s own `GradeTag` component (`:54-63`) never receives a measurement on the lobby board, ever. This is exactly the gap the first pass described for item 19's "lobby card" half, and it is **unchanged**. The commit that says it closed item 19 closed two of its three parts. |
+| 20 | One end-to-end fill on Base, under $2, with a Basescan link in the README | **OWNER-ONLY — not done** | **OWNER-ONLY — still not done** | Re-checked this pass: no `basescan.org/tx` anywhere in `README.md` or `docs/`. `runParlayFill` is still at `src/views/Parlay.tsx:1377`, still flag-gated behind `THETADUEL_TRADE=on`. Nobody has spent a cent. Only the owner can close this. |
+| 21 | **A second end-to-end fill on a non-ETH/BTC underlying**, same evidence | **OWNER-ONLY — not done, and blocked upstream** | **OWNER-ONLY — still not done, still blocked upstream** | Same evidence: none. NOT blocked upstream — the book is healthy (item 17, corrected). Only the owner can close this. |
 
 ### Scoreboard
 
-**PASS 12** · **PARTIAL 5** · **FAIL 1** · **OWNER-ONLY 2**
+**First pass:** PASS 12 · PARTIAL 5 · FAIL 1 · OWNER-ONLY 2 (before mid-audit
+closures: PASS 9 · PARTIAL 6 · FAIL 3).
 
-(First pass, before three rows closed mid-audit: PASS 9 · PARTIAL 6 · FAIL 3.)
+**Second pass, now:** **PASS 17 · PARTIAL 2 · FAIL 0 · OWNER-ONLY 2.**
 
-The one remaining FAIL (item 2) and four of the five PARTIALs (8, 15, 18, 19)
-reduce to a single root cause: **plan 6 built some modules and did not wire them
-into the views.** Two clusters remain:
+Five rows changed verdict outright: 2 (FAIL → PASS), 8 (PARTIAL → PASS), 14
+(PARTIAL → PASS), 15 (PASS-as-a-module-unwired → PASS-wired-end-to-end), 18
+(PARTIAL → PASS). A sixth, 19, kept its verdict (PARTIAL) but changed
+substance — two of its three surfaces closed, one (the lobby board's `grades`
+prop) did not, despite the commit that landed the other two also claiming this
+one. The remaining two PARTIALs are 17 (blocked on the protocol team's book
+endpoint, not on any builder) and 19 (blocked on one missing prop-drill,
+`grades={...}` into `<LobbyCard>` at its two call sites). Both OWNER-ONLY rows
+are unchanged: nobody has filled anything on Base.
 
-- **The card path.** `cardsForSlice` and `multipleAt` have no production call
-  site, so `ParlayPick` still deals eight seeded cards priced by
-  `optionize.multiplierFor`, never renders a dead slot, and never shows a
-  multiplier that came from the protocol's own `calculatePayout`. Closes items 2
-  and 8.
-- **The gate path.** `qualifiedAssets` has no production call site; the only
-  `data/qualify` imports in `src/` are `import type`. `CreateLobby` accepts
-  `live?: QualifiedAsset[]` and `App.tsx` never passes it. Closes items 15, 18
-  and 19 in one edit.
+The wiring the first pass called "the highest value per line currently
+available in this repo" got written: `cardsForSlice`/`multipleAt` now have
+production callers (closes 2, 8), and `qualifiedAssets()` now reaches
+`CreateLobby` and `MatchSpin` (closes 15, 18, and two of three parts of 19).
+What is left is smaller and more specific than what was left before: one prop
+(`grades`) not drilled into one component (`LobbyCard`) at its two call sites,
+and one protocol-side URL still 404ing.
 
-`spinSlice` also has no caller, which is what leaves the DEEP/THIN grade off the
-slice reveal. All of it is plumbing over code that already exists and is already
-tested — the highest value per line currently available in this repo.
+## Defects found since the first pass — not among the original 21
 
-## 🔴 The live book is 404ing — demo-critical
+These are not §9 checkboxes. They are correctness bugs the first pass's own
+method (measure, don't read a commit message) would have caught had they been
+introduced before it was written; they were introduced or discovered after, so
+they are recorded here rather than silently folded into the table above.
 
-Re-verified during this audit, 2026-09-05, from this machine:
+**D1 — `isBuyer` was inverted, and a real fill would have made the player the
+writer. Fixed and committed (`37f0c37`).** `src/desk/fill.ts`'s `askEntry` — the
+order the app actually fills — was reading `isBid = entry.order.isBuyer`
+backwards, so it pointed at the maker's **bid**. Filling one makes the taker
+the seller: collateral posted, downside unbounded, exactly what both plans
+forbid by construction. The SDK's own typings contradict themselves on this
+point (`index.d.ts:773` vs. `normalizeOdetteOrder`), so it was settled by
+measurement instead — 142 live orders joined against the venue's own two-sided
+MM quotes, with total separation and zero counterexamples (`isBuyer=true`
+orders rest at 1.58–1.66× the MM mark and never at/below its bid; `isBuyer=
+false` orders rest at 0.69–0.72× and never at/above its ask). **Why nothing
+caught it:** the fix splits the flag into `takerBuys` (the player's side,
+which still labels `OrderRow.side`) and the corrected `isBid = !takerBuys`
+(which decides what gets filled) — and the blotter's BUY/SELL column was
+always built straight off `isBuyer`/`takerBuys`, so **the label the player
+saw was correct the entire time the fill target underneath it was wrong**. A
+green blotter hid a wrong-side fill path. Verified current: `src/server/
+thetanuts.ts:1575-1576` (`takerBuys`/`isBid`), `:1637` (`side: takerBuys ?
+"BUY" : "SELL"`); `src/desk/fill.ts:620` (`entry.order.isBuyer ? "BUY" :
+"SELL"`) — both still read straight off the same flag, unchanged since the
+fix. This is committed, on HEAD, not working-tree-only.
 
-| URL | Response |
-|---|---|
-| `https://indexer.thetanuts.finance/api/v1/book` | **404** |
-| `https://indexer.thetanuts.finance/api/v1/orders` | **404** |
-| `https://indexer.thetanuts.finance/api/book` | **404** |
-| `https://indexer.thetanuts.finance/api/state` | **200**, live, at chain head |
+**D2 — `Level` keys were built on `orderExpiryTimestamp` (the order's
+signature deadline) instead of the option's own expiry, merging different
+contracts into one row. Fixed and committed (`56435c0`).**
+`src/server/thetanuts.ts`'s market builder grouped orders into price levels by
+`underlying|isCall|strikes|orderExpiryTimestamp`. On the frozen capture every
+order carries the *same* signature deadline (a maker signs a batch at once),
+which made that field a constant and collapsed the key to
+`underlying|isCall|strikes` — thirty orders into fifteen levels, thirteen of
+which merged two or more distinct option expiries. The worst, ETH 2650 CALL,
+merged three different contracts (5 Sep / 6 Sep / 11 Sep, two different
+implementations, one WETH-collateralised and two USDC-collateralised) into one
+row reporting `mid: 1.9874` and `structure: UNKNOWN`. **Verified by reading
+the code, not the commit:** `src/server/thetanuts.ts` now rebuilds the key on
+the real option expiry plus the implementation address (`interface Level` at
+`:1200`, `markKey` at `:1355`, `edgeOf`'s median-IV grouping at `:1368`), with
+the signature deadline demoted to `OrderRow.instrument`/`.time` only. This is
+backed by dedicated regression tests, run this pass:
+`test/market-builder.test.ts` — 111 pass / 0 fail, including `"the signature
+deadline groups nothing — two deadlines on one contract are one level"`
+(`:126`) and `"the implementation is part of the key — a ranger and a condor
+are not one level"` (`:165`).
 
-The first of those is the `indexerApiUrl` baked into
-`@thetanuts-finance/thetanuts-client@0.3.0`'s Base chain config, and the only URL
-`fetchOrders()` ever asks for. `https://pricing.thetanuts.finance` also serves
-live MM quotes. **The indexer is up; that one route is not where the SDK thinks
-it is.**
+**D3 — Slip legs were still priced by the retired clamped ratio
+(`desk/optionize.ts`) in `src/state/match.ts`, while the pick screen had
+already moved to the live path. Fixed and committed (`e91d177`).** This is the same root cause as item 2, on a different surface:
+`0b54d7b` wired `ParlayPick.tsx`'s grid to `cardsForTicker`/`multipleAt`, but
+`match.ts` — which prices the legs that actually reach `settle`, the tape and
+the escrow — was still calling `optionize(leg, book)`, the hand-rolled clamped
+ratio the audit's item 2 was written to catch. One surface was right by
+override; every other surface a slip leg reaches was printing the old number
+for the same bet. **Verified by reading the code, not the commit:**
+`src/state/match.ts` now builds `optionize()`'s replacement as a local
+`priced()` (`:531-534`) off the same `cardsForTicker` call the pick screen
+uses (`:503-509`), reading the leg's card via `slotFor` and re-denominating it
+via `legFromLiveCard` — so the card dealt and the leg priced are now, by
+construction, the same object read twice. `optionize()` itself has zero
+remaining callers anywhere in `src/`. Tests that exercise this path this pass
+all pass: `test/app.test.tsx` (85), `test/attest.test.ts` (129), `test/
+parlay.test.ts`+`test/optionize.test.ts`+`test/engine.test.ts` (78).
 
-- **Effect:** the asset-gate probe cannot read a live book, and `/api/market`
-  falls back to its last good snapshot and labels itself `stale` rather than
-  pretending (`src/server/thetanuts.ts:1578`).
-- **The fix is a URL, not a refactor.** `indexerApiUrl` is overridable in the
-  client config. Ask the protocol team for the current book endpoint — this is
-  the single highest-value question to put to them, and it blocks the §7 demo
-  beat that plan6 §10 says is the one that lands.
-- A second, machine-local problem stacks on top: TLS interception here makes the
-  SDK's Node HTTP agent report `unable to get local issuer certificate`. Bun's
-  own `fetch` (different CA store) reaches the host fine. Run the probe from an
-  un-intercepted network before any demo.
-- **Demo-safe path today:** `bun run scripts/probe-assets.ts --fixture` runs the
-  identical gate and the identical formatter over a genuine frozen capture,
-  banner-marked so it can never be mistaken for a live table. It proves the
-  method, which is what §10's third claim actually needs.
+**D4 — `CreateLobby` defaulted every ungraded asset to `"THIN"`, printing a
+measurement nobody made. Fixed and committed (`e91d177`).**
+Covered in full under item 19(b) above; repeated here because it is a
+correctness defect in its own right, not only a §9 sub-item. `THIN` is a real
+verdict ("resting orders and greeks, no market-maker feed"); printing it for
+an asset the gate never measured is the exact class of claim this screen
+exists to delete. The fix: a genuine `null`/"not graded" state
+(`UNGRADED_LABEL`, `:226`) distinct from the `THIN` grade, rendered in a
+neutral colour rather than a grade colour.
 
-Long-form write-up, with the raw output of both runs:
-[`docs/asset-gate.md`](asset-gate.md).
+## ~~The live book is still 404ing~~ — RETRACTED, the book is healthy
 
-## The `rfq.ts` union — decided and changed
+Wrong, and it is the **third** time this trap has caught an agent, so the mechanism matters
+more than the correction. `fetchOrders()` issues a relative `get("/")` against `apiBaseUrl` —
+a Cloudflare Worker origin that has served ~380 greeked orders throughout. `indexerApiUrl` is a
+path *prefix* every other caller appends a subpath to, so requesting it bare 404s by design.
+A real transport failure (local TLS interception, since cleared) once printed the wrong field in
+the probe's error banner; every agent since has curled the URL that banner named, got the
+expected 404, and fused two unrelated facts into an outage.
+
+Item 21 is therefore **not** blocked upstream — only on the owner spending a cent.
+Teardown: `docs/book-endpoint.md`.
+
+
+## The `rfq.ts` union — decided and changed (unchanged since first pass)
 
 `src/desk/rfq.ts` had `RfqInput.underlying: "ETH" | "BTC"`, justified in a
 docblock as *"nothing else has a Thetanuts options market (FINDINGS §3)"*.
@@ -132,54 +246,77 @@ type RFQUnderlying = 'ETH' | 'BTC' | 'SOL' | 'DOGE' | 'XRP' | 'BNB' | 'PAXG' | '
 
 `RFQBuilderParams.underlying` is that type. Our field was **narrower than the
 type the protocol accepts** — we were deciding what the venue sells. The old
-comment collapsed the MM-pricing set (two) onto the price-feed set (eight), which
-is precisely the conflation §7 exists to kill and precisely what once made AVAX
-the broken default asset.
+comment collapsed the MM-pricing set (two) onto the price-feed set (eight),
+which is precisely the conflation §7 exists to kill and precisely what once
+made AVAX the broken default asset.
 
 The counter-argument was weighed and rejected. RFQ *is* MM-dependent, and a
 sealed-bid request on DOGE will very likely get no bids. But **"nobody bid" is
-already a first-class state in this module** — `awaitOffers` returns `unanswered`,
-not an error, because a sealed-bid auction with no bidders is the protocol
-working, not failing. A type that refuses the request in advance pre-answers a
-question only the makers can answer, and answers it wrong for six assets.
-Nothing in `rfq.ts` branches on the value: it is threaded to the SDK's builder
-and written into a public breadcrumb, and `RfqBreadcrumb.underlying` was already
-`string`, so the file was internally inconsistent as well.
+already a first-class state in this module** — `awaitOffers` returns
+`unanswered`, not an error, because a sealed-bid auction with no bidders is the
+protocol working, not failing. A type that refuses the request in advance
+pre-answers a question only the makers can answer, and answers it wrong for six
+assets. Nothing in `rfq.ts` branches on the value: it is threaded to the SDK's
+builder and written into a public breadcrumb, and `RfqBreadcrumb.underlying`
+was already `string`, so the file was internally inconsistent as well.
 
-**Changed:** a new exported `RfqUnderlying` mirroring the SDK's eight, with the
-reasoning in its docblock so the next reader does not re-litigate it.
-`src/ui/RfqPanel.tsx` still offers ETH and BTC from its own `TRADABLE` list —
-that is a **product** decision about where a bid is likeliest, and it stays a
-subset of the union. Four tests in `test/rfq.test.ts` hold the line: the union
-must equal the SDK's declaration (read out of the `.d.ts`, so an SDK bump fails
-loudly), all eight reach the builder unchanged, an AVAX request produces the same
-call sequence and breadcrumb shape as an ETH one, and `TRADABLE` must stay inside
-the union. `bun test test/rfq.test.ts` → **60 pass / 0 fail**.
+**Changed:** a new exported `RfqUnderlying` (`src/desk/rfq.ts:296`) mirroring
+the SDK's eight, with the reasoning in its docblock so the next reader does not
+re-litigate it. `src/ui/RfqPanel.tsx` still offers ETH and BTC from its own
+`TRADABLE` list — that is a **product** decision about where a bid is
+likeliest, and it stays a subset of the union. `test/rfq.test.ts` still holds
+the line. This section is unchanged from the first pass and was re-confirmed,
+not re-derived, this pass.
+
+**Second-pass correction, not to `rfq.ts` but to this file's own first-pass
+finding about a *different* union:** first-pass finding 1 below recommended
+widening `src/server/thetanuts.ts`'s separate `"ETH" | "BTC"` union
+(`MMClient.getPricingArray`'s parameter) to match this one. That recommendation
+was wrong — see item 14 above. The two unions are different SDK declarations
+with different real signatures, and conflating them was exactly the mistake
+`rfq.ts`'s widening was supposed to teach the next reader to avoid.
 
 ## Things worth fixing that are outside this audit's file grant
 
-Reported, not edited.
+Reported, not edited. Re-checked this pass; status noted per item.
 
-1. **`src/server/thetanuts.ts:345`** — the surviving `"ETH" | "BTC"` union
-   (item 14). Widening it to the SDK's eight matches the protocol's own typing
-   and the FINDINGS §3 fact that the other six return `[]` rather than throwing;
-   `scripts/probe-assets.ts:256`'s cast then becomes unnecessary.
-2. **`test/determinism.test.ts:139`** — the boundary scan matches raw file text
-   with no comment stripping, so an engine docblock that merely *names*
-   `src/server/thetanuts.ts` fails the build identically to an import. It cost
-   this audit a false FAIL on item 7, and it was worked around by rewording the
-   docblock rather than fixing the scan, so it will happen again. Give it the
-   comment stripper `test/detail.test.ts:412` already has. A scan that cannot
-   tell an import from a sentence about an import trains people to stop writing
-   the sentence — which is the opposite of what this codebase wants.
-3. **`src/data/spot.ts:179-180`** — a comment still citing `TIERS.SHARP.prob` and
-   describing `TIERS` / `summarize()` as pinned. `TIERS` is gone; the sentence
-   teaches the next reader a constant that does not exist, and it is the kind of
-   rot that makes someone re-add it.
-4. **The wiring, and it is two edits:** pass `qualifiedAssets()` into
-   `CreateLobby` from `src/App.tsx:440` (closes items 15, 18, 19), and drive
-   `ParlayPick`'s cards off `cardsForSlice` / `multipleAt` instead of
-   `optionize.quoteFor` (closes items 2 and 8). Everything both edits need is
-   already written and already tested.
+1. ~~**`src/server/thetanuts.ts` — the surviving `"ETH" | "BTC"` union.**~~
+   **Retracted.** This pass checked the SDK's `.d.ts` directly:
+   `MMClient.getPricingArray`'s parameter really is `'ETH' | 'BTC'` in the
+   vendor's own types (`index.d.ts:7690`), unlike `RFQBuilderParams.underlying`
+   (eight members). The first-pass recommendation to widen it conflated the two
+   declarations. `thetanuts.ts:466-500` now documents the distinction with both
+   line numbers. See item 14 and the `rfq.ts` section above. **No further
+   action needed here.**
+2. **`test/determinism.test.ts:138-139`** — the boundary scan matches raw file
+   text with no comment stripping, so an engine docblock that merely *names*
+   `src/server/thetanuts.ts` fails the build identically to an import. **Still
+   unfixed this pass** — re-read directly, still a raw `text.match(...)` with
+   no stripper, unlike `test/detail.test.ts:412`'s scanner. It cost the first
+   pass a false FAIL on item 7 and was worked around by rewording a docblock
+   rather than fixing the scan, so it will happen again to the next docblock
+   that names the file it must not import. Give it the same comment stripper.
+3. **`src/data/spot.ts:179-180`** — a comment still citing `TIERS.SHARP.prob`
+   and describing `TIERS`/`summarize()` as pinned. **Still there, re-confirmed
+   this pass.** `TIERS` is gone; the sentence teaches the next reader a
+   constant that does not exist.
+4. ~~**The wiring, and it is two edits.**~~ **Done, and it is what closed items
+   2, 8, 15, 18 and two-thirds of 19 above** (`fbef12b`, `0b54d7b`, `e91d177`,
+   `56435c0` — see D2/D3/D4). The one remaining edit from this family that is
+   *not* done: pass `grades={...}` into
+   `<LobbyCard>` at its two call sites, `src/views/Battles.tsx:105` and
+   `src/views/Lobby.tsx:49` — see item 19(c). Everything that edit needs
+   (`gradeIndex`, `LobbyCard`'s own `grades` prop and `GradeTag` component) is
+   already written and already tested; it is one prop-drill, the same shape as
+   the edit that closed item 18.
+5. **New this pass — D2, D3 and D4 were all verified against a dirty working
+   tree first and landed as commits before this file was finished**
+   (`e91d177` for D3 + D4 + the ParlayPick/parlay.ts half of item 2;
+   `56435c0` for D2). All three are verified real and tested against that
+   working tree (see D2–D4 and item 19(b) above); the commits were confirmed
+   to contain the same diffs this pass already read, but were not
+   independently re-greped a second time after landing. Re-run this audit's
+   greps against whatever HEAD is current before the next pass, on the same
+   principle as everything else in this file.
 
 @see `plan6-real-parlay.md` §9, §10 · `docs/asset-gate.md` · `docs/HANDOFF.md`
