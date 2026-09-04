@@ -17,9 +17,63 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
-## State at last update (post-P2+P5b gate + UI wave + escrow review)
+## State at last update (post-P3+P4 gate — the account-switch handoff)
 
-- Tests: 530 pass / 0 fail, 18 files. Typecheck clean repo-wide.
+> Written for a FRESH ACCOUNT picking this up cold after a rate-limit switch.
+> Everything below "Older gates" is history; this block + "IN FLIGHT" +
+> "Owner still owes" is what you act on. Protocol unchanged: Fable 5 MAIN
+> session orchestrates/briefs/gates/commits, Opus 5 subagents build,
+> parallel ONLY on disjoint file sets, every wave `bunx tsc --noEmit` clean
+> + full `bun test` green + commit on `zq` + push.
+
+- Last commits: 4e47663 (P3 real fillOrder + P4 hybrid spot anchoring),
+  96a66d4 (chrome-candles card ornament v1). Targeted suites 278/0 at that
+  gate; run the full suite yourself before your first commit.
+- ALL Thetanuts SDK phases are now SHIPPED: P0 guard, P1 live book,
+  P2 /desk live, P3 real fillOrder (THETADUEL_TRADE=on opt-in, $2 cap,
+  $0.01 ladder, flag-off byte-identical — proven in test/fill.test.ts),
+  P4 spot annotations + book-delta advisory (src/data/spot.ts), P5a escrow
+  (NOT deployed), P5b attest referee with EIP-191-signed locks.
+  README's "Thetanuts — what is actually live" table is current.
+- IN FLIGHT at handoff time (two Opus builders; if they died mid-work, see
+  the mid-flight section at the bottom — their briefs are summarized here):
+  1) WALLET BRAND COLOURS — src/ui/WalletPicker.tsx + src/styles.css ONLY.
+     The hover sticker (shipped, then fixed twice) must additionally tint
+     the hovered row in THAT wallet's brand colour at the Daniluk
+     reference's density (~10% wash + the INSTALLED chip going solid
+     brand): rdns-keyed map for majors (Phantom violet, MetaMask orange)
+     + canvas dominant-colour fallback for unknown wallets, mock = neutral,
+     resting state unchanged. Owner has already rejected: lime accents on
+     hover, sticker hidden under the × button, sticker clipped by the row.
+  2) CHROME-CANDLES REWORK — src/components/ChromeCandles.tsx +
+     src/ui/LobbyCards.tsx ONLY (styles.css belongs to builder 1). v1
+     (committed) was rejected by the owner: capsules too huge, sheens are
+     flat milky bands, green-washed. Required material (from the owner's
+     watch-clip frames, chrome-capture-2026-09-04.gif in repo root):
+     ~85% darkness, hairline 1px rim speculars, narrow feathered traveling
+     sheen, cold ice-blue light (#7dd3fc family) with card accent only in
+     the faint ambient pool, slender 1-1.5px trend-line. THEN per-card
+     THEMED objects (crypto = candle rally, stocks = a different chrome
+     object) — owner's words: "custom theme related object for each,
+     please don't make them identical; if not, focus on only 1 first."
+- Owner asks pending beyond that: drop the Dota 2 hero-pick theme at
+  src/assets/parlay-pick.mp3 (seam is live, silence until then); eyeball
+  the wallet sticker covering the INSTALLED chip while hovered and the
+  36px dialog header gap (accepted for now unless the owner objects).
+- NEXT per plan after in-flight lands: P6 staking UI — HARD PREREQUISITE:
+  on-chain seat binding (read a/b from DuelOpened/DuelJoined instead of the
+  lock body; docs/reviews/escrow-adversarial-review.md X-1 residual +
+  attest.ts docstring) — then P7 truth pass (README table exists; still
+  owed: consistent LIVE/SEEDED/STALE/PARTIAL chip vocabulary sweep).
+- Session facts a fresh account cannot see: dev server runs `bun run dev`
+  on :3000 in the orchestrator's background (restart it — it dies with the
+  session); a passive standby session "mubahack-15" may message you via
+  cross-session pipe (it stood down; the tree is the active session's);
+  the shareable status artifact URL is in "Local-only artifacts" below.
+
+## Older gates (history)
+
+- Tests at the P2+P5b gate: 530 pass / 0 fail, 18 files. Typecheck clean.
 - SHIPPED (all pushed on zq; main has everything through 051889b):
   7 game waves (sound+CS:GO spin, live news terminal, sectors, BLITZ/QUICK/
   NORMAL modes, duel soundtrack, rank moment + copy-trade fiction, /ranks

@@ -337,13 +337,30 @@ leg's border on whether it won. `sx()` parses those declaration strings into
 React style objects once and caches them, so the port reads next to the design
 rather than forking from it. `src/lib/sx.ts` is the whole mechanism.
 
-## Wiring Thetanuts in
+## Thetanuts — what is actually live
 
-Market data sits behind one interface, `MarketSource` in `src/data/market.ts`.
-The app ships `mockMarketSource` (static fixtures, no network). To go live,
-implement the same interface over `client.mmPricing.getPricingArray` and
-`client.api.fetchOrders`, then change the one line in `src/client.tsx`. No
-view changes; the footer reads `source.id`.
+Market data sits behind one interface, `MarketSource` in `src/data/market.ts`;
+the app still ships `mockMarketSource` and every live feature degrades to it.
+As of the P3+P4 gate:
+
+| Surface | Live? | Behind |
+|---|---|---|
+| `/api/market` — Base order book + MM pricing + greeks | LIVE (30s poll, stale-on-failure) | `THETADUEL_MARKET` opt-out |
+| `/desk` book, MM chain, payoff spot label, $1 previews | LIVE | same |
+| Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it (~7 of 18 names); the other names render exactly the seeded app | same |
+| "Launch attack" → real `fillOrder`, $2 hard cap, ~$0.01 target | REAL, mainnet | `THETADUEL_TRADE=on` opt-IN, default off |
+| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** — deploy is gated on the owner's own read | owner |
+| Attest referee (`/api/lock` + `/api/attest`) | live code; lock requires seat a's EIP-191 signature | `ATTESTOR_PRIVATE_KEY` |
+| USDC staking UI | NOT built (P6) — hard prerequisite: on-chain seat binding (see `docs/reviews/escrow-adversarial-review.md`, X-1) | — |
+
+The seeded game never depends on any of it: kill every flag and the app is
+byte-for-byte the offline build. **Residual trust, stated plainly:** the attest
+server re-derives the winner from committed picks and never signs a claimed
+one, but it can see picks in the clear and holds the only verdict key — a
+dishonest operator could collude, and a duel's counterparty (who knows the
+room key) could still lock seat `a` first. Commit-reveal and on-chain seat
+binding are the named v2; the escrow's unconditional 6-hour refund is the
+escape hatch that needs no server at all.
 
 ## What the tape actually does
 
