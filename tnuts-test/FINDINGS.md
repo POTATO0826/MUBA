@@ -500,3 +500,86 @@ plaintext-ECDH-key hazard the plan's P7 stretch flags. Server-side (our reads) i
   receipt. `preview.totalCollateral` is the exact-approval amount and the number the user
   clicks.
 - **P1 client construction**: `{ chainId: 8453, provider, referrer, logger }` — all native.
+
+---
+
+## Correction (2026-09-04, after the MCP cross-check)
+
+Nothing above is rewritten; this section supersedes two lines of it. The audit is
+`docs/reviews/mcp-crosscheck.md`, which read the SDK authors' own MCP server
+(`@thetanuts-finance/mcp@1.0.0`) against our integration.
+
+### `keyStorageProvider` does NOT auto-detect. In a browser it THROWS.
+
+The `§0.3.0 delta` block above records the field as
+*"auto-detects: localStorage in browser, file storage in Node"*, and the WARNING beneath it
+treats browser localStorage as a hazard we would be opted into by default. Both statements
+came from the shipped `.d.ts` doc comment, which is **stale**. The shipped *code* does the
+opposite:
+
+```js
+// node_modules/@thetanuts-finance/thetanuts-client/dist/index.js:11714
+function getDefaultStorageProvider() {
+  if (typeof window !== "undefined" && window.localStorage) {
+    throw new InvalidKeyError(
+      "Browser RFQ key storage must be configured explicitly. Pass keyStorageProvider to ThetanutsClient; do not rely on plaintext localStorage defaults."
+    );
+  }
+  return new FileStorageProvider();
+}
+```
+
+and the client constructor reaches it **eagerly**, before anything is used:
+
+```js
+// :16645
+this.rfqKeys = new RFQKeyManagerModule(this, config.keyStorageProvider, config.rfqKeyPrefix);
+```
+
+Reproduced twice against the installed 0.3.0: once in Node with a faked `window`, and once
+through `createLiveFillDeps().getSigner()` under `bun test`, where happy-dom supplies a real
+`window.localStorage`. Both threw `InvalidKeyError` / `INVALID_KEY` from inside
+`new ThetanutsClient(...)`.
+
+Consequences, all now fixed:
+
+- **Every browser construction must pass `keyStorageProvider`.** All four in
+  `src/desk/fill.ts` now pass `new MemoryStorageProvider()` — memory rather than
+  `LocalStorageProvider` because we never touch `client.rfqKeys`, so no ECDH key is
+  generated and none is persisted. The SDK's own MCP does the same thing for the same
+  reason (`mcp/dist/prepare/sdk.js:12-19` always supplies one).
+- **The P7 plaintext-localStorage hazard is no longer a default we inherit.** It is now
+  strictly opt-in, via `LocalStorageProvider`, which logs its own warning on construction.
+  Do not reach for it.
+- **P1's server client is unaffected.** `src/server/thetanuts.ts` runs under Bun, where
+  `typeof window === "undefined"`, so the fallback is the inert `FileStorageProvider`
+  (its constructor stores a path and touches no disk). Verified: `bun -e 'typeof window'`
+  is `undefined`.
+
+### P2's ranger decision was not decidable from strikes, and no longer tries to be
+
+The `§4 calculatePayout and RANGER` note and the P2 consequence above assume a four-strike
+order can be told apart from a condor by its strikes — ascending, equal outer widths, a gap
+in the middle. It cannot. The SDK's own `calculate_payout` tool description states the
+*condor* convention as `[K1..K4] ASCENDING with K2-K1 === K4-K3`, i.e. the identical test,
+and `validateCondor` / `validateRanger` (`dist/index.js:16838`, `:16871`) accept the same
+set — so consulting `validateRanger` was restating our own arithmetic, not cross-checking it.
+
+The authoritative reading is `rawApiData.implementation` looked up in
+`chainConfig.optionImplementations` (46 entries on Base, keyed by **lowercase** address),
+whose `name` is already the UPPER_SNAKE `ProductName` our `PAYOUT_TYPE` map is keyed by. On
+Base: `RANGER` is `0x9980ec85…`, `CALL_CONDOR` `0x14476CF2…`, `PUT_CONDOR` `0xC742E422…`.
+`src/server/thetanuts.ts` now does that lookup; the strike count survives only as the
+fallback for one, two and three strikes, and a four-strike row it cannot resolve is quoted
+with `structure: "UNKNOWN"` and no payout type rather than guessed at.
+
+### `rawApiData.optionBookAddress` is a claim to check, not an authority to trust
+
+Recorded here because it contradicts the doctrine both `src/desk/fill.ts` and
+`src/server/thetanuts.ts` used to state. The SDK's `resolveOptionBookTarget`
+(`dist/index.js:1561-1582`) requires the API-supplied address to **equal** the
+chain-configured OptionBook and throws `INVALID_ORDER` otherwise, documenting the reason:
+"to prevent a compromised API from redirecting fills to an attacker contract that drains
+pre-existing allowances". The approval spender is therefore
+`chainConfig.contracts.optionBook`, and a mismatch refuses the fill before anything is
+approved.

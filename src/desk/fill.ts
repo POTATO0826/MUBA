@@ -65,6 +65,16 @@ import type { OrderRow } from "../types.ts";
  *  - `fillOrder(order, usdcAmount?, referrer?)` returns a raw ethers
  *    `TransactionReceipt`, *not* the exported `FillOrderResult` type
  *    (`index.d.ts:2025`).
+ *
+ * And one the `.d.ts` gets outright wrong, found by the MCP cross-check
+ * (`docs/reviews/mcp-crosscheck.md` §BUG-1) and corrected in FINDINGS:
+ *
+ *  - `keyStorageProvider` is documented as "auto-detects environment:
+ *    localStorage in browser, file storage in Node.js". The **shipped code
+ *    throws** in a browser instead (`dist/index.js:11714`), and the client
+ *    constructor builds `rfqKeys` eagerly (`:16645`), so every browser
+ *    construction that omits the field throws `INVALID_KEY` before it is used.
+ *    All four constructions in this file therefore pass one. See `getSigner`.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,8 +174,17 @@ export interface RawFillOrder {
     /** 8dp decimal strings. */
     strikes?: string[];
     isCall?: boolean;
-    /** The OptionBook this order was signed for — the address that wins over
-     *  any chain config or docs page, because the signature is over it. */
+    /**
+     * The OptionBook this order was signed for, **as the indexer reports it**.
+     *
+     * It does not win over the chain config, and an earlier version of this
+     * comment said it did. The signature is over a book contract, but this
+     * string is not the signature — it is an API field, and the SDK's
+     * `resolveOptionBookTarget` treats a value that disagrees with
+     * `chainConfig.contracts.optionBook` as a compromised-API signal and throws
+     * `INVALID_ORDER` (mcp-crosscheck §BUG-3). So it is a thing to *check*, and
+     * `FillDeps.optionBook` is the thing to trust. See step 7.
+     */
     optionBookAddress?: string;
     collateral?: string;
   };
@@ -338,6 +357,22 @@ export interface FillDeps {
    * refuses rather than guessing what the number meant.
    */
   usdc?: string;
+  /**
+   * The **chain-configured** OptionBook address — `chainConfig.contracts.optionBook`.
+   *
+   * This is the approval spender, and it is the trust anchor rather than a
+   * cross-check. See step 7 and `docs/reviews/mcp-crosscheck.md` §BUG-3: the
+   * SDK's `resolveOptionBookTarget` (`dist/index.js:1561-1582`) requires the
+   * order's own `rawApiData.optionBookAddress` to *equal* this, and says why in
+   * the words a threat model would use — "to prevent a compromised API from
+   * redirecting fills to an attacker contract that drains pre-existing
+   * allowances".
+   *
+   * Unset means the sequence has no anchor and refuses to approve anything. The
+   * live adapter fills it in at step 2, from the same `chainConfig` object it
+   * reads `usdc` off.
+   */
+  optionBook?: string;
   now?(): number;
 }
 
@@ -615,12 +650,39 @@ export function freezeOrder<T extends RawFillOrder>(order: T): Readonly<T> {
 // The sequence
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Seconds → ms, tolerating the three encodings an expiry arrives in. */
-function expiryMs(order: RawFillOrder): number | null {
-  const raw = order.rawApiData?.orderExpiryTimestamp ?? order.order.expiry;
+/** One expiry field → ms, tolerating the three encodings they arrive in. */
+function toMs(raw: string | bigint | number | undefined | null): number | null {
   if (raw === undefined || raw === null) return null;
   const seconds = Number(raw);
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+}
+
+/**
+ * The **earlier** of the two clocks an order runs on.
+ *
+ * There are two, and they are different things: `rawApiData.orderExpiryTimestamp`
+ * is when the maker's EIP-712 signature stops being valid, and `order.expiry` is
+ * when the option itself settles. This used to take the first field that was
+ * present rather than the smaller of the two — mcp-crosscheck OPPORTUNITY 10,
+ * which points out that the SDK's own `fillOrder` checks *both* before it will
+ * sign, and throws `ORDER_EXPIRED` on either. They were equal in the frozen
+ * capture, so this was latent; `Math.min` is free and removes the case where the
+ * option expiry is the binding one.
+ *
+ * `null` when neither field is usable, which the caller reads as "no expiry
+ * claim to check" rather than as "expired".
+ *
+ * Still measured against the local wall clock rather than
+ * `client.getCurrentTimestamp()`. That divergence stands on purpose: the chain
+ * read is an extra RPC round trip on the public endpoint that `RATE_LIMIT`
+ * exists for, and `EXPIRY_BUFFER_MS` is a whole minute of headroom — far more
+ * than any plausible clock skew on a laptop that just loaded a web page.
+ */
+function expiryMs(order: RawFillOrder): number | null {
+  const candidates = [toMs(order.rawApiData?.orderExpiryTimestamp), toMs(order.order.expiry)].filter(
+    (ms): ms is number => ms !== null,
+  );
+  return candidates.length === 0 ? null : Math.min(...candidates);
 }
 
 /** The rungs at or above `from`, capped. */
@@ -650,7 +712,9 @@ function ladderFrom(from: bigint): bigint[] {
  *  5. `preview`   — synchronous, local, and climbs the dust ladder until the
  *                   maker's remaining collateral will absorb something.
  *  6. `confirm`   — a human clicks the `totalCollateral` figure.
- *  7. `allowance` — **exactly** that figure. Never `MaxUint256`.
+ *  7. `allowance` — **exactly** that figure, to the **chain-configured**
+ *                   OptionBook. Never `MaxUint256`, and never to an address the
+ *                   book's API supplied and nothing validated (BUG-3).
  *  8. `fill`      — `fillOrder(frozen order, amount, referrer)`.
  *  9. `done`      — receipt + BaseScan.
  */
@@ -804,24 +868,78 @@ export async function runFill(
 
   // ── 7. allowance, exact ───────────────────────────────────────────────────
   onStep("allowance");
-  // The spender is the book **the order was signed for**, read off the order
-  // itself. Two official doc pages disagree about the Base OptionBook address
-  // and the chain config is only a cross-check: a fill submitted to any other
-  // address fails whatever a docs page says.
-  const spender = order.rawApiData?.optionBookAddress ?? "";
-  if (!spender) {
+  //
+  // **The spender is the chain-configured OptionBook, and nothing else.**
+  //
+  // This file used to say the opposite — "the order's own `optionBookAddress`
+  // wins … the chain config is the cross-check, not the authority" — reasoning
+  // that an order is an EIP-712 signature over one book contract. That reason
+  // is true and the conclusion drawn from it was wrong, because the address
+  // being reasoned about arrives from the *indexer*, not from the signature.
+  //
+  // `docs/reviews/mcp-crosscheck.md` §BUG-3 puts the SDK's own position beside
+  // ours. `resolveOptionBookTarget` (`dist/index.js:1561-1582`) accepts an
+  // API-supplied `rawApiData.optionBookAddress` only when it equals the
+  // chain-configured OptionBook, and documents the threat verbatim: a
+  // compromised API could otherwise redirect fills "to an attacker contract
+  // that drains pre-existing allowances". We approve *before* we fill, so we
+  // are the half of that sequence the attacker actually wants.
+  //
+  // Two consequences, both handled below rather than described:
+  //
+  //  1. A mismatch REFUSES. Approving to the order's address and letting
+  //     `fillOrder` throw `INVALID_ORDER` afterwards leaves a live allowance
+  //     to an address nothing validated, with nothing legitimate to consume it.
+  //  2. No configured address means no anchor, so there is nothing to validate
+  //     against and the fill stops. The live adapter always has one by step 7
+  //     — it is read off `chainConfig` when the client is built at step 2.
+  //
+  // This is also why `resolveOptionBook`'s `agreed: false`
+  // (`src/server/thetanuts.ts`) is not a cosmetic amber chip: per the SDK, a
+  // disagreement means every fill against those orders throws.
+  const canonical = deps.optionBook ?? "";
+  if (!canonical) {
     return raise("CONTRACT_REVERT", "allowance", {
-      message: "That order does not name an OptionBook.",
+      message: "The chain's OptionBook address is unknown.",
       recovery:
-        "An order is a signature over one book contract. Without the address there is nothing " +
-        "safe to approve, so the fill stops here.",
-      action: "refresh",
+        "The approval spender is the OptionBook the chain config names, never an address the " +
+        "book's API supplied. Without it there is nothing safe to approve, so the fill stops " +
+        "here. Reconnect the wallet and press the amount again.",
+      action: "retry",
     });
   }
+  const named = order.rawApiData?.optionBookAddress;
+  // Mirrors `resolveOptionBookTarget` exactly, including its one permissive
+  // case: an order that names no book is not a mismatch, and the canonical
+  // address stands.
+  if (named && named.toLowerCase() !== canonical.toLowerCase()) {
+    return raise("CONTRACT_REVERT", "allowance", {
+      message: "That order names a different OptionBook than this chain.",
+      recovery:
+        "Nothing was spent and nothing was approved. The SDK refuses this fill too — an order " +
+        "whose API-supplied book address does not match the chain-configured one throws " +
+        "INVALID_ORDER — so approving first would leave an allowance to an unvalidated " +
+        "address with nothing to consume it. Pick another row.",
+      action: "refresh",
+      detail: `rawApiData.optionBookAddress (${named}) ≠ configured OptionBook (${canonical})`,
+    });
+  }
+  const spender = canonical;
   let approvalSkipped = false;
   try {
     // EXACTLY `totalCollateral`. Never `MaxUint256`, never a rounded-up
     // convenience amount, never a cached "already approved plenty".
+    //
+    // One honesty caveat, from mcp-crosscheck OPPORTUNITY 11: `totalCollateral`
+    // is the rung we passed in, **verbatim** — `previewFillOrder` sets
+    // `totalCollateral = usdcAmount ?? …` and the later clamp of `numContracts`
+    // down to the maker's remaining depth does not feed back into it. So when a
+    // fill is clamped, this approval (and the figure the human confirmed) can
+    // exceed what the contract will actually pull, leaving a residual
+    // allowance. The exact figure would be `numContracts * pricePerContract /
+    // 1e8`. Left as the SDK reports it rather than recomputed: it is bounded at
+    // $2 by `MAX_FILL_USDC`, and a number we derive ourselves diverging from
+    // the number the venue previewed is a worse failure than a residual cent.
     const receipt = await deps.ensureAllowance(
       quote.collateralToken,
       spender,
@@ -940,6 +1058,8 @@ export function createLiveFillDeps(
     ensureAllowance(t: string, s: string, a: bigint): Promise<unknown | null>;
   } | null = null;
   let usdcAddress: string | undefined;
+  /** `chainConfig.contracts.optionBook` — the canonical spender. See BUG-3. */
+  let optionBookAddress: string | undefined;
 
   return {
     walletId: wallet.id,
@@ -950,12 +1070,18 @@ export function createLiveFillDeps(
     get usdc() {
       return usdcAddress;
     },
+    // Same shape, same reason, read at step 7.
+    get optionBook() {
+      return optionBookAddress;
+    },
 
     async getSigner() {
       const signer = await wallet.getSigner();
       if (!signer) return null;
 
-      const { ThetanutsClient } = await import("@thetanuts-finance/thetanuts-client");
+      const { ThetanutsClient, MemoryStorageProvider } = await import(
+        "@thetanuts-finance/thetanuts-client"
+      );
       const { JsonRpcProvider } = await import("ethers");
       // A signer from a browser wallet carries its own provider; the public
       // endpoint is the fallback and is the reason `RATE_LIMIT` exists in the
@@ -971,10 +1097,44 @@ export function createLiveFillDeps(
         provider: provider as never,
         signer: signer as never,
         referrer: options.referrer,
+        // ── The line that makes any of this run at all ──────────────────────
+        //
+        // `docs/reviews/mcp-crosscheck.md` §BUG-1, reproduced twice before this
+        // was written: once in Node with a faked `window`, and once through
+        // this very function under happy-dom, which supplies a real
+        // `window.localStorage` exactly as a browser does. Both threw
+        // `InvalidKeyError INVALID_KEY` from inside `new ThetanutsClient`.
+        //
+        // Why: 0.3.0 builds the RFQ key manager **eagerly** in the constructor
+        // (`dist/index.js:16645`), and its default provider does not do what
+        // the `.d.ts` says. The doc comment on `keyStorageProvider` still reads
+        // "auto-detects environment: localStorage in browser, file storage in
+        // Node.js"; the shipped `getDefaultStorageProvider` (`:11714`) instead
+        // *throws* the moment it sees `window.localStorage`, on the grounds
+        // that plaintext localStorage is not a default anyone should inherit.
+        // The comment is stale, the code is not — corrected in
+        // `tnuts-test/FINDINGS.md` §"0.3.0 delta".
+        //
+        // Without this the throw lands inside `getSigner`, and `runFill` step 2
+        // reads a throw from `getSigner` as connected-but-wrong-chain — so a
+        // user already on Base was told to switch to Base, every time, forever.
+        //
+        // The SDK's own MCP server is the witness that the field is required:
+        // its per-wallet `buildClient` (`mcp/dist/prepare/sdk.js:12-19`) always
+        // passes one. Memory rather than `LocalStorageProvider` because we never
+        // touch `client.rfqKeys` — RFQ is deliberately out of scope — so nothing
+        // needs to survive the tab, and an ECDH private key that is never
+        // persisted is the plaintext-localStorage hazard closed rather than
+        // opted into.
+        keyStorageProvider: new MemoryStorageProvider(),
       });
       book = client.optionBook as never;
       erc20 = client.erc20 as never;
       usdcAddress = client.chainConfig?.tokens?.USDC?.address;
+      // The trust anchor for the approval spender — see step 7 and BUG-3.
+      // `contracts.optionBook` is the chain-configured address, which is what
+      // the SDK's own `resolveOptionBookTarget` validates every fill against.
+      optionBookAddress = client.chainConfig?.contracts?.optionBook ?? undefined;
       return signer;
     },
 
@@ -983,7 +1143,9 @@ export function createLiveFillDeps(
       // driven out of order — a programming error, raised as the code whose
       // recovery ("connect a wallet") is at least not misleading.
       if (!book) throw new Error("SIGNER_REQUIRED");
-      const { ThetanutsClient } = await import("@thetanuts-finance/thetanuts-client");
+      const { ThetanutsClient, MemoryStorageProvider } = await import(
+        "@thetanuts-finance/thetanuts-client"
+      );
       const { JsonRpcProvider } = await import("ethers");
       // A read-only client for the book read: `fetchOrders` needs no signer, and
       // asking the signing client to do it would put a wallet in the path of a
@@ -991,6 +1153,11 @@ export function createLiveFillDeps(
       const reader = new ThetanutsClient({
         chainId: BASE_CHAIN_ID,
         provider: new JsonRpcProvider(PUBLIC_BASE_RPC) as never,
+        // Required in a browser even with no signer: `rfqKeys` is built in the
+        // constructor and its default provider throws under `window`
+        // (mcp-crosscheck §BUG-1; FINDINGS §"0.3.0 delta"). Read-only is not an
+        // exemption — the throw happens before the client is ever used.
+        keyStorageProvider: new MemoryStorageProvider(),
       });
       const orders = (await reader.api.fetchOrders()) as unknown as readonly RawFillOrder[];
 
@@ -1044,11 +1211,17 @@ export function createLiveFillDeps(
 export async function readReferrerSplit(referrer: string): Promise<bigint | null> {
   if (!referrer) return null;
   try {
-    const { ThetanutsClient } = await import("@thetanuts-finance/thetanuts-client");
+    const { ThetanutsClient, MemoryStorageProvider } = await import(
+      "@thetanuts-finance/thetanuts-client"
+    );
     const { JsonRpcProvider } = await import("ethers");
     const client = new ThetanutsClient({
       chainId: BASE_CHAIN_ID,
       provider: new JsonRpcProvider(PUBLIC_BASE_RPC) as never,
+      // Without this the constructor throws under `window` and the `catch`
+      // below swallows it, so the footer chip read `SPLIT — unread` forever
+      // and looked like an RPC problem (mcp-crosscheck §BUG-1).
+      keyStorageProvider: new MemoryStorageProvider(),
     });
     return await client.optionBook.getReferrerFeeSplit(referrer);
   } catch {
@@ -1086,7 +1259,9 @@ export async function claimReferrerFees(
         error: { code: "SIGNER_REQUIRED", ...FILL_COPY.SIGNER_REQUIRED, step: "signer" },
       };
     }
-    const { ThetanutsClient } = await import("@thetanuts-finance/thetanuts-client");
+    const { ThetanutsClient, MemoryStorageProvider } = await import(
+      "@thetanuts-finance/thetanuts-client"
+    );
     const { JsonRpcProvider } = await import("ethers");
     const provider =
       (signer as { provider?: unknown }).provider ?? new JsonRpcProvider(PUBLIC_BASE_RPC);
@@ -1094,6 +1269,10 @@ export async function claimReferrerFees(
       chainId: BASE_CHAIN_ID,
       provider: provider as never,
       signer: signer as never,
+      // Fourth and last browser construction. Same reason as the other three
+      // (mcp-crosscheck §BUG-1); here the throw would have been reported as a
+      // claim failure rather than as what it is.
+      keyStorageProvider: new MemoryStorageProvider(),
     });
     const results = await client.optionBook.claimAllFees(referrer);
     return { ok: true, claimed: results.filter((r) => r.receipt).length };

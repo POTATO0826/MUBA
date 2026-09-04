@@ -1,4 +1,4 @@
-import { ThetanutsClient, validateRanger } from "@thetanuts-finance/thetanuts-client";
+import { ThetanutsClient, getOptionImplementationInfo } from "@thetanuts-finance/thetanuts-client";
 import type { PayoutType, ThetanutsLogger } from "@thetanuts-finance/thetanuts-client";
 import { JsonRpcProvider } from "ethers";
 import type { FillPreview, MmQuote, OrderRow, PricingRow } from "../types.ts";
@@ -151,18 +151,50 @@ export interface RawOrderEntry {
     orderExpiryTimestamp?: number;
     /** The OptionBook this order was signed for. See `resolveOptionBook`. */
     optionBookAddress?: string;
+    /**
+     * The deployed option-implementation contract this order is an instance of.
+     *
+     * **This is the field that says what the product actually is** — see
+     * `classifyOrder` and `docs/reviews/mcp-crosscheck.md` §BUG-2. The SDK
+     * itself treats it as load-bearing: `buildContractOrder` refuses an order
+     * whose implementation is the zero address, on the grounds that "the option
+     * type is not deployed on this chain".
+     */
+    implementation?: string;
     /** Undocumented. Shape-checked at the boundary, never trusted. */
     greeks?: unknown;
   };
 }
 
-/** Just enough of `client.chainConfig` to resolve feeds, tokens and the book. */
+/** One entry of `chainConfig.optionImplementations`. `type` and `numStrikes`
+ *  are widened from the SDK's literal unions so a fixture is assignable; only
+ *  `name` is read. */
+export interface RawImplementationInfo {
+  /** UPPER_SNAKE `ProductName` — `RANGER`, `CALL_CONDOR`, `PHYSICAL_PUT`, … */
+  name: string;
+  type?: string;
+  numStrikes?: number;
+}
+
+/** Just enough of `client.chainConfig` to resolve feeds, tokens, the book and
+ *  what each order actually is. */
 export interface RawChainConfig {
   priceFeeds: Record<string, string>;
   contracts: { optionBook: string | null };
   /** Keyed by symbol. Optional so a test's fake config can omit it; the real
    *  `ChainConfig` always has it. */
   tokens?: Record<string, { address: string; symbol: string; decimals: number }>;
+  /**
+   * Implementation address → product, **keyed by LOWERCASE address** (the
+   * SDK's own doc comment on `ChainConfig.optionImplementations` says so, and
+   * the 46 live keys are lowercase). This is the authoritative product registry
+   * and the fix for BUG-2 — see `classifyOrder`.
+   *
+   * Optional because the frozen capture in `test/fixtures/orders.json` predates
+   * our reading it and a test's fake config may omit it. When it is absent
+   * `implementationInfo` falls through to the SDK's own copy of the same table.
+   */
+  optionImplementations?: Record<string, RawImplementationInfo>;
 }
 
 /**
@@ -230,12 +262,20 @@ export interface RawMarket {
 /**
  * Which OptionBook the app should believe in.
  *
- * `agreed: false` is not an error — it is a fact the UI shows as an amber chip.
+ * **`agreed: false` is not an amber chip. It means no fill is possible.**
+ * `docs/reviews/mcp-crosscheck.md` §BUG-3: the SDK's `resolveOptionBookTarget`
+ * throws `INVALID_ORDER` on every fill whose API-supplied book address differs
+ * from the chain-configured one, so a disagreement is not a curiosity for an
+ * operator to notice — it is the whole trade path being closed, and
+ * `src/desk/fill.ts` step 7 refuses before approving anything.
  */
 export interface OptionBookRef {
+  /** The **chain-configured** address — the one the app should approve and
+   *  submit to. See `resolveOptionBook`. */
   address: string;
   /** True when the chain config and the book's own orders name the same
-   *  address (or when no order names one at all). */
+   *  address (or when no order names one at all). False means fills against
+   *  those orders will be refused. */
   agreed: boolean;
 }
 
@@ -420,16 +460,31 @@ export function feedSymbols(feeds: Record<string, string>): Map<string, string> 
  * did not record the two URLs themselves, so this comment names the pages
  * rather than fabricating links). Neither is hardcoded here.
  *
- * The rule, and the reason for it: **the order's own `optionBookAddress`
- * wins.** An order is an EIP-712 signature over a specific book contract; a
- * fill submitted to any other address fails, whatever the chain config or a
- * docs page says. `client.chainConfig.contracts.optionBook` is the cross-check,
- * not the authority, and a disagreement is surfaced (`agreed: false`) rather
- * than silently resolved — if the config and the live book part ways, an
- * operator should see it before a fill does.
+ * The rule, and the reason for it — **reversed** by
+ * `docs/reviews/mcp-crosscheck.md` §BUG-3, and the old reasoning is left here
+ * because it is instructive about how it went wrong. It read: "the order's own
+ * `optionBookAddress` wins. An order is an EIP-712 signature over a specific
+ * book contract; a fill submitted to any other address fails, whatever the
+ * chain config says." Both sentences are true. The conclusion does not follow,
+ * because the address in question is not part of the signature — it is a field
+ * the *indexer* attached, and a compromised indexer is precisely the thing the
+ * chain config is there to outrank.
  *
- * When no order carries an address there is nothing to disagree with, so the
- * config stands and `agreed` is true.
+ * The SDK says so in its own words. `resolveOptionBookTarget`
+ * (`dist/index.js:1561-1582`) accepts `rawApiData.optionBookAddress` only when
+ * it equals the chain-configured OptionBook, "to prevent a compromised API from
+ * redirecting fills to an attacker contract that drains pre-existing
+ * allowances", and throws `INVALID_ORDER` otherwise.
+ *
+ * So: **the chain config is the authority** and the address returned here is
+ * the one the app should approve and submit to. The book's own claim is the
+ * thing being checked, and `agreed: false` means every fill against those
+ * orders is refused (`src/desk/fill.ts` step 7) rather than merely noted.
+ *
+ * When no order carries an address there is nothing to disagree with, so
+ * `agreed` is true. When the *config* carries none, the order's address is all
+ * there is; it is reported so the desk can show something, and `fill.ts` still
+ * refuses to approve against an address that reached it that way.
  */
 export function resolveOptionBook(
   chainConfig: RawChainConfig,
@@ -445,8 +500,9 @@ export function resolveOptionBook(
     }
   }
   if (!fromOrders) return { address: configured, agreed: true };
+  if (!configured) return { address: fromOrders, agreed: false };
   return {
-    address: fromOrders,
+    address: configured,
     agreed: configured.toLowerCase() === fromOrders.toLowerCase(),
   };
 }
@@ -546,51 +602,156 @@ export function greeksOf(raw: unknown): Greeks {
   return { delta, iv };
 }
 
-/** The structure a set of strikes describes. Finer than `PricingRow.type`,
- *  which only has three members because `/desk` colours by it. */
-export type Structure = "CALL" | "PUT" | "SPREAD" | "FLY" | "CONDOR" | "RANGER";
+/**
+ * The structure a row describes. Finer than `PricingRow.type`, which only has
+ * three members because `/desk` colours by it.
+ *
+ * `UNKNOWN` is the honest seventh member, added with the BUG-2 fix: a
+ * four-strike row whose implementation address we cannot resolve is a condor
+ * **or** an iron condor **or** a ranger, and nothing in the strikes decides
+ * between them. Such a row is still quoted; it simply asserts nothing.
+ */
+export type Structure = "CALL" | "PUT" | "SPREAD" | "FLY" | "CONDOR" | "RANGER" | "UNKNOWN";
 
 /**
- * Strikes → structure.
+ * The SDK's registry name → our structure. One direction of the same map
+ * `productNameOf` walks the other way.
  *
- * The strike count carries the product type (`Order.strikes` doc comment:
- * 1 vanilla, 2 spread, 3 butterfly, 4 condor/iron-condor/ranger), so only the
- * four-strike case needs deciding — and it is the case that matters, because
- * the SDK's payout math silently prices a ranger **as a condor** unless the
- * caller passes `isRanger: true` (FINDINGS "the 4-strike discriminator trap").
- * This function is what will set that flag in P2.
+ * Every name here is a real key of `chainConfig.optionImplementations` on Base
+ * (15 distinct products over 46 addresses). A name that is *not* here — today,
+ * only `CALL_LOAN`, which is a loan handler and not a book product — resolves
+ * to `UNKNOWN` rather than to a guess.
+ */
+const PRODUCT_STRUCTURE: Record<string, Structure> = {
+  LINEAR_CALL: "CALL",
+  INVERSE_CALL: "CALL",
+  PHYSICAL_CALL: "CALL",
+  PUT: "PUT",
+  PHYSICAL_PUT: "PUT",
+  CALL_SPREAD: "SPREAD",
+  INVERSE_CALL_SPREAD: "SPREAD",
+  PUT_SPREAD: "SPREAD",
+  CALL_FLY: "FLY",
+  PUT_FLY: "FLY",
+  CALL_CONDOR: "CONDOR",
+  PUT_CONDOR: "CONDOR",
+  IRON_CONDOR: "CONDOR",
+  RANGER: "RANGER",
+};
+
+/**
+ * Implementation address → the product it deploys, or `null`.
  *
- * Ranger invariants, from the `PayoutType` doc table and the real `case
- * "ranger":` in `dist/index.js:10966`:
- *   strikes are `[callLower, callUpper, putLower, putUpper]`, ASCENDING,
- *   `callUpper - callLower === putUpper - putLower` (equal widths), and
- *   `callUpper < putLower` (the zone gap).
- * An iron condor is the same arity with `[putLower, putUpper, callLower,
- * callUpper]` and no equal-width rule, so equal widths + a gap is the
- * discriminator.
+ * Two sources, in order, and both are the same table:
  *
- * The SDK exports its own `validateRanger(strikes)` and it is consulted rather
- * than reimplemented — but only for the width rule it actually checks; the
- * ascending and zone-gap checks are ours, because a validator that accepts
- * `[100, 90, ...]` would let a descending set through.
+ *  1. `chainConfig.optionImplementations`, keyed by **lowercase** address —
+ *     what the live client carries, and what the review names as the fix. It is
+ *     preferred so that `buildSnapshot` stays a function of its arguments: hand
+ *     it a config with the map and it answers from the map alone.
+ *  2. The SDK's own `getOptionImplementationInfo(8453, address)`, which reads
+ *     the identical 46-entry table out of `CHAIN_CONFIGS_BY_ID`. Consulted only
+ *     when the config carries no map at all — a test fake, or the frozen
+ *     capture in `test/fixtures/orders.json`, which was taken before we read
+ *     this field and cannot be re-cut without a live book. A frozen constant is
+ *     not a clock or a socket, so this costs the builder none of its purity.
+ *
+ * `null` means "no address, or an address neither table knows" — a deployment
+ * newer than our installed SDK, which is a real thing that will happen, and the
+ * only correct answer to it is "I do not know".
+ */
+export function implementationInfo(
+  address: string | undefined,
+  chainConfig: RawChainConfig,
+): RawImplementationInfo | null {
+  const key = String(address ?? "").toLowerCase();
+  if (!key || /^0x0+$/.test(key)) return null;
+  const fromConfig = chainConfig?.optionImplementations?.[key];
+  if (fromConfig?.name) return fromConfig;
+  if (chainConfig?.optionImplementations) return null;
+  try {
+    return getOptionImplementationInfo(CHAIN_ID, key);
+  } catch {
+    // `getOptionImplementationInfo` throws on an unsupported chain id. Ours is
+    // a literal 8453, so this is unreachable — and a `catch` is still cheaper
+    // than an unhandled throw inside a pure builder.
+    return null;
+  }
+}
+
+/**
+ * Strikes → structure, **by counting alone**. The fallback, not the answer.
+ *
+ * The strike count really does carry the product for one, two and three strikes
+ * (`Order.strikes` doc comment: 1 vanilla, 2 spread, 3 butterfly), and that part
+ * is safe: `LINEAR_CALL`, `INVERSE_CALL` and `PHYSICAL_CALL` are all calls, and
+ * all three take the same `PayoutType`, so flattening them to `CALL` mislabels
+ * nothing that is spent on.
+ *
+ * **Four strikes is where counting stops working, and this function no longer
+ * pretends otherwise.** It used to return `RANGER` for an ascending set with
+ * equal outer widths and a gap in the middle, on the reasoning that an iron
+ * condor has no equal-width rule. `docs/reviews/mcp-crosscheck.md` §BUG-2 shows
+ * that reasoning is false of the *plain* condor: the SDK's own
+ * `calculate_payout` tool description states the convention as
+ * `call_condor/put_condor = [K1..K4] ASCENDING with K2-K1 === K4-K3`, which is
+ * character for character the test we were using to exclude condors. And the
+ * `validateRanger(...)` clause that looked like an independent cross-check was
+ * not one: `validateCondor` and `validateRanger` accept the identical set
+ * (`dist/index.js:16838`, `:16871`), so it restated our own arithmetic back to
+ * us. Every symmetric condor on the book was being typed `RANGER`, coloured
+ * `RANGER`, and given `payout: 'ranger'` — a wrong number waiting for the first
+ * screen that prices off it.
+ *
+ * So four or more strikes now answers `UNKNOWN`. The row is still quoted; it
+ * carries no structure claim and no payout type, which is what "we cannot tell
+ * from here" looks like in the data. `classifyOrder` is the one that *can* tell,
+ * and it does not count strikes at all.
  */
 export function classify(strikes: readonly number[], isCall: boolean): Structure {
   const vanilla = isCall ? "CALL" : "PUT";
   if (strikes.length <= 1) return vanilla;
   if (strikes.length === 2) return "SPREAD";
   if (strikes.length === 3) return "FLY";
-  if (strikes.length > 4) return "CONDOR";
+  return "UNKNOWN";
+}
 
-  const [a, b, c, d] = strikes as [number, number, number, number];
-  const ascending = a < b && b < c && c < d;
-  const equalWidths = Math.abs(b - a - (d - c)) < 1e-9;
-  const zoneGap = b < c;
-  // Cross-check against the SDK's own checker. It reads the same four numbers
-  // in the same order, so a disagreement means our reading of the invariant
-  // drifted from theirs — treat it as "not a ranger" and quote the row as a
-  // condor rather than flagging a payout mode the protocol would reject.
-  const sdkAgrees = validateRanger([a, b, c, d]).valid;
-  return ascending && equalWidths && zoneGap && sdkAgrees ? "RANGER" : "CONDOR";
+/** What one level's product resolved to, and whether anything authoritative
+ *  said so. */
+export interface StructureRead {
+  structure: Structure;
+  /** The SDK registry name (`RANGER`, `CALL_CONDOR`, `PHYSICAL_PUT`, …) when
+   *  the implementation address decided it; `null` when it did not. */
+  productName: string | null;
+}
+
+/**
+ * What an order actually is — looked up, not guessed.
+ *
+ * `rawApiData.implementation` names a deployed contract, `optionImplementations`
+ * maps that contract to a product, and the product's `name` is already the
+ * UPPER_SNAKE `ProductName` key that `PAYOUT_TYPE` is keyed by. One lookup
+ * replaces the whole four-clause heuristic, and it fixes more than the ranger
+ * case: `PHYSICAL_CALL`, `PHYSICAL_PUT` and `INVERSE_CALL` used to be flattened
+ * into `LINEAR_CALL` / `PUT` by the strike count.
+ *
+ * The heuristic survives as the fallback for a row whose implementation address
+ * is missing or unrecognised, and its uncertainty is carried in the return
+ * rather than hidden: `productName: null` and, for four strikes, `UNKNOWN`.
+ */
+export function classifyOrder(
+  strikes: readonly number[],
+  isCall: boolean,
+  implementation: string | undefined,
+  chainConfig: RawChainConfig,
+): StructureRead {
+  const info = implementationInfo(implementation, chainConfig);
+  const structure = info ? PRODUCT_STRUCTURE[info.name] : undefined;
+  if (info && structure) return { structure, productName: info.name };
+  // Either no address, an address no table knows, or a known product that is
+  // not a book option (`CALL_LOAN`). None of those is a licence to count
+  // strikes and assert — but a one-, two- or three-strike row is still safely
+  // decidable, so only the four-strike case actually loses its label.
+  return { structure: classify(strikes, isCall), productName: null };
 }
 
 /**
@@ -632,8 +793,19 @@ export const PAYOUT_TYPE: Record<string, PayoutType> = {
   RANGER: "ranger",
 };
 
-/** Our `Structure` + the call/put flag → the SDK's registry name. */
-export function productNameOf(structure: Structure, isCall: boolean): string {
+/**
+ * Our `Structure` + the call/put flag → the SDK's registry name.
+ *
+ * `null` for `UNKNOWN`, which is the whole point of that member: there is no
+ * registry name for "we could not resolve the implementation", and inventing
+ * one would put the guess back where the lookup just removed it.
+ *
+ * This is the coarse direction. When `classifyOrder` resolved a real
+ * implementation it hands back the exact `productName` and that is used
+ * instead — `PHYSICAL_CALL` stays `PHYSICAL_CALL` rather than collapsing to
+ * `LINEAR_CALL` on the way through here.
+ */
+export function productNameOf(structure: Structure, isCall: boolean): string | null {
   switch (structure) {
     case "CALL":
       return "LINEAR_CALL";
@@ -645,27 +817,39 @@ export function productNameOf(structure: Structure, isCall: boolean): string {
       return isCall ? "CALL_FLY" : "PUT_FLY";
     case "RANGER":
       return "RANGER";
-    // A four-strike order that is not a ranger is quoted as a plain condor —
-    // the same default the SDK's own `getPayoutTypeFromOptionType` takes
-    // (index.d.ts:7002), which is the point: our answer and the SDK's agree
-    // unless `classify` says RANGER, and then the caller passes `isRanger`.
     case "CONDOR":
       return isCall ? "CALL_CONDOR" : "PUT_CONDOR";
+    case "UNKNOWN":
+      return null;
   }
 }
 
 /**
- * The `PayoutType` a row should be priced with.
+ * The `PayoutType` a row should be priced with, or `null` when we do not know.
  *
  * This is the field that defuses the discriminator trap: `calculateMaxPayout` /
  * `calculatePayoutAtPrice` take an *order*, which carries no payout type, so a
  * ranger read off the book **silently prices as a condor** unless the caller
  * passes `isRanger: true`. `payout === "ranger"` on a row is exactly that flag,
- * decided once here where `classify()` and `validateRanger()` are in scope,
- * rather than re-derived at each call site in P3.
+ * decided once here rather than re-derived at each call site.
+ *
+ * `productName` is `classifyOrder`'s answer and wins when it has one: it is the
+ * registry key straight off the chain's implementation table, so `PHYSICAL_PUT`
+ * resolves to `put` without ever being flattened to `PUT`.
+ *
+ * **`null` is a first-class outcome and there is no longer a `?? "call"` behind
+ * it.** The old fallback guessed a vanilla payout for anything the map missed;
+ * after `docs/reviews/mcp-crosscheck.md` §BUG-2 that is exactly the shape of
+ * mistake this file exists to stop. A row with no payout type is quoted and not
+ * priced, which `src/views/Parlay.tsx` already renders (`unpriceable`).
  */
-export function payoutTypeFor(structure: Structure, isCall: boolean): PayoutType {
-  return PAYOUT_TYPE[productNameOf(structure, isCall)] ?? (isCall ? "call" : "put");
+export function payoutTypeFor(
+  structure: Structure,
+  isCall: boolean,
+  productName?: string | null,
+): PayoutType | null {
+  const name = productName ?? productNameOf(structure, isCall);
+  return name === null ? null : (PAYOUT_TYPE[name] ?? null);
 }
 
 /**
@@ -774,6 +958,18 @@ interface Level {
   size: number;
   delta: number | null;
   iv: number | null;
+  /**
+   * The implementation address the orders in this level named, or `undefined`.
+   *
+   * A level is one instrument — same underlying, same call/put flag, same
+   * strikes, same expiry — so every order in it should name the same
+   * implementation. `conflicted` records the case where two did not, which is
+   * not a thing that should happen and is therefore not a thing to average out:
+   * a level whose own orders disagree about what product it is gets no product
+   * claim at all.
+   */
+  implementation: string | undefined;
+  conflicted: boolean;
 }
 
 /** Signed distance from the group median IV, or `undefined` with no greeks. */
@@ -843,7 +1039,22 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       size: 0,
       delta: greeks.delta,
       iv: greeks.iv,
+      implementation: api.implementation,
+      conflicted: false,
     };
+
+    // Two orders on the same instrument naming two different implementations
+    // is a contradiction, not a tie to break. The level keeps the first and
+    // remembers that it is no longer trustworthy.
+    if (api.implementation && level.implementation === undefined) {
+      level.implementation = api.implementation;
+    } else if (
+      api.implementation &&
+      level.implementation &&
+      api.implementation.toLowerCase() !== level.implementation.toLowerCase()
+    ) {
+      level.conflicted = true;
+    }
 
     // Best bid is the highest someone will pay; best ask the lowest anyone
     // will take.
@@ -900,12 +1111,23 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
   const rowOf = new Map<Level, PricingRow>();
   for (const level of levels.values()) {
     const scale = maxByUnderlying.get(level.underlying) ?? 1;
-    const structure = classify(level.strikes, level.isCall);
+    // Looked up from the implementation address, not inferred from the strikes
+    // — `docs/reviews/mcp-crosscheck.md` §BUG-2. A conflicted level passes no
+    // address at all, so it lands in the fallback like an unknown one.
+    const read = classifyOrder(
+      level.strikes,
+      level.isCall,
+      level.conflicted ? undefined : level.implementation,
+      raw.chainConfig,
+    );
+    const structure = read.structure;
+    const payout = payoutTypeFor(structure, level.isCall, read.productName);
     const row: PricingRow = {
       // `type` keeps its three-member union because `/desk` colours by it;
-      // `structure` below is the truthful one. A four-strike order is only
-      // called RANGER when it really is one — the improvement over the
-      // transplanted heuristic, which called every 4-strike order a ranger.
+      // `structure` below is the truthful one. A four-strike order is called
+      // RANGER only when the chain's own implementation table says the contract
+      // behind it is the ranger implementation — never because four numbers
+      // happened to be evenly spaced.
       type: structure === "RANGER" ? "RANGER" : level.isCall ? "CALL" : "PUT",
       strike:
         level.strikes.length >= 4
@@ -925,14 +1147,23 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
         level.bestBid !== null && level.bestAsk !== null
           ? ((level.bestBid + level.bestAsk) / 2).toFixed(4)
           : undefined,
+      // `"UNKNOWN"` when the implementation address was missing, unrecognised
+      // or contradicted by the level's own orders. That string is the visible
+      // form of "this row is quoted, and it claims nothing about its shape" —
+      // `src/views/Parlay.tsx` counts rangers by `structure === "RANGER"`, so
+      // an unresolved four-strike row is simply not one.
       structure,
-      // Decided here, once, where `classify()` and `validateRanger()` are both
-      // in scope — and it is what makes a RANGER row *priceable* rather than
-      // merely quoted. SDK 0.3.0 ships real ranger payout math, so the plan's
-      // `PAYOFF UNAVAILABLE — ranger math is on-chain only` branch is the
-      // unsupported one and is not taken: every classified row gets a payout
-      // type, `'ranger'` included.
-      payout: payoutTypeFor(structure, level.isCall),
+      // Decided here, once, from the product the chain named — and it is what
+      // makes a RANGER row *priceable* rather than merely quoted. SDK 0.3.0
+      // ships real ranger payout math, so the plan's `PAYOFF UNAVAILABLE —
+      // ranger math is on-chain only` branch is the unsupported one and is not
+      // taken.
+      //
+      // `undefined` rather than a guessed vanilla payout when we could not
+      // resolve the product: `Parlay.tsx` already reads a missing `payout` as
+      // "unpriceable", and a payout type nothing authoritative backs is the
+      // exact failure BUG-2 was.
+      payout: payout ?? undefined,
     };
     rowOf.set(level, row);
     pricing[level.underlying] = [...(pricing[level.underlying] ?? []), row];
