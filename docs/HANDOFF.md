@@ -304,6 +304,56 @@ on a board that is deliberately changing; re-pin them, never delete them.
   WHICH bundle — `bun build` used not to clean `dist/`, and a past session blamed
   vendor code for an already-fixed leak.
 
+### ✅ Plans 6 and 7 are built, and the triple-check has run
+
+**HEAD 28c8551 · 1577 pass / 0 fail · typecheck clean · pushed to origin/new.**
+
+All three passes done (protocol below, kept for the next time):
+- **Pass 1** — typecheck clean, full suite green, fresh build, and the secrets
+  scan verified non-vacuous ("1 bundle file, all built by this run").
+- **Pass 2** — `docs/plan7-audit.md` (first ever audit of plan 7): 23 PASS /
+  4 PARTIAL / 0 FAIL / 2 owner-only, since narrowed to **1 PARTIAL + the 2
+  owner-only**. `docs/plan6-audit.md` re-verified: **19 PASS / 0 PARTIAL /
+  0 FAIL / 2 owner-only**.
+- **Pass 3** — `docs/reality-check.md`: 17 surfaces in a real browser at
+  1280/1600/1920. Zero console errors, no NaN/undefined/0.0000 anywhere, no
+  overflow. Every defect it found was **truthfulness, not breakage** — and all
+  of them are now fixed.
+
+**What pass 3 caught that nothing else could**, all fixed: `index.ts` never
+emitted the `options` flag, so the parlay screen — the surface a demo walks —
+fell back to seeded in every configuration under a home page promising live
+pricing; live news reached 1 match in 20 because the allowlist still came from
+the retired equity fixture; `/ranks` wore a pulsing LIVE chip over an entirely
+seeded ladder; `/desk` called an axis fraction a probability and printed one of
+two breakevens.
+
+**Money bugs found and fixed this session** (none had ever executed, so nothing
+was lost — but each would have on the first real fill):
+1. `isBuyer` inverted — `askEntry` pointed at the maker's BID, so a fill would
+   have made the player the writer. Settled by measuring 142 live orders.
+2. The duel score divided ETH-denominated marks by USDC premiums — wrong by
+   ~2,375x on ETH, ~81,000x on BTC, and differently per player.
+3. `CONTRACT_DECIMALS` 18 where the venue answers 6 — `duelScore` multiplied by
+   it, so a real 0.25-contract leg contributed 2.5e-13 of its PnL.
+4. `reservePrice` was never sent, so every RFQ would have gone out at 0n —
+   accepting any price a maker offered.
+5. A `Level` keyed on the signature deadline merged three different contracts
+   into one row, publishing a mid between two different options.
+6. The arena promised "DuelEscrow's six-hour refund returns both stakes" for a
+   contract that is not deployed and stakes nobody took.
+
+**What is left, and it is all yours** — no agent can close these:
+- One real RANGER filled off the book, under $2, BaseScan link in the README.
+- One real CALL_CONDOR via RFQ, same evidence. The measurements say makers
+  answer 84.2% of requests with a median first offer of 6s, but nothing has
+  been sent from this repo.
+- Deploy + verify `DuelEscrow` after your own read of it. Until then the arena
+  correctly says stakes are notional.
+- `RPC_URL` (a private Base endpoint) and a funded wallet.
+- The one remaining plan 7 PARTIAL is README copy (§"Live arena" still lists
+  the two deleted modes).
+
 ### The triple-check, owed once plan 6 and plan 7 are both built
 
 The owner asked for the whole project to be checked three times over
