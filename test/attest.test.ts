@@ -60,22 +60,32 @@ import {
   type SeatProvider,
   type SeatReader,
 } from "../src/server/seats.ts";
+import { SCORE_DP, duelScore, type FilledLeg } from "../src/engine/score.ts";
 import {
   BASE_CHAIN_ID,
   DEADLINE_SECONDS,
+  FILLS_MESSAGE_PREFIX,
+  MARK_MAX_LAG_MS,
+  MAX_ENDS_AT_SKEW_MS,
   VERDICT_DOMAIN_NAME,
   VERDICT_DOMAIN_VERSION,
   LOCK_MESSAGE_PREFIX,
   VERDICT_TYPES,
+  canonicalLegs,
   createAttestService,
   deriveVerdict,
+  fillsCommitOf,
+  fillsMessage,
   lockMessage,
+  marksFromSnapshot,
   type AttestEnvelope,
   type AttestFail,
   type AttestOk,
   type AttestService,
   type LockEnvelope,
   type LockOk,
+  type MarkSnapshot,
+  type MarkSource,
   type StatusEnvelope,
   type StatusOk,
   type TypedDataSigner,
@@ -188,7 +198,11 @@ interface Harness {
  * derivation — has to hold identically with and without a chain behind it.
  * Defaulting it to `null` is what keeps the whole suite above chain-free.
  */
-function harness(at = T0, seats: SeatReader | null = null): Harness {
+function harness(
+  at = T0,
+  seats: SeatReader | null = null,
+  marks: MarkSource | null = null,
+): Harness {
   let clock = at;
   const signed: SignedCall[] = [];
 
@@ -211,7 +225,12 @@ function harness(at = T0, seats: SeatReader | null = null): Harness {
     // and `bun test` runs with `.env` loaded, so a developer with a real
     // `RPC_URL` and `THETADUEL_ESCROW` exported would silently be running this
     // suite against Base.
-    svc: createAttestService({ signer, escrow: ESCROW, seats, now: () => clock }),
+    // `marks` is passed explicitly for the same reason `seats` is, and it is
+    // `null` by default: omitting it would have the service build a market
+    // source over the live Thetanuts pricing host on the first duel-clock
+    // attest. Every test in this file that means "no book" therefore says so,
+    // and every test that means "this book" hands over a frozen one.
+    svc: createAttestService({ signer, escrow: ESCROW, seats, marks, now: () => clock }),
     signed,
     advance: (ms: number) => {
       clock += ms;
@@ -1441,6 +1460,891 @@ describe("the seats are bound to the chain — X-1's residual", () => {
     expect(res.note).toBeUndefined();
     expect(res.duelId).toBe(DUEL_ID);
     expect(chain.calls).toEqual([]);
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The duel clock — plan 6 §C
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Everything below settles a duel on **marks**, not on the tape.
+ *
+ * An option expires on a Friday; a duel lasts four minutes. The repo runs both
+ * clocks and lets them measure different things, and this is the first one: the
+ * attestor reads ONE market snapshot at the duel's declared end and scores both
+ * committed slates off it with `src/engine/score.ts`. The expiry clock is the
+ * OptionBook's business and nothing here can touch it — the player keeps the
+ * position they bought whichever way the pot went.
+ *
+ * The book is frozen in this file. There is no network in any test below: a
+ * `MarkSource` is four lines, the service is handed one explicitly, and the
+ * default in `harness` is `null` so a test that forgets gets "no market source"
+ * rather than a live read of Base.
+ */
+
+/** Four minutes past the lock — the duel length plan 6 §C is written around. */
+const ENDS_AT = T0 + 240_000;
+/** When the snapshot was taken: after the end, comfortably inside the lag. */
+const SNAP_AT = ENDS_AT + 500;
+/** When the attestor calls. */
+const AFTER = ENDS_AT + 1_000;
+
+const ETH = "ETH-27SEP26-4400-C";
+const BTC = "BTC-27SEP26-70000-P";
+
+/** The frozen book both slates are marked against. ETH up from 0.25, BTC up
+ *  from 2.00 — the same two moves `test/score.test.ts` hand-computes. */
+const MARKS: Record<string, number> = { [ETH]: 0.5, [BTC]: 2.25 };
+
+const filled = (
+  instrument: string,
+  entryMark: number,
+  contracts: number,
+  premium: number,
+): FilledLeg => ({ instrument, entryMark, contracts, premium });
+
+/**
+ * The two baskets, and the whole point of §C1 in two lines.
+ *
+ *   GOOD  ETH  (0.50 − 0.25) × 2 = +0.50 on premium 0.50  →  score 1.00
+ *   BIG   BTC  (2.25 − 2.00) × 6 = +1.50 on premium 3.00  →  score 0.50
+ *
+ * BIG makes three times the money and loses, because it risked six times as
+ * much to do it. Asserted below rather than trusted.
+ */
+const GOOD: readonly FilledLeg[] = [filled(ETH, 0.25, 2, 0.5)];
+const BIG: readonly FilledLeg[] = [filled(BTC, 2, 6, 3)];
+
+/** A basket the frozen book has no mark for. */
+const UNMARKABLE: readonly FilledLeg[] = [filled("DOGE-27SEP26-1-C", 0.1, 4, 1)];
+
+// ─── a frozen book, and a count of how often it was read ─────────────────────
+
+interface Book {
+  source: MarkSource;
+  /** How many times the service actually read it. The freeze test is entirely
+   *  this number. */
+  reads(): number;
+  /** Change what the NEXT read would return. Used to prove that a frozen
+   *  snapshot is never re-read, however the book moves afterwards. */
+  set(at: number, marks: Record<string, number>): void;
+}
+
+function book(at = SNAP_AT, marks: Record<string, number> = MARKS): Book {
+  let reads = 0;
+  let current: MarkSnapshot = { at, marks: new Map(Object.entries(marks)) };
+  return {
+    source: {
+      read: async () => {
+        reads += 1;
+        return current;
+      },
+    },
+    reads: () => reads,
+    set: (nextAt, nextMarks) => {
+      current = { at: nextAt, marks: new Map(Object.entries(nextMarks)) };
+    },
+  };
+}
+
+/** A book that answers with a typed refusal, like the real source does when the
+ *  pricing host is down. */
+function deadBook(reason: string): Book {
+  let reads = 0;
+  return {
+    source: {
+      read: async () => {
+        reads += 1;
+        return { reason };
+      },
+    },
+    reads: () => reads,
+    set: () => {},
+  };
+}
+
+// ─── building a duel-clock lock ──────────────────────────────────────────────
+
+interface FillsOpts {
+  endsAt?: number;
+  aLegs?: readonly FilledLeg[];
+  bLegs?: readonly FilledLeg[];
+  /** Who signs each slate. Defaults to the seat that owns it — a test that
+   *  wants one player stating the other's fills overrides these. */
+  aSigner?: Wallet;
+  bSigner?: Wallet;
+  /** What each slate's signature is actually over, when that must differ from
+   *  what is sent. */
+  signMatchKey?: string;
+  signEndsAt?: number;
+}
+
+/** The `fills` block of a lock body, each slate signed by its own seat. */
+function fillsBlock(o: FillsOpts = {}): Record<string, unknown> {
+  const endsAt = o.endsAt ?? ENDS_AT;
+  const aLegs = o.aLegs ?? GOOD;
+  const bLegs = o.bLegs ?? BIG;
+  const mk = o.signMatchKey ?? MATCH_KEY;
+  const se = o.signEndsAt ?? endsAt;
+  const aw = o.aSigner ?? SEAT_A;
+  const bw = o.bSigner ?? SEAT_B;
+  return {
+    endsAt,
+    a: { legs: aLegs, sig: aw.signMessageSync(fillsMessage(mk, A, se, aLegs)) },
+    b: { legs: bLegs, sig: bw.signMessageSync(fillsMessage(mk, B, se, bLegs)) },
+  };
+}
+
+/**
+ * A whole lock body on the duel clock: picks, both slates, and `a`'s six-line
+ * signature binding the lot.
+ *
+ * `fills` is taken as a value rather than built here so that a test can hand
+ * over a tampered block and still get a signature over the UNTAMPERED one —
+ * which is the attacker's actual position.
+ */
+function duelLockBody(
+  fills: Record<string, unknown>,
+  opts: {
+    picks?: Record<string, string>;
+    b?: string | null;
+    /** What `a` signs the sixth line over. Defaults to a commit over `fills`. */
+    signCommit?: string | null;
+    matchKey?: string;
+  } = {},
+): Record<string, unknown> {
+  const matchKey = opts.matchKey ?? MATCH_KEY;
+  const picks = opts.picks ?? WINNING_SLIP;
+  const b = opts.b === undefined ? B : opts.b;
+  const commit =
+    opts.signCommit !== undefined
+      ? opts.signCommit
+      : fillsCommitOf(
+          fills["endsAt"] as number,
+          (fills["a"] as { legs: readonly FilledLeg[] }).legs,
+          (fills["b"] as { legs: readonly FilledLeg[] }).legs,
+        );
+  return {
+    matchKey,
+    picks,
+    a: A,
+    ...(b ? { b } : {}),
+    fills,
+    sig: SEAT_A.signMessageSync(lockMessage(matchKey, A, b, picks, commit)),
+  };
+}
+
+/** A harness with a frozen book, already advanced past the duel's end. */
+function duelHarness(b: Book = book()): Harness & { book: Book } {
+  const h = harness(T0, null, b.source);
+  return { ...h, book: b };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("the duel clock scores marks, and the tape is not consulted", () => {
+  test("the fixture baskets are what §C1 says they are", () => {
+    // Stated before anything depends on it: BIG makes more money, GOOD has the
+    // better return, and the tape — on WINNING_SLIP — pays A. So a verdict of B
+    // below can only have come from the marks.
+    const marks = new Map(Object.entries(MARKS));
+    expect(duelScore(GOOD, marks)).toBe(1);
+    expect(duelScore(BIG, marks)).toBe(0.5);
+    expect(expectedWinner(WINNING_SLIP)).toBe(A);
+  });
+
+  test("a lock that commits two slates comes back with a fillsCommit", async () => {
+    const h = duelHarness();
+    const res = okLock(await h.svc.lock(duelLockBody(fillsBlock())));
+    expect(res.fillsCommit).toBe(fillsCommitOf(ENDS_AT, GOOD, BIG));
+    // The picks commit is unchanged — the two commitments are independent, and
+    // the picks one is still what a pre-phase-C client would compute.
+    expect(res.commit).toBe(okLock(await harness().svc.lock(lockBody(SEAT_A))).commit);
+  });
+
+  test("THE VERDICT MOVES: the marks pay B where the tape would have paid A", async () => {
+    // Same seed, same committed picks. On the tape this duel pays A. On the
+    // duel clock A holds the mediocre basket and loses. If this returned A, the
+    // attestor would still be replaying the tape.
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD })));
+    h.advance(AFTER - T0);
+    const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+    expect(res.winner).toBe(B);
+    expect(expectedWinner(WINNING_SLIP)).toBe(A);
+  });
+
+  test("and the other way round, on identical picks", async () => {
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG })));
+    h.advance(AFTER - T0);
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(A);
+  });
+
+  test("the smaller basket beats the bigger one — return on premium, not P&L", async () => {
+    // BIG's P&L is +1.50 against GOOD's +0.50. Whoever holds GOOD wins anyway.
+    for (const [aLegs, bLegs, winner] of [
+      [GOOD, BIG, A],
+      [BIG, GOOD, B],
+    ] as const) {
+      const h = duelHarness();
+      await h.svc.lock(duelLockBody(fillsBlock({ aLegs, bLegs })));
+      h.advance(AFTER - T0);
+      expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(winner);
+    }
+  });
+
+  test("the signature is a real EIP-712 verdict over the duel-clock winner", async () => {
+    // The duel clock changes what the winner IS; it changes nothing about what
+    // a verdict is. Same domain, same struct, same recovery as the tape path.
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD })));
+    h.advance(AFTER - T0);
+    const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+    expect(
+      recoverAddress(
+        TypedDataEncoder.hash(contractDomain(ESCROW), CONTRACT_TYPES, {
+          duelId: res.duelId,
+          winner: res.winner,
+          deadline: BigInt(res.deadline),
+        }),
+        res.signature,
+      ),
+    ).toBe(ATTESTOR.address);
+    expect(res.winner).toBe(B);
+  });
+
+  test("a duel that has not ended yet is not scored", async () => {
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock()));
+    h.advance(239_999); // one millisecond short
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "duel has not ended",
+    });
+    expect(h.signed).toEqual([]);
+    expect(h.book.reads()).toBe(0); // the book is not even consulted
+  });
+});
+
+describe("ONE snapshot, both players, frozen after the first read", () => {
+  test("the book is read exactly once, and both slates are scored off that read", async () => {
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG })));
+    h.advance(AFTER - T0);
+    okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+    // One read for two players. A per-player read would be two, and the second
+    // could straddle the book's 15-second refresh.
+    expect(h.book.reads()).toBe(1);
+  });
+
+  test("THE RETRY ATTACK: a losing player cannot call again until the sign flips", async () => {
+    // The failure this freeze exists to prevent. A holds the mediocre basket
+    // and loses. The book then moves decisively in A's favour — ETH collapses,
+    // BTC rips — and A calls again. And again after the deadline refresh, which
+    // is the one path that genuinely re-signs.
+    const b = book();
+    const h = duelHarness(b);
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD })));
+    h.advance(AFTER - T0);
+
+    const first = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+    expect(first.winner).toBe(B);
+
+    b.set(SNAP_AT + 60_000, { [ETH]: 0.001, [BTC]: 99 });
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
+
+    h.advance(29 * 60_000); // past DEADLINE_REFRESH_BELOW_SECONDS — a real re-sign
+    const late = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+    expect(late.winner).toBe(B);
+    expect(late.signature).not.toBe(first.signature); // a new deadline…
+    expect(b.reads()).toBe(1); // …over the same frozen snapshot
+  });
+
+  test("an empty book is refused BEFORE it can be frozen", async () => {
+    // A soft read failure wearing a timestamp. Freezing it would refuse this
+    // duel permanently on one bad read, so it is refused and not stored — and a
+    // later good read still settles the duel.
+    const b = book(SNAP_AT, {});
+    const h = duelHarness(b);
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG })));
+    h.advance(AFTER - T0);
+
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market snapshot has no marks",
+    });
+    expect(h.signed).toEqual([]);
+
+    b.set(SNAP_AT + 1_000, MARKS);
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(A);
+    expect(b.reads()).toBe(2);
+  });
+
+  test("first-write-wins pins the SLATES too, not only the picks", async () => {
+    // Otherwise the duel clock would reopen the exact hole commit-then-derive
+    // closes: watch the book, then re-lock a basket that already won.
+    const h = duelHarness();
+    const first = okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD }))));
+
+    const relock = okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
+    expect(relock.fillsCommit).toBe(first.fillsCommit);
+    expect(relock.note).toBe("already locked");
+
+    h.advance(AFTER - T0);
+    // Scored on the FIRST slates: A holds BIG and still loses.
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
+  });
+});
+
+describe("sign nothing — plan 6 §C3, and there is no tiebreak", () => {
+  /** A duel-clock harness that has already locked the given baskets and moved
+   *  the clock past the end. */
+  async function ready(
+    aLegs: readonly FilledLeg[],
+    bLegs: readonly FilledLeg[],
+    b: Book = book(),
+  ): Promise<Harness & { book: Book }> {
+    const h = duelHarness(b);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs, bLegs }))));
+    h.advance(AFTER - T0);
+    return h;
+  }
+
+  test("scores level to 6dp sign nothing", async () => {
+    //   A  ETH: (0.50 − 0.25) × 2 = +0.50 on 1.00  →  0.5
+    //   B  BTC: (2.25 − 2.00) × 4 = +1.00 on 2.00  →  0.5
+    // Two genuinely different positions with the same return. No coin flip.
+    const h = await ready([filled(ETH, 0.25, 2, 1)], [filled(BTC, 2, 4, 2)]);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: `scores level to ${SCORE_DP}dp`,
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("a difference below the sixth decimal is also a tie", async () => {
+    //   B  (0.25 × 8) ÷ 4.000001 = 0.49999987… — inside 6dp of A's 0.5
+    const h = await ready(
+      [filled(ETH, 0.25, 2, 1)],
+      [filled(BTC, 2, 8, 4), filled(ETH, 0.5, 8, 0.000001)],
+    );
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: `scores level to ${SCORE_DP}dp`,
+    });
+  });
+
+  test("an unmarkable leg signs nothing, and the refusal names it", async () => {
+    // Named on purpose: a player can check "DOGE-27SEP26-1-C had no mark"
+    // against the same public book. "No verdict" is not checkable by anybody.
+    for (const [aLegs, bLegs] of [
+      [GOOD, UNMARKABLE],
+      [UNMARKABLE, BIG],
+      [UNMARKABLE, UNMARKABLE],
+    ] as const) {
+      const h = await ready(aLegs, bLegs);
+      expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+        ok: false,
+        reason: "unmarkable leg: DOGE-27SEP26-1-C",
+      });
+      expect(h.signed).toEqual([]);
+    }
+  });
+
+  test("a partially marked basket is refused, not scored on the legs that marked", async () => {
+    // The tempting bug: A's losing leg is the one with no mark, so dropping it
+    // would hand A the duel.
+    const h = await ready([filled(ETH, 0.25, 4, 1), filled("SOL-27SEP26-200-C", 9, 4, 1)], BIG);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "unmarkable leg: SOL-27SEP26-200-C",
+    });
+  });
+
+  test("a STALE snapshot signs nothing", async () => {
+    // Past MARK_MAX_LAG_MS the marks describe an hour of news nobody was
+    // playing. The refund is the honest answer.
+    const h = await ready(GOOD, BIG, book(ENDS_AT + MARK_MAX_LAG_MS + 1));
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market snapshot is stale",
+    });
+    expect(h.signed).toEqual([]);
+    // And the boundary is inclusive on the good side, so an honest player who
+    // took a wallet prompt is not refunded out of a pot they won.
+    const edge = await ready(GOOD, BIG, book(ENDS_AT + MARK_MAX_LAG_MS));
+    expect(okAttest(await edge.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(A);
+  });
+
+  test("a snapshot from BEFORE the duel ended signs nothing", async () => {
+    // Scoring a duel on marks that predate its end is scoring a different duel.
+    const h = await ready(GOOD, BIG, book(ENDS_AT - 1));
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market snapshot predates the duel",
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("no market source at all signs nothing — it never falls back to the tape", async () => {
+    // The most important of the refusals: with no book, the honest answer is the
+    // refund. Falling back to `deriveVerdict` here would pay a winner nobody's
+    // marks chose, on a duel whose players bought real options.
+    const h = harness(T0, null, null);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
+    h.advance(AFTER - T0);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "no market source",
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("a book that refuses passes its reason through, and signs nothing", async () => {
+    const h = await ready(GOOD, BIG, deadBook("market unreachable"));
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market unreachable",
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("a book that THROWS is a refusal, not a crash and not a fallback", async () => {
+    const exploding: MarkSource = {
+      read: async () => {
+        throw new Error("ECONNRESET");
+      },
+    };
+    const h = harness(T0, null, exploding);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
+    h.advance(AFTER - T0);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market unreachable",
+    });
+    expect(h.signed).toEqual([]);
+  });
+
+  test("a snapshot with no timestamp signs nothing", async () => {
+    const undated: MarkSource = {
+      read: async () => ({ at: Number.NaN, marks: new Map(Object.entries(MARKS)) }),
+    };
+    const h = harness(T0, null, undated);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: GOOD, bLegs: BIG }))));
+    h.advance(AFTER - T0);
+    expect(await h.svc.attest({ matchKey: MATCH_KEY })).toEqual({
+      ok: false,
+      reason: "market snapshot has no timestamp",
+    });
+  });
+
+  test("EVERY refusal leaves no verdict behind — the refund path stays open", async () => {
+    // The escrow's six-hour timeout needs nothing at all from this server. What
+    // it needs is that this server never signs the wrong thing, so a refusal
+    // must leave `status` reading `attested: false` — a client that saw `true`
+    // would sit waiting for a payout that does not exist.
+    const h = await ready(GOOD, UNMARKABLE);
+    const duelId = id(MATCH_KEY);
+    await h.svc.attest({ matchKey: MATCH_KEY });
+    const st = okStatus(h.svc.status(duelId));
+    expect(st.locked).toBe(true);
+    expect(st.attested).toBe(false);
+    expect(st.winner).toBeUndefined();
+
+    const res = await h.svc.handleAttest(
+      new Request("http://localhost/api/attest", {
+        method: "POST",
+        body: JSON.stringify({ matchKey: MATCH_KEY }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false, reason: "unmarkable leg: DOGE-27SEP26-1-C" });
+  });
+});
+
+describe("the slates are the players' own, and the request cannot state them", () => {
+  test("each seat signs its own slate — a cannot state b's fills", async () => {
+    // If `a` could write `b`'s entry marks, `a` could hand itself the duel by
+    // giving `b` a basket that had already lost.
+    const h = duelHarness();
+    const forged = fillsBlock({ aLegs: GOOD, bLegs: BIG, bSigner: SEAT_A });
+    expect(await h.svc.lock(duelLockBody(forged))).toEqual({
+      ok: false,
+      reason: "b fills are not b's",
+    });
+    // And nothing was stored, so the seat is still free for an honest lock.
+    expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(false);
+  });
+
+  test("nor can b state a's", async () => {
+    const h = duelHarness();
+    expect(await h.svc.lock(duelLockBody(fillsBlock({ aSigner: SEAT_B })))).toEqual({
+      ok: false,
+      reason: "a fills are not a's",
+    });
+  });
+
+  test("a stranger's signature on either slate is refused", async () => {
+    const h = duelHarness();
+    expect(await h.svc.lock(duelLockBody(fillsBlock({ aSigner: SEAT_S })))).toEqual({
+      ok: false,
+      reason: "a fills are not a's",
+    });
+    expect(await h.svc.lock(duelLockBody(fillsBlock({ bSigner: SEAT_S })))).toEqual({
+      ok: false,
+      reason: "b fills are not b's",
+    });
+  });
+
+  test("legs tampered with after signing are refused", async () => {
+    // The attacker's real position: a valid signature over one basket, and a
+    // wish for it to authorise another.
+    const h = duelHarness();
+    const honest = fillsBlock({ aLegs: GOOD, bLegs: BIG });
+    const tampered = {
+      ...honest,
+      a: { ...(honest["a"] as object), legs: [filled(ETH, 0.01, 200, 0.01)] },
+    };
+    expect(await h.svc.lock(duelLockBody(tampered))).toEqual({
+      ok: false,
+      reason: "a fills are not a's",
+    });
+  });
+
+  test("a slate signed for another match, or another end time, does not travel", async () => {
+    const h = duelHarness();
+    expect(await h.svc.lock(duelLockBody(fillsBlock({ signMatchKey: `${LOBBY_ID}:999999` })))).toEqual({
+      ok: false,
+      reason: "a fills are not a's",
+    });
+    expect(await h.svc.lock(duelLockBody(fillsBlock({ signEndsAt: ENDS_AT + 1 })))).toEqual({
+      ok: false,
+      reason: "a fills are not a's",
+    });
+  });
+
+  test("the slate message is order-independent in exactly the way the score is", async () => {
+    // `canonicalLegs` sorts, so the order the fills happened in — which is book
+    // depth, not a decision — cannot change the string that was signed.
+    const legs = [filled(BTC, 2, 6, 3), filled(ETH, 0.25, 2, 0.5)];
+    const reversed = [...legs].reverse();
+    expect(canonicalLegs(legs)).toBe(canonicalLegs(reversed));
+    expect(fillsMessage(MATCH_KEY, A, ENDS_AT, legs)).toBe(
+      fillsMessage(MATCH_KEY, A, ENDS_AT, reversed),
+    );
+
+    // …so a slate signed in one order locks when sent in the other.
+    const h = duelHarness();
+    const sig = SEAT_A.signMessageSync(fillsMessage(MATCH_KEY, A, ENDS_AT, legs));
+    const fills = {
+      endsAt: ENDS_AT,
+      a: { legs: reversed, sig },
+      b: { legs: BIG, sig: SEAT_B.signMessageSync(fillsMessage(MATCH_KEY, B, ENDS_AT, BIG)) },
+    };
+    expect(okLock(await h.svc.lock(duelLockBody(fills))).fillsCommit).toBe(
+      fillsCommitOf(ENDS_AT, legs, BIG),
+    );
+  });
+
+  test("the slate message is the five-line string a client can rebuild", () => {
+    const msg = fillsMessage(MATCH_KEY, A, ENDS_AT, GOOD);
+    expect(msg.split("\n")).toEqual([
+      FILLS_MESSAGE_PREFIX,
+      `matchKey:${MATCH_KEY}`,
+      `seat:${A}`,
+      `endsAt:${ENDS_AT}`,
+      `legs:${canonicalLegs(GOOD)}`,
+    ]);
+    expect(msg.endsWith("\n")).toBe(false);
+    // And it is a different prefix from the lock's, because a different person
+    // signs it: seat `b` signs a slate and never signs a lock.
+    expect(FILLS_MESSAGE_PREFIX).not.toBe(LOCK_MESSAGE_PREFIX);
+    expect(verifyMessage(msg, SEAT_A.signMessageSync(msg))).toBe(A);
+  });
+
+  test("a's lock signature binds the slates — they cannot be added or stripped", async () => {
+    // The sixth line. A five-line message is never equal to a six-line one, so
+    // an attacker can neither bolt slates onto a signed tape lock nor strip them
+    // off a signed duel-clock one: the server rebuilds whichever the REQUEST's
+    // shape calls for, and recovery must land on `a` exactly.
+    const h = duelHarness();
+
+    // Bolted on: a body carrying fills, signed over the five-line message.
+    expect(await h.svc.lock(duelLockBody(fillsBlock(), { signCommit: null }))).toEqual({
+      ok: false,
+      reason: "signature is not a's",
+    });
+
+    // Stripped off: a body with no fills, signed over the six-line message.
+    const sixLine = SEAT_A.signMessageSync(
+      lockMessage(MATCH_KEY, A, B, WINNING_SLIP, fillsCommitOf(ENDS_AT, GOOD, BIG)),
+    );
+    expect(
+      await h.svc.lock({ matchKey: MATCH_KEY, picks: WINNING_SLIP, a: A, b: B, sig: sixLine }),
+    ).toEqual({ ok: false, reason: "signature is not a's" });
+
+    // Swapped: a different pair of slates under a signature over the first pair.
+    const swapped = duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD }), {
+      signCommit: fillsCommitOf(ENDS_AT, GOOD, BIG),
+    });
+    expect(await h.svc.lock(swapped)).toEqual({ ok: false, reason: "signature is not a's" });
+
+    // None of the three consumed the seat.
+    expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(false);
+  });
+
+  test("the fills commit binds the end time as well as both baskets", () => {
+    expect(fillsCommitOf(ENDS_AT, GOOD, BIG)).not.toBe(fillsCommitOf(ENDS_AT + 1, GOOD, BIG));
+    expect(fillsCommitOf(ENDS_AT, GOOD, BIG)).not.toBe(fillsCommitOf(ENDS_AT, BIG, GOOD));
+    expect(fillsCommitOf(ENDS_AT, GOOD, BIG)).toBe(fillsCommitOf(ENDS_AT, [...GOOD], [...BIG]));
+  });
+
+  test("a duel clock needs both seats — an open b cannot have a basket", async () => {
+    const h = duelHarness();
+    expect(await h.svc.lock(duelLockBody(fillsBlock(), { b: null }))).toEqual({
+      ok: false,
+      reason: "fills need both seats",
+    });
+  });
+
+  test("a malformed slate is refused with a reason, never normalised into one", async () => {
+    const h = duelHarness();
+    const base = fillsBlock();
+    const aSlate = base["a"] as Record<string, unknown>;
+    const bad: ReadonlyArray<[unknown, string]> = [
+      [{ ...base, a: { ...aSlate, legs: [] } }, "a filled nothing"],
+      [{ ...base, a: { ...aSlate, legs: "nope" } }, "bad a legs"],
+      [
+        {
+          ...base,
+          a: { ...aSlate, legs: Array.from({ length: 13 }, () => filled(ETH, 0.25, 1, 1)) },
+        },
+        "too many a legs",
+      ],
+      [{ ...base, a: { ...aSlate, legs: [{ ...GOOD[0]!, instrument: "" }] } }, "bad a instrument"],
+      // A price that arrived as a string is a client bug: coercing it would put
+      // a different double in the score than the one that was signed.
+      [{ ...base, a: { ...aSlate, legs: [{ ...GOOD[0]!, premium: "0.50" }] } }, "bad a premium"],
+      [{ ...base, a: { ...aSlate, legs: [{ ...GOOD[0]!, contracts: 0 }] } }, "bad a contracts"],
+      [{ ...base, a: { ...aSlate, legs: [{ ...GOOD[0]!, entryMark: -1 }] } }, "bad a entryMark"],
+      [{ ...base, a: { ...aSlate, legs: [{ ...GOOD[0]!, premium: Number.NaN }] } }, "bad a premium"],
+      [{ ...base, a: { ...aSlate, sig: "0xdead" } }, "bad a fills signature"],
+      [{ ...base, a: { ...aSlate, sig: undefined } }, "missing a fills signature"],
+      [{ ...base, a: undefined }, "missing a fills"],
+      [{ ...base, b: undefined }, "missing b fills"],
+      [{ ...base, endsAt: "soon" }, "bad endsAt"],
+      [{ ...base, endsAt: ENDS_AT + 0.5 }, "bad endsAt"],
+      [{ ...base, endsAt: T0 + MAX_ENDS_AT_SKEW_MS + 1 }, "bad endsAt"],
+      [{ ...base, endsAt: T0 - MAX_ENDS_AT_SKEW_MS - 1 }, "bad endsAt"],
+      ["not an object", "bad fills"],
+      [42, "bad fills"],
+      [[], "bad fills"],
+    ];
+    for (const [fills, reason] of bad) {
+      const res = await h.svc.lock({ ...duelLockBody(base), fills });
+      expect(`${reason} → ${(res as AttestFail).reason}`).toBe(`${reason} → ${reason}`);
+    }
+    // Not one of them stored anything.
+    expect(okStatus(h.svc.status(id(MATCH_KEY))).locked).toBe(false);
+    expect(h.book.reads()).toBe(0);
+  });
+});
+
+describe("THE MONEY TEST, on the duel clock: the request states nothing", () => {
+  test("a client-supplied winner is ignored, exactly as on the tape", async () => {
+    // The same assertion as the tape path's, re-run where the winner now comes
+    // from marks. `/api/attest` trusts one field of the body and it is the
+    // match key.
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD }))); // derives to B
+    h.advance(AFTER - T0);
+    for (const claimed of [A, STRANGER, ATTESTOR.address, `0x${"0".repeat(40)}`]) {
+      expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY, winner: claimed })).winner).toBe(B);
+    }
+  });
+
+  test("nor can the request supply the marks, the slates, the scores or the end time", async () => {
+    // Every input the verdict is computed from, offered in the body at once. The
+    // server reads its own book, its own committed slates and its own clock.
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD })));
+    h.advance(AFTER - T0);
+    const res = okAttest(
+      await h.svc.attest({
+        matchKey: MATCH_KEY,
+        winner: A,
+        marks: { [ETH]: 99, [BTC]: 0.0001 },
+        snapshot: { at: AFTER, marks: { [ETH]: 99 } },
+        fills: fillsBlock({ aLegs: GOOD, bLegs: BIG }),
+        endsAt: T0,
+        picks: LOSING_SLIP,
+        a: STRANGER,
+        b: STRANGER,
+        aScore: 99,
+        bScore: -1,
+      }),
+    );
+    expect(res.winner).toBe(B);
+    expect(h.book.reads()).toBe(1); // its own book, read once
+  });
+
+  test("the clock the duel is scored against is the COMMITTED one", async () => {
+    // `endsAt` was signed by both seats at lock time and hashed into `a`'s lock
+    // signature. A later request naming an earlier end cannot re-open a window.
+    const h = duelHarness();
+    await h.svc.lock(duelLockBody(fillsBlock()));
+    expect(await h.svc.attest({ matchKey: MATCH_KEY, endsAt: T0 })).toEqual({
+      ok: false,
+      reason: "duel has not ended",
+    });
+    expect(h.signed).toEqual([]);
+  });
+});
+
+describe("the tape path survives phase C untouched", () => {
+  test("a lock with no slates settles on the tape and never reads a book", async () => {
+    // Plan 6 §8: "reverts cleanly — tape path still present". The seeded game
+    // still plays here, and a server whose duels all settle on the tape reads
+    // no market data at all.
+    const b = book();
+    const h = duelHarness(b);
+    await locked(h, WINNING_SLIP);
+    h.advance(AFTER - T0);
+    expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(
+      expectedWinner(WINNING_SLIP),
+    );
+    expect(b.reads()).toBe(0);
+  });
+
+  test("a tape lock carries no fillsCommit, and its message is still five lines", async () => {
+    const h = duelHarness();
+    expect(okLock(await h.svc.lock(lockBody(SEAT_A))).fillsCommit).toBeUndefined();
+    expect(lockMessage(MATCH_KEY, A, B, WINNING_SLIP).split("\n")).toHaveLength(5);
+    expect(
+      lockMessage(MATCH_KEY, A, B, WINNING_SLIP, fillsCommitOf(ENDS_AT, GOOD, BIG)).split("\n"),
+    ).toHaveLength(6);
+  });
+
+  test("`fills: null` and `fills: undefined` are the tape, not a malformed duel", async () => {
+    for (const fills of [null, undefined]) {
+      const b = book();
+      const h = duelHarness(b);
+      expect(okLock(await h.svc.lock({ ...lockBody(SEAT_A), fills })).fillsCommit).toBeUndefined();
+      h.advance(AFTER - T0);
+      expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(
+        expectedWinner(WINNING_SLIP),
+      );
+      expect(b.reads()).toBe(0);
+    }
+  });
+
+  test("which clock settles a duel is decided by the COMMIT, never by the request", async () => {
+    // A tape lock cannot be talked onto the duel clock by an attest body, and a
+    // duel-clock lock cannot be talked back onto the tape. There is no flag.
+    const h = duelHarness();
+    await locked(h, WINNING_SLIP);
+    h.advance(AFTER - T0);
+    expect(
+      okAttest(await h.svc.attest({ matchKey: MATCH_KEY, fills: fillsBlock(), endsAt: ENDS_AT }))
+        .winner,
+    ).toBe(expectedWinner(WINNING_SLIP));
+    expect(h.book.reads()).toBe(0);
+  });
+});
+
+describe("the snapshot reducer fails closed", () => {
+  test("an MM chain yields instrument → mark", () => {
+    const marks = marksFromSnapshot({
+      mmPricing: {
+        ETH: [{ ticker: "ETH-3SEP26-2100-C", mark: "0.4212", bid: "0.41", ask: "0.43" }],
+        BTC: [{ ticker: "BTC-3SEP26-70000-P", mark: "1.5", bid: "1.4", ask: "1.6" }],
+      },
+    });
+    expect(marks.get("ETH-3SEP26-2100-C")).toBe(0.4212);
+    expect(marks.get("BTC-3SEP26-70000-P")).toBe(1.5);
+    expect(marks.size).toBe(2);
+  });
+
+  test("a lone bid or ask is NEVER a mark", () => {
+    // A one-sided level has no fair value, and treating it as one would
+    // systematically flatter whichever player held the thin leg.
+    const marks = marksFromSnapshot({
+      orders: [
+        { instrument: "X-C", bid: "1.2" },
+        { instrument: "Y-C", ask: "3.4" },
+        { instrument: "Z-C", px: "9.9", size: "10" },
+      ],
+    });
+    expect(marks.size).toBe(0);
+  });
+
+  test("`mark` wins over `mid`, and `mid` is only a fallback", () => {
+    expect(marksFromSnapshot({ orders: [{ instrument: "X-C", mark: "1", mid: "2" }] }).get("X-C")).toBe(1);
+    expect(marksFromSnapshot({ orders: [{ instrument: "X-C", mid: "2" }] }).get("X-C")).toBe(2);
+  });
+
+  test("the first writer wins per instrument, and mmPricing is visited first", () => {
+    // A quote's own mark must never be overwritten by a neighbouring row's
+    // midpoint.
+    const marks = marksFromSnapshot({
+      mmPricing: { ETH: [{ ticker: "X-C", mark: "1" }] },
+      pricing: { ETH: [{ ticker: "X-C", mark: "2" }] },
+      orders: [{ instrument: "X-C", mark: "3" }],
+    });
+    expect(marks.get("X-C")).toBe(1);
+  });
+
+  test("anything it does not recognise contributes NO mark", () => {
+    // Fail closed, in one list: a row with no mark is a leg with no mark, which
+    // is a duel that signs nothing and refunds. There is no path from "the
+    // snapshot changed shape" to "somebody was paid on a wrong number".
+    for (const snapshot of [
+      null,
+      undefined,
+      42,
+      "a string",
+      [],
+      {},
+      { mmPricing: null },
+      { mmPricing: { ETH: "not rows" } },
+      { mmPricing: { ETH: [null, 7, "x"] } },
+      { mmPricing: { ETH: [{ mark: "1" }] } }, //               no name
+      { mmPricing: { ETH: [{ ticker: "", mark: "1" }] } }, //   empty name
+      { mmPricing: { ETH: [{ ticker: "X-C" }] } }, //           no mark
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: "—" }] } }, // the "no MM price" sentinel
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: "1.2 (stale)" }] } },
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: "-1" }] } },
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: Number.NaN }] } },
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: null }] } },
+      { mmPricing: { ETH: [{ ticker: "X-C", mark: {} }] } },
+    ]) {
+      expect(marksFromSnapshot(snapshot).size).toBe(0);
+    }
+  });
+
+  test("a numeric mark is taken as-is, and zero is a real price", () => {
+    // A worthless option is worth zero, which is a mark. Only a *missing* one is
+    // unmarkable.
+    expect(marksFromSnapshot({ orders: [{ instrument: "X-C", mark: 0 }] }).get("X-C")).toBe(0);
+    expect(marksFromSnapshot({ orders: [{ instrument: "X-C", mark: 0.5 }] }).get("X-C")).toBe(0.5);
+  });
+
+  test("a reduced snapshot drives a real verdict end to end", async () => {
+    // The two halves joined: the reducer's output IS the map the score reads,
+    // and the instrument key is the book's own name for the thing, verbatim.
+    const reduced = marksFromSnapshot({
+      mmPricing: {
+        ETH: [{ ticker: ETH, mark: "0.5" }],
+        BTC: [{ ticker: BTC, mark: "2.25" }],
+      },
+    });
+    const source: MarkSource = { read: async () => ({ at: SNAP_AT, marks: reduced }) };
+    const h = harness(T0, null, source);
+    okLock(await h.svc.lock(duelLockBody(fillsBlock({ aLegs: BIG, bLegs: GOOD }))));
+    h.advance(AFTER - T0);
     expect(okAttest(await h.svc.attest({ matchKey: MATCH_KEY })).winner).toBe(B);
   });
 });
