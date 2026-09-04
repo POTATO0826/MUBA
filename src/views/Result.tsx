@@ -1,10 +1,11 @@
 import { CHAMP_ART } from "../data/fixtures.ts";
+import { modeTag, type ModeSpec } from "../data/modes.ts";
+import { sectorChips } from "../data/sectors.ts";
 import { legState, type MatchVerdict } from "../engine/match.ts";
 import { conditionText, type ParlayLeg } from "../engine/parlay.ts";
-import { TAPE_LEN } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, tag } from "../theme.ts";
-import type { Player } from "../types.ts";
+import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
+import type { Player, SectorKey } from "../types.ts";
 import { TIER_COLOR } from "./ParlayPick.tsx";
 
 interface ResultProps {
@@ -18,6 +19,11 @@ interface ResultProps {
   /** What you banked in points: the stake at your parlay's odds, or nothing. */
   pointsWon: number;
   salt: number;
+  /** The print the duel settled on — the mode's window. Every leg on this
+   *  screen is read at it, so a Blitz result never shows a full-tape move. */
+  settleAt: number;
+  mode: ModeSpec;
+  sectors: readonly SectorKey[];
   prizeLabel: string;
   onBackToBattles: () => void;
   onRematch: () => void;
@@ -53,6 +59,16 @@ export function Result(p: ResultProps) {
             <div style={sx("margin-top:12px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap")}>
               <span style={sx(`font:700 30px/1 ${MONO};color:${C.accent}`)}>{p.prizeLabel}</span>
               <span style={sx(`font:500 12px/1 ${MONO};color:${C.muted}`)}>{v.scoreLine}</span>
+            </div>
+            <div style={sx("margin-top:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
+              <span style={sx(modeTag(p.mode.key))}>
+                {p.mode.label} · {p.mode.duration}
+              </span>
+              {sectorChips(p.sectors).map((c) => (
+                <span key={c.key} style={sx(miniTag(c.color))}>
+                  {c.label}
+                </span>
+              ))}
             </div>
             <div data-testid="points-won" style={sx(`margin-top:10px;font:500 11px/1 ${MONO};color:${v.meWins ? C.green : C.dim}`)}>
               {v.meWins
@@ -133,7 +149,7 @@ export function Result(p: ResultProps) {
             </div>
             <div style={sx("display:flex;flex-direction:column;gap:0;margin-top:6px")}>
               {s.legs.map((l) => {
-                const st = legState(l, p.salt, TAPE_LEN);
+                const st = legState(l, p.salt, p.settleAt);
                 return (
                   <div
                     key={l.sym}

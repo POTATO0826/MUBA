@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+import { modeTag, type ModeSpec } from "../data/modes.ts";
 import { meta } from "../data/universe.ts";
 import {
   PARLAY_CARDS,
@@ -11,6 +13,7 @@ import {
   type Tier,
 } from "../engine/parlay.ts";
 import { fmtPx } from "../engine/tape.ts";
+import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, sectorColor, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -25,11 +28,17 @@ export const TIER_COLOR: Record<Tier, string> = {
 
 interface ParlayPickProps {
   lobbyName: string;
+  /** This match's window. Its `oddsBoost` is already inside `summary.mult`;
+   *  the slip only has to say where the premium came from. */
+  mode: ModeSpec;
   opponent: Player;
   arena: readonly string[];
   /** Your pick per ticker so far. */
   picks: Readonly<Record<string, ParlayCard>>;
   allPicked: boolean;
+  /** Whole seconds left on the pick clock; `null` on an untimed mode, and the
+   *  chip, the beeps and the EVEN note all disappear with it. */
+  secondsLeft: number | null;
   /** Your slip: real legs where picked, an EVEN-bullish preview where not. */
   myLegs: readonly ParlayLeg[];
   summary: ParlaySummary;
@@ -44,9 +53,33 @@ interface ParlayPickProps {
  * bearish. Pick one per ticker; the parlay is the combination. The odds on
  * the slip are the product of the legs — every leg has to land.
  */
+/** The last five seconds are the loud ones. */
+const HOT = 5;
+
+/** `0:18` — a clock reads as a clock, and the monospace stops it juddering. */
+const clockText = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
+
 export function ParlayPick(p: ParlayPickProps) {
   const left = p.arena.filter((s) => !p.picks[s]).length;
   const s = p.summary;
+  const counting = p.secondsLeft !== null;
+  const hot = p.secondsLeft !== null && p.secondsLeft <= HOT;
+
+  // One beep per distinct second of the last five. The clock re-renders far
+  // more often than once a second, so the ref — not the render — is what makes
+  // it fire exactly once; `countdown.final` marks the last one.
+  const beeped = useRef<number | null>(null);
+  useEffect(() => {
+    const n = p.secondsLeft;
+    if (n === null || n > HOT || n < 1) {
+      if (n === null) beeped.current = null;
+      return;
+    }
+    if (beeped.current === n) return;
+    beeped.current = n;
+    // `leg` is how the recipe receives the seconds remaining (map.ts).
+    sfx(n === 1 ? "countdown.final" : "countdown.beep", { leg: n });
+  }, [p.secondsLeft]);
 
   return (
     <div style={sx("padding:24px 28px;max-width:1720px;margin:0 auto")}>
@@ -60,6 +93,23 @@ export function ParlayPick(p: ParlayPickProps) {
         >
           BLIND · OPPONENT SLIP HIDDEN
         </span>
+        <span style={sx(modeTag(p.mode.key))}>
+          {p.mode.label} · {p.mode.duration}
+        </span>
+        {p.secondsLeft !== null && (
+          <span
+            data-testid="pick-clock"
+            style={sx(
+              `font:700 13px/1 ${MONO};letter-spacing:.08em;border-radius:6px;padding:6px 9px;` +
+                (hot
+                  ? `color:${C.red};border:1px solid ${C.red}66;background:${C.red}1a;` +
+                    "animation:vcPulse 1.6s ease-in-out infinite"
+                  : `color:${C.text};border:1px solid ${C.borderMid};background:${C.raised}`),
+            )}
+          >
+            {clockText(p.secondsLeft)}
+          </span>
+        )}
         <div style={sx("flex:1")} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>
         <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{p.prizeLabel}</span>
@@ -183,6 +233,20 @@ export function ParlayPick(p: ParlayPickProps) {
               <Stat label="IF IT PAYS" value={p.allPicked ? s.potentialPoints.toLocaleString("en-US") : "—"} testid="potential-points" />
             </div>
 
+            {/* The shorter the window, the more the house pays for it. NORMAL
+                is the base edition — no boost, no line. */}
+            {p.mode.oddsBoost > 1 && (
+              <div
+                data-testid="odds-boost"
+                style={sx(`display:flex;align-items:center;gap:9px;padding:10px 14px;border-top:1px solid ${C.line}`)}
+              >
+                <span style={sx(modeTag(p.mode.key))}>
+                  {p.mode.label} +{Math.round((p.mode.oddsBoost - 1) * 100)}%
+                </span>
+                <span style={sx(`font:400 10px/1.4 ${MONO};color:${C.dim}`)}>window premium, already in the odds</span>
+              </div>
+            )}
+
             <div style={sx("padding:12px")}>
               <button
                 onClick={p.onLock}
@@ -196,6 +260,14 @@ export function ParlayPick(p: ParlayPickProps) {
               >
                 {p.allPicked ? "Lock parlay → duel" : `Pick ${left} more`}
               </button>
+              {counting && (
+                <div
+                  data-testid="pick-clock-note"
+                  style={sx(`margin-top:8px;text-align:center;font:400 10px/1.4 ${MONO};color:${hot ? C.red : C.dim}`)}
+                >
+                  unpicked legs lock at EVEN ↑
+                </div>
+              )}
             </div>
           </div>
 

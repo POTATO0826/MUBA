@@ -82,6 +82,10 @@ export interface LobbyDef {
   /** The sector groups the spin deals from. THE source of the book:
    *  `bookOf(lobby)` = `bookForSectors(sectors)`, in canonical board order. */
   sectors: readonly SectorKey[];
+  /** How much of the walk this lobby's duel runs for, and with it the salts,
+   *  the leg targets, the odds boost and the pick clock. Spec in
+   *  `MODES[mode]` (`src/data/modes.ts`). */
+  mode: Mode;
   /** Derived at construction from `sectors` (`marketOf(sectors)`) and kept on
    *  the lobby for presentation only — labels, colours, card art and the
    *  Battles filter. Never read it to build a book; read `sectors`. */

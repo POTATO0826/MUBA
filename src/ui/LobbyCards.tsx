@@ -1,5 +1,6 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
+import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, sectorChips } from "../data/sectors.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
@@ -17,6 +18,13 @@ import type { LobbyDef } from "../types.ts";
  *   yours, open            → "Waiting for opponent…" — nothing to do yet
  *   yours, matched         → "Start match · vs …" — both seats are taken
  */
+/**
+ * `"15 MIN"` → `"15M"`, `"24 HOURS"` → `"24H"`. The mode chip stacks above the
+ * legs badge in a 264px-wide card, so the badge column stays one token deep.
+ */
+const shortDuration = (m: ModeSpec): string =>
+  m.minutes < 60 ? `${m.minutes}M` : `${m.minutes / 60}H`;
+
 export function LobbyCard({
   lobby,
   onAccept,
@@ -45,6 +53,7 @@ export function LobbyCard({
   // Resting state shows at most two sector chips; the hover pane shows the
   // book in full, so a collapsed `ALL STOCKS` chip is never the whole story.
   const chips = sectorChips(lobby.sectors, 2);
+  const mode = MODES[lobby.mode];
   const picked = new Set(lobby.sectors);
   const sectorLine = SECTOR_ORDER.filter((k) => picked.has(k))
     .map((k) => SECTORS[k].label)
@@ -54,7 +63,7 @@ export function LobbyCard({
   const details = [
     `${lobby.host.name} · ${MARKET_LABEL[lobby.market]} · ${lobby.legs} legs · ${sectorLine}`,
     `${lobby.prize.toFixed(2)} Ξ pool · ${(lobby.prize / 2).toFixed(2)} Ξ each`,
-    "Spin deals the tickers · most legs wins",
+    `${mode.label} · ${mode.duration} window · spin deals the tickers · most legs wins`,
   ];
 
   return (
@@ -102,13 +111,19 @@ export function LobbyCard({
                 </div>
               </div>
             </div>
-            <div
-              style={sx(
-                `font:700 9px/1 ${MONO};letter-spacing:.1em;padding:5px 7px;border-radius:5px;flex:none;` +
-                  `border:1px solid ${C.border};background:rgba(0,0,0,.28);color:${C.muted}`,
-              )}
-            >
-              {lobby.legs} LEGS
+            {/* The badge column: what window you are playing, then how many legs. */}
+            <div style={sx("display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none")}>
+              <span style={sx(`${modeTag(lobby.mode)};white-space:nowrap`)}>
+                {mode.label} · {shortDuration(mode)}
+              </span>
+              <div
+                style={sx(
+                  `font:700 9px/1 ${MONO};letter-spacing:.1em;padding:5px 7px;border-radius:5px;flex:none;` +
+                    `border:1px solid ${C.border};background:rgba(0,0,0,.28);color:${C.muted}`,
+                )}
+              >
+                {lobby.legs} LEGS
+              </div>
             </div>
           </div>
 

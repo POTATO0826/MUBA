@@ -1,8 +1,10 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
+import { sectorChips } from "../data/sectors.ts";
+import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, tag } from "../theme.ts";
+import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
 import type { LobbyDef, Player } from "../types.ts";
 
 interface RoomProps {
@@ -17,12 +19,17 @@ interface RoomProps {
   onLeave: () => void;
 }
 
-const STEPS = [
+/**
+ * The four beats of a match. Only DUEL depends on the mode: it is the line
+ * that names the compression both players just agreed to — a Blitz duel is
+ * fifteen minutes of tape played in a couple of seconds.
+ */
+const stepsFor = (mode: ModeSpec): readonly (readonly [string, string])[] => [
   ["SPIN", "the reel deals the tickers"],
   ["STUDY", "same charts, same wire"],
   ["PARLAY", "pick a card, blind"],
-  ["DUEL", "both slips on the tape"],
-] as const;
+  ["DUEL", `${mode.duration} of tape in ${mode.wallSeconds}s`],
+];
 
 /**
  * The lobby room. Both seats are taken; nothing happens until both players
@@ -31,6 +38,8 @@ const STEPS = [
  */
 export function Room(p: RoomProps) {
   const color = MARKET_COLOR[p.lobby.market];
+  const mode = MODES[p.lobby.mode];
+  const steps = stepsFor(mode);
   const both = p.ready.me && p.ready.opp;
 
   return (
@@ -46,6 +55,14 @@ export function Room(p: RoomProps) {
             <div style={sx("display:flex;align-items:center;gap:8px")}>
               <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.14em;color:${color}`)}>LOBBY</span>
               <span style={sx(tag(color))}>{MARKET_LABEL[p.lobby.market]}</span>
+              {sectorChips(p.lobby.sectors).map((chip) => (
+                <span key={chip.key} style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}>
+                  {chip.label}
+                </span>
+              ))}
+              <span style={sx(modeTag(p.lobby.mode))}>
+                {mode.label} · {mode.duration}
+              </span>
               <span style={sx(tag(C.muted))}>{p.lobby.legs} LEGS</span>
               <span style={sx(tag(C.muted))}>1V1</span>
             </div>
@@ -104,13 +121,13 @@ export function Room(p: RoomProps) {
       </div>
 
       <div style={sx(`display:flex;align-items:center;gap:10px;margin-top:18px;padding:14px 18px;border:1px solid ${C.border};border-radius:12px;background:${C.card};flex-wrap:wrap`)}>
-        {STEPS.map(([k, v], i) => (
+        {steps.map(([k, v], i) => (
           <div key={k} style={sx("display:flex;align-items:center;gap:10px")}>
             <div>
               <div style={sx(`font:700 10px/1 ${MONO};letter-spacing:.12em;color:${i === 0 ? color : C.muted}`)}>{k}</div>
               <div style={sx(`margin-top:5px;font:400 10.5px/1 ${MONO};color:${C.faint}`)}>{v}</div>
             </div>
-            {i < STEPS.length - 1 && <span style={sx(`margin:0 6px;color:${C.borderMid}`)}>→</span>}
+            {i < steps.length - 1 && <span style={sx(`margin:0 6px;color:${C.borderMid}`)}>→</span>}
           </div>
         ))}
         <div style={sx("flex:1")} />

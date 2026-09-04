@@ -5,11 +5,14 @@ import { App } from "../src/App.tsx";
 import { bookFor } from "../src/data/lobbies.ts";
 import { mockMarketSource } from "../src/data/market.ts";
 import type { NewsSource, WireItem } from "../src/data/news.ts";
+import { MODES, MODE_SALT } from "../src/data/modes.ts";
 import { bookForSectors } from "../src/data/sectors.ts";
+import { edgeOf, scoreOf, settle } from "../src/engine/match.ts";
+import { buildLeg } from "../src/engine/parlay.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS } from "../src/state/match.ts";
-import type { SectorKey } from "../src/types.ts";
+import type { Mode, SectorKey } from "../src/types.ts";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -318,6 +321,127 @@ describe("sectors", () => {
     expect(dealt).toEqual(["TSLA", "AMD", "META"]);
     mount("/match/kz-semis/parlay?seed=424242");
     expect(slipLegs()).toEqual([...dealt]);
+  });
+});
+
+describe("modes", () => {
+  /** Resting card face. The hover pane carries the full line too, so a
+   *  negative assertion has to scope to the body or it proves nothing. */
+  const face = (id: string) =>
+    lobbyCards().find((c) => c.dataset.lobby === id)!.querySelector(".vc-lobby-body")!.textContent ?? "";
+  const modeBtns = () => Array.from(container.querySelectorAll<HTMLButtonElement>("[data-mode]"));
+  const modeBtn = (m: Mode) => modeBtns().find((b) => b.dataset.mode === m)!;
+  const pressed = () => modeBtns().filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.dataset.mode);
+  const boostLine = () => container.querySelector<HTMLElement>("[data-boost]");
+  const testid = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+
+  test("every card wears the window it is played on", () => {
+    mount("/battles");
+    expect(face("lx-degen")).toContain("BLITZ");
+    expect(face("lx-degen")).toContain("15M");
+    expect(face("kz-semis")).toContain("NORMAL · 24H");
+    expect(face("kz-semis")).not.toContain("BLITZ");
+
+    // The window folds into the third hover line rather than adding a fourth.
+    const details = container.querySelector<HTMLElement>('[data-details="lx-degen"]')!;
+    expect(details.children).toHaveLength(3);
+    expect(details.children[2]!.textContent).toContain("BLITZ · 15 MIN window");
+    expect(details.children[2]!.textContent).toContain("most legs wins");
+  });
+
+  test("the builder picks a mode, and the payout boost follows it", () => {
+    mount("/create");
+    expect(modeBtns().map((b) => b.dataset.mode)).toEqual(["BLITZ", "QUICK", "NORMAL"]);
+    // The house edition is the default: base targets, base odds, no clock.
+    expect(pressed()).toEqual(["NORMAL"]);
+    expect(boostLine()).toBeNull();
+
+    act(() => modeBtn("BLITZ").click());
+    expect(pressed()).toEqual(["BLITZ"]);
+    expect(boostLine()?.textContent).toContain("×1.35");
+
+    act(() => modeBtn("NORMAL").click());
+    expect(pressed()).toEqual(["NORMAL"]);
+    expect(boostLine()).toBeNull();
+  });
+
+  test("the mode is the window: the same slip on the same seed settles on a different scoreboard", () => {
+    // lx-degen's own arena and salt, built the way `derived` builds them — a
+    // ticker nobody picked previews at EVEN ↑, and the mode scales the line.
+    const arena = spinCase(bookForSectors(["DEFI", "MEME"]), 3, 424242).syms;
+    const salt = 2 + 424242 * 3 + MODE_SALT.BLITZ;
+    const scale = MODES.BLITZ.targetScale;
+    const mine = arena.map((s) => buildLeg(s, "over", "EVEN", scale));
+    const theirs = arena.map((s) => buildLeg(s, "under", "EVEN", scale));
+
+    // Only the settle print moves. Fifteen minutes of tape is not a prefix of
+    // the day's read — the opponent's book has not landed a leg yet at 56.
+    expect(scoreOf(theirs, salt, MODES.BLITZ.settleAt)).toBe(0);
+    expect(scoreOf(theirs, salt, MODES.NORMAL.settleAt)).toBe(1);
+    expect(edgeOf(mine, salt, MODES.BLITZ.settleAt)).not.toBe(edgeOf(mine, salt, MODES.NORMAL.settleAt));
+
+    const blitz = settle(mine, theirs, arena, salt, MODES.BLITZ.settleAt, "You", "lexa");
+    const normal = settle(mine, theirs, arena, salt, MODES.NORMAL.settleAt, "You", "lexa");
+    expect(blitz.scoreLine).not.toBe(normal.scoreLine);
+    expect(blitz.decider).not.toBe(normal.decider);
+
+    // And the duel screen says which window it is playing, in the same numbers.
+    mount("/match/lx-degen/duel?seed=424242");
+    expect(text()).toContain("BLITZ · 15 MIN · TAPE ×402");
+    remount("/match/kz-semis/duel?seed=424242");
+    expect(text()).toContain("NORMAL · 24 HOURS · TAPE ×10,800");
+  });
+
+  test("a timed mode puts a clock on the pick screen, an untimed one does not", () => {
+    mount("/match/lx-degen/parlay?seed=424242");
+    const clock = testid("pick-clock")!;
+    expect(clock).not.toBeNull();
+    expect(clock.textContent).toMatch(/^\d+:\d{2}$/);
+    expect(clock.getAttribute("style")).toContain("monospace");
+    expect(testid("pick-clock-note")?.textContent).toContain("lock at EVEN");
+
+    remount("/match/kz-semis/parlay?seed=424242");
+    expect(testid("pick-clock")).toBeNull();
+    expect(testid("pick-clock-note")).toBeNull();
+  });
+
+  test("a slip left unpicked locks itself once the clock runs out", async () => {
+    mount("/match/lx-degen/parlay?seed=424242");
+    expect(testid("pick-clock")).not.toBeNull();
+
+    const realNow = Date.now;
+    try {
+      // Past the 20-second deadline. The match's own 120ms interval is what
+      // notices — the same tick that would have counted the clock down.
+      Date.now = () => realNow.call(Date) + 60_000;
+      await act(async () => {
+        await sleep(150);
+      });
+    } finally {
+      Date.now = realNow;
+    }
+
+    expect(window.location.pathname).toBe("/match/lx-degen/duel");
+    expect(text()).toContain("Live duel · Friday tail");
+    // Expired is the button's own transition: every unpicked leg went EVEN ↑.
+    expect(text()).toContain("EVEN↑ EVEN↑ EVEN↑");
+  });
+
+  test("the window premium rides a Blitz slip and leaves NORMAL's odds where they were", () => {
+    mount("/match/lx-degen/parlay?seed=424242");
+    expect(testid("odds-boost")?.textContent).toContain("+35%");
+
+    remount("/match/kz-semis/parlay?seed=424242");
+    expect(testid("odds-boost")).toBeNull();
+    // …and the pinned NORMAL slip still prices exactly as it always did.
+    const cards = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-parlay]"));
+    const pick = (sym: string, id: string) =>
+      act(() => cards.find((c) => c.dataset.parlay === `${sym}:${id}`)!.click());
+    const syms = slipLegs() as string[];
+    pick(syms[0]!, "sharp-bear");
+    pick(syms[1]!, "safe-bull");
+    pick(syms[2]!, "degen-bull");
+    expect(testid("combined-mult")?.textContent).toBe("×47.52");
   });
 });
 

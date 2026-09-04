@@ -53,11 +53,17 @@ const DESK: readonly (readonly { who: string; text: string }[])[] = [
   ],
 ];
 
-/** One news line per ticker, then a desk exchange. */
-export function briefsFor(syms: readonly string[], salt: number): readonly Brief[] {
+/** One news line per ticker, then a desk exchange. `end` is the mode's settle
+ *  print: the news is written about the window the duel actually runs, so a
+ *  Blitz headline never calls a name higher on strength it only finds later. */
+export function briefsFor(
+  syms: readonly string[],
+  salt: number,
+  end: number = TAPE_LEN,
+): readonly Brief[] {
   const random = seededRandom(salt * 131 + syms.length);
   const news: Brief[] = syms.map((sym) => {
-    const up = pctAt(sym, salt, TAPE_LEN) >= 0;
+    const up = pctAt(sym, salt, end) >= 0;
     const pool = up ? UP : DOWN;
     const line = pool[Math.floor(random() * pool.length)]!;
     return { kind: "news", sym, text: line(sym, meta(sym).sector.toLowerCase()) };

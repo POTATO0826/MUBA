@@ -50,10 +50,17 @@ export interface ParlayLeg extends Leg {
   strike: number;
 }
 
-export function buildLeg(sym: string, dir: Direction, tier: Tier): ParlayLeg {
+/** `targetScale` is the mode's shrink factor: a shorter duel window moves less,
+ *  so every line moves in with it. `1` is the full-tape lobby, unchanged. */
+export function buildLeg(
+  sym: string,
+  dir: Direction,
+  tier: Tier,
+  targetScale = 1,
+): ParlayLeg {
   const u = meta(sym);
   const spec = TIERS[tier];
-  const t = +(u.t * spec.scale).toFixed(2);
+  const t = +(u.t * spec.scale * targetScale).toFixed(2);
   const strike = u.px * (1 + (dir === "over" ? t : -t) / 100);
   return {
     sym,
@@ -80,6 +87,8 @@ export function impliedProbability(legs: readonly ParlayLeg[]): number {
 }
 
 export interface ParlaySummary {
+  /** Leg product × the mode's odds boost — the number the slip prints and
+   *  the number the payout is struck off. */
   mult: number;
   prob: number;
   potentialPoints: number;
@@ -87,8 +96,14 @@ export interface ParlaySummary {
   loud: boolean;
 }
 
-export function summarize(legs: readonly ParlayLeg[], stakePoints: number): ParlaySummary {
-  const mult = parlayMultiplier(legs);
+/** `oddsBoost` is the mode's premium for the tighter window. It rides on `mult`,
+ *  so it reaches `potentialPoints` too — the boost is a payout, not a label. */
+export function summarize(
+  legs: readonly ParlayLeg[],
+  stakePoints: number,
+  oddsBoost = 1,
+): ParlaySummary {
+  const mult = parlayMultiplier(legs) * oddsBoost;
   const prob = impliedProbability(legs);
   return { mult, prob, potentialPoints: Math.round(stakePoints * mult), loud: prob < LOUD_BELOW };
 }
@@ -127,16 +142,17 @@ export function cardById(id: string | null | undefined): ParlayCard | null {
 }
 
 /** One leg from one pick. */
-export function legForCard(sym: string, card: ParlayCard): ParlayLeg {
-  return buildLeg(sym, card.stance === "bull" ? "over" : "under", card.tier);
+export function legForCard(sym: string, card: ParlayCard, targetScale = 1): ParlayLeg {
+  return buildLeg(sym, card.stance === "bull" ? "over" : "under", card.tier, targetScale);
 }
 
 /** The slip a pick per ticker produces. Every ticker must have one. */
 export function legsForPicks(
   syms: readonly string[],
   picks: Readonly<Record<string, ParlayCard>>,
+  targetScale = 1,
 ): readonly ParlayLeg[] {
-  return syms.map((sym) => legForCard(sym, picks[sym]!));
+  return syms.map((sym) => legForCard(sym, picks[sym]!, targetScale));
 }
 
 /** "SAFE↑ EVEN↓ DEGEN↑" — the slip, one glyph per leg. */

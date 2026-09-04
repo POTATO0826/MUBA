@@ -1,10 +1,11 @@
 import { Sparkline } from "../components/Sparkline.tsx";
+import type { ModeSpec } from "../data/modes.ts";
 import { buildChartCard } from "../engine/chart.ts";
 import { legState } from "../engine/match.ts";
 import type { ParlayLeg } from "../engine/parlay.ts";
-import { TAPE_LEN, windowLabel } from "../engine/tape.ts";
+import { windowLabel } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS } from "../theme.ts";
+import { C, MONO, SANS, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
 
 interface LiveProps {
@@ -16,6 +17,10 @@ interface LiveProps {
   myCardLabel: string;
   oppCardLabel: string;
   salt: number;
+  /** The print this duel settles on — the mode's window, not the whole tape. */
+  settleAt: number;
+  /** This lobby's mode: the badge text and the tint the duel runs in. */
+  mode: ModeSpec;
   /** Print the tape has played up to. */
   pos: number;
   raceDone: boolean;
@@ -29,7 +34,7 @@ interface LiveProps {
 /** Both slips, held through a compressed window of the tape. */
 export function Live(p: LiveProps) {
   const nLegs = p.myLegs.length;
-  const progress = (p.pos / TAPE_LEN) * 100;
+  const progress = (p.pos / p.settleAt) * 100;
   const firstSym = p.arena[0];
   const cols = Math.min(3, Math.max(2, p.arena.length));
 
@@ -46,13 +51,9 @@ export function Live(p: LiveProps) {
     <div style={sx("padding:24px 28px;max-width:1720px;margin:0 auto")}>
       <div style={sx("display:flex;align-items:center;gap:16px;margin-bottom:18px")}>
         <h2 style={sx(`margin:0;font:700 19px/1 ${SANS};letter-spacing:-.02em`)}>Live duel · {p.lobbyName}</h2>
-        <span
-          style={sx(
-            `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.accent};` +
-              "border:1px solid rgba(200,255,0,.3);background:rgba(200,255,0,.08);border-radius:6px;padding:6px 8px",
-          )}
-        >
-          TAPE ×64{firstSym ? ` · ${windowLabel(firstSym, p.salt)}` : ""}
+        <span style={sx(tag(p.mode.color))}>
+          {p.mode.label} · {p.mode.duration} · TAPE ×{p.mode.compression}
+          {firstSym ? ` · ${windowLabel(firstSym, p.salt)}` : ""}
         </span>
         <div style={sx("flex:1")} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>
@@ -60,7 +61,14 @@ export function Live(p: LiveProps) {
       </div>
 
       <div style={sx(`height:3px;border-radius:99px;background:${C.line};overflow:hidden;margin-bottom:18px`)}>
-        <div style={sx(`height:100%;width:${progress.toFixed(1)}%;background:${C.accent};transition:width .1s linear`)} />
+        <div
+          style={sx(
+            `height:100%;width:${progress.toFixed(1)}%;background:${p.mode.color};transition:width .1s linear` +
+              // Two seconds of tape is short enough that a still bar reads as
+              // stalled; the pulse is the only cue Blitz is running.
+              (p.mode.key === "BLITZ" ? ";animation:vcPulse 1.2s ease-in-out infinite" : ""),
+          )}
+        />
       </div>
 
       <div style={sx("display:grid;grid-template-columns:260px minmax(0,1fr) 260px;gap:18px;align-items:start")}>

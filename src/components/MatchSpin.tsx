@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { modeTag, type ModeSpec } from "../data/modes.ts";
 import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, tickParams } from "../lib/sound/index.ts";
@@ -18,6 +19,8 @@ const ease = (t: number) => 1 - Math.pow(1 - t, 5);
 interface MatchSpinProps {
   lobbyName: string;
   marketLabel: string;
+  /** The window this lobby runs on — the chip beside the market tag. */
+  mode: ModeSpec;
   color: string;
   opponent: Player;
   /** The lobby's book, in the same order `spinCase` indexed it. */
@@ -193,6 +196,9 @@ export function MatchSpin(p: MatchSpinProps) {
             LUCKY SPIN · {p.lobbyName.toUpperCase()}
           </span>
           <span style={sx(tag(p.color))}>{p.marketLabel}</span>
+          <span style={sx(modeTag(p.mode.key))}>
+            {p.mode.label} · {p.mode.duration}
+          </span>
           <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>you vs {p.opponent.name}</span>
           <div style={sx("flex:1")} />
           <span style={sx(`font:500 10px/1 ${MONO};color:${done ? C.accent : C.dim}`)}>{status}</span>

@@ -1,9 +1,10 @@
 import { NewsWire } from "../components/NewsWire.tsx";
 import { Sparkline } from "../components/Sparkline.tsx";
+import { modeTag, type ModeSpec } from "../data/modes.ts";
 import type { WireItem } from "../data/news.ts";
 import { meta } from "../data/universe.ts";
 import { buildChartCard } from "../engine/chart.ts";
-import { TAPE_LEN, fmtPx, series } from "../engine/tape.ts";
+import { fmtPx, series } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -17,13 +18,17 @@ interface StudyProps {
   /** Where that feed came from — the terminal draws it as its header chip. */
   wireStatus: "mock" | "live" | "partial";
   salt: number;
+  /** The print the duel will settle on. The study charts are drawn to exactly
+   *  that window, so what you read is the length you play. */
+  settleAt: number;
+  mode: ModeSpec;
   opponent: Player;
   prizeLabel: string;
   onDone: () => void;
 }
 
 /** Both players read the same charts and the same wire before picking a parlay. */
-export function Study({ arena, wire, wireStatus, salt, opponent, prizeLabel, onDone }: StudyProps) {
+export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent, prizeLabel, onDone }: StudyProps) {
   const cols = Math.min(3, Math.max(2, arena.length));
   const firstTarget = meta(arena[0] ?? "ETH").t;
 
@@ -38,7 +43,9 @@ export function Study({ arena, wire, wireStatus, salt, opponent, prizeLabel, onD
     {
       tag: "READ 02",
       title: "The tape you duel on is new",
-      body: "These charts are the study window. The duel draws a fresh random window on the same tickers, so read behaviour, not levels.",
+      body:
+        `These charts are the study window — ${mode.duration} of tape, the same length the duel runs. ` +
+        "The duel draws a fresh random window on the same tickers, so read behaviour, not levels.",
     },
     {
       tag: "READ 03",
@@ -60,6 +67,9 @@ export function Study({ arena, wire, wireStatus, salt, opponent, prizeLabel, onD
         >
           STUDY PHASE · BOTH PLAYERS READING
         </span>
+        <span style={sx(modeTag(mode.key))}>
+          {mode.label} · {mode.duration}
+        </span>
         <div style={sx("flex:1")} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>
         <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{prizeLabel}</span>
@@ -69,7 +79,7 @@ export function Study({ arena, wire, wireStatus, salt, opponent, prizeLabel, onD
         <div style={sx("display:flex;flex-direction:column;gap:18px;min-width:0")}>
           <div style={sx(`display:grid;grid-template-columns:repeat(${cols},minmax(0,1fr));gap:12px`)}>
             {arena.map((sym) => {
-              const card = buildChartCard(sym, salt, TAPE_LEN, 110);
+              const card = buildChartCard(sym, salt, settleAt, 110);
               const u = meta(sym);
               const tape = series(sym, salt);
               const hi = Math.max(...tape);

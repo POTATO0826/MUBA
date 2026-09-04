@@ -1,11 +1,12 @@
 import { useCallback, useRef } from "react";
 import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
+import { MODES, MODE_ORDER, modeTag } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, bookForSectors, symsOfSector } from "../data/sectors.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, pill, tag } from "../theme.ts";
+import { C, MONO, SANS, miniTag, pill, tag } from "../theme.ts";
 import type { LobbyForm } from "../state/match.ts";
-import type { MarketFilter, SectorKey } from "../types.ts";
+import type { MarketFilter, Mode, SectorKey } from "../types.ts";
 
 const STEP_BTN =
   `width:34px;height:34px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
@@ -22,6 +23,24 @@ const BOOK_LINE =
 
 const MARKETS: readonly MarketFilter[] = ["STOCK", "CRYPTO", "MIXED"];
 
+/** One mode button. The selected one is lit in its own colour — the same
+ *  border/tint idiom the sector pills use, one step brighter because the mode
+ *  is the only choice on this card that changes the payout. */
+const MODE_BTN = (color: string, on: boolean): string =>
+  `display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;` +
+  `padding:10px 8px;border-radius:10px;text-align:left;cursor:pointer;` +
+  (on
+    ? `border:1px solid ${color}80;background:${color}14;box-shadow:0 0 0 1px ${color}26,0 8px 20px -12px ${color}`
+    : `border:1px solid ${C.border};background:transparent`);
+
+/** `BLITZ · 15 MIN` on one line inside a ~112px column: the mode tag with its
+ *  letter-spacing eased off, so `NORMAL · 24 HOURS` still fits unwrapped. */
+const MODE_HEAD = (m: Mode, on: boolean): string =>
+  (on ? modeTag(m) : miniTag(C.faint)) + ";letter-spacing:.06em;white-space:nowrap";
+
+const MODE_NUM = (on: boolean): string =>
+  `font:500 9.5px/1 ${MONO};color:${on ? C.textSoft : C.dim}`;
+
 /** Legs run 2–4, so the stepper's pitch walks that span. */
 const legsPitch = (legs: number) => 1 + ((Math.max(2, Math.min(4, legs)) - 2) / 2) * 0.35;
 /** The prize has no useful ceiling, so the walk saturates at a sane pool. */
@@ -37,6 +56,7 @@ interface CreateLobbyProps {
   onName: (v: string) => void;
   onMarket: (m: MarketFilter) => void;
   onToggleSector: (k: SectorKey) => void;
+  onMode: (m: Mode) => void;
   onLegsUp: () => void;
   onLegsDown: () => void;
   onPrizeInput: (raw: string) => void;
@@ -55,6 +75,7 @@ interface CreateLobbyProps {
  *  header tag reflects the market the selection derives to. */
 export function CreateLobby(p: CreateLobbyProps) {
   const color = MARKET_COLOR[p.form.market];
+  const mode = MODES[p.form.mode];
   const hover = useSoundHover();
 
   // The book the spin would deal from, recomputed each render — it is a
@@ -221,10 +242,39 @@ export function CreateLobby(p: CreateLobbyProps) {
           <div style={sx(`${LABEL};margin-top:20px`)}>ENTRY PER PLAYER</div>
           <div style={sx(`margin-top:10px;font:700 24px/1 ${MONO}`)}>{p.entryLabel}</div>
           <div style={sx(NOTE)}>Half the pool each. Winner takes the full pool.</div>
+          {mode.oddsBoost > 1 && (
+            <div data-boost style={sx(`margin-top:6px;font:500 10.5px/1.4 ${MONO};color:${mode.color}`)}>
+              winner takes {p.prizeLabel} · payout boost ×{mode.oddsBoost.toFixed(2)}
+            </div>
+          )}
 
           <div style={sx(`${LABEL};margin-top:20px`)}>MODE</div>
-          <div style={sx(`margin-top:10px;font:700 14px/1 ${SANS}`)}>1v1</div>
-          <div style={sx(NOTE)}>Spin → case study → parlay → duel. Winner on legs, conviction breaks ties.</div>
+          <div style={sx("display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:10px")}>
+            {MODE_ORDER.map((m) => {
+              const s = MODES[m];
+              const on = p.form.mode === m;
+              return (
+                <button
+                  key={m}
+                  data-mode={m}
+                  aria-pressed={on}
+                  onClick={() => {
+                    sfx("ui.toggle.on");
+                    p.onMode(m);
+                  }}
+                  {...hover}
+                  style={sx(MODE_BTN(s.color, on))}
+                >
+                  <span style={sx(MODE_HEAD(m, on))}>
+                    {s.label} · {s.duration}
+                  </span>
+                  <span style={sx(MODE_NUM(on))}>targets ×{s.targetScale.toFixed(2)}</span>
+                  <span style={sx(MODE_NUM(on))}>payout ×{s.oddsBoost.toFixed(2)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={sx(NOTE)}>{mode.blurb}</div>
 
           <button
             onClick={() => {

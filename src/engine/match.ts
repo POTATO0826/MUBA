@@ -14,11 +14,26 @@ export function scoreOf(legs: readonly Leg[], salt: number, pos: number): number
 }
 
 /** Tie-break metric: total absolute move across the legs that actually landed,
- *  measured at the end of the tape. Bigger conviction takes the pool. */
-export function edgeOf(legs: readonly Leg[], salt: number): number {
+ *  measured at print `end` — the mode's settle print, the whole tape by default.
+ *  Bigger conviction takes the pool. */
+export function edgeOf(legs: readonly Leg[], salt: number, end: number = TAPE_LEN): number {
   return legs.reduce((acc, l) => {
-    const st = legState(l, salt, TAPE_LEN);
+    const st = legState(l, salt, end);
     return acc + (st.won ? Math.abs(st.pct) : 0);
+  }, 0);
+}
+
+/** Second tie-break: signed travel in each leg's own direction, counted whether
+ *  the leg cleared its target or not. An over leg banks its move, an under leg
+ *  banks the negative of it, so a book that was right about direction and short
+ *  of the line still outranks one that was simply wrong.
+ *
+ *  Short windows make 0–0 common, and at 0–0 every `edgeOf` is 0 — without this
+ *  the first tie-break hands every scoreless duel to P1. */
+export function driftOf(legs: readonly Leg[], salt: number, end: number = TAPE_LEN): number {
+  return legs.reduce((acc, l) => {
+    const { pct } = legState(l, salt, end);
+    return acc + (l.dir === "over" ? pct : -pct);
   }, 0);
 }
 
@@ -38,8 +53,9 @@ export function readPlayer(
   salt: number,
   score: number,
   won: boolean,
+  end: number = TAPE_LEN,
 ): PlayerRead {
-  const settled = legs.map((l) => ({ ...l, st: legState(l, salt, TAPE_LEN) }));
+  const settled = legs.map((l) => ({ ...l, st: legState(l, salt, end) }));
   const overs = legs.filter((l) => l.dir === "over").length;
   const unders = legs.length - overs;
 
@@ -90,6 +106,9 @@ export interface MatchVerdict {
   oppScore: number;
   myEdge: number;
   oppEdge: number;
+  /** Second tie-break, decided only when the edges are dead level. */
+  myDrift: number;
+  oppDrift: number;
   tied: boolean;
   meWins: boolean;
   winner: string;
@@ -113,19 +132,25 @@ export function settle(
 ): MatchVerdict {
   const myScore = scoreOf(myLegs, salt, pos);
   const oppScore = scoreOf(oppLegs, salt, pos);
-  const myEdge = edgeOf(myLegs, salt);
-  const oppEdge = edgeOf(oppLegs, salt);
+  const myEdge = edgeOf(myLegs, salt, pos);
+  const oppEdge = edgeOf(oppLegs, salt, pos);
+  const myDrift = driftOf(myLegs, salt, pos);
+  const oppDrift = driftOf(oppLegs, salt, pos);
 
   const tied = myScore === oppScore;
-  const meWins = myScore > oppScore || (tied && myEdge >= oppEdge);
+  // Conviction first, raw travel second. The drift arm only fires when the two
+  // books landed the exact same points on won legs — which at 0–0 is always.
+  const meWins =
+    myScore > oppScore ||
+    (tied && (myEdge !== oppEdge ? myEdge > oppEdge : myDrift >= oppDrift));
   const winner = meWins ? p1Name : oppName;
 
-  const myRead = readPlayer(p1Name, myLegs, salt, myScore, meWins);
-  const oppRead = readPlayer(oppName, oppLegs, salt, oppScore, !meWins);
+  const myRead = readPlayer(p1Name, myLegs, salt, myScore, meWins, pos);
+  const oppRead = readPlayer(oppName, oppLegs, salt, oppScore, !meWins, pos);
   const winRead = meWins ? myRead : oppRead;
   const loseRead = meWins ? oppRead : myRead;
 
-  const upN = arena.filter((s) => pctAt(s, salt, TAPE_LEN) > 0).length;
+  const upN = arena.filter((s) => pctAt(s, salt, pos) > 0).length;
   const tapeBias =
     upN >= arena.length - 1
       ? "a broadly bullish tape"
@@ -133,12 +158,21 @@ export function settle(
         ? "a broadly bearish tape"
         : "a mixed tape";
 
+  // Level on conviction means nobody cashed a leg, or both cashed identically.
+  // Either way the sentence has to explain the axis that actually decided it.
+  const tieDetail =
+    myEdge !== oppEdge
+      ? `${winRead.who}’s won legs moved ${(meWins ? myEdge : oppEdge).toFixed(1)} points ` +
+        `combined against ${(meWins ? oppEdge : myEdge).toFixed(1)} for ${loseRead.who}.`
+      : `neither book had the edge on won legs, so it fell to raw travel — ` +
+        `${winRead.who}’s slip drifted ${(meWins ? myDrift : oppDrift).toFixed(1)} points ` +
+        `its own way against ${(meWins ? oppDrift : myDrift).toFixed(1)} for ${loseRead.who}.`;
+
   const decider =
     `The window drew ${tapeBias} (${upN} of ${arena.length} assets closed up). ` +
     (tied
       ? `Both slips cashed ${myScore} leg${myScore === 1 ? "" : "s"}, so it went to conviction: ` +
-        `${winRead.who}’s won legs moved ${(meWins ? myEdge : oppEdge).toFixed(1)} points ` +
-        `combined against ${(meWins ? oppEdge : myEdge).toFixed(1)} for ${loseRead.who}.`
+        tieDetail
       : `${winRead.who}’s ${winRead.style.split(" · ")[0]!.toLowerCase()} lined up with it; ` +
         `${loseRead.who}’s ${loseRead.style.split(" · ")[0]!.toLowerCase()} needed the opposite ` +
         `drift. Final legs ${Math.max(myScore, oppScore)}–${Math.min(myScore, oppScore)}.`);
@@ -151,7 +185,9 @@ export function settle(
 
   const tieNote = tied
     ? ` · tied ${myScore}–${oppScore}, broken on conviction (` +
-      `${(meWins ? myEdge : oppEdge).toFixed(1)} vs ${(meWins ? oppEdge : myEdge).toFixed(1)} pts on won legs)`
+      (myEdge !== oppEdge
+        ? `${(meWins ? myEdge : oppEdge).toFixed(1)} vs ${(meWins ? oppEdge : myEdge).toFixed(1)} pts on won legs)`
+        : `${(meWins ? myDrift : oppDrift).toFixed(1)} vs ${(meWins ? oppDrift : myDrift).toFixed(1)} pts of drift)`)
     : " · winner takes the pool";
 
   return {
@@ -159,6 +195,8 @@ export function settle(
     oppScore,
     myEdge,
     oppEdge,
+    myDrift,
+    oppDrift,
     tied,
     meWins,
     winner,

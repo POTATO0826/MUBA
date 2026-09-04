@@ -33,14 +33,20 @@ export function randomOpponent(random: () => number = Math.random): Player {
  * `test/determinism.test.ts` pin the tickers it deals at seed 424242 against
  * `bookFor("STOCK")`, and `spinCase` indexes into the book, so any narrowing
  * would silently re-deal that match. The other five carry themed books.
+ *
+ * `kz-semis` and `mi-majors` MUST stay `NORMAL` for the same reason: `MODE_SALT`
+ * rides on both match salts and `settleAt` shortens the window, and `NORMAL` is
+ * the identity of both (salt 0, the whole tape, ×1 targets and odds). The
+ * multipliers and percentages those two matches are pinned at in
+ * `test/app.test.tsx` only survive on the identity mode.
  */
 export const LOBBIES: readonly LobbyDef[] = [
-  { id: "kz-semis", name: "Semis sprint", host: OPPONENTS[0]!, sectors: ["SEMIS", "TECH", "MACRO"], market: "STOCK", legs: 3, prize: 4.8, status: "open", mine: false, opponent: null, createdAgo: "2m" },
-  { id: "mi-majors", name: "Majors only", host: OPPONENTS[1]!, sectors: ["MAJORS"], market: "CRYPTO", legs: 2, prize: 1.2, status: "open", mine: false, opponent: null, createdAgo: "5m" },
-  { id: "dr-mixed", name: "Cross-asset box", host: OPPONENTS[2]!, sectors: ["SEMIS", "MAJORS"], market: "MIXED", legs: 4, prize: 8.0, status: "open", mine: false, opponent: null, createdAgo: "9m" },
-  { id: "lx-degen", name: "Friday tail", host: OPPONENTS[3]!, sectors: ["DEFI", "MEME"], market: "CRYPTO", legs: 3, prize: 2.5, status: "open", mine: false, opponent: null, createdAgo: "12m" },
-  { id: "no-grind", name: "Weekly grind", host: OPPONENTS[4]!, sectors: ["MACRO"], market: "STOCK", legs: 2, prize: 0.6, status: "open", mine: false, opponent: null, createdAgo: "18m" },
-  { id: "ar-whale", name: "Whale box", host: OPPONENTS[5]!, sectors: ["MACRO", "DEFI"], market: "MIXED", legs: 4, prize: 20.0, status: "open", mine: false, opponent: null, createdAgo: "31m" },
+  { id: "kz-semis", name: "Semis sprint", host: OPPONENTS[0]!, sectors: ["SEMIS", "TECH", "MACRO"], market: "STOCK", mode: "NORMAL", legs: 3, prize: 4.8, status: "open", mine: false, opponent: null, createdAgo: "2m" },
+  { id: "mi-majors", name: "Majors only", host: OPPONENTS[1]!, sectors: ["MAJORS"], market: "CRYPTO", mode: "NORMAL", legs: 2, prize: 1.2, status: "open", mine: false, opponent: null, createdAgo: "5m" },
+  { id: "dr-mixed", name: "Cross-asset box", host: OPPONENTS[2]!, sectors: ["SEMIS", "MAJORS"], market: "MIXED", mode: "QUICK", legs: 4, prize: 8.0, status: "open", mine: false, opponent: null, createdAgo: "9m" },
+  { id: "lx-degen", name: "Friday tail", host: OPPONENTS[3]!, sectors: ["DEFI", "MEME"], market: "CRYPTO", mode: "BLITZ", legs: 3, prize: 2.5, status: "open", mine: false, opponent: null, createdAgo: "12m" },
+  { id: "no-grind", name: "Weekly grind", host: OPPONENTS[4]!, sectors: ["MACRO"], market: "STOCK", mode: "QUICK", legs: 2, prize: 0.6, status: "open", mine: false, opponent: null, createdAgo: "18m" },
+  { id: "ar-whale", name: "Whale box", host: OPPONENTS[5]!, sectors: ["MACRO", "DEFI"], market: "MIXED", mode: "BLITZ", legs: 4, prize: 20.0, status: "open", mine: false, opponent: null, createdAgo: "31m" },
 ];
 
 /** Market identity and the market book live in ./sectors.ts (A-k3) so that

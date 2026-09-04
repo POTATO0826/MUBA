@@ -9,6 +9,7 @@ import {
   randomOpponent,
   stakePointsFor,
 } from "../data/lobbies.ts";
+import { MODES, MODE_SALT } from "../data/modes.ts";
 import { PRESETS, SECTOR_ORDER, bookForSectors, marketOf } from "../data/sectors.ts";
 import { settle } from "../engine/match.ts";
 import {
@@ -21,9 +22,9 @@ import {
   type ParlayLeg,
 } from "../engine/parlay.ts";
 import { newSeed, seededRandom, spinCase } from "../engine/spin.ts";
-import { TAPE_LEN } from "../engine/tape.ts";
+import { sfx } from "../lib/sound/index.ts";
 import type { Route } from "../lib/route.ts";
-import type { LobbyDef, MarketFilter, SectorKey, Tab } from "../types.ts";
+import type { LobbyDef, MarketFilter, Mode, SectorKey, Tab } from "../types.ts";
 
 /**
  * One match: which lobby, which seed, who is ready, which parlay card, and
@@ -42,6 +43,9 @@ export interface LobbyForm {
    *  touches either. */
   sectors: readonly SectorKey[];
   market: MarketFilter;
+  /** The window the published lobby's duel runs on. `MODES[mode]` carries the
+   *  settle print, the target scale, the odds boost and the pick clock. */
+  mode: Mode;
   legs: number;
   /** Prize pool in ETH. */
   prize: number;
@@ -59,8 +63,14 @@ export interface MatchState {
   ready: { me: boolean; opp: boolean };
   /** Your pick per ticker: card id by symbol. The lock waits for every ticker. */
   myPicks: Readonly<Record<string, string>>;
-  /** Advances every 120ms while the tape is running. */
+  /** Advances every 120ms while the tape is running, and while a timed parlay
+   *  is counting down — that is what makes `derived.secondsLeft` move. */
   tick: number;
+  /** Wall-clock ms the parlay slip locks itself at, or `null` when the mode is
+   *  untimed (`NORMAL`) or there is no parlay on screen. Set on entry to the
+   *  parlay and cleared on every way out of a match, so a second duel can
+   *  never inherit the first one's clock. */
+  deadline: number | null;
   /** Underlying selected on the options desk. */
   asset: string;
   form: LobbyForm;
@@ -77,12 +87,31 @@ const INITIAL_FORM: LobbyForm = {
   name: "Room #4471",
   sectors: PRESETS.MIXED,
   market: "MIXED",
+  mode: "NORMAL",
   legs: 3,
   prize: 5,
   prizeText: "5.00",
 };
 
 const NOT_READY = { me: false, opp: false } as const;
+
+/**
+ * When a parlay entered right now would lock itself. `null` for an untimed
+ * mode or a missing lobby — the clock is a mode property, not a match one.
+ *
+ * Wall clock only: it decides WHEN the slip locks, never WHAT it locks. The
+ * legs an expired slip carries are the same deterministic `buildLeg(sym,
+ * "over", "EVEN", targetScale)` preview `derived` already renders for an
+ * unpicked ticker, so nothing here reaches for an RNG.
+ */
+function deadlineFor(lobby: LobbyDef | null): number | null {
+  const secs = lobby ? MODES[lobby.mode].pickSeconds : null;
+  return secs === null ? null : Date.now() + secs * 1000;
+}
+
+/** The one patch that ends the pick phase — pressed or expired, byte for byte
+ *  the same transition. Auto-lock must never drift from the button. */
+const LOCK_PATCH = { tab: "duel", tick: 0, deadline: null } as const satisfies Partial<MatchState>;
 
 export function initialState(route: Route): MatchState {
   const lobby = LOBBIES.find((l) => l.id === route.lobbyId) ?? null;
@@ -96,6 +125,8 @@ export function initialState(route: Route): MatchState {
     ready: NOT_READY,
     myPicks: {},
     tick: 0,
+    // A `/match/:id/parlay?seed=N` link opened cold starts its own clock.
+    deadline: route.tab === "parlay" && lobby ? deadlineFor(lobby) : null,
     asset: "ETH",
     form: INITIAL_FORM,
   };
@@ -124,9 +155,25 @@ export function useMatch(route: Route) {
     setState((s) => ({ ...s, ...(typeof p === "function" ? p(s) : p) }));
   }, []);
 
+  // One clock for the whole match. The tape uses it to advance, and a timed
+  // parlay uses it twice over: every tick re-runs `derived` so `secondsLeft`
+  // counts down, and the tick that finds the deadline behind us locks the slip
+  // with the button's own patch. An untimed parlay (NORMAL) is not ticked at
+  // all, so nothing about that path — renders included — changes.
   useEffect(() => {
     const id = setInterval(() => {
-      if (stateRef.current.tab === "duel") setState((s) => ({ ...s, tick: s.tick + 1 }));
+      const cur = stateRef.current;
+      if (cur.tab === "duel") {
+        setState((s) => ({ ...s, tick: s.tick + 1 }));
+        return;
+      }
+      if (cur.tab !== "parlay" || cur.deadline === null) return;
+      if (Date.now() >= cur.deadline) {
+        sfx("countdown.expire");
+        setState((s) => (s.tab === "parlay" ? { ...s, ...LOCK_PATCH } : s));
+      } else {
+        setState((s) => ({ ...s, tick: s.tick + 1 }));
+      }
     }, 120);
     return () => clearInterval(id);
   }, []);
@@ -165,6 +212,7 @@ export function useMatch(route: Route) {
         ready: NOT_READY,
         myPicks: {},
         tick: 0,
+        deadline: null,
       });
 
     return {
@@ -208,6 +256,11 @@ export function useMatch(route: Route) {
           );
           return { form: { ...s.form, sectors, market: marketOf(sectors) } };
         }),
+      /** The window the published duel runs on. Nothing else recomputes: the
+       *  mode is orthogonal to the book — it picks the settle print, the target
+       *  scale, the payout boost and the pick clock, none of which touch which
+       *  tickers get dealt or how many legs the book can fill. */
+      setFormMode: (mode: Mode) => patch((s) => ({ form: { ...s.form, mode } })),
       formLegsUp: () =>
         patch((s) => ({ form: { ...s.form, legs: clampLegs(s.form.legs + 1, legsMax(s.form.sectors)) } })),
       formLegsDown: () =>
@@ -242,6 +295,7 @@ export function useMatch(route: Route) {
             sectors: s.form.sectors,
             // Presentation only, and always derived — never the form's own field.
             market: marketOf(s.form.sectors),
+            mode: s.form.mode,
             legs: s.form.legs,
             prize: s.form.prize,
             status: "open",
@@ -264,6 +318,7 @@ export function useMatch(route: Route) {
           tab: "battles",
           lobbyId: null,
           ready: NOT_READY,
+          deadline: null,
           lobbies: s.lobbies.map((l) =>
             l.id === s.lobbyId && !l.mine ? { ...l, status: "open", opponent: null } : l,
           ),
@@ -272,20 +327,32 @@ export function useMatch(route: Route) {
       // ---------- the match ----------
 
       /** Abandon the spin. */
-      closeSpin: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY }),
+      closeSpin: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY, deadline: null }),
       claim: () => patch({ tab: "study" }),
-      doneStudy: () => patch({ tab: "parlay" }),
+      /** Into the pick phase, and the pick clock starts here. Study itself is
+       *  untimed — the mode's `pickSeconds` bounds the slip, not the reading. */
+      doneStudy: () =>
+        patch((s) => ({
+          tab: "parlay",
+          deadline: deadlineFor(s.lobbies.find((l) => l.id === s.lobbyId) ?? null),
+        })),
       pick: (sym: string, cardId: string) =>
         patch((s) => ({ myPicks: { ...s.myPicks, [sym]: cardId } })),
-      lockParlay: () => patch({ tab: "duel", tick: 0 }),
+      lockParlay: () => patch(LOCK_PATCH),
       settle: () => patch({ tab: "result" }),
-      backToBattles: () => patch({ tab: "battles", lobbyId: null, ready: NOT_READY, tick: 0 }),
+      backToBattles: () =>
+        patch({ tab: "battles", lobbyId: null, ready: NOT_READY, tick: 0, deadline: null }),
     };
   }, [patch]);
 
   const derived = useMemo(() => {
     const lobby = state.lobbies.find((l) => l.id === state.lobbyId) ?? null;
     const opponent = lobby ? opponentOf(lobby) : null;
+    // The mode spec drives four things at once: the salts, the settle print,
+    // every leg's target and the payout. With no lobby on screen there is no
+    // duel to shape, and NORMAL is the identity of all four — full tape,
+    // salt 0, ×1 targets, ×1 odds — so the no-lobby path stays inert.
+    const spec = lobby ? MODES[lobby.mode] : MODES.NORMAL;
     // The book comes from the lobby's sectors, and `canPlay` is what keeps
     // `spinCase` from throwing mid-render on a book too small for the legs.
     const spin = lobby && canPlay(lobby) ? spinCase(bookOf(lobby), lobby.legs, state.seed) : null;
@@ -306,21 +373,34 @@ export function useMatch(route: Route) {
 
     // A ticker without a pick shows at EVEN, bullish — a preview, not a position.
     const myLegs: readonly ParlayLeg[] = arena.map((sym) =>
-      myPicks[sym] ? legForCard(sym, myPicks[sym]!) : buildLeg(sym, "over", "EVEN"),
+      myPicks[sym]
+        ? legForCard(sym, myPicks[sym]!, spec.targetScale)
+        : buildLeg(sym, "over", "EVEN", spec.targetScale),
     );
-    const oppLegs: readonly ParlayLeg[] = arena.map((sym) => legForCard(sym, oppPicks[sym]!));
+    const oppLegs: readonly ParlayLeg[] = arena.map((sym) =>
+      legForCard(sym, oppPicks[sym]!, spec.targetScale),
+    );
 
     const stakePoints = lobby ? stakePointsFor(lobby) : 0;
-    const studySalt = 1 + state.seed * 3;
-    const fightSalt = 2 + state.seed * 3;
-    const pos = Math.min(TAPE_LEN, Math.max(2, state.tick * TAPE_STEP));
+    // `MODE_SALT` moves the whole window rather than shortening the same one,
+    // so the same seed in a different mode is a genuinely different draw and
+    // not a prefix of the NORMAL tape. `MODE_SALT.NORMAL === 0` keeps today's
+    // series byte-identical.
+    const studySalt = 1 + state.seed * 3 + MODE_SALT[spec.key];
+    const fightSalt = 2 + state.seed * 3 + MODE_SALT[spec.key];
+    const pos = Math.min(spec.settleAt, Math.max(2, state.tick * TAPE_STEP));
+    // Whole seconds still on the pick clock. Recomputed here rather than kept
+    // in state so it can never disagree with `deadline`; the 120ms interval
+    // bumps `tick`, which re-runs this memo, which is what makes it count.
+    const secondsLeft =
+      state.deadline === null ? null : Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
 
     const verdict =
       lobby && opponent
-        ? settle(myLegs, oppLegs, arena, fightSalt, TAPE_LEN, YOU.name, opponent.name)
+        ? settle(myLegs, oppLegs, arena, fightSalt, spec.settleAt, YOU.name, opponent.name)
         : null;
-    const mySummary = summarize(myLegs, stakePoints);
-    const oppSummary = summarize(oppLegs, stakePoints);
+    const mySummary = summarize(myLegs, stakePoints, spec.oddsBoost);
+    const oppSummary = summarize(oppLegs, stakePoints, spec.oddsBoost);
 
     return {
       lobby,
@@ -338,21 +418,37 @@ export function useMatch(route: Route) {
       oppSummary,
       /** What the winner banks in points: the stake at their own parlay's odds. */
       pointsIfWon: mySummary.potentialPoints,
-      briefs: briefsFor(arena, studySalt),
+      briefs: briefsFor(arena, studySalt, spec.settleAt),
       /** Identity of this match for anything cached per (lobby, seed) — the news wire. Null-safe: `lobby` can be null mid-render. */
       matchKey: `${state.lobbyId ?? "none"}:${state.seed}`,
       studySalt,
       fightSalt,
+      /** This match's mode spec — the window, the targets, the odds, the clock. */
+      mode: spec,
+      /** The print the duel settles on: the whole tape on NORMAL, less on the
+       *  shorter modes. Every view that used to reach for `TAPE_LEN` reads this. */
+      settleAt: spec.settleAt,
       /** Print index the tape has played up to. */
       pos,
-      raceDone: pos >= TAPE_LEN,
+      /** Whole seconds left to pick, or `null` when the mode is untimed. */
+      secondsLeft,
+      raceDone: pos >= spec.settleAt,
       verdict,
       prizeLabel: lobby ? `${lobby.prize.toFixed(2)} ETH` : "—",
       entryLabel: lobby ? `${(lobby.prize / 2).toFixed(2)} ETH` : "—",
       formPrizeLabel: `${state.form.prize.toFixed(2)} ETH`,
       formEntryLabel: `${(state.form.prize / 2).toFixed(2)} ETH`,
     };
-  }, [state.lobbies, state.lobbyId, state.seed, state.ready, state.myPicks, state.tick, state.form.prize]);
+  }, [
+    state.lobbies,
+    state.lobbyId,
+    state.seed,
+    state.ready,
+    state.myPicks,
+    state.tick,
+    state.deadline,
+    state.form.prize,
+  ]);
 
   return { state, derived, actions };
 }
