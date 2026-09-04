@@ -9,6 +9,7 @@ import type { Tab } from "../types.ts";
  *   /battles          the lobby board
  *   /create           the lobby builder
  *   /desk             the options desk
+ *   /ranks            the ladder
  *   /match/:id/room?seed=N       the lobby room — both players ready up
  *   /match/:id?seed=N            the spin
  *   /match/:id/study?seed=N      the case study
@@ -55,6 +56,7 @@ export function parseRoute(pathname: string, search: string): Route {
   if (parts[0] === "battles") return { tab: "battles", ...NONE };
   if (parts[0] === "create") return { tab: "create", ...NONE };
   if (parts[0] === "desk") return { tab: "desk", ...NONE };
+  if (parts[0] === "ranks") return { tab: "ranks", ...NONE };
   return { tab: "lobby", ...NONE };
 }
 
@@ -67,5 +69,6 @@ export function routePath(tab: Tab, lobbyId: string | null, seed: number | null)
   if (tab === "battles") return "/battles";
   if (tab === "create") return "/create";
   if (tab === "desk") return "/desk";
+  if (tab === "ranks") return "/ranks";
   return "/";
 }

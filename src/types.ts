@@ -16,7 +16,8 @@ export type Mode = "BLITZ" | "QUICK" | "NORMAL";
  * Screens in the app.
  *
  * `battles → room → spin → study → parlay → duel → result` is one match;
- * `create` feeds it a lobby. `lobby` (home) and `desk` sit outside it.
+ * `create` feeds it a lobby. `lobby` (home), `desk` and `ranks` (the ladder)
+ * sit outside it — they carry no lobby and no seed.
  */
 export type Tab =
   | "lobby"
@@ -28,7 +29,8 @@ export type Tab =
   | "parlay"
   | "duel"
   | "result"
-  | "desk";
+  | "desk"
+  | "ranks";
 
 export interface Asset {
   sym: string;

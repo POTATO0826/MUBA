@@ -96,6 +96,11 @@ const INITIAL_FORM: LobbyForm = {
 
 const NOT_READY = { me: false, opp: false } as const;
 
+/** The screens that stand outside a match: they carry no lobby and no seed,
+ *  so a cold `/ranks` (or `/desk`) must never be mistaken for a match address
+ *  with a missing lobby and bounced to the board. */
+const OUTSIDE_MATCH: ReadonlySet<Tab> = new Set<Tab>(["lobby", "battles", "create", "desk", "ranks"]);
+
 /**
  * When a parlay entered right now would lock itself. `null` for an untimed
  * mode or a missing lobby — the clock is a mode property, not a match one.
@@ -116,7 +121,7 @@ const LOCK_PATCH = { tab: "duel", tick: 0, deadline: null } as const satisfies P
 
 export function initialState(route: Route): MatchState {
   const lobby = LOBBIES.find((l) => l.id === route.lobbyId) ?? null;
-  const inMatch = route.tab !== "lobby" && route.tab !== "battles" && route.tab !== "create" && route.tab !== "desk";
+  const inMatch = !OUTSIDE_MATCH.has(route.tab);
   return {
     // A match address with no lobby behind it lands on the board.
     tab: inMatch && !lobby ? "battles" : route.tab,

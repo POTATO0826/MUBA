@@ -10,12 +10,14 @@ const MATCH_FLOW: readonly Tab[] = ["battles", "create", "room", "spin", "study"
 
 /**
  * Each tab clicks at its own pitch, so walking the nav row walks up a scale:
- * 523 / 587 / 659 Hz against `nav.click`'s 660Hz base.
+ * 523 / 587 / 659 / 698 Hz against `nav.click`'s 660Hz base. The ladder took
+ * the fourth step rather than squeezing a semitone in beside the desk.
  */
 const NAV: readonly { key: Tab; label: string; pitch: number }[] = [
   { key: "lobby", label: "Home", pitch: 523 / 660 },
   { key: "battles", label: "Battles", pitch: 587 / 660 },
-  { key: "desk", label: "Options desk", pitch: 659 / 660 },
+  { key: "ranks", label: "Ranking", pitch: 659 / 660 },
+  { key: "desk", label: "Options desk", pitch: 698 / 660 },
 ];
 
 interface HeaderProps {

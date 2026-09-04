@@ -21,6 +21,7 @@ import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
 import { Parlay } from "./views/Parlay.tsx";
 import { ParlayPick } from "./views/ParlayPick.tsx";
+import { Ranking } from "./views/Ranking.tsx";
 import { Result } from "./views/Result.tsx";
 import { Room } from "./views/Room.tsx";
 import { Study } from "./views/Study.tsx";
@@ -28,9 +29,6 @@ import { Study } from "./views/Study.tsx";
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
   "radial-gradient(900px 500px at 8% 0%, rgba(99,102,241,.08), transparent 55%),#09090b";
-
-/** Wave 7 replaces this with `actions.go("ranks")`. */
-const noop = (): void => {};
 
 const MATCH_STAGES = new Set(["room", "spin", "study", "parlay", "duel", "result"]);
 
@@ -46,7 +44,7 @@ function currentRoute(): Route {
  *
  * Take a seat, both players ready up in the room, the spin deals the tickers
  * both of you play on, read the case, pick a parlay card, hold through the
- * tape, settle. `lobby` (home), `create` and `desk` sit beside it.
+ * tape, settle. `lobby` (home), `create`, `desk` and `ranks` sit beside it.
  */
 export function App({ source, newsSource = mockNewsSource, route }: {
   source: MarketSource;
@@ -292,12 +290,18 @@ export function App({ source, newsSource = mockNewsSource, route }: {
           posAfter={rank.posAfter}
           onBackToBattles={actions.backToBattles}
           onRematch={actions.go("create")}
-          // Wave 7 routes `/ranks`; until then the ladder link is inert.
-          onOpenLadder={noop}
+          onOpenLadder={actions.go("ranks")}
         />
       )}
 
       {state.tab === "desk" && <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />}
+
+      {/* The ladder. `rank.you` is the same `LeaderPlayer` the rank moment
+          reasons about, so the row that climbs on the Result screen is
+          literally the row this page sorts into the table. `streak` rides
+          along from the same hook because it is the one movement reading the
+          ledger actually samples — the hero chip's `↑ W3 STREAK`. */}
+      {state.tab === "ranks" && <Ranking you={rank.you} streak={rank.streak} />}
 
       <Footer source={source} />
     </div>

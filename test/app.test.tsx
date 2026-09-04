@@ -949,3 +949,202 @@ describe("the rank moment", () => {
     15_000,
   );
 });
+
+describe("the ladder", () => {
+  /** The whole board: three plinths plus every table row. The page splits the
+   *  ranked list in two, so neither half alone is the count to assert on. */
+  const podium = () => Array.from(container.querySelectorAll<HTMLElement>("[data-podium]"));
+  const rankRows = () => Array.from(container.querySelectorAll<HTMLElement>("[data-rank-row]"));
+  const rowIds = () => rankRows().map((r) => r.dataset.rankRow ?? "");
+  const boardSize = () => podium().length + rankRows().length;
+  const leader = () => container.querySelector<HTMLElement>('[data-podium="1"]')?.textContent ?? "";
+  /** The metric column's header — the only titled node on the page, and the
+   *  title carries the untruncated text the column may be eliding. */
+  const metricHead = () =>
+    container.querySelector<HTMLElement>("[data-ladder] [title]")?.getAttribute("title") ?? "";
+  const nudge = () => container.querySelector<HTMLElement>("[data-you-nudge]")?.textContent ?? "";
+  const drawers = () => Array.from(container.querySelectorAll<HTMLElement>("[data-ladder-drawer]"));
+
+  /** Row A. Labels come from `FILTER_LABEL`, so they are the visible strings. */
+  function pickFilter(label: string) {
+    const el = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("[data-ladder-filters] button"),
+    ).find((b) => (b.textContent ?? "").trim() === label);
+    if (!el) throw new Error(`no ladder filter "${label}"`);
+    act(() => el.click());
+  }
+
+  /** Row B. A chip's text is its label with the qualifying count welded on
+   *  ("SEMIS4"), so match the front of it — and only inside the revealed row,
+   *  which is where `data-ladder-selection` lives. */
+  function chip(label: string) {
+    const el = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("[data-ladder-selection] button"),
+    ).find((b) => (b.textContent ?? "").startsWith(label));
+    if (!el) throw new Error(`no ladder chip "${label}"`);
+    act(() => el.click());
+  }
+
+  function clearSelection() {
+    const el = container.querySelector<HTMLButtonElement>("[data-ladder-clear]");
+    if (!el) throw new Error("no clear × on the ladder");
+    act(() => el.click());
+  }
+
+  test("/ranks opens on the ladder itself, not a bounce to the board", () => {
+    mount("/ranks");
+    // A cold /ranks is not a match address: it must not redirect to battles.
+    expect(window.location.pathname).toBe("/ranks");
+    expect(container.querySelector("[data-ladder]")).not.toBeNull();
+
+    expect(text()).toContain("The ladder");
+    expect(text()).toContain("3.5%"); // rank is income, priced on the page
+    expect(text()).toContain("RANKED");
+    expect(text()).toContain("COPIERS ACTIVE");
+    expect(text()).toContain("PTS / 24H");
+
+    // Thirteen personas plus your row: three on plinths, the rest in the table.
+    expect(podium()).toHaveLength(3);
+    expect(rankRows()).toHaveLength(11);
+    // Your row is drawn once, wherever it lands — plinth or table, never both.
+    expect(container.querySelectorAll("[data-you]")).toHaveLength(1);
+  });
+
+  test("the ladder is a tab like any other, and the others still work", () => {
+    mount();
+    click("Ranking");
+    expect(window.location.pathname).toBe("/ranks");
+    expect(text()).toContain("The ladder");
+
+    click("Battles");
+    expect(window.location.pathname).toBe("/battles");
+    expect(text()).toContain("Open battles");
+  });
+
+  test("each filter re-ranks the same fourteen players", () => {
+    mount("/ranks");
+    const heads: string[] = [];
+    const leaders: string[] = [];
+
+    for (const label of ["COPY HEAT", "SECTOR × MODE", "WIN RATE", "EARNINGS"]) {
+      pickFilter(label);
+      // Nobody is invented and nobody is dropped — the board is re-sorted.
+      expect(boardSize()).toBe(14);
+      expect(podium()).toHaveLength(3);
+      // …and re-numbered from the top every time.
+      expect(container.querySelector('[data-podium="1"]')).not.toBeNull();
+      expect(container.querySelector('[data-podium="3"]')).not.toBeNull();
+      heads.push(metricHead());
+      leaders.push(leader());
+    }
+
+    // The metric column says which question is being answered, and the four
+    // questions are four different questions.
+    expect(new Set(heads).size).toBe(4);
+    // …and at least two of them have a different answer at #1.
+    expect(new Set(leaders).size).toBeGreaterThan(1);
+  });
+
+  test("sector × mode composes: OR inside a group, AND across them", () => {
+    mount("/ranks");
+    pickFilter("SECTOR × MODE");
+    expect(container.querySelector("[data-ladder-selection]")).not.toBeNull();
+    // Empty means ALL — the default board is the whole ladder.
+    expect(metricHead()).toBe("WINS · ALL SECTORS · ALL MODES");
+    expect(boardSize()).toBe(14);
+
+    chip("SEMIS");
+    expect(metricHead()).toBe("WINS · SEMIS · ALL MODES");
+    const semis = boardSize();
+    expect(semis).toBeGreaterThan(0);
+    expect(semis).toBeLessThan(14);
+
+    // OR within the group: a second sector can only widen the pool.
+    chip("BIG TECH");
+    expect(metricHead()).toBe("WINS · SEMIS+BIG TECH · ALL MODES");
+    const both = boardSize();
+    expect(both).toBeGreaterThan(semis);
+    expect(both).toBeLessThan(14);
+
+    // AND across groups: a mode on top can only narrow it.
+    chip("BLITZ");
+    expect(metricHead()).toBe("WINS · SEMIS+BIG TECH · BLITZ");
+    expect(boardSize()).toBeLessThan(both);
+    expect(boardSize()).toBeGreaterThan(0);
+
+    clearSelection();
+    expect(metricHead()).toBe("WINS · ALL SECTORS · ALL MODES");
+    expect(boardSize()).toBe(14);
+
+    // A legal pair nobody specialises in says so rather than going blank —
+    // and the way out is inside the message.
+    chip("OLD WORLD");
+    expect(container.querySelector("[data-ladder-empty]")).not.toBeNull();
+    expect(boardSize()).toBe(0);
+    expect(text()).toContain("NO PLAYER SPECIALISES IN OLD WORLD");
+
+    clearSelection();
+    expect(container.querySelector("[data-ladder-empty]")).toBeNull();
+    expect(boardSize()).toBe(14);
+  });
+
+  test("the pin answers 'where am I' in the units of the live column", () => {
+    mount("/ranks");
+    // Off the podium, so the bar is there — and your row stays in the table.
+    expect(container.querySelector("[data-you-pin]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-you]")).toHaveLength(1);
+    // COPY HEAT counts copiers, so the gap is quoted in copiers.
+    expect(nudge()).toContain("TO OVERTAKE");
+    expect(nudge()).toContain("COPIERS");
+
+    pickFilter("WIN RATE");
+    expect(container.querySelector("[data-you-pin]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-you]")).toHaveLength(1);
+    // WIN RATE is a percentage, and the nudge is in percentage points.
+    expect(nudge()).toMatch(/\d+\.\d% TO OVERTAKE /);
+  });
+
+  test("a row opens a drawer, and a re-rank closes it", () => {
+    mount("/ranks");
+    expect(drawers()).toHaveLength(0);
+
+    const row = rankRows()[0]!;
+    const id = row.dataset.rankRow ?? "";
+    act(() => row.click());
+
+    const open = container.querySelector<HTMLElement>(`[data-ladder-drawer="${id}"]`);
+    expect(open).not.toBeNull();
+    expect(drawers()).toHaveLength(1); // one at a time
+    expect(open?.textContent).toContain("SECTOR SHARE");
+    expect(open?.textContent).toContain("MODE SHARE");
+    // The fee the whole page is about, priced per transaction.
+    expect(open?.textContent).toContain("3.5%");
+
+    // After a re-rank that row may not even be on the board, so the drawer
+    // goes with the ranking that opened it.
+    pickFilter("EARNINGS");
+    expect(drawers()).toHaveLength(0);
+  });
+
+  test("the same ladder is the same ladder on every mount", () => {
+    mount("/ranks");
+    const ids = rowIds();
+    const plinths = podium().map((p) => p.dataset.podium);
+    expect(ids).toHaveLength(11);
+
+    remount("/ranks");
+    expect(rowIds()).toEqual(ids);
+    expect(podium().map((p) => p.dataset.podium)).toEqual(plinths);
+  });
+
+  test("the result links straight to the board it just moved you on", () => {
+    mount("/match/kz-semis/result?seed=424242");
+    throughRank();
+    click("View the full ladder →");
+
+    expect(window.location.pathname).toBe("/ranks");
+    expect(text()).toContain("The ladder");
+    expect(container.querySelectorAll("[data-rank-row]")).toHaveLength(11);
+    expect(container.querySelectorAll("[data-you]")).toHaveLength(1);
+  });
+});
