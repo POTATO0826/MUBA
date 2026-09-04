@@ -59,18 +59,12 @@
  *     a later valid one.
  *
  *     What this closes: nobody can lock a match naming an address they do not
- *     control. **What it does not close, and the P6 work that will:**
+ *     control. **What it does not close on its own** — the counterparty can
+ *     still claim the `a` seat, because `b` is a real address with a real key
+ *     and in the intended flow `a` hands them the room link. That is point 4,
+ *     and it is why a signature alone was never going to be enough. The rest
+ *     stays open:
  *
- *       - *The counterparty can still claim the `a` seat.* `b` is a real
- *         address with a real key; if `b` learns the match key before `a`'s
- *         client locks — and in the intended flow `a` hands them the room link
- *         — `b` can sign a lock of their own, as `a`, over a slip they searched
- *         for. The v2 fix is not a bigger signature: it is **binding the seats
- *         to the chain**, reading `a` and `b` out of the escrow's own
- *         `DuelOpened`/`DuelJoined` events instead of believing the body at
- *         all. Until then the per-room nonce (point 4) is what keeps the match
- *         key out of a stranger's hands, and the six-hour refund is what caps
- *         the damage.
  *       - *Operator collusion.* This is still not commit-reveal: the server
  *         sees the picks in the clear and holds the only key that signs
  *         verdicts, so a dishonest operator can always collude with a player.
@@ -83,7 +77,63 @@
  *         refused rather than mis-verified. It fails closed; supporting it
  *         means an on-chain `isValidSignature` call, which is P6 work.
  *
- *  4. **A match key may carry a per-room nonce** — finding 6-1.
+ *  4. **The seats are read from the chain, not from the body** — the residual
+ *     of X-1, and the hard prerequisite for staking.
+ *
+ *     Point 3 proves the caller controls the address they name. It cannot prove
+ *     that address is *playing this duel*, and the person best placed to
+ *     exploit that gap is the opponent: `b` knows the match key, can search the
+ *     ≤ 4 096 slips offline for one that wins, and can sign a perfectly valid
+ *     lock naming **themselves** in the `a` seat. Every check in point 3
+ *     passes. No larger signature fixes it, because every field of the request
+ *     belongs to the attacker.
+ *
+ *     The one witness that cannot be forged is the escrow, where both seats
+ *     were bought with a stake: `a` paid to `open`, `b` paid to `join`.
+ *     `src/server/seats.ts` reads them back out of the contract's `duels`
+ *     getter, and `lock()` **compares instead of believing**. The full
+ *     disposition, which is the security-relevant part of this module:
+ *
+ *     | escrow (`THETADUEL_ESCROW` + `RPC_URL`) | on-chain state | lock |
+ *     |---|---|---|
+ *     | not configured | — | accepted on the signature alone, exactly as before |
+ *     | configured | duel is `FULL`, seats match `a`/`b` in order | accepted |
+ *     | configured | claimed `a` is not the on-chain opener | `"not a seat in this duel"` |
+ *     | configured | `a` matches, claimed `b` is not the on-chain joiner | `"opponent is not the on-chain seat"` |
+ *     | configured | id never opened (`NONE`) | `"seats not on chain"` |
+ *     | configured | still `OPEN` — nobody has joined | `"opponent has not joined on chain"` |
+ *     | configured | `SETTLED` or `REFUNDED` | `"duel is closed on chain"` |
+ *     | configured | RPC unreachable, wrong chain, unparseable | `"chain unreachable"` / `"bad chain response"` |
+ *
+ *     Four things about that table are load-bearing:
+ *
+ *       - **Unconfigured is byte-identical to the old behaviour.** A demo with
+ *         no escrow and no RPC is the PTS-only app, and it must keep working
+ *         with no chain anywhere near it. `test/attest.test.ts` asserts that
+ *         path explicitly so a later edit cannot quietly start requiring one.
+ *       - **The match is ORDERED — `a` is the on-chain opener.** Comparing the
+ *         two seats as an unordered set would close nothing at all: the whole
+ *         attack is `b` swapping the seats, and `{b, a}` equals `{a, b}`. The
+ *         asymmetry is real rather than a convention: the escrow writes `d.a`
+ *         in `open` and `d.b` in `join` and never rewrites either, and in this
+ *         game the seats are not interchangeable either — `a` is the seat whose
+ *         picks were committed and whose slip is played against the *seeded*
+ *         opponent, while `b` is betting against it. So the room's opener is
+ *         the player who locks. A joiner who locks is refused, by design.
+ *       - **A configured escrow makes `/api/lock` the staked path only.** With
+ *         an escrow set, a lock for a duel that was never opened on chain is
+ *         refused — there is nothing to settle and nothing to pay. PTS-only
+ *         duels never call this route.
+ *       - **It fails CLOSED.** If the escrow is configured and the chain cannot
+ *         be reached, the lock is refused rather than falling back to trusting
+ *         the body. Falling back would be worse than never having read the
+ *         chain: an attacker who can make one RPC time out — a burst of
+ *         requests against a throttled endpoint will do — would restore the
+ *         exact hole this closes, and would do it precisely when nobody is
+ *         watching. A refused lock costs an honest player a retry; a trusted
+ *         body costs them their stake.
+ *
+ *  5. **A match key may carry a per-room nonce** — finding 6-1.
  *
  *     `matchKey` is `` `${lobbyId}:${seed}` `` (`state/match.ts:429`), which is
  *     six lobbies × 900 000 seeds: the reviewer recovered a preimage from an
@@ -97,9 +147,9 @@
  *     that adopting it needs no change to this module.
  *
  * Shape and style are `src/server/news.ts`'s, deliberately:
- *  - **Injectable.** `createAttestService({ signer, now, escrow })` — the tests
- *    pass a throwaway `Wallet` and a fake clock and never touch a chain or a
- *    key file.
+ *  - **Injectable.** `createAttestService({ signer, now, escrow, seats })` —
+ *    the tests pass a throwaway `Wallet`, a fake clock and a seat reader over a
+ *    fake provider, and never touch a chain or a key file.
  *  - **Never throws at the route.** Every handler answers HTTP 200 with a typed
  *    envelope; `ok` is the client's only decision.
  *  - **Bounded, oldest-evicting cache** with a TTL (`put`, mirroring
@@ -118,6 +168,7 @@ import { settle } from "../engine/match.ts";
 import { PARLAY_CARDS, cardById, legForCard, type ParlayCard, type ParlayLeg } from "../engine/parlay.ts";
 import { seededRandom, spinCase } from "../engine/spin.ts";
 import { Wallet, ZeroAddress, getAddress, id, keccak256, toUtf8Bytes, verifyMessage } from "ethers";
+import { createSeatReader, type SeatReader } from "./seats.ts";
 import type { LobbyDef } from "../types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,6 +336,24 @@ export interface AttestDeps {
   /** The `verifyingContract` half of the domain. Defaults to
    *  `THETADUEL_ESCROW`; injected in tests so no deployment is needed. */
   escrow?: string;
+  /**
+   * Where `lock()` learns who is actually playing — module docstring, point 4.
+   *
+   * Three values, three meanings, and the distinction matters:
+   *
+   *  - **omitted** — build one from the environment (`THETADUEL_ESCROW` +
+   *    `RPC_URL`). If either is missing the reader reports itself unconfigured
+   *    and the seat check is skipped. This is production.
+   *  - **a reader** — use it. A test injects one over a fake provider.
+   *  - **`null`** — seat binding is explicitly off.
+   *
+   * `null` exists for the test suite and is not a hole: `bun test` runs in a
+   * shell that may well have a real `RPC_URL` and a real `THETADUEL_ESCROW`
+   * exported — `.env` is loaded automatically — and a suite that silently
+   * started calling Base because of an operator's shell would be both flaky and
+   * a genuine privacy surprise. Tests that mean "no chain" say so out loud.
+   */
+  seats?: SeatReader | null;
 }
 
 export interface AttestService {
@@ -293,15 +362,24 @@ export interface AttestService {
    *
    * Body: `{ matchKey, picks, a, b?, sig }`. `sig` is `a`'s EIP-191 personal
    * signature over `lockMessage(matchKey, a, b, picks)` — module docstring,
-   * point 3. Without it the lock is refused `"missing signature"`.
+   * point 3. Without it the lock is refused `"missing signature"`. When an
+   * escrow is configured, `a` and `b` must also be the duel's on-chain seats —
+   * point 4.
    */
   handleLock(req: Request): Promise<Response>;
   /** `POST /api/attest`. Always resolves, always 200. */
   handleAttest(req: Request): Promise<Response>;
   /** `GET /api/duel-status?duelId=0x…`. Synchronous — it only reads memory. */
   handleStatus(url: URL): Response;
-  /** The same work without the HTTP envelope, for tests and in-process callers. */
-  lock(body: unknown): LockEnvelope;
+  /**
+   * The same work without the HTTP envelope, for tests and in-process callers.
+   *
+   * Asynchronous because of the seat read (point 4), and asynchronous even when
+   * no escrow is configured and no read happens: one signature is one contract
+   * for every caller, and a route whose safety depends on which branch it took
+   * is a route somebody eventually calls on the wrong branch.
+   */
+  lock(body: unknown): Promise<LockEnvelope>;
   attest(body: unknown): Promise<AttestEnvelope>;
   status(duelId: string): StatusEnvelope;
 }
@@ -643,6 +721,63 @@ function readAddress(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Seat binding — the residual of X-1
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compare a lock's claimed seats against the escrow's, and say why not.
+ *
+ * `null` means the lock may proceed; anything else is the refusal, verbatim.
+ * The whole disposition table from the module docstring's point 4 is here, in
+ * one function, in the order the checks matter:
+ *
+ *  1. the chain has to have answered at all (fail closed),
+ *  2. the duel has to be one that can still be settled,
+ *  3. the claimed `a` has to be the on-chain OPENER — ordered, not a set
+ *     membership test, because the attack is exactly a swap,
+ *  4. the claimed `b` has to be the on-chain joiner.
+ *
+ * Module-level and dependency-free on purpose: it takes a reader and three
+ * strings and returns a refusal, so `test/attest.test.ts` can drive every row
+ * of the table with a four-line fake provider and no service at all.
+ */
+async function checkSeats(
+  reader: SeatReader,
+  duelId: string,
+  a: string,
+  b: string | null,
+): Promise<AttestFail | null> {
+  const seats = await reader.read(duelId);
+
+  if (!seats.ok) {
+    // Every miss is a refusal — there is no branch here that falls back to
+    // trusting the body, and adding one would undo the entire fix. A reader
+    // that has become unconfigured mid-flight (it cannot, today) lands here
+    // too, which is the safe direction.
+    return { ok: false, reason: seats.reason };
+  }
+
+  // A duel with no opponent has nobody to pay if the committed slip loses, and
+  // storing such a lock would pin `b: null` under first-write-wins and make the
+  // duel permanently unsettleable. Refusing is also the honest answer to a
+  // client that raced its own `join` transaction: retry, and a refused lock
+  // costs it nothing.
+  if (seats.status === "OPEN") return { ok: false, reason: "opponent has not joined on chain" };
+
+  // SETTLED or REFUNDED. A duel leaves FULL exactly once, so no verdict signed
+  // from here could ever be paid; committing picks for it would be theatre.
+  if (seats.status !== "FULL") return { ok: false, reason: "duel is closed on chain" };
+
+  // THE X-1 REFUSAL. `b` signing as themselves in the `a` seat gets this far
+  // with a perfect signature and dies here, because the escrow remembers who
+  // paid to open and who paid to join.
+  if (a !== seats.a) return { ok: false, reason: "not a seat in this duel" };
+  if (b !== seats.b) return { ok: false, reason: "opponent is not the on-chain seat" };
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The service
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -719,9 +854,53 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
 
   const configured = (): boolean => signer() !== null;
 
+  /**
+   * The seat reader, built once, lazily, on the same terms as the signer.
+   *
+   * `null` means seat binding is off and `lock()` keeps its pre-X-1 behaviour.
+   * The environment is read here rather than in `AttestDeps` so that a process
+   * given `THETADUEL_ESCROW` and `RPC_URL` after a restart picks them up, and
+   * so that the escrow the seats are read from is the same environment variable
+   * the verdict domain is built from — one address, one place it can be wrong.
+   */
+  let cachedSeats: SeatReader | null | undefined;
+
+  function seats(): SeatReader | null {
+    // An injected reader that reports itself unconfigured means the same thing
+    // as no reader at all — "there is no escrow to check against" — and must
+    // NOT become a refusal on every lock. Normalising it here rather than at the
+    // call site keeps that disposition in one place, and lets a test hand the
+    // service a real reader over a real fake provider and still assert that the
+    // unconfigured path never touches it.
+    if (deps.seats !== undefined) return deps.seats && deps.seats.configured ? deps.seats : null;
+    if (cachedSeats !== undefined) return cachedSeats;
+    try {
+      const reader = createSeatReader();
+      cachedSeats = reader.configured ? reader : null;
+    } catch {
+      cachedSeats = null;
+    }
+    return cachedSeats;
+  }
+
   // ── lock ──────────────────────────────────────────────────────────────────
 
-  function lock(body: unknown): LockEnvelope {
+  /** The stored commit for a duel, if there is a live one. Called twice by
+   *  `lock` — see the note on the second call. */
+  function liveLock(duelId: string): LockEntry | null {
+    const existing = locks.get(duelId);
+    return existing && now() - existing.at < LOCK_TTL_MS ? existing : null;
+  }
+
+  const alreadyLocked = (duelId: string, entry: LockEntry): LockOk => ({
+    ok: true,
+    duelId,
+    commit: entry.commit,
+    matchKey: entry.matchKey,
+    note: "already locked",
+  });
+
+  async function lock(body: unknown): Promise<LockEnvelope> {
     if (!configured()) return NOT_CONFIGURED;
     if (!isRecord(body)) return { ok: false, reason: "bad body" };
 
@@ -733,16 +912,8 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
     // FIRST WRITE WINS. Before anything else is validated, because the whole
     // point is that a second commit cannot influence the stored one — not its
     // picks, not its addresses, and not by being malformed either.
-    const existing = locks.get(duelId);
-    if (existing && now() - existing.at < LOCK_TTL_MS) {
-      return {
-        ok: true,
-        duelId,
-        commit: existing.commit,
-        matchKey: existing.matchKey,
-        note: "already locked",
-      };
-    }
+    const existing = liveLock(duelId);
+    if (existing) return alreadyLocked(duelId, existing);
 
     const a = readAddress(body["a"], "a", false);
     if ("reason" in a) return { ok: false, reason: a.reason };
@@ -797,6 +968,30 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
     // Both sides are checksummed — `getAddress` above, `verifyMessage` by
     // construction — so this is a value comparison and not a case comparison.
     if (recovered !== a.address) return { ok: false, reason: "signature is not a's" };
+
+    // SEAT BINDING — the residual of X-1, module docstring point 4. After the
+    // signature deliberately: recovery is local, cheap and refuses everything a
+    // stranger can send, so only a caller who genuinely controls `a` can make
+    // this process talk to an RPC at all. It is also the last gate, so a duel
+    // whose seats do not match has still had every cheaper reason reported
+    // first — a client debugging its own body never gets "not a seat" when the
+    // real problem was its picks.
+    const reader = seats();
+    if (reader) {
+      const seatFail = await checkSeats(reader, duelId, a.address!, b.address);
+      if (seatFail) return seatFail;
+    }
+
+    // FIRST WRITE WINS, again — and this second look is not redundant.
+    // Everything above the seat read is synchronous, so before it there was no
+    // instant at which two locks for one duel could both be in flight. The
+    // `await` creates one: two valid locks arriving together would both pass
+    // the check at the top and the second `put` would overwrite the first,
+    // which is precisely the property this route exists to hold. The recheck
+    // closes that window; Bun's single event loop makes it sufficient, because
+    // nothing can interleave between here and the `put` below.
+    const raced = liveLock(duelId);
+    if (raced) return alreadyLocked(duelId, raced);
 
     const commit = commitOf(picks);
     put(locks, duelId, {
@@ -922,7 +1117,7 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
 
   async function handleLock(req: Request): Promise<Response> {
     try {
-      return json(lock(await readBody(req)));
+      return json(await lock(await readBody(req)));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       return json({ ok: false, reason: `error: ${reason}` });

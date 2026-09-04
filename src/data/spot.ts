@@ -1,4 +1,4 @@
-import { C, MONO } from "../theme.ts";
+import { FEED_STATE, MONO } from "../theme.ts";
 import type { MarketSource } from "./market.ts";
 
 /**
@@ -61,16 +61,22 @@ export const SPOT_CHIP = "LIVE SPOT · SEEDED TAPE";
 
 /**
  * The chip's dress, defined once so the reel and the pick screen cannot drift
- * apart. Green, matching the footer's live-provenance line and every live
- * annotation this module produces — the colour is doing the same job in all
- * three places, which is the point of it being one colour.
+ * apart.
+ *
+ * It wears the vocabulary's LIVE colour (`FEED_STATE.live`, `src/theme.ts`),
+ * because that is the claim it is making: this surface is carrying at least one
+ * live print. The same colour tints the live half of every `seeded · live` pair
+ * below, the footer's provenance line and `/desk`'s feed pill, and it is one
+ * constant in one place so those four cannot drift apart either.
  *
  * `modeTag` in `data/modes.ts` set this precedent: a style that belongs to a
  * datum rather than to a view lives with the datum.
  */
+export const LIVE_COLOR = FEED_STATE.live.color;
+
 export const spotChipSx =
-  `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.green};` +
-  `border:1px solid ${C.green}4d;background:${C.green}14;border-radius:6px;padding:6px 8px`;
+  `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${LIVE_COLOR};` +
+  `border:1px solid ${LIVE_COLOR}4d;background:${LIVE_COLOR}14;border-radius:6px;padding:6px 8px`;
 
 /**
  * The two assets with a real options book, and therefore the only two with

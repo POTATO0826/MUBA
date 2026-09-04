@@ -1,5 +1,5 @@
 import { sx } from "../lib/sx.ts";
-import { MONO } from "../theme.ts";
+import { C, FEED_STATE, MONO, feedState, stateAge, stateChip } from "../theme.ts";
 import type { MarketSource } from "../data/market.ts";
 
 /**
@@ -10,19 +10,16 @@ import type { MarketSource } from "../data/market.ts";
  * every second would re-render the whole app once a second forever, for a
  * number nobody reads that precisely. The age is computed during render, so it
  * refreshes whenever anything else on the page does — coarse, honest, free.
+ *
+ * The word and the colour come from `FEED_STATE` (`src/theme.ts`). This strip
+ * used to hold three colour literals of its own and to phrase the fixture case
+ * as lowercase "mock data" while the news wire two panels up called the same
+ * condition `SEEDED` — and its amber meant STALE while the wire's amber meant
+ * SEEDED. One vocabulary, so a reader who learns a chip here can read it
+ * anywhere.
  */
 
-/** `"12s ago"` / `"4m ago"`, or `null` when the source has no age (the mock). */
-function ageLabel(fetchedAt: number, now: number): string | null {
-  if (!fetchedAt) return null;
-  const seconds = Math.max(0, Math.round((now - fetchedAt) / 1000));
-  if (seconds < 90) return `${seconds}s ago`;
-  return `${Math.round(seconds / 60)}m ago`;
-}
-
-const GREEN = "#84cc16";
-const AMBER = "#f59e0b";
-const DIM = "#52525b";
+const DIM = C.faint;
 
 export function Footer({
   source,
@@ -33,10 +30,11 @@ export function Footer({
   marketError?: string | null;
 }) {
   const { source: kind, fetchedAt } = source.meta;
-  const age = ageLabel(fetchedAt, Date.now());
+  const age = stateAge(fetchedAt, Date.now());
   // Stale rows are real numbers wearing the wrong timestamp, so they get the
   // warning colour and keep their age chip — that chip is the whole disclosure.
-  const colour = kind === "live" ? GREEN : kind === "stale" ? AMBER : DIM;
+  const state = feedState(kind);
+  const spec = FEED_STATE[state];
 
   return (
     <footer
@@ -51,10 +49,25 @@ export function Footer({
       <span>·</span>
       <span>Base mainnet 8453</span>
       <div style={sx("flex:1")} />
-      {marketError && <span style={sx(`color:${AMBER}`)}>{marketError}</span>}
-      <span style={sx(`color:${colour}`)}>
-        {kind === "mock"
-          ? "mock data — read only"
+      {/* Prose, not a chip: the reason the state is what it is. It keeps the
+          plain warning amber rather than borrowing STALE's, because a
+          switched-off market reports here while the chip beside it correctly
+          reads SEEDED, and a colour that meant STALE would then be arguing with
+          the chip. */}
+      {marketError && <span style={sx(`color:${C.amber}`)}>{marketError}</span>}
+      <span
+        data-testid="market-state"
+        title={spec.means}
+        style={sx(stateChip(state))}
+      >
+        {spec.label}
+      </span>
+      <span style={sx(`color:${spec.color}`)}>
+        {/* Same claim as before the vocabulary landed, in the vocabulary's
+            word: a fixture is SEEDED, and "seeded fixtures" is what the chip
+            beside it now says out loud. */}
+        {state === "seeded"
+          ? "seeded fixtures — read only"
           : `${source.id}${age ? ` · ${age}` : ""} — read only`}
       </span>
     </footer>

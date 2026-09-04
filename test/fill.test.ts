@@ -32,6 +32,7 @@ import {
   MAX_UINT256,
   TARGET_FILL_USDC,
   classifyFillError,
+  createLiveFillDeps,
   freezeOrder,
   looksThrottled,
   orderIdentity,
@@ -58,6 +59,9 @@ import type { OrderRow } from "../src/types.ts";
 const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const OTHER_TOKEN = "0x4200000000000000000000000000000000000006"; // WETH on Base, 18dp
 const BOOK = "0x0000000000000000000000000000000000000B00";
+/** The address a compromised indexer would attach to an order to collect an
+ *  approval it has no business collecting. Never approved — see BUG-3. */
+const EVIL_BOOK = "0x00000000000000000000000000000000BADbAD00";
 const REFERRER = "0x000000000000000000000000000000000000FEE5";
 const HASH = "0xabc123def456abc123def456abc123def456abc123def456abc123def456abcd";
 
@@ -142,6 +146,13 @@ function spy(over: Partial<FillDeps> = {}): Spy {
     walletId: "injected",
     referrer: REFERRER,
     usdc: USDC,
+    // The chain-configured OptionBook — the approval spender, and the anchor
+    // every order's own `optionBookAddress` is checked against
+    // (`docs/reviews/mcp-crosscheck.md` §BUG-3). The live adapter reads it off
+    // `chainConfig` when it builds the client at step 2, so by step 7 it is
+    // always there; a `FillDeps` without one refuses to approve anything, which
+    // is its own test below.
+    optionBook: BOOK,
     now: () => NOW,
     getSigner: async () => SIGNER,
     refetchOrder: async () => makeOrder(),
@@ -395,6 +406,25 @@ describe("runFill — the 60s expiry buffer", () => {
     expect((await run(s)).outcome.status).toBe("filled");
   });
 
+  test("the EARLIER of the two expiry fields binds, not the first one present", async () => {
+    // An order runs on two clocks: `rawApiData.orderExpiryTimestamp` is when
+    // the maker's signature dies, `order.expiry` is when the option settles.
+    // The SDK's `fillOrder` checks BOTH (mcp-crosscheck OPPORTUNITY 10); this
+    // used to take whichever was present first, which let a signature-valid
+    // order with a nearly-settled option through. Here the signature has an
+    // hour and the option has thirty seconds.
+    const s = spy({
+      refetchOrder: async () => {
+        const fresh = makeOrder({ orderExpiryTimestamp: NOW / 1000 + 3600 });
+        return { ...fresh, order: { ...fresh.order, expiry: BigInt(NOW / 1000 + 30) } };
+      },
+    });
+    const error = failure((await run(s)).outcome);
+    expect(error.code).toBe("ORDER_EXPIRED");
+    expect(error.step).toBe("expiry");
+    expect(s.calls).not.toContain("previewFillOrder");
+  });
+
   test("an order that names no expiry at all is not blocked by the buffer", async () => {
     // Absence is not "expired". A book that stops sending the field must not
     // silently make every row unfillable.
@@ -478,11 +508,12 @@ describe("runFill — the approval is exact", () => {
     await run(s);
 
     const [token, spender, amount] = s.allowanceArgs[0]!;
-    // The token comes from the preview, the spender from the order itself —
-    // the OptionBook the maker's signature is over, which outranks any chain
-    // config or docs page.
+    // The token comes from the preview; the spender is the CHAIN-CONFIGURED
+    // OptionBook, never the address the book's API attached to the order. See
+    // `docs/reviews/mcp-crosscheck.md` §BUG-3 and the mismatch test below.
     expect(token).toBe(USDC);
     expect(spender).toBe(BOOK);
+    expect(spender).toBe(s.deps.optionBook!);
     expect(amount).toBe(9_900n);
     expect(amount).not.toBe(MAX_UINT256);
     // And it is the number the human was shown.
@@ -506,15 +537,107 @@ describe("runFill — the approval is exact", () => {
     expect(outcome.approvalSkipped).toBe(false);
   });
 
-  test("an order that names no OptionBook is refused before anything is approved", async () => {
+  test("an order that names no OptionBook uses the chain's, exactly as the SDK does", async () => {
+    // `resolveOptionBookTarget` (`dist/index.js:1561-1582`) returns the
+    // canonical address unchanged when `rawApiData.optionBookAddress` is absent
+    // — a missing claim is not a conflicting one. We mirror that.
     const s = spy({
       refetchOrder: async () => makeOrder({ optionBookAddress: undefined }),
+    });
+    expect((await run(s)).outcome.status).toBe("filled");
+    expect(s.allowanceArgs[0]![1]).toBe(BOOK);
+  });
+
+  test("an order naming a DIFFERENT OptionBook is refused before anything is approved", async () => {
+    // BUG-3. The threat the SDK names in its own source: a compromised API
+    // redirects the fill "to an attacker contract that drains pre-existing
+    // allowances". We approve before we fill, so the approval is the half worth
+    // stealing — and this order never gets one.
+    const s = spy({
+      refetchOrder: async () => makeOrder({ optionBookAddress: EVIL_BOOK }),
     });
     const error = failure((await run(s)).outcome);
     expect(error.code).toBe("CONTRACT_REVERT");
     expect(error.step).toBe("allowance");
+    expect(error.message).toContain("different OptionBook");
+    expect(error.detail).toContain(EVIL_BOOK);
     expect(s.calls).not.toContain("ensureAllowance");
     expect(s.calls).not.toContain("fillOrder");
+  });
+
+  test("the same address in a different case is not a mismatch", async () => {
+    const s = spy({
+      refetchOrder: async () => makeOrder({ optionBookAddress: BOOK.toUpperCase() }),
+    });
+    expect((await run(s)).outcome.status).toBe("filled");
+    // The canonical spelling is what gets approved, not the order's.
+    expect(s.allowanceArgs[0]![1]).toBe(BOOK);
+  });
+
+  test("with no chain-configured OptionBook nothing is approved at all", async () => {
+    // No anchor means nothing to validate against. The old code approved to
+    // whatever the order named in this situation; that is the doctrine BUG-3
+    // reversed.
+    const s = spy({ optionBook: undefined });
+    const error = failure((await run(s)).outcome);
+    expect(error.code).toBe("CONTRACT_REVERT");
+    expect(error.step).toBe("allowance");
+    expect(error.message).toContain("OptionBook address is unknown");
+    expect(s.calls).not.toContain("ensureAllowance");
+    expect(s.calls).not.toContain("fillOrder");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The live adapter — the one place the real SDK is constructed
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * BUG-1, pinned against the shipped SDK rather than against a description of it.
+ *
+ * This is the one test in the file that touches
+ * `@thetanuts-finance/thetanuts-client` for real, and it can, because
+ * `new ThetanutsClient(...)` opens no socket: it stores a provider (ethers'
+ * `JsonRpcProvider` constructor is lazy) and builds its modules. What it *did*
+ * do, before the fix, is throw — and it threw here, under `bun test`, with no
+ * faking at all, because `test/setup.ts` registers happy-dom and happy-dom
+ * gives us a real `window.localStorage`, exactly as a browser does.
+ *
+ * `docs/reviews/mcp-crosscheck.md` §BUG-1 for the mechanism: `rfqKeys` is
+ * built eagerly in the constructor and `getDefaultStorageProvider()` throws
+ * `INVALID_KEY` rather than falling back to localStorage, contrary to a stale
+ * `.d.ts` doc comment.
+ */
+describe("createLiveFillDeps constructs a browser client that actually constructs", () => {
+  test("the environment this test runs in is browser-shaped, which is the point", () => {
+    // If this ever stops being true the test below stops proving anything.
+    expect(typeof globalThis.window).toBe("object");
+    expect(globalThis.window.localStorage).toBeTruthy();
+  });
+
+  test("getSigner builds the client instead of throwing INVALID_KEY", async () => {
+    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => SIGNER });
+    // Before the fix this rejected with `InvalidKeyError` — and `runFill` step 2
+    // reads a throw from `getSigner` as "connected, wrong chain", so the panel
+    // told a user already on Base to switch to Base, forever.
+    const signer = await deps.getSigner();
+    expect(signer).toBe(SIGNER);
+  });
+
+  test("and it fills in both chain-config anchors the later steps depend on", async () => {
+    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => SIGNER });
+    await deps.getSigner();
+    // Base mainnet USDC and the chain-configured OptionBook, straight off
+    // `client.chainConfig`. The second is the BUG-3 approval spender.
+    expect(deps.usdc?.toLowerCase()).toBe(USDC.toLowerCase());
+    expect(deps.optionBook).toMatch(/^0x[0-9a-fA-F]{40}$/);
+  });
+
+  test("a wallet that cannot produce a signer builds no client at all", async () => {
+    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => null });
+    expect(await deps.getSigner()).toBeNull();
+    expect(deps.usdc).toBeUndefined();
+    expect(deps.optionBook).toBeUndefined();
   });
 });
 

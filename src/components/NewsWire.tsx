@@ -3,7 +3,7 @@ import type { WireItem } from "../data/wire.ts";
 import { meta } from "../data/universe.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, sectorColor, tag, type FeedStateSpec } from "../theme.ts";
 
 interface NewsWireProps {
   /**
@@ -36,11 +36,22 @@ interface NewsWireProps {
   onSymToggle?: (sym: string) => void;
 }
 
-/** Header chip copy and colour per source. `partial` = live, but a feed dropped. */
-const STATUS: Record<NewsWireProps["status"], { label: string; color: string }> = {
-  mock: { label: "SEEDED", color: C.amber },
-  live: { label: "LIVE", color: C.green },
-  partial: { label: "PARTIAL", color: C.blue },
+/**
+ * Header chip copy and colour per source — now read straight off the app's one
+ * provenance vocabulary (`FEED_STATE`, `src/theme.ts`) rather than re-stated
+ * here.
+ *
+ * The labels are unchanged; this wire is where `SEEDED`/`LIVE`/`PARTIAL` were
+ * coined and the vocabulary took its words from it. What changed is the fixture
+ * colour: `SEEDED` was amber, and amber simultaneously meant STALE in the
+ * footer — the same colour claiming "this is a fixture" on one panel and "these
+ * numbers are real but out of date" on another. Amber is now STALE alone, and a
+ * fixture reads in the resting grey, which is what a fixture is.
+ */
+const STATUS: Record<NewsWireProps["status"], FeedStateSpec> = {
+  mock: FEED_STATE.seeded,
+  live: FEED_STATE.live,
+  partial: FEED_STATE.partial,
 };
 
 /** Scroll height of the headline list — about nine rows, so the feed reads as
@@ -229,7 +240,9 @@ export function NewsWire({ items, status, filterSym = null, onSymToggle }: NewsW
         ) : null}
         <span
           data-testid="wire-status"
-          title={`Wire source: ${status}`}
+          // The vocabulary's own sentence, so the chip explains itself on
+          // hover instead of restating its own label back at the reader.
+          title={chip.means}
           style={sx(
             `font:700 9px/1 ${MONO};letter-spacing:.12em;padding:5px 7px;border-radius:5px;` +
               `border:1px solid ${chip.color}55;background:${chip.color}1f;color:${chip.color}`,

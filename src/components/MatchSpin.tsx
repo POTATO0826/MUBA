@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
-import { SPOT_CHIP, liveTag, spotChipSx, spotFor, spotPair } from "../data/spot.ts";
+import { LIVE_COLOR, SPOT_CHIP, liveTag, spotChipSx, spotFor, spotPair } from "../data/spot.ts";
 import { STRIP_LEN, TILE_GAP, TILE_PITCH, TILE_W, type SpinResult } from "../engine/spin.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, tickParams } from "../lib/sound/index.ts";
@@ -281,7 +281,7 @@ export function MatchSpin(p: MatchSpinProps) {
           {shownLive !== null && (
             <div
               data-testid="pointer-spot"
-              style={sx(`margin-top:9px;font:500 10px/1 ${MONO};letter-spacing:.04em;color:${C.green}`)}
+              style={sx(`margin-top:9px;font:500 10px/1 ${MONO};letter-spacing:.04em;color:${LIVE_COLOR}`)}
             >
               {spotPair(shown.px, shownLive)}
             </div>
@@ -331,7 +331,7 @@ export function MatchSpin(p: MatchSpinProps) {
                         half only — the accent line directly above is the seeded
                         one, and the header chip says so. */}
                     {tileLive !== null && (
-                      <div style={sx(`margin-top:4px;font:500 9px/1 ${MONO};color:${C.green}`)}>
+                      <div style={sx(`margin-top:4px;font:500 9px/1 ${MONO};color:${LIVE_COLOR}`)}>
                         {liveTag(tileLive)}
                       </div>
                     )}

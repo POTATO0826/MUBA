@@ -73,7 +73,8 @@ const LIVE_NEWS_RE = /data\/news|data\/wire|\/api\/news/;
  * those carries a live value. Widening this to /thetanuts|market/ would fail
  * those legitimate references and would be a gate failure, not a fix.
  */
-const LIVE_MARKET_RE = /data\/thetanuts|server\/thetanuts|\/api\/market|\/api\/attest|\/api\/lock|thetanuts-client/;
+const LIVE_MARKET_RE =
+  /data\/thetanuts|server\/thetanuts|server\/seats|\/api\/market|\/api\/attest|\/api\/lock|thetanuts-client/;
 
 /** Every engine module, globbed at runtime so a NEW engine file is covered the
  *  moment it lands — no test edit required. */
@@ -128,9 +129,14 @@ describe("determinism boundary — live news and live market never reach settlem
   });
 
   test("the live-market regex stays narrow — it must not swallow legitimate references", () => {
-    // The six live-market reach-throughs it exists to catch…
+    // The seven live-market reach-throughs it exists to catch…
     expect(LIVE_MARKET_RE.test(`import { useLiveMarket } from "../data/thetanuts.tsx";`)).toBe(true);
     expect(LIVE_MARKET_RE.test(`import { createMarketService } from "../server/thetanuts.ts";`)).toBe(true);
+    // The chain reader behind the escrow's seats: settlement derives the winner
+    // from `(lobby, seed)` and committed picks alone, so an engine module that
+    // could ask the chain who is playing would be reading the one input the
+    // replay cannot reproduce.
+    expect(LIVE_MARKET_RE.test(`import { createSeatReader } from "../server/seats.ts";`)).toBe(true);
     expect(LIVE_MARKET_RE.test(`await fetch("/api/market");`)).toBe(true);
     expect(LIVE_MARKET_RE.test(`await fetch("/api/attest", { method: "POST" });`)).toBe(true);
     expect(LIVE_MARKET_RE.test(`await fetch("/api/lock", { method: "POST" });`)).toBe(true);

@@ -3,8 +3,23 @@ import { PlayerMark } from "../components/PlayerMark.tsx";
 import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
 import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
-import { SPOT_CHIP, bookDeltaNote, liveTag, seededTag, spotChipSx, spotFor } from "../data/spot.ts";
+import {
+  LIVE_COLOR,
+  SPOT_CHIP,
+  bookDeltaNote,
+  liveTag,
+  seededTag,
+  spotChipSx,
+  spotFor,
+} from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
+import {
+  OPTIONS_CHIP,
+  SETTLEMENT_NOTE,
+  hasBook,
+  quoteFor,
+  type OptionBook,
+} from "../desk/optionize.ts";
 import {
   PARLAY_CARDS,
   TIERS,
@@ -19,7 +34,7 @@ import {
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, sectorColor, stateChip, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
 
 /**
@@ -57,6 +72,21 @@ interface ParlayPickProps {
    * determinism locks would say so.
    */
   source: MarketSource;
+  /**
+   * The book this match was dealt against, frozen — or `undefined`, which is
+   * the default and is today's screen exactly.
+   *
+   * The one prop on this component that is **not** additive. Where a ticker has
+   * a chain, its eight cards state the venue's strike, the venue's delta and a
+   * multiplier derived from the venue's premium, and `p.myLegs` were priced off
+   * this same frozen object upstream — so the card and the leg cannot disagree.
+   * Where a ticker has no chain (fourteen of eighteen board names, always) the
+   * card is the seeded card it has always been, and says so.
+   *
+   * Nothing here reads a market source, and this object cannot fetch: it is a
+   * value `App` already read and `useMatch` already froze.
+   */
+  book?: OptionBook;
   /** This match's window. Its `oddsBoost` is already inside `summary.mult`;
    *  the slip only has to say where the premium came from. */
   mode: ModeSpec;
@@ -190,6 +220,14 @@ export function ParlayPick(p: ParlayPickProps) {
             {SPOT_CHIP}
           </span>
         )}
+        {/* The claim the market-priced cards below are making, said once at the
+            top of the screen. Rendered only when there is a book — a slip with
+            no market card on it must not wear a badge about market cards. */}
+        {p.book && (
+          <span data-testid="options-chip" style={sx(spotChipSx)}>
+            {OPTIONS_CHIP}
+          </span>
+        )}
         {p.secondsLeft !== null && (
           <span
             data-testid="pick-clock"
@@ -216,6 +254,17 @@ export function ParlayPick(p: ParlayPickProps) {
             const picked = p.picks[sym] ?? null;
             const color = sectorColor(u.sector);
             const liveSpot = spots.get(sym) ?? null;
+            /**
+             * Whether this ticker's cards are priced off the book.
+             *
+             * `undefined` — no book at all — is not the same as "this ticker has
+             * no book". The first draws today's screen with no chips anywhere;
+             * the second draws a LIVE/SEEDED chip on every ticker header, so a
+             * player reading a mixed slip can see at a glance which lines the
+             * market wrote and which the game did.
+             */
+            const priced = hasBook(p.book, sym);
+            const pickedQuote = picked ? quoteFor(p.book, sym, picked.tier, picked.stance) : null;
             return (
               <section
                 key={sym}
@@ -225,6 +274,21 @@ export function ParlayPick(p: ParlayPickProps) {
                 <div style={sx(`display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
                   <span style={sx(`font:700 16px/1 ${MONO}`)}>{sym}</span>
                   <span style={sx(tag(color))}>{u.sector}</span>
+                  {/* The state-chip vocabulary (`FEED_STATE`, `stateChip`),
+                      applied to the one question this screen now has to answer
+                      per ticker: did the venue write these eight cards, or did
+                      the game? SEEDED is grey rather than amber on purpose —
+                      a ticker with no options book is the app's ordinary
+                      resting state, not a fault. */}
+                  {p.book && (
+                    <span
+                      data-testid={`book-state-${sym}`}
+                      title={FEED_STATE[priced ? "live" : "seeded"].means}
+                      style={sx(stateChip(priced ? "live" : "seeded"))}
+                    >
+                      {FEED_STATE[priced ? "live" : "seeded"].label}
+                    </span>
+                  )}
                   {/* C4 site: the ticker's reference price.
                       With no live print this is the line it has always been.
                       With one, the seeded number stays exactly where it was and
@@ -235,13 +299,22 @@ export function ParlayPick(p: ParlayPickProps) {
                     <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
                   ) : (
                     <span data-testid={`spot-${sym}`} style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>
-                      {seededTag(u.px)} · <span style={sx(`color:${C.green}`)}>{liveTag(liveSpot)}</span> · base ±
+                      {/* `LIVE_COLOR` is the vocabulary's LIVE tint, not a
+                          hand-picked green — the same constant the header chip
+                          and the footer's provenance line use. */}
+                      {seededTag(u.px)} · <span style={sx(`color:${LIVE_COLOR}`)}>{liveTag(liveSpot)}</span> · base ±
                       {u.t.toFixed(1)}%
                     </span>
                   )}
                   <div style={sx("flex:1")} />
                   <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${picked ? TIER_COLOR[picked.tier] : C.faint}`)}>
-                    {picked ? `${picked.label} · ×${picked && TIERS[picked.tier].mult.toFixed(1)}` : "pick one"}
+                    {picked
+                      ? `${picked.label} · ×${
+                          pickedQuote
+                            ? pickedQuote.multiplier.toFixed(2)
+                            : TIERS[picked.tier].mult.toFixed(1)
+                        }`
+                      : "pick one"}
                   </span>
                 </div>
 
@@ -261,7 +334,28 @@ export function ParlayPick(p: ParlayPickProps) {
                      * imported for this — the advisory cannot move the odds
                      * because it never sees them.
                      */
-                    const advisory = bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
+                    /**
+                     * This card, priced off the frozen book — or `null`, which
+                     * is the ordinary case and is the seeded card unchanged.
+                     *
+                     * Cheap enough to compute in the render: eight cards over at
+                     * most four tickers, each a single pass over a chain of a
+                     * few dozen rows, on a screen that only re-renders on a
+                     * pick. And it is the same pure call `useMatch` made to
+                     * price `p.myLegs`, over the same frozen object, so the two
+                     * are equal by construction rather than by convention.
+                     */
+                    const quote = quoteFor(p.book, sym, card.tier, card.stance);
+                    /**
+                     * The `book Δ` second opinion, suppressed on a market-priced
+                     * card. It exists to put the book's view *beside* an invented
+                     * probability; where the probability already IS the book's
+                     * delta, printing it twice would read as two sources
+                     * agreeing when it is one source quoted once.
+                     */
+                    const advisory = quote
+                      ? null
+                      : bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
                     return (
                       <button
                         key={card.id}
@@ -286,11 +380,38 @@ export function ParlayPick(p: ParlayPickProps) {
                           </span>
                         </div>
                         <div style={sx(`margin-top:10px;font:700 22px/1 ${MONO};letter-spacing:-.02em;color:${tc}`)}>
-                          ×{card && TIERS[card.tier].mult.toFixed(1)}
+                          ×{quote ? quote.multiplier.toFixed(2) : card && TIERS[card.tier].mult.toFixed(1)}
                         </div>
                         <div style={sx(`margin-top:6px;font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
-                          {bull ? "above" : "below"} {fmtPx(leg.strike)} · ~{Math.round(leg.prob * 100)}%
+                          {/* Same sentence, same shape, same place. On the
+                              seeded path both numbers come out of `TIERS` and
+                              the asset's base move; on the market path the
+                              strike is one the venue lists and the percentage
+                              is that option's own delta. The card never claims
+                              the tier's `~25%` over a Δ0.41 option — it prints
+                              the delta it actually found, and the line below
+                              says the tier's target was missed. */}
+                          {bull ? "above" : "below"}{" "}
+                          {fmtPx(quote ? quote.strike : leg.strike)} · ~
+                          {Math.round((quote ? quote.impliedProb : leg.prob) * 100)}%
                         </div>
+                        {quote && (
+                          <div
+                            data-testid={`option-${sym}:${card.id}`}
+                            style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${LIVE_COLOR}`)}
+                          >
+                            {quote.label}
+                          </div>
+                        )}
+                        {quote?.offTarget && (
+                          <div
+                            data-testid={`option-offtarget-${sym}:${card.id}`}
+                            style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${C.amber}`)}
+                          >
+                            thin book · nearest strike misses {card.tier}’s ~
+                            {Math.round(TIERS[card.tier].prob * 100)}%
+                          </div>
+                        )}
                         {advisory && (
                           <div
                             data-testid={`book-delta-${sym}:${card.id}`}
@@ -321,6 +442,16 @@ export function ParlayPick(p: ParlayPickProps) {
             One pick per ticker. Every leg must land for the parlay to pay. Against {p.opponent.name} the duel
             goes to whoever lands more legs; a tie goes to conviction. Higher tiers pay more — and hand the
             tie to the steadier slip.
+            {/* The sentence a player must see before they pick, in the box they
+                are already reading to learn the rules. It is not a footnote and
+                it is not a tooltip: everything above it is real market data, the
+                settlement below is not, and the difference is the one thing a
+                demo must never leave to be inferred. */}
+            {p.book && (
+              <span data-testid="options-note" style={sx(`display:block;margin-top:9px;color:${C.textSoft}`)}>
+                {SETTLEMENT_NOTE}
+              </span>
+            )}
           </div>
         </div>
 

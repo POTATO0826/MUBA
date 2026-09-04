@@ -4,9 +4,11 @@ import {
   buildMmQuotes,
   buildSnapshot,
   classify,
+  classifyOrder,
   collateralTokens,
   feedSymbols,
   greeksOf,
+  implementationInfo,
   mmStrikeBand,
   payoutTypeFor,
   productNameOf,
@@ -34,6 +36,16 @@ import type { PricingRow } from "../src/types.ts";
  */
 
 const AT = 1_788_500_000_000;
+
+/**
+ * Three deployed implementations on Base 8453, verbatim from
+ * `chainConfig.implementations`. They are the whole of BUG-2's fix: the same
+ * four strikes mean different products behind different contracts, and only
+ * these addresses tell them apart.
+ */
+const RANGER_IMPL = "0x9980ec85bc6fE07340adb36c76FA093bb6D4FcBc";
+const CONDOR_IMPL = "0x14476CF2ea9F7C448100F061670E390f17c78817";
+const PHYSICAL_PUT_IMPL = "0x6aD53DD058bea004829cCf58a282C21a7Df02DcA";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
   RawMarket & { _provenance: { captured: string } };
@@ -322,53 +334,230 @@ describe("depth scales per underlying with a floor of 2", () => {
 
 // ─── classify ────────────────────────────────────────────────────────────────
 
-describe("classify: ranger vs condor is the four-strike decision", () => {
-  test("strike count picks everything else", () => {
+/**
+ * BUG-2 (`docs/reviews/mcp-crosscheck.md`): a ranger and a condor are not
+ * distinguishable by their strikes, so we stopped trying.
+ *
+ * The old heuristic called a four-strike order a RANGER when the strikes
+ * ascended with equal outer widths and a gap in the middle. Every one of those
+ * clauses is also true of a plain symmetric condor — the SDK's own
+ * `calculate_payout` description spells the condor convention as
+ * `[K1..K4] ASCENDING with K2-K1 === K4-K3` — and the `validateRanger` call
+ * that looked like an independent second opinion accepts the identical set that
+ * `validateCondor` does. So every symmetric condor on the book was typed
+ * RANGER and given `payout: 'ranger'`.
+ *
+ * The replacement reads `rawApiData.implementation` against the chain's own
+ * 46-entry implementation registry. These tests drive both halves: the lookup,
+ * and what a row that cannot be looked up now says about itself.
+ */
+describe("classify: the strike-count fallback, and where counting stops working", () => {
+  test("one, two and three strikes are still decidable by counting", () => {
     expect(classify([2500], true)).toBe("CALL");
     expect(classify([2500], false)).toBe("PUT");
     expect(classify([2400, 2600], true)).toBe("SPREAD");
     expect(classify([2400, 2500, 2600], true)).toBe("FLY");
   });
 
-  test("equal wing widths plus a zone gap is a RANGER", () => {
-    // [callLower, callUpper, putLower, putUpper], ascending, widths equal
-    // (500 === 500), and callUpper (80000) < putLower (81000).
-    expect(classify([79500, 80000, 81000, 81500], true)).toBe("RANGER");
+  test("four strikes is UNKNOWN — including the shape we used to call a RANGER", () => {
+    // Ascending, equal widths (500 === 500), a gap in the middle. This is the
+    // ranger convention AND the condor convention; nothing here separates them.
+    expect(classify([79500, 80000, 81000, 81500], true)).toBe("UNKNOWN");
+    // And so are all the shapes the old clauses used to exclude — they were
+    // never excluding condors, only mis-shaped rangers.
+    expect(classify([79500, 80000, 81000, 82000], true)).toBe("UNKNOWN");
+    expect(classify([79500, 80500, 80500, 81500], true)).toBe("UNKNOWN");
+    expect(classify([81500, 81000, 80000, 79500], true)).toBe("UNKNOWN");
+    expect(classify([1, 2, 3, 4, 5], true)).toBe("UNKNOWN");
   });
 
-  test("unequal wing widths is a CONDOR, not a ranger", () => {
-    // The trap this guards (FINDINGS, "the 4-strike discriminator trap"): the
-    // SDK prices a 4-strike order as a condor unless told `isRanger`, so a
-    // wrong RANGER here would later mis-price a real payout.
-    expect(classify([79500, 80000, 81000, 82000], true)).toBe("CONDOR");
+  test("an UNKNOWN structure has no registry name and no payout type", () => {
+    // The point of the member: nothing downstream can be handed a product name
+    // or a payout mode that nothing authoritative backs.
+    expect(productNameOf("UNKNOWN", true)).toBeNull();
+    expect(payoutTypeFor("UNKNOWN", true)).toBeNull();
+    expect(payoutTypeFor("UNKNOWN", false)).toBeNull();
+  });
+});
+
+describe("classifyOrder: the implementation address decides, not the strikes", () => {
+  /** A chain config carrying the two implementations that matter here. */
+  const withImpls = {
+    ...FIXTURE.chainConfig,
+    optionImplementations: {
+      [RANGER_IMPL.toLowerCase()]: { name: "RANGER", type: "RANGER", numStrikes: 4 },
+      [CONDOR_IMPL.toLowerCase()]: { name: "CALL_CONDOR", type: "CONDOR", numStrikes: 4 },
+      [PHYSICAL_PUT_IMPL.toLowerCase()]: { name: "PHYSICAL_PUT", type: "VANILLA", numStrikes: 1 },
+    },
+  };
+
+  test("the very same strikes are a RANGER or a CONDOR depending on the contract", () => {
+    // This is BUG-2 in one assertion: four identical numbers, two different
+    // products, and only the implementation address tells them apart.
+    const strikes = [79500, 80000, 81000, 81500];
+    expect(classifyOrder(strikes, true, RANGER_IMPL, withImpls)).toEqual({
+      structure: "RANGER",
+      productName: "RANGER",
+    });
+    expect(classifyOrder(strikes, true, CONDOR_IMPL, withImpls)).toEqual({
+      structure: "CONDOR",
+      productName: "CALL_CONDOR",
+    });
   });
 
-  test("no zone gap is a CONDOR", () => {
-    expect(classify([79500, 80500, 80500, 81500], true)).toBe("CONDOR");
+  test("and they carry the payout type the SDK's math actually wants", () => {
+    const strikes = [79500, 80000, 81000, 81500];
+    const ranger = classifyOrder(strikes, true, RANGER_IMPL, withImpls);
+    const condor = classifyOrder(strikes, true, CONDOR_IMPL, withImpls);
+    expect(payoutTypeFor(ranger.structure, true, ranger.productName)).toBe("ranger");
+    expect(payoutTypeFor(condor.structure, true, condor.productName)).toBe("call_condor");
   });
 
-  test("descending strikes are a CONDOR — the SDK's own validator is not enough", () => {
-    // `validateRanger` checks widths; it does not reject a descending set.
-    // The ascending check is ours, and this is why.
-    expect(classify([81500, 81000, 80000, 79500], true)).toBe("CONDOR");
+  test("the lookup is case-insensitive on the address", () => {
+    expect(classifyOrder([1, 2, 3, 4], true, RANGER_IMPL.toUpperCase(), withImpls).productName).toBe(
+      "RANGER",
+    );
   });
 
-  test("more than four strikes falls back to CONDOR", () => {
-    expect(classify([1, 2, 3, 4, 5], true)).toBe("CONDOR");
+  test("a physical put stays a physical put instead of being flattened to PUT", () => {
+    // The smaller mislabel the heuristic also had: PHYSICAL_CALL, PHYSICAL_PUT
+    // and INVERSE_CALL were all collapsed by the strike count.
+    const read = classifyOrder([2500], false, PHYSICAL_PUT_IMPL, withImpls);
+    expect(read.productName).toBe("PHYSICAL_PUT");
+    expect(read.structure).toBe("PUT");
+    expect(payoutTypeFor(read.structure, false, read.productName)).toBe("put");
   });
 
-  test("the real book's four-strike orders classify as rangers and keep type RANGER", () => {
+  test("an address the registry does not know falls back, and says nothing it cannot back", () => {
+    const unknown = "0x00000000000000000000000000000000deadbeef";
+    // Four strikes: the fallback cannot decide, so it does not.
+    const four = classifyOrder([79500, 80000, 81000, 81500], true, unknown, withImpls);
+    expect(four).toEqual({ structure: "UNKNOWN", productName: null });
+    expect(payoutTypeFor(four.structure, true, four.productName)).toBeNull();
+    // One strike: the count really is enough, so the row keeps its label.
+    const one = classifyOrder([2500], true, unknown, withImpls);
+    expect(one).toEqual({ structure: "CALL", productName: null });
+    expect(payoutTypeFor(one.structure, true, one.productName)).toBe("call");
+  });
+
+  test("no address at all, and the zero address, are both 'unknown'", () => {
+    // The SDK's own `buildContractOrder` refuses a zero implementation on the
+    // grounds that the option type is not deployed on this chain.
+    expect(classifyOrder([1, 2, 3, 4], true, undefined, withImpls).structure).toBe("UNKNOWN");
+    expect(classifyOrder([1, 2, 3, 4], true, "", withImpls).structure).toBe("UNKNOWN");
+    expect(
+      classifyOrder([1, 2, 3, 4], true, `0x${"0".repeat(40)}`, withImpls).structure,
+    ).toBe("UNKNOWN");
+  });
+
+  test("a config with no registry at all falls through to the SDK's copy of it", () => {
+    // Which is what the frozen capture does — it predates our reading this
+    // field and cannot be re-cut without a live book. Same 46-entry table,
+    // same answers.
+    expect(implementationInfo(RANGER_IMPL, FIXTURE.chainConfig)?.name).toBe("RANGER");
+    expect(implementationInfo(CONDOR_IMPL, FIXTURE.chainConfig)?.name).toBe("CALL_CONDOR");
+    expect(implementationInfo("0x00000000000000000000000000000000deadbeef", FIXTURE.chainConfig))
+      .toBeNull();
+  });
+
+  test("a config that HAS a registry is the only one consulted", () => {
+    // Purity: hand the builder a config with the map and it answers from the
+    // map alone, so a test can model a chain we do not ship a table for.
+    const onlyMine = {
+      ...FIXTURE.chainConfig,
+      optionImplementations: { "0xabc": { name: "IRON_CONDOR" } },
+    };
+    expect(implementationInfo(RANGER_IMPL, onlyMine)).toBeNull();
+    expect(classifyOrder([1, 2, 3, 4], true, "0xABC", onlyMine)).toEqual({
+      structure: "CONDOR",
+      productName: "IRON_CONDOR",
+    });
+  });
+});
+
+describe("the snapshot labels its rows from the chain, not from the strikes", () => {
+  test("the real book's four-strike orders are rangers, and the registry is why", () => {
     const ranger = rowsFor("BTC").find((r) => r.structure === "RANGER");
     expect(ranger).toBeDefined();
     expect(ranger!.type).toBe("RANGER");
+    expect(ranger!.payout).toBe("ranger");
     // A range is printed as a span, not a single strike.
     expect(ranger!.strike).toContain("–");
+    // And the reason is the address on the order, not the shape of its numbers:
+    // the fixture's four-strike orders all name the ranger implementation.
+    const fourStrike = FIXTURE.orders.filter((o) => (o.rawApiData?.strikes ?? []).length === 4);
+    expect(fourStrike.length).toBeGreaterThan(0);
+    for (const o of fourStrike) {
+      expect(o.rawApiData!.implementation!.toLowerCase()).toBe(RANGER_IMPL.toLowerCase());
+    }
+  });
+
+  test("a condor on the same strikes is NOT coloured or priced as a ranger", () => {
+    // The regression BUG-2 describes: swap only the implementation address on
+    // the fixture's own ranger orders and the row must change its mind.
+    const asCondor = FIXTURE.orders.map((o) =>
+      (o.rawApiData?.strikes ?? []).length === 4
+        ? { ...o, rawApiData: { ...o.rawApiData, implementation: CONDOR_IMPL } }
+        : o,
+    );
+    const built = buildSnapshot({ ...FIXTURE, orders: asCondor }, AT);
+    const rows = built.pricing.BTC ?? [];
+    expect(rows.some((r) => r.structure === "RANGER")).toBe(false);
+    const condor = rows.find((r) => r.structure === "CONDOR");
+    expect(condor).toBeDefined();
+    expect(condor!.type).not.toBe("RANGER");
+    expect(condor!.payout).toBe("call_condor");
+  });
+
+  test("a four-strike row with no implementation is quoted, unlabelled and unpriced", () => {
+    // "Keep the row on the screen; assert nothing about it." The old code
+    // asserted RANGER here, which is a claim about money.
+    const stripped = FIXTURE.orders.map((o) =>
+      (o.rawApiData?.strikes ?? []).length === 4
+        ? { ...o, rawApiData: { ...o.rawApiData, implementation: undefined } }
+        : o,
+    );
+    const rows = buildSnapshot({ ...FIXTURE, orders: stripped }, AT).pricing.BTC ?? [];
+    const unknown = rows.find((r) => r.structure === "UNKNOWN");
+    expect(unknown).toBeDefined();
+    // Still a row: quoted, sized, and on screen.
+    expect(unknown!.strike).toContain("–");
+    expect(unknown!.size).toBeTruthy();
+    // But claiming nothing.
+    expect(unknown!.payout).toBeUndefined();
+    expect(unknown!.type).not.toBe("RANGER");
+  });
+
+  test("two orders on one instrument naming two implementations forfeit the label", () => {
+    // A contradiction is not a tie to break.
+    const four = FIXTURE.orders.filter((o) => (o.rawApiData?.strikes ?? []).length === 4);
+    expect(four.length).toBeGreaterThanOrEqual(2);
+    const conflicted = FIXTURE.orders.map((o) =>
+      o === four[1] ? { ...o, rawApiData: { ...o.rawApiData, implementation: CONDOR_IMPL } } : o,
+    );
+    const rows = buildSnapshot({ ...FIXTURE, orders: conflicted }, AT).pricing.BTC ?? [];
+    // The two ranger orders are the same instrument in the capture, so they
+    // group into one level — which now disagrees with itself.
+    expect(rows.some((r) => r.structure === "UNKNOWN")).toBe(true);
+    expect(rows.some((r) => r.structure === "RANGER")).toBe(false);
   });
 
   test("structure is finer than type — a spread keeps its call/put colour", () => {
     const spread = rowsFor("BTC").find((r) => r.structure === "SPREAD");
     expect(spread).toBeDefined();
     expect(spread!.type).toBe("CALL");
+  });
+
+  test("the capture's physical options are no longer flattened into vanillas", () => {
+    // PHYSICAL_CALL and PHYSICAL_PUT are both in the fixture; the strike count
+    // used to call them LINEAR_CALL and PUT.
+    const impls = new Set(
+      FIXTURE.orders.map((o) => String(o.rawApiData?.implementation ?? "").toLowerCase()),
+    );
+    expect(impls.has(PHYSICAL_PUT_IMPL.toLowerCase())).toBe(true);
+    // Their payout type is unchanged by the correction — a physical put still
+    // pays like a put — which is exactly why this mislabel had not bitten.
+    expect(payoutTypeFor("PUT", false, "PHYSICAL_PUT")).toBe("put");
   });
 });
 
@@ -380,14 +569,18 @@ describe("resolveOptionBook", () => {
     expect(snap.optionBook.address).toBe(FIXTURE.chainConfig.contracts.optionBook!);
   });
 
-  test("the ORDER's address wins a disagreement, and the disagreement is reported", () => {
-    // An order is a signature over one book contract; a fill sent anywhere
-    // else reverts, whatever the config or a docs page says.
+  test("the CHAIN CONFIG wins a disagreement, and the disagreement means no fill", () => {
+    // Reversed by `docs/reviews/mcp-crosscheck.md` §BUG-3. The order's
+    // `optionBookAddress` is an indexer-supplied field, not part of the
+    // signature, and the SDK's `resolveOptionBookTarget` throws INVALID_ORDER
+    // when it disagrees with the chain config — "to prevent a compromised API
+    // from redirecting fills to an attacker contract that drains pre-existing
+    // allowances". `agreed: false` is that state, not an amber chip.
     const ref = resolveOptionBook(
       { ...FIXTURE.chainConfig, contracts: { optionBook: "0xConfigBook" } },
       [order({ optionBookAddress: "0xOrderBook" })],
     );
-    expect(ref).toEqual({ address: "0xOrderBook", agreed: false });
+    expect(ref).toEqual({ address: "0xConfigBook", agreed: false });
   });
 
   test("case does not make a disagreement", () => {
@@ -601,11 +794,22 @@ describe("productNameOf / payoutTypeFor: one map, no string surgery", () => {
     // case where it silently isn't. Three unions name these shapes and no two
     // share strings (FINDINGS "0.3.0 delta").
     expect(payoutTypeFor("CALL", true)).toBe("call");
-    expect(productNameOf("CALL", true).toLowerCase()).toBe("linear_call");
+    expect(productNameOf("CALL", true)!.toLowerCase()).toBe("linear_call");
     expect(payoutTypeFor("CONDOR", false)).toBe("put_condor");
   });
 
-  test("every structure resolves to a payout type — none of them guesses", () => {
+  test("a resolved product name overrides the coarse structure→name direction", () => {
+    // `classifyOrder` hands back the registry key it actually read, and that
+    // wins: an inverse call is a call, but it is not LINEAR_CALL.
+    expect(payoutTypeFor("CALL", true, "INVERSE_CALL")).toBe("call");
+    expect(payoutTypeFor("SPREAD", true, "INVERSE_CALL_SPREAD")).toBe("call_spread");
+    expect(payoutTypeFor("CONDOR", true, "IRON_CONDOR")).toBe("iron_condor");
+    // And a product with no payout entry — `CALL_LOAN` is a loan handler, not
+    // a book option — resolves to nothing rather than to a vanilla guess.
+    expect(payoutTypeFor("CALL", true, "CALL_LOAN")).toBeNull();
+  });
+
+  test("every decidable structure resolves to a payout type — none of them guesses", () => {
     const structures = ["CALL", "PUT", "SPREAD", "FLY", "CONDOR", "RANGER"] as const;
     const payouts = structures.flatMap((s) => [payoutTypeFor(s, true), payoutTypeFor(s, false)]);
     // The vanilla and ranger rows ignore the flag — `classify()` already put

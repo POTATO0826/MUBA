@@ -18,6 +18,17 @@ import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
  *   - `live`  — a snapshot the server built inside its TTL.
  *   - `stale` — the last good live snapshot, still on screen because the
  *     refresh failed. The numbers are real, just old; `fetchedAt` says how old.
+ *
+ * **These are wire words, not screen words.** What a reader sees is decided
+ * once, by `FEED_STATE` in `src/theme.ts` — `mock` is drawn `SEEDED`, and the
+ * fourth state in that vocabulary (`PARTIAL`) belongs to the news feed, which
+ * can lose one source and keep the rest. A market snapshot has no partial: the
+ * book either arrives or the whole read falls through to the stale path
+ * (`createMarketService.refresh`), and the MM chain failing on its own is
+ * absence rather than degradation — only ETH and BTC ever have one, so an empty
+ * chain is indistinguishable from a legitimately empty chain and must not be
+ * dressed as a fault. `feedState()` is the only place the translation happens;
+ * no view should be spelling either set of words itself.
  */
 export interface MarketMeta {
   /** False when the live read failed and nothing good was ever cached. */
