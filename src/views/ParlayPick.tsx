@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
+import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
+import { SPOT_CHIP, bookDeltaNote, liveTag, seededTag, spotChipSx, spotFor } from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
 import {
   PARLAY_CARDS,
@@ -43,6 +45,18 @@ export const TIER_COLOR: Record<Tier, string> = {
 
 interface ParlayPickProps {
   lobbyName: string;
+  /**
+   * The live book. Two strictly additive uses, and no third:
+   *
+   *  1. a spot annotation beside each ticker's seeded reference price;
+   *  2. the book's delta beside a tier's implied probability, as advice.
+   *
+   * Nothing here reaches `myLegs`, `summary`, `TIERS` or the odds. The slip is
+   * built from the seed and settles on the seeded tape; if that ever stopped
+   * being true, `/match/:id/parlay?seed=N` would stop replaying and the
+   * determinism locks would say so.
+   */
+  source: MarketSource;
   /** This match's window. Its `oddsBoost` is already inside `summary.mult`;
    *  the slip only has to say where the premium came from. */
   mode: ModeSpec;
@@ -91,6 +105,24 @@ export function ParlayPick(p: ParlayPickProps) {
   const s = p.summary;
   const counting = p.secondsLeft !== null;
   const hot = p.secondsLeft !== null && p.secondsLeft <= HOT;
+
+  /**
+   * Live spot for the dealt tickers, `null` for most of them. Three to five
+   * names on screen and a fresh `source` object on every 30s poll, so this is
+   * cheap either way — it is memoised because the card grid below re-renders on
+   * every pick and the answer cannot have changed.
+   */
+  const spots = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const sym of p.arena) {
+      const px = spotFor(sym, p.source);
+      if (px !== null) m.set(sym, px);
+    }
+    return m;
+  }, [p.arena, p.source]);
+  /** No annotations, no chip — and then this screen is byte-identical to the
+   *  one that shipped before live data existed. */
+  const anyLive = spots.size > 0;
 
   /**
    * The pick music, on exactly the room's terms.
@@ -151,6 +183,13 @@ export function ParlayPick(p: ParlayPickProps) {
         <span style={sx(modeTag(p.mode.key))}>
           {p.mode.label} · {p.mode.duration}
         </span>
+        {/* The board legend for this surface. Only when something below is
+            actually annotated. */}
+        {anyLive && (
+          <span data-testid="spot-chip" style={sx(spotChipSx)}>
+            {SPOT_CHIP}
+          </span>
+        )}
         {p.secondsLeft !== null && (
           <span
             data-testid="pick-clock"
@@ -176,6 +215,7 @@ export function ParlayPick(p: ParlayPickProps) {
             const u = meta(sym);
             const picked = p.picks[sym] ?? null;
             const color = sectorColor(u.sector);
+            const liveSpot = spots.get(sym) ?? null;
             return (
               <section
                 key={sym}
@@ -185,7 +225,20 @@ export function ParlayPick(p: ParlayPickProps) {
                 <div style={sx(`display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
                   <span style={sx(`font:700 16px/1 ${MONO}`)}>{sym}</span>
                   <span style={sx(tag(color))}>{u.sector}</span>
-                  <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
+                  {/* C4 site: the ticker's reference price.
+                      With no live print this is the line it has always been.
+                      With one, the seeded number stays exactly where it was and
+                      gains the word that was always implied — the live print
+                      joins it, named, in the live colour. The legs below are
+                      struck off `u.px` either way. */}
+                  {liveSpot === null ? (
+                    <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>${fmtPx(u.px)} · base ±{u.t.toFixed(1)}%</span>
+                  ) : (
+                    <span data-testid={`spot-${sym}`} style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>
+                      {seededTag(u.px)} · <span style={sx(`color:${C.green}`)}>{liveTag(liveSpot)}</span> · base ±
+                      {u.t.toFixed(1)}%
+                    </span>
+                  )}
                   <div style={sx("flex:1")} />
                   <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${picked ? TIER_COLOR[picked.tier] : C.faint}`)}>
                     {picked ? `${picked.label} · ×${picked && TIERS[picked.tier].mult.toFixed(1)}` : "pick one"}
@@ -198,6 +251,17 @@ export function ParlayPick(p: ParlayPickProps) {
                     const tc = TIER_COLOR[card.tier];
                     const on = picked?.id === card.id;
                     const bull = card.stance === "bull";
+                    /**
+                     * The book's own read on this card's line — advisory, and
+                     * only where a book exists.
+                     *
+                     * The moneyness is `strike / px`, both taken off the leg the
+                     * card would build, which is the leg the duel would settle.
+                     * The tier's `~n%` above it is untouched, and `TIERS` is not
+                     * imported for this — the advisory cannot move the odds
+                     * because it never sees them.
+                     */
+                    const advisory = bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
                     return (
                       <button
                         key={card.id}
@@ -227,6 +291,14 @@ export function ParlayPick(p: ParlayPickProps) {
                         <div style={sx(`margin-top:6px;font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
                           {bull ? "above" : "below"} {fmtPx(leg.strike)} · ~{Math.round(leg.prob * 100)}%
                         </div>
+                        {advisory && (
+                          <div
+                            data-testid={`book-delta-${sym}:${card.id}`}
+                            style={sx(`margin-top:4px;font:400 9.5px/1.4 ${MONO};color:${C.green}`)}
+                          >
+                            {advisory}
+                          </div>
+                        )}
                         {on && (
                           <div
                             style={sx(

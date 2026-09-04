@@ -228,6 +228,11 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
         <MatchSpin
           key={state.seed}
           lobbyName={lobby.name}
+          // Display only, and only ever additive: the reel annotates the four
+          // board names Thetanuts actually prices and is silent about the other
+          // fourteen. What the reel *deals* comes from `spinCase` and the seed,
+          // which never see this.
+          source={source}
           marketLabel={MARKET_LABEL[lobby.market]}
           mode={derived.mode}
           color={MARKET_COLOR[lobby.market]}
@@ -256,6 +261,10 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
       {state.tab === "parlay" && lobby && opp && (
         <ParlayPick
           lobbyName={lobby.name}
+          // Same contract as the reel's: spot annotates the ticker headers and
+          // the book's delta sits beside a tier as advice. Neither reaches
+          // `derived.myLegs`, `summary` or anything that pays out.
+          source={source}
           mode={derived.mode}
           opponent={opp}
           arena={derived.arena}
@@ -320,7 +329,14 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
         />
       )}
 
-      {state.tab === "desk" && <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} />}
+      {/* `wallet` is what lets /desk sign a real fill behind `THETADUEL_TRADE=on`
+          — the first screen in the app that needs a signer rather than an
+          address. It is optional on `Parlay`, and with the flag off (or on the
+          mock tier, which must never approve or fill) the desk renders exactly
+          the DOM it rendered before the fill flow existed. */}
+      {state.tab === "desk" && (
+        <Parlay source={source} asset={state.asset} onAsset={actions.setAsset} wallet={active} />
+      )}
 
       {/* The ladder. `rank.you` is the same `LeaderPlayer` the rank moment
           reasons about, so the row that climbs on the Result screen is
