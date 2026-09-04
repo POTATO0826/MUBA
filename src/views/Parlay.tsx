@@ -4,8 +4,10 @@ import type { MarketSource } from "../data/market.ts";
 import { REFRESH_MS } from "../data/thetanuts.tsx";
 import {
   ALCHEMY_HINT,
+  DROP_COPY,
   FILL_LADDER,
   MAX_FILL_USDC,
+  PARTIAL_FILL_POLICY,
   TARGET_FILL_USDC,
   claimReferrerFees,
   contracts as contractText,
@@ -13,14 +15,20 @@ import {
   readReferrerSplit,
   refFor,
   runFill,
+  runParlayFill,
   splitLabel,
   usdText,
   type FillOutcome,
   type FillQuote,
   type FillStep,
   type FillWallet,
+  type ParlayFillLeg,
+  type ParlayFillResult,
+  type ParlayLegState,
+  type ParlaySlipQuote,
 } from "../desk/fill.ts";
 import { buildPayoffChart, ETH_VOL_BOX } from "../desk/payoff.ts";
+import { degeneracyScore } from "../engine/parlay.ts";
 import { sx } from "../lib/sx.ts";
 import {
   C,
@@ -33,7 +41,7 @@ import {
   stateDot,
   tag,
 } from "../theme.ts";
-import type { OrderRow } from "../types.ts";
+import type { OrderRow, PricingRow } from "../types.ts";
 
 const PRICING_COLUMNS = "88px 96px 110px 100px 100px 84px 84px 1fr";
 /** The MM chain: ticker, type, strike, expiry, and the four prices. */
@@ -121,6 +129,34 @@ function useTradeConfig(wallet: DeskWallet | undefined): TradeConfig {
   return config;
 }
 
+/**
+ * One chain level's identity on this screen.
+ *
+ * Type, strike **and expiry** — the third is not decoration: one underlying
+ * lists the same strike across four expiries, and a two-part key would make a
+ * slip pick the wrong week's option while the row on screen looked right.
+ */
+function rowKey(row: PricingRow): string {
+  return `${row.type}-${row.strike}-${row.expiry}`;
+}
+
+/** `−0.34` / `0.34` → `0.34`, and `—` → `null`. Both minus signs, because the
+ *  server writes U+2212 and a put's delta is negative. */
+function absDelta(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Math.abs(Number(String(raw).replace("−", "-")));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** `markPrice` as a number, or `undefined`. Most live rows carry no mark —
+ *  market-maker pricing covers two underlyings — and that is a fact about the
+ *  feed, never a reason to substitute a mid we computed. */
+function markOf(row: PricingRow): number | undefined {
+  if (row.mark === undefined) return undefined;
+  const n = Number(String(row.mark).replace("−", "-"));
+  return Number.isFinite(n) ? n : undefined;
+}
+
 interface ParlayProps {
   source: MarketSource;
   asset: string;
@@ -164,6 +200,27 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
    *  blotter of un-clickable rows must not advertise a quote it cannot give. */
   const previewable = orders.some((o) => o.preview);
   const [selected, setSelected] = useState<string | null>(null);
+
+  /**
+   * The parlay slip: which chain rows the player has stacked, by key.
+   *
+   * Kept as keys rather than rows so a book refresh re-resolves each pick
+   * against the *current* snapshot — a slip holding a 30-second-old copy of a
+   * row would quote one price and preview another.
+   *
+   * Only rows that carry `order` can be picked at all. That is the same rule
+   * `cardsForSlice` applies when it deals a card: a level built from bids or
+   * from MM pricing alone has nothing to buy, so it is display-only. The mock
+   * sets `order` on nothing, which is what keeps the seeded book unfillable by
+   * construction here as well as on the blotter.
+   */
+  const [slipKeys, setSlipKeys] = useState<readonly string[]>([]);
+  const slipRows = slipKeys
+    .map((key) => pricing.find((r) => rowKey(r) === key))
+    .filter((r): r is PricingRow => r !== undefined && r.order !== undefined);
+  function toggleSlip(key: string) {
+    setSlipKeys((keys) => (keys.includes(key) ? keys.filter((k) => k !== key) : [...keys, key]));
+  }
 
   /**
    * The blotter's provenance pill.
@@ -443,7 +500,7 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
 
             {pricing.map((r, i) => (
               <div
-                key={`${r.type}-${r.strike}`}
+                key={rowKey(r)}
                 style={sx(
                   `display:grid;grid-template-columns:${PRICING_COLUMNS};gap:10px;align-items:center;` +
                     `padding:12px 18px;border-bottom:1px solid ${C.lineSoft};background:${
@@ -473,6 +530,26 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
                     />
                   </div>
                   <span style={sx(`font:400 10px/1 ${MONO};color:${C.dim}`)}>{r.size}</span>
+                  {/* The slip toggle. Rendered only with `THETADUEL_TRADE=on`,
+                      a wallet, AND a resting order behind the level — a level
+                      with no `order` is a quote you cannot buy, and offering it
+                      as a leg would be the one failure `PricingRow.order`
+                      exists to delete. With any of the three missing this cell
+                      is exactly what it was. */}
+                  {canFill && r.order && (
+                    <button
+                      onClick={() => toggleSlip(rowKey(r))}
+                      style={sx(
+                        `height:22px;padding:0 8px;border-radius:6px;cursor:pointer;` +
+                          `font:700 9px/1 ${MONO};letter-spacing:.1em;` +
+                          (slipKeys.includes(rowKey(r))
+                            ? `border:1px solid ${C.accent};background:rgba(200,255,0,.14);color:${C.accent}`
+                            : `border:1px solid ${C.borderMid};background:transparent;color:${C.muted}`),
+                      )}
+                    >
+                      {slipKeys.includes(rowKey(r)) ? "IN SLIP" : "+ SLIP"}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -712,6 +789,16 @@ export function Parlay({ source, asset, onAsset, wallet }: ParlayProps) {
             </span>
           </div>
         </div>
+
+        {canFill && wallet && (
+          <ParlaySlip
+            rows={slipRows}
+            underlying={asset}
+            wallet={wallet}
+            referrer={trade.referrer}
+            onRemove={toggleSlip}
+          />
+        )}
 
         {canFill && wallet && <ReferrerStrip wallet={wallet} referrer={trade.referrer} />}
 
@@ -1070,6 +1157,512 @@ function FillFlow({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The parlay slip — N legs, one confirmation, N transactions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The §D3 ladder, as chips. `dropped` and `failed` are their own terminals
+ *  because "nothing was spent" and "gas was spent and it reverted" are not the
+ *  same news. */
+const LEG_STATUS_LABEL: Record<ParlayLegState["status"], string> = {
+  pending: "PENDING",
+  previewed: "PREVIEWED",
+  dropped: "DROPPED",
+  approved: "APPROVED",
+  filled: "FILLED ✓",
+  failed: "FAILED",
+};
+
+const LEG_STATUS_COLOR: Record<ParlayLegState["status"], string> = {
+  pending: C.faint,
+  previewed: C.blue,
+  dropped: C.dim,
+  approved: C.accent,
+  filled: C.green,
+  failed: C.amber,
+};
+
+/**
+ * One rung of the §D3 ladder, drawn.
+ *
+ * Exported so `test/fill.test.ts` can assert every terminal renders what it
+ * promises without a chain: a BaseScan link on `filled`, the mapped error code
+ * on `failed`, and the reason on `dropped`. A ladder is the strongest "this is
+ * real" artifact a demo has, and a hash nobody can open is not evidence.
+ */
+export function ParlayLegChip({ leg }: { leg: ParlayLegState }) {
+  const color = LEG_STATUS_COLOR[leg.status];
+  return (
+    <div
+      style={sx(
+        `display:flex;flex-direction:column;gap:4px;padding:8px 10px;border-radius:8px;` +
+          `border:1px solid ${C.line};background:${C.raised}`,
+      )}
+    >
+      <div style={sx("display:flex;align-items:center;gap:8px")}>
+        <span style={sx(`font:700 10.5px/1 ${MONO};flex:1;min-width:0`)}>{leg.label}</span>
+        <span style={sx(`font:700 9px/1 ${MONO};letter-spacing:.1em;color:${color}`)}>
+          {LEG_STATUS_LABEL[leg.status]}
+        </span>
+      </div>
+      {leg.quote && (
+        <div style={sx(`font:400 10px/1.4 ${MONO};color:${C.muted}`)}>
+          {contractText(leg.quote.numContracts)} contracts · ${usdText(leg.quote.totalCollateral)}
+          {leg.status === "filled" &&
+            (leg.approvalSkipped ? " · 1 tx (allowance sufficient)" : " · 2 tx")}
+        </div>
+      )}
+      {/* A hash nobody can open is not evidence. This link is the strongest
+          "this is real" artifact the demo has, so it is on the leg rather than
+          on a summary line the eye slides past. */}
+      {leg.status === "filled" && leg.explorer && (
+        <a
+          href={leg.explorer}
+          target="_blank"
+          rel="noreferrer"
+          style={sx(`font:400 10px/1.4 ${MONO};color:${C.accent}`)}
+        >
+          {leg.hash?.slice(0, 12)}… on BaseScan
+        </a>
+      )}
+      {leg.status === "dropped" && leg.dropped && (
+        <div style={sx(`font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
+          {leg.dropped} — {DROP_COPY[leg.dropped]}
+        </div>
+      )}
+      {leg.status === "failed" && leg.error && (
+        <div style={sx(`font:400 10px/1.4 ${MONO};color:${C.amber}`)}>
+          {leg.error.code} at {STEP_LABEL[leg.error.step]} — {leg.error.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The slip, and the one confirmation that buys it.
+ *
+ * **A parlay is N independent fills, one transaction each** — the seven
+ * physical multi-leg implementations on Base are the zero address
+ * (`tnuts-test/FINDINGS.md` §3), so there is no atomic basket to buy and this
+ * screen does not pretend there is one. Everything visible here follows from
+ * that: the per-leg ladder, the partial-fill sentence above the button, and the
+ * fact that the result can read "2 of 3 landed" without anything having gone
+ * wrong with the app.
+ *
+ * The sequence lives in `src/desk/fill.ts`, where `test/fill.test.ts` drives
+ * every branch with no chain in reach. This component owns four things: which
+ * rung is selected, the ladder as it arrives, the slip quote that is awaiting a
+ * confirmation, and the promise that clicking the total resolves.
+ */
+function ParlaySlip({
+  rows,
+  underlying,
+  wallet,
+  referrer,
+  onRemove,
+}: {
+  rows: readonly PricingRow[];
+  underlying: string;
+  wallet: DeskWallet;
+  referrer: string;
+  onRemove: (key: string) => void;
+}) {
+  const [amount, setAmount] = useState<bigint>(TARGET_FILL_USDC);
+  const [ladder, setLadder] = useState<readonly ParlayLegState[] | null>(null);
+  const [step, setStep] = useState<FillStep | null>(null);
+  const [slip, setSlip] = useState<ParlaySlipQuote | null>(null);
+  const [result, setResult] = useState<ParlayFillResult | null>(null);
+  const [running, setRunning] = useState(false);
+  /** Resolves the one confirmation `runParlayFill` is sitting on. */
+  const decide = useRef<((ok: boolean) => void) | null>(null);
+
+  // An unmount mid-slip must not leave the sequence awaiting a click that can
+  // never arrive. `false` ends it as `cancelled`, which is the truth.
+  useEffect(() => () => decide.current?.(false), []);
+
+  /**
+   * The legs, and the one field this screen deliberately leaves empty.
+   *
+   * `instrument` is the key the duel clock marks a filled leg by, and it must
+   * be the **venue's own** name, verbatim (`src/engine/score.ts`). A
+   * `PricingRow` carries the mark's *value* — joined on the server from
+   * `MmQuote.markPrice` — but not the mark's *name*, and the order book's
+   * `ETH-3SEP-4400-C` is a different namespace from the market maker's
+   * `ETH-3SEP26-2100-C`. So it is passed as `undefined` rather than composed
+   * from a strike and an expiry: a near-miss key is the one failure that pays
+   * the wrong player quietly, and the honest outcome is `unmarkable` → no
+   * verdict → both stakes refunded. The line below says so on screen.
+   */
+  const legs: ParlayFillLeg[] = rows.map((row) => ({
+    id: rowKey(row),
+    label: `${underlying}-${row.expiry}-${row.strike}-${row.type === "CALL" ? "C" : "P"}`,
+    entryMark: markOf(row),
+    order: row.order!,
+    usdcAmount: amount,
+  }));
+  /** Legs the duel clock could not score even if they all landed. */
+  const unscoreable = legs.filter((l) => !l.instrument || l.entryMark === undefined);
+  /** What the slip asks for. Shown beside the cap so the staircase is visible
+   *  before it is refused — but the refusal itself is in code, above the
+   *  network, which is the half that is a bound. */
+  const requested = legs.reduce((acc, l) => acc + l.usdcAmount, 0n);
+  const overCap = requested > MAX_FILL_USDC;
+
+  /** `|delta|` per leg id — the "chance to land", for the re-score. */
+  const probOf = new Map<string, number>();
+  for (const row of rows) {
+    const d = absDelta(row.delta);
+    if (d !== null) probOf.set(rowKey(row), d);
+  }
+
+  /**
+   * The slip's degeneracy score over the legs that actually landed.
+   *
+   * `degeneracyScore` (`src/engine/parlay.ts`) is the product of `1 / prob`. It
+   * is a GAME number and it is rendered without a currency symbol, because a
+   * basket of options pays the **sum** of its legs and never the product — see
+   * `basketPayoff`. This is what "your slip re-scores" means, computed: a
+   * three-leg slip that lands two legs is a shorter shot than the one the
+   * player pressed, and the score says so instead of quietly keeping the old
+   * one.
+   */
+  function scoreOf(states: readonly ParlayLegState[]): number | null {
+    const probs = states.map((s) => probOf.get(s.id)).filter((p): p is number => p !== undefined);
+    return probs.length === states.length && probs.length > 0
+      ? degeneracyScore(probs.map((prob) => ({ prob })))
+      : null;
+  }
+
+  const pressedScore = scoreOf(legs.map((l) => ({ id: l.id, label: l.label, status: "pending" })));
+
+  async function start() {
+    if (running || legs.length === 0) return;
+    setRunning(true);
+    setResult(null);
+    setLadder(null);
+    setSlip(null);
+    setStep(null);
+
+    const deps = createLiveFillDeps(wallet, { referrer: referrer || undefined });
+    // One confirmation, for the whole slip, and only a click on the total
+    // resolves it. The live adapter's own `confirm` refuses by default; a deps
+    // object that could confirm itself would be a fill with no human in it.
+    deps.confirmSlip = (quote) =>
+      new Promise<boolean>((resolve) => {
+        setSlip(quote);
+        decide.current = resolve;
+      });
+
+    const outcome = await runParlayFill(legs, deps, (states, s) => {
+      setLadder(states);
+      setStep(s);
+    });
+    decide.current = null;
+    setSlip(null);
+    setResult(outcome);
+    setRunning(false);
+  }
+
+  const awaiting = running && slip !== null;
+  const landedScore = result ? scoreOf(result.filled) : null;
+
+  return (
+    <div
+      style={sx(
+        `border:1px solid ${C.border};border-radius:12px;background:${C.card};overflow:hidden`,
+      )}
+    >
+      <div
+        style={sx(
+          `display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid ${C.border}`,
+        )}
+      >
+        <span style={sx(`font:700 13px/1 ${SANS}`)}>Parlay slip</span>
+        <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>
+          {legs.length} LEG{legs.length === 1 ? "" : "S"} · {legs.length} TX
+        </span>
+      </div>
+
+      <div style={sx("padding:14px 16px;display:flex;flex-direction:column;gap:10px")}>
+        {legs.length === 0 && (
+          <div style={sx(`font:400 10.5px/1.6 ${MONO};color:${C.dim}`)}>
+            Empty. Press <span style={sx(`color:${C.muted}`)}>+ SLIP</span> on a chain row that a
+            resting order backs — a level quoted by market makers alone has nothing to buy.
+          </div>
+        )}
+
+        {/* The pre-flight list: what the player picked, and what each leg's
+            premium is. Max loss is the premium, at every rank and every detail
+            level, and it is above the size selector rather than behind it. */}
+        {!running &&
+          !result &&
+          rows.map((row) => (
+            <div
+              key={rowKey(row)}
+              style={sx(
+                `display:flex;align-items:center;gap:8px;font:400 10.5px/1.4 ${MONO};color:${C.muted}`,
+              )}
+            >
+              <span style={sx(tag(TYPE_COLOR[row.type]))}>{row.type}</span>
+              <span style={sx(`font-weight:700;color:${C.text}`)}>{row.strike}</span>
+              <span style={sx(`color:${C.dim}`)}>{row.expiry}</span>
+              <div style={sx("flex:1")} />
+              <span style={sx(`color:${C.red}`)}>{row.ask}</span>
+              <button
+                onClick={() => onRemove(rowKey(row))}
+                style={sx(
+                  `height:20px;width:20px;border:1px solid ${C.borderMid};border-radius:6px;` +
+                    `background:transparent;color:${C.dim};font:700 10px/1 ${MONO};cursor:pointer`,
+                )}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+
+        {/* Size, per leg. Every rung is filtered against MAX_FILL_USDC — but
+            the rung is per LEG, and the cap is on the SLIP, which is exactly
+            the staircase §D1 names. The line below states the sum against the
+            bound so the player can see it before pressing; the refusal itself
+            lives in `runParlayFill`, above the network. */}
+        {!running && !result && legs.length > 0 && (
+          <>
+            <div style={sx("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
+              <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>
+                PER LEG
+              </span>
+              {FILL_LADDER.filter((rung) => rung <= MAX_FILL_USDC).map((rung) => (
+                <button
+                  key={String(rung)}
+                  onClick={() => setAmount(rung)}
+                  style={sx(pill(amount === rung))}
+                >
+                  ${usdText(rung)}
+                </button>
+              ))}
+            </div>
+            <div
+              style={sx(
+                `font:400 10px/1.5 ${MONO};color:${overCap ? C.amber : C.faint}`,
+              )}
+            >
+              slip total ${usdText(requested)} · cap ${usdText(MAX_FILL_USDC)}
+              {overCap
+                ? " — refused in code, on the SUM. A cap the sum can step over is a cap with a staircase next to it."
+                : " — the cap is checked on the sum as well as on each leg"}
+            </div>
+            {pressedScore !== null && (
+              <div style={sx(`font:400 10px/1.5 ${MONO};color:${C.dim}`)}>
+                degeneracy ×{pressedScore.toFixed(2)} — a game score, not a payout. A basket pays
+                the sum of its legs.
+              </div>
+            )}
+            {/* The two clocks are independent, and one of them cannot read
+                these legs. Said before the press, not after the refund: the
+                option still settles at expiry on chain either way, but the
+                four-minute duel needs a mark and a name to read it by, and the
+                book publishes a market-maker ticker for ETH and BTC only. */}
+            {unscoreable.length > 0 && (
+              <div style={sx(`font:400 10px/1.55 ${MONO};color:${C.amber}`)}>
+                {unscoreable.length} of {legs.length} leg
+                {legs.length === 1 ? "" : "s"} cannot be scored on the duel clock — no
+                market-maker mark and ticker for {unscoreable.length === 1 ? "it" : "them"}. The
+                position is real and settles at expiry regardless; the duel itself would refund
+                both stakes.
+              </div>
+            )}
+            <button
+              onClick={() => void start()}
+              style={sx(
+                `height:36px;border:none;border-radius:8px;background:${C.accent};color:${C.bg};` +
+                  `font:700 12px/1 ${SANS};cursor:pointer`,
+              )}
+            >
+              Review slip · {legs.length} leg{legs.length === 1 ? "" : "s"}
+            </button>
+          </>
+        )}
+
+        {/* ── The confirm screen. One confirmation, for the whole slip. ──── */}
+        {awaiting && slip && (
+          <div style={sx("display:flex;flex-direction:column;gap:9px")}>
+            <div style={sx(`font:700 10px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>
+              CONFIRM THE SLIP
+            </div>
+            {slip.legs.map((leg) => (
+              <div
+                key={leg.id}
+                style={sx(
+                  `display:flex;gap:8px;font:400 10.5px/1.4 ${MONO};color:${C.muted}`,
+                )}
+              >
+                <span style={sx(`flex:1;min-width:0;color:${C.text}`)}>{leg.label}</span>
+                <span>{contractText(leg.quote!.numContracts)}</span>
+                <span style={sx(`color:${C.accent}`)}>${usdText(leg.quote!.totalCollateral)}</span>
+              </div>
+            ))}
+            {/* Legs the book removed between the press and this screen, named
+                rather than silently dropped — a slip that quietly shrinks is a
+                slip the player did not build. */}
+            {slip.dropped.map((leg) => (
+              <div key={leg.id} style={sx(`font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
+                {leg.label} — dropped, {leg.dropped ? DROP_COPY[leg.dropped] : "not fillable"}
+              </div>
+            ))}
+            <div
+              style={sx(
+                `display:flex;justify-content:space-between;font:500 11px/1 ${MONO};color:${C.muted}`,
+              )}
+            >
+              <span>total debit</span>
+              <span style={sx(`color:${C.text}`)}>${usdText(slip.totalDebit)}</span>
+            </div>
+            {/* Max loss, above the button, unconditionally. It is the same
+                number as the debit — every leg is a long option, so the premium
+                paid is the whole of the downside — and saying so is the single
+                most valuable habit this product can build. */}
+            <div
+              style={sx(
+                `display:flex;justify-content:space-between;font:700 11px/1 ${MONO};color:${C.amber}`,
+              )}
+            >
+              <span>total max loss</span>
+              <span>${usdText(slip.maxLoss)}</span>
+            </div>
+            {/* §D2 — the policy, on screen, BEFORE the first signature. */}
+            <div
+              style={sx(
+                `border:1px solid ${C.borderMid};border-radius:8px;padding:9px;` +
+                  `font:400 10.5px/1.55 ${SANS};color:${C.textSoft};text-wrap:pretty`,
+              )}
+            >
+              {slip.policy}
+            </div>
+            <button
+              onClick={() => decide.current?.(true)}
+              style={sx(
+                `border:1px solid ${C.accent};border-radius:8px;background:rgba(200,255,0,.12);` +
+                  `color:${C.accent};font:700 14px/1 ${MONO};padding:10px;cursor:pointer`,
+              )}
+            >
+              ${usdText(slip.totalDebit)}
+            </button>
+            <div style={sx(`font:400 10px/1.5 ${MONO};color:${C.faint};text-align:center`)}>
+              click the amount — each leg approves exactly its own collateral, never MaxUint256
+            </div>
+            <button
+              onClick={() => decide.current?.(false)}
+              style={sx(
+                `height:28px;border:1px solid ${C.borderMid};border-radius:7px;background:transparent;` +
+                  `color:${C.muted};font:500 11px/1 ${SANS};cursor:pointer`,
+              )}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {/* ── The §D3 ladder ─────────────────────────────────────────────── */}
+        {(ladder || result) && !awaiting && (
+          <div style={sx("display:flex;flex-direction:column;gap:7px")}>
+            {(result?.legs ?? ladder ?? []).map((leg) => (
+              <ParlayLegChip key={leg.id} leg={leg} />
+            ))}
+          </div>
+        )}
+
+        {running && !awaiting && (
+          <div style={sx(`font:400 10.5px/1.5 ${MONO};color:${C.dim}`)}>
+            {step === "fill" ? "signing and submitting…" : `working… (${step ?? "cap"})`}
+          </div>
+        )}
+
+        {result && result.status !== "refused" && (
+          <div
+            style={sx(
+              `font:400 10.5px/1.6 ${MONO};color:${
+                result.status === "filled"
+                  ? C.green
+                  : result.status === "partial"
+                    ? C.amber
+                    : C.dim
+              }`,
+            )}
+          >
+            {result.status === "cancelled"
+              ? "cancelled — nothing was approved and nothing was spent"
+              : `${result.filled.length} of ${result.legs.length} legs landed · spent $${usdText(result.spent)}`}
+            {/* The re-score, which is the second half of the policy the player
+                read before signing. It is a game number and carries no `$`. */}
+            {result.filled.length > 0 && landedScore !== null && (
+              <div style={sx(`margin-top:5px;color:${C.dim}`)}>
+                slip re-scored — degeneracy ×{landedScore.toFixed(2)} on what landed
+              </div>
+            )}
+            {result.status === "partial" && (
+              <div style={sx(`margin-top:5px;color:${C.faint}`)}>
+                Nothing was unwound. Selling the landed legs back into a thin book would turn a
+                failed leg into a realised loss; you keep the options you paid for.
+              </div>
+            )}
+            {/* On the receipt too, because this is where a player looks when
+                the duel later refunds instead of paying. */}
+            {result.unmarkable.length > 0 && (
+              <div style={sx(`margin-top:5px;color:${C.amber}`)}>
+                {result.unmarkable.length} landed leg
+                {result.unmarkable.length === 1 ? "" : "s"} carry no market-maker mark, so the duel
+                clock cannot score {result.unmarkable.length === 1 ? "it" : "them"} — the duel
+                refunds. The options are yours and settle at expiry on chain.
+              </div>
+            )}
+          </div>
+        )}
+
+        {result?.status === "refused" && result.error && (
+          <div
+            style={sx(
+              `border:1px solid ${C.amber}55;background:${C.amber}12;border-radius:8px;padding:10px;` +
+                `font:400 10.5px/1.6 ${MONO};color:${C.amber}`,
+            )}
+          >
+            <div style={sx(`font:700 10px/1 ${MONO};letter-spacing:.1em`)}>
+              {result.error.code} · at {STEP_LABEL[result.error.step]}
+            </div>
+            <div style={sx(`margin-top:7px;color:${C.textSoft}`)}>{result.error.message}</div>
+            <div style={sx(`margin-top:5px;color:${C.muted}`)}>{result.error.recovery}</div>
+          </div>
+        )}
+
+        {result && (
+          <button
+            onClick={() => {
+              setResult(null);
+              setLadder(null);
+              setStep(null);
+            }}
+            style={sx(
+              `height:28px;border:1px solid ${C.borderMid};border-radius:7px;background:transparent;` +
+                `color:${C.muted};font:500 11px/1 ${SANS};cursor:pointer`,
+            )}
+          >
+            {ACTION_LABEL[result.error?.action ?? "none"]}
+          </button>
+        )}
+
+        {/* The policy is on the confirm screen because that is where §D2 puts
+            it — but it is also here, before the player has pressed anything, so
+            nobody meets it for the first time with a wallet prompt open. */}
+        {!running && !result && legs.length > 0 && (
+          <div style={sx(`font:400 10px/1.55 ${SANS};color:${C.faint};text-wrap:pretty`)}>
+            {PARTIAL_FILL_POLICY}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

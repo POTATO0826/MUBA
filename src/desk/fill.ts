@@ -1,4 +1,5 @@
-import type { OrderRow } from "../types.ts";
+import type { FilledLeg } from "../engine/score.ts";
+import type { FillableOrder, OrderRow } from "../types.ts";
 
 /**
  * The real fill: one resting Thetanuts order, bought with real USDC, on Base
@@ -343,6 +344,17 @@ export interface FillDeps {
    * thing you press is the amount you spend.
    */
   confirm(quote: FillQuote): Promise<boolean>;
+  /**
+   * The same gate, for a whole slip: **one** confirmation, for N legs.
+   *
+   * Optional, and when it is absent `runParlayFill` falls back to `confirm`
+   * with the aggregate quote — so a `FillDeps` written for the single-leg path
+   * still takes exactly one confirmation for a parlay rather than N of them.
+   * What the richer shape buys is the disclosure §D2 requires: the final leg
+   * list, the total debit, the total max loss and the partial-fill policy, all
+   * in front of the player *before* the first signature.
+   */
+  confirmSlip?(slip: ParlaySlipQuote): Promise<boolean>;
   /** Attribution on every fill. An un-whitelisted referrer's split is 0 bps —
    *  which is why this is threaded for attribution and never called revenue. */
   referrer?: string;
@@ -983,6 +995,741 @@ export async function runFill(
     quote,
     nonce: order.order.nonce === undefined ? null : String(order.order.nonce),
     approvalSkipped,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The parlay — N independent fills, one transaction each
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ## Why there is no atomic path, and why this file does not fake one
+ *
+ * A parlay is a basket of options. The obvious implementation is one multi-leg
+ * product — a butterfly, a condor — bought in a single transaction, and it is
+ * unavailable: `chainConfig.implementations` puts **seven physical multi-leg
+ * implementations at the zero address** on Base (`tnuts-test/FINDINGS.md` §3:
+ * `PHYSICAL_CALL_SPREAD`, `PHYSICAL_PUT_SPREAD`, both flies, both condors and
+ * the iron condor). There is no contract to fill.
+ *
+ * So a parlay is **N independent vanilla fills, one transaction each**, and
+ * everything below follows from that one fact:
+ *
+ *  - There is no rollback. Leg 3 failing cannot un-fill legs 1 and 2, because
+ *    they are already someone else's position on chain.
+ *  - There is therefore a **declared degradation policy** rather than an
+ *    implied one, and it is `PARTIAL_FILL_POLICY` — shown to the player before
+ *    the first signature, not written in this comment.
+ *  - And there is a per-leg **status ladder**, because a sequence of N
+ *    transactions with one spinner over it is a sequence nobody can audit.
+ *
+ * ## What this deliberately does not do: unwind
+ *
+ * The tempting recovery on a failed leg is to sell the landed ones back and
+ * return the player to flat. Do not. Selling back means crossing the spread on
+ * a book that is thin enough to have failed a leg thirty seconds ago, at
+ * whatever bid is resting — which converts a *failed* leg (costing nothing but
+ * gas) into a *realised* loss on the legs that worked. Keeping the position is
+ * both cheaper and more honest: the player holds exactly the options they paid
+ * for, each with its own bounded max loss, and the slip re-scores around what
+ * landed.
+ */
+
+/**
+ * The partial-fill policy, in one sentence, exported so the screen and the test
+ * are quoting the same string.
+ *
+ * §D2: this renders on the confirm screen, above the button, **before the first
+ * signature**. A player who learns it afterwards has been surprised by their
+ * own position — and a policy that lives only in a docblock is a policy the
+ * person it applies to never read.
+ */
+export const PARTIAL_FILL_POLICY =
+  "Legs fill one at a time. If one fails, you keep the ones that landed and " +
+  "your slip re-scores.";
+
+/**
+ * The rungs of §D3, in order: `pending → previewed → approved → filled ✓`.
+ *
+ * Two extra terminals, because a real sequence has them: `dropped` for a leg
+ * removed **before** the first signature (so nothing was spent and nothing was
+ * approved), and `failed` for a leg that was attempted and did not land.
+ * Collapsing those two would tell a player their money might be somewhere it
+ * provably is not.
+ */
+export type LegStatus = "pending" | "previewed" | "dropped" | "approved" | "filled" | "failed";
+
+/** Why a leg never reached a signature. Every one of these is an ordinary
+ *  state of a live book, not an error in the app. */
+export type LegDropReason = "NO_FILL" | "EXPIRED" | "COLLATERAL" | "BOOK_MISMATCH";
+
+/** One line per reason, for the ladder. Same rule as `FILL_COPY`: a state with
+ *  no copy is a chip nobody can read. */
+export const DROP_COPY: Record<LegDropReason, string> = {
+  NO_FILL: "the maker's remaining collateral will not absorb this size",
+  EXPIRED: "the maker's signature expires within the minute — a stale order reverts",
+  COLLATERAL: "not collateralised in USDC, so the same number would mean a different amount",
+  BOOK_MISMATCH: "names a different OptionBook than this chain — never approved",
+};
+
+/**
+ * One leg of a slip, as the fill needs it.
+ *
+ * The order is **in hand**, not re-fetched by nonce the way `runFill` does it.
+ * That is a deliberate difference and it costs something, so it is stated: a
+ * single-leg fill can afford one round trip to the book between the press and
+ * the signature, and a slip cannot afford N of them in front of a confirm
+ * screen the player is reading. What replaces the re-fetch is the expiry buffer
+ * (checked here, against the order's own two clocks, before any signature) plus
+ * the degradation policy — an order that has left the book since the snapshot
+ * fails *its own* leg with `ORDER_EXPIRED` at the fill step, and the rest of
+ * the slip carries on. That is the same outcome a re-fetch would have produced,
+ * one transaction later and for the price of a revert's gas.
+ */
+export interface ParlayFillLeg {
+  /** Stable identity for the ladder — a `LiveCard.id`, or a row identity. */
+  id: string;
+  /** `ETH-27SEP-4400-C`. **Display copy only** — never used to match an order,
+   *  and never used as a marks-map key. See `instrument`. */
+  label: string;
+  /**
+   * The **venue's own name** for this instrument, verbatim, or `undefined`.
+   *
+   * This is the key `src/engine/score.ts` looks a filled leg's mark up by, and
+   * it is deliberately not derivable from anything else on this object. Two
+   * namespaces name the same option on Base and they do not agree: the order
+   * book's instrument is `ETH-3SEP-4400-C` (no year, built by
+   * `src/server/thetanuts.ts`), and the market-maker chain's `MmQuote.ticker`
+   * is `ETH-3SEP26-2100-C` (with year, the SDK's own string). Only the second
+   * keys into `marksFromSnapshot`, because `MmQuote` is the only shape in the
+   * snapshot carrying **both** a name and a mark.
+   *
+   * So this field is **copied or absent, never composed**. `FilledLeg`'s own
+   * docstring names a synthesised instrument name as the one failure mode that
+   * pays the wrong player quietly, and a translation between the two schemes
+   * would be exactly that — a near-miss guess dressed as a join.
+   *
+   * `undefined` is the honest and currently *usual* answer: a card is built
+   * from a `PricingRow`, and a `PricingRow` carries the mark's **value**
+   * (`mark`, joined on the server) but not the mark's **name**. A leg with no
+   * instrument here is unmarkable, `duelScore` refuses, and the duel refunds —
+   * which fails closed. See `ParlayFillResult.unmarkable`.
+   */
+  instrument?: string;
+  /**
+   * The mark price per contract at the moment of the fill, verbatim from the
+   * venue (`markPrice`) — the baseline the duel clock measures from, and *not*
+   * the price paid, which carries the spread and the fee.
+   *
+   * Same rule as `instrument`: copied or absent. Absent for every underlying
+   * with no market-maker pricing, which is six of the eight price feeds.
+   */
+  entryMark?: number;
+  /** The resting order this leg fills against. `FillableOrder` (`src/types.ts`)
+   *  is assignable, which is how a `LiveCard`'s `row.order` gets here. */
+  order: RawFillOrder;
+  /** The notional this leg asks for, USDC 6dp. */
+  usdcAmount: bigint;
+}
+
+/** One rung of the ladder, as the screen draws it. */
+export interface ParlayLegState {
+  id: string;
+  label: string;
+  status: LegStatus;
+  /** `ParlayFillLeg.instrument`, carried through untouched — the duel clock's
+   *  join key, or `undefined` when the venue gave us no name. */
+  instrument?: string;
+  /** `ParlayFillLeg.entryMark`, carried through untouched. */
+  entryMark?: number;
+  /** Set from `previewed` onward: what this leg costs, exactly. */
+  quote?: FillQuote;
+  /** Set on `filled`. */
+  hash?: string;
+  /** BaseScan, ready to open — a hash nobody can open is not evidence. */
+  explorer?: string;
+  nonce?: string | null;
+  /** `true` when `ensureAllowance` returned `null`: the allowance was already
+   *  sufficient and this leg was one transaction, not two. */
+  approvalSkipped?: boolean;
+  /** The mapped code, on `dropped` and on `failed` alike. */
+  error?: FillError;
+  dropped?: LegDropReason;
+}
+
+/**
+ * What the player confirms — once, for the whole slip.
+ *
+ * Everything §D1 step 4 names is on here, so the screen cannot render a
+ * confirmation that is missing one of them: the final leg list, the total
+ * debit, the total max loss and the policy.
+ */
+export interface ParlaySlipQuote {
+  /** The legs that will actually be attempted, each already `previewed`. */
+  legs: readonly ParlayLegState[];
+  /** The legs that will not be, and why. Shown beside the list rather than
+   *  silently removed — a slip that quietly shrinks between the press and the
+   *  confirm is a slip the player did not build. */
+  dropped: readonly ParlayLegState[];
+  /** Σ `totalCollateral` over `legs`. What leaves the wallet if every leg
+   *  lands. */
+  totalDebit: bigint;
+  /**
+   * The slip's total max loss — and it is **the same number** as `totalDebit`.
+   *
+   * That identity is the whole reason a bought option is survivable, so it is
+   * surfaced as its own field rather than left for the reader to notice: every
+   * leg is a long option, the premium is paid up front, and nothing on this
+   * slip can lose more than what the confirm button says.
+   */
+  maxLoss: bigint;
+  /** Σ `numContracts`, 18dp. */
+  totalContracts: bigint;
+  /** The collateral token every surviving leg agreed on. */
+  collateralToken: string;
+  /** `PARTIAL_FILL_POLICY`, carried so the confirm screen cannot omit it. */
+  policy: string;
+}
+
+export interface ParlayFillResult {
+  /**
+   *  - `filled`    — every attempted leg landed.
+   *  - `partial`   — some landed, some did not. The player keeps what landed.
+   *  - `none`      — the slip was confirmed and nothing landed.
+   *  - `cancelled` — the player declined. Nothing approved, nothing spent.
+   *  - `refused`   — the slip never reached a confirmation. See `error`.
+   */
+  status: "filled" | "partial" | "none" | "cancelled" | "refused";
+  /** The ladder, in slip order, whatever happened. */
+  legs: readonly ParlayLegState[];
+  /** The legs that landed — the position the player now holds. */
+  filled: readonly ParlayLegState[];
+  /** Attempted and did not land. Nothing beyond gas was spent on these. */
+  failed: readonly ParlayLegState[];
+  /** Removed before the first signature. Nothing at all was spent on these. */
+  dropped: readonly ParlayLegState[];
+  /** Σ `totalCollateral` over the legs the player confirmed. */
+  totalDebit: bigint;
+  /** The same number. See `ParlaySlipQuote.maxLoss`. */
+  maxLoss: bigint;
+  /** Σ `totalCollateral` over the legs that actually landed — what was really
+   *  spent, which after a partial fill is not the number that was confirmed. */
+  spent: bigint;
+  /**
+   * Landed legs the **duel clock cannot score**, by label.
+   *
+   * A leg reaches this list when it filled but carries no venue `instrument`
+   * or no `entryMark` — so `marksFromSnapshot` has no key for it and
+   * `duelScore` returns `NaN`, the attestor signs nothing and the duel refunds
+   * both stakes. That is the correct direction to fail in, and it is reported
+   * here rather than swallowed because it is a **product fact, not a bug**:
+   * market-maker pricing exists for ETH and BTC only, so a duel fought on an
+   * order-book-only underlying has no marks to be scored against today.
+   *
+   * Non-empty does **not** mean anything went wrong with the fill. The two
+   * clocks are independent: the player holds the option either way, and it
+   * settles at expiry on chain regardless of who took the escrow pot.
+   */
+  unmarkable: readonly string[];
+  /** Set only on `refused`. */
+  error?: FillError;
+}
+
+/**
+ * The shape of a live card that a fill needs, named structurally so the desk
+ * does not import the engine.
+ *
+ * `LiveCard` (`src/engine/parlay.ts`) satisfies this exactly. Declaring the
+ * seam this way rather than importing follows the same rule that put
+ * `FillableOrder` in `src/types.ts`: the engine and the desk share a vocabulary
+ * and neither reaches into the other.
+ */
+export interface FillableCard {
+  id: string;
+  underlying: string;
+  /** The listed strike, as the row prints it. */
+  strike: string;
+  /** The row's own expiry label — `"12 SEP"`. */
+  expiry: string;
+  stance: "bull" | "bear";
+  /** `markPrice` as a number, or `null`/absent — `LiveCard.mark`. Carried, not
+   *  recomputed; it becomes `ParlayFillLeg.entryMark`. */
+  mark?: number | null;
+  /**
+   * The venue's own instrument name, if the caller has one.
+   *
+   * `LiveCard` does not carry one today, and neither does the `PricingRow`
+   * underneath it — see `ParlayFillLeg.instrument`. Declared here so that the
+   * day a ticker is threaded onto the row, the join closes by supplying a
+   * field rather than by inventing a format.
+   */
+  instrument?: string;
+  row: { order?: FillableOrder };
+}
+
+/**
+ * `ETH-12 SEP-4400-C` — **display only**, and never a marks-map key.
+ *
+ * This is a composed name, in this app's own format, and it deliberately does
+ * not try to look like either venue namespace. Something that almost looks like
+ * a venue ticker is worse than something that plainly does not: the first
+ * invites a lookup that silently misses.
+ */
+export function cardLabel(card: FillableCard): string {
+  return `${card.underlying}-${card.expiry}-${card.strike}-${card.stance === "bull" ? "C" : "P"}`;
+}
+
+/**
+ * One card → one leg, or `null` when no resting order backs it.
+ *
+ * `null` rather than a leg with an absent order, because a card the book cannot
+ * fill is not a smaller purchase — it is not a purchase. `cardsForSlice`
+ * already refuses to deal one; this is the same rule held at the fill seam, so
+ * a caller that builds legs some other way cannot route around it.
+ *
+ * `instrument` and `entryMark` are **copied straight off the card or left
+ * absent**. Nothing here derives a name from a strike and an expiry.
+ */
+export function legFromCard(card: FillableCard, usdcAmount: bigint): ParlayFillLeg | null {
+  const order = card.row.order;
+  if (!order) return null;
+  return {
+    id: card.id,
+    label: cardLabel(card),
+    instrument: card.instrument,
+    entryMark: card.mark ?? undefined,
+    order,
+    usdcAmount,
+  };
+}
+
+/**
+ * The landed legs, in the shape the duel clock scores — `FilledLeg`
+ * (`src/engine/score.ts`).
+ *
+ * Only legs that carry **both** a venue instrument name and an entry mark are
+ * returned. A leg missing either is not translated, not defaulted and not
+ * guessed at; it is named in `ParlayFillResult.unmarkable` instead, and the
+ * consequence (no verdict, both stakes refunded) is the one plan 6 §C3 already
+ * chose over a coin flip.
+ *
+ * The type is imported for its shape only, so the desk still names no engine
+ * module at runtime.
+ */
+export function filledLegsFor(result: ParlayFillResult): readonly FilledLeg[] {
+  const legs: FilledLeg[] = [];
+  for (const leg of result.filled) {
+    if (!leg.instrument || leg.entryMark === undefined || !leg.quote) continue;
+    legs.push({
+      // Verbatim. The whole point of this function is that this line is an
+      // assignment and never a template string.
+      instrument: leg.instrument,
+      entryMark: leg.entryMark,
+      contracts: Number(leg.quote.numContracts) / 10 ** 18,
+      premium: Number(leg.quote.totalCollateral) / 10 ** 6,
+    });
+  }
+  return legs;
+}
+
+/**
+ * Buy a slip, for real: one preview pass, one confirmation, N transactions.
+ *
+ * **This never throws.** Every exit is a `ParlayFillResult`, for the same
+ * reason `runFill` never throws — a rejected promise here is a spinner that
+ * spins forever on a screen someone is presenting from, except now with real
+ * positions half-open behind it.
+ *
+ * The sequence, in the order §D1 fixes it and the order `test/fill.test.ts`
+ * asserts:
+ *
+ *  1. `cap`      — the **requested** notional: every leg under `MAX_FILL_USDC`
+ *                  *and their sum* under it, checked **before a single dep is
+ *                  touched**. A cap the sum can step over is a cap with a
+ *                  staircase next to it: four legs at $1 each is $4 through a
+ *                  $2 bound, and every individual check passes.
+ *  2. `signer`   — the mock wallet is refused above `getSigner` entirely.
+ *  3. `preview`  — every leg, synchronously (`previewFillOrder` is sync —
+ *                  FINDINGS). A leg the book will not absorb, will not
+ *                  collateralise in USDC, or that names a foreign OptionBook is
+ *                  **dropped here**, before anything is signed.
+ *  4. `expiry`   — every leg's earlier expiry clock against `EXPIRY_BUFFER_MS`.
+ *                  Stale legs are dropped **before the first signature, not
+ *                  after**: filling a stale order reverts `Signer Not
+ *                  Authorized`, which reads as a wallet fault and is not one.
+ *  5. `cap`      — again, on the **previewed** sum, after every drop, so the
+ *                  number the player is about to confirm is the number that is
+ *                  bounded. Reported at step `cap`.
+ *  6. `confirm`  — **one** confirmation for the whole slip, carrying the final
+ *                  leg list, the total debit, the total max loss and
+ *                  `PARTIAL_FILL_POLICY`.
+ *  7. `allowance`/`fill` — per leg, in slip order. `ensureAllowance` with that
+ *                  leg's own `totalCollateral` and never `MaxUint256`; then
+ *                  `fillOrder`. **A leg that fails is recorded and the loop
+ *                  continues.** Nothing is unwound.
+ *  8. `done`     — the ladder, with a BaseScan link on every leg that landed.
+ */
+export async function runParlayFill(
+  legs: readonly ParlayFillLeg[],
+  deps: FillDeps,
+  onProgress: (ladder: readonly ParlayLegState[], step: FillStep) => void = () => {},
+): Promise<ParlayFillResult> {
+  const now = deps.now ?? (() => Date.now());
+
+  /** The ladder. Mutated in place, and copied out on every transition so a
+   *  React caller sees a new array rather than the same one twice. */
+  const ladder: ParlayLegState[] = legs.map((leg) => ({
+    id: leg.id,
+    label: leg.label,
+    // Carried, never derived. If the caller had no venue name for this leg,
+    // neither does anything downstream — see `ParlayFillResult.unmarkable`.
+    instrument: leg.instrument,
+    entryMark: leg.entryMark,
+    status: "pending",
+  }));
+  const snapshot = (): ParlayLegState[] => ladder.map((s) => ({ ...s }));
+  const emit = (step: FillStep) => onProgress(snapshot(), step);
+
+  const refuse = (
+    code: FillCode,
+    step: FillStep,
+    over?: Partial<FillError>,
+  ): ParlayFillResult => ({
+    status: "refused",
+    legs: snapshot(),
+    filled: [],
+    failed: [],
+    dropped: snapshot().filter((s) => s.status === "dropped"),
+    totalDebit: 0n,
+    maxLoss: 0n,
+    spent: 0n,
+    // Nothing landed, so there is nothing the duel clock could have scored.
+    unmarkable: [],
+    error: { code, ...FILL_COPY[code], step, ...over },
+  });
+
+  const drop = (state: ParlayLegState, reason: LegDropReason, error?: FillError) => {
+    state.status = "dropped";
+    state.dropped = reason;
+    state.error = error;
+  };
+
+  // ── 1. cap, on the requested notional, before any dep ──────────────────────
+  // Nothing above this line touches `deps` — the same property `runFill` pins,
+  // held for a slip. The difference that matters is the second check: an
+  // individually-legal set of legs whose SUM is over the bound is exactly the
+  // staircase, and it is refused here, with no signer asked for and no book
+  // read.
+  emit("cap");
+  if (legs.length === 0) {
+    return refuse("SIZE", "cap", {
+      message: "An empty slip has nothing to fill.",
+      recovery: "Add at least one card that a resting order actually backs.",
+      action: "none",
+    });
+  }
+  let requested = 0n;
+  for (const leg of legs) {
+    if (typeof leg.usdcAmount !== "bigint" || leg.usdcAmount <= 0n) {
+      return refuse("SIZE", "cap", {
+        message: "Every leg needs a positive amount.",
+        action: "none",
+      });
+    }
+    if (leg.usdcAmount > MAX_FILL_USDC) {
+      return refuse("SIZE", "cap", {
+        message: `No leg may ask for more than $${usdText(MAX_FILL_USDC)}.`,
+        recovery:
+          "MAX_FILL_USDC is a code cap, not a form validation — Thetanuts has no testnet, so " +
+          "every rehearsal spends real money and the bound lives above the network call.",
+        action: "none",
+      });
+    }
+    requested += leg.usdcAmount;
+  }
+  if (requested > MAX_FILL_USDC) {
+    return refuse("SIZE", "cap", {
+      message: `This slip asks for $${usdText(requested)} across ${legs.length} legs; the cap is $${usdText(MAX_FILL_USDC)}.`,
+      recovery:
+        "The cap is on the SLIP, not on the leg — otherwise four legs at a dollar each would " +
+        "walk a $2 bound up to $4 with every individual check passing. Drop a leg or pick a " +
+        "smaller size.",
+      action: "none",
+    });
+  }
+
+  // ── 2. signer ──────────────────────────────────────────────────────────────
+  emit("signer");
+  if (deps.walletId === "mock") {
+    return refuse("SIGNER_REQUIRED", "signer", {
+      message: "The mock wallet cannot sign — and must not.",
+      recovery:
+        "Install a browser wallet, or set WALLETCONNECT_PROJECT_ID, and reload. The mock is " +
+        "the fallback that keeps the app playable with no wallet at all; it never touches money.",
+      action: "connect",
+    });
+  }
+  let signer: unknown | null;
+  try {
+    signer = await deps.getSigner();
+  } catch (error) {
+    return refuse("SIGNER_REQUIRED", "signer", {
+      ...classifyFillError(error, "signer"),
+      code: "SIGNER_REQUIRED",
+      message: "The wallet is not on Base.",
+      recovery: "Switch the wallet to Base mainnet (8453) and confirm the slip again.",
+      action: "switch",
+    });
+  }
+  if (!signer) return refuse("SIGNER_REQUIRED", "signer");
+
+  // The approval anchor, read once. No anchor means nothing safe to approve, so
+  // the slip stops before it previews anything — same doctrine as `runFill`
+  // step 7 (`docs/reviews/mcp-crosscheck.md` §BUG-3).
+  const canonical = deps.optionBook ?? "";
+  if (!canonical) {
+    return refuse("CONTRACT_REVERT", "allowance", {
+      message: "The chain's OptionBook address is unknown.",
+      recovery:
+        "The approval spender is the OptionBook the chain config names, never an address the " +
+        "book's API supplied. Without it there is nothing safe to approve, so the slip stops " +
+        "here. Reconnect the wallet and try again.",
+      action: "retry",
+    });
+  }
+
+  // ── 3. preview every leg, synchronously ────────────────────────────────────
+  // One pass, no awaits: `previewFillOrder` is local arithmetic over an order we
+  // already hold (FINDINGS "0.3.0 delta"), so the whole slip is priced before
+  // anything else happens. Frozen first, for the reason `freezeOrder` gives —
+  // an order is an EIP-712 signature over its own fields, and this one now
+  // travels through a preview, a confirm screen a human reads, and N approvals.
+  emit("preview");
+  const orders = legs.map((leg) => freezeOrder(leg.order));
+  for (let i = 0; i < legs.length; i++) {
+    const state = ladder[i]!;
+    const leg = legs[i]!;
+    let preview: RawFillPreview;
+    try {
+      preview = deps.previewFillOrder(orders[i]!, leg.usdcAmount, deps.referrer);
+    } catch (error) {
+      // One leg's preview throwing is that leg's problem, not the slip's — the
+      // indexer serves orders that `previewFillOrder` rejects, and a slip that
+      // died on the first of them would be a slip the book decided for us.
+      drop(state, "NO_FILL", classifyFillError(error, "preview"));
+      continue;
+    }
+    if (preview.numContracts <= 0n) {
+      drop(state, "NO_FILL");
+      continue;
+    }
+    // The decimals guard, per leg. "$0.01" against 18-decimal WETH is not one
+    // cent by twelve orders of magnitude, and on a slip the mistake compounds
+    // into a total the player confirmed while reading a different number.
+    if (deps.usdc && preview.collateralToken.toLowerCase() !== deps.usdc.toLowerCase()) {
+      drop(state, "COLLATERAL");
+      continue;
+    }
+    // The BUG-3 check, per leg, and it DROPS rather than refusing the slip: one
+    // order carrying a foreign book address says nothing about the other three.
+    // What it must never do is reach `ensureAllowance`.
+    const named = orders[i]!.rawApiData?.optionBookAddress;
+    if (named && named.toLowerCase() !== canonical.toLowerCase()) {
+      drop(state, "BOOK_MISMATCH", {
+        code: "CONTRACT_REVERT",
+        ...FILL_COPY.CONTRACT_REVERT,
+        message: "That order names a different OptionBook than this chain.",
+        step: "preview",
+        detail: `rawApiData.optionBookAddress (${named}) ≠ configured OptionBook (${canonical})`,
+      });
+      continue;
+    }
+    state.quote = {
+      usdcAmount: leg.usdcAmount,
+      numContracts: preview.numContracts,
+      totalCollateral: preview.totalCollateral,
+      collateralToken: preview.collateralToken,
+    };
+    state.status = "previewed";
+  }
+  emit("preview");
+
+  // ── 4. expiry, before the first signature ──────────────────────────────────
+  emit("expiry");
+  for (let i = 0; i < legs.length; i++) {
+    const state = ladder[i]!;
+    if (state.status !== "previewed") continue;
+    const expiresAt = expiryMs(orders[i]!);
+    // `null` is "no expiry claim to check", not "expired" — a book that stops
+    // sending the field must not silently make every leg unfillable.
+    if (expiresAt !== null && expiresAt - now() < EXPIRY_BUFFER_MS) drop(state, "EXPIRED");
+  }
+  emit("expiry");
+
+  const live = ladder.filter((s) => s.status === "previewed");
+  if (live.length === 0) {
+    // Every leg went before the confirm. Which code depends on why: an expired
+    // book and an empty one have different recoveries, and offering "refresh"
+    // for a size problem sends the player back for another round of the same.
+    const anyExpired = ladder.some((s) => s.dropped === "EXPIRED");
+    return refuse(anyExpired ? "ORDER_EXPIRED" : "SIZE", anyExpired ? "expiry" : "preview", {
+      message: "No leg of this slip can be filled right now.",
+    });
+  }
+
+  // ── 5. the cap the sum cannot step over ────────────────────────────────────
+  // Re-checked on what the book actually quoted, after every drop, so the bound
+  // holds over the number the player is about to see rather than over the number
+  // they asked for. `previewFillOrder` sets `totalCollateral` from the amount we
+  // passed in (mcp-crosscheck OPPORTUNITY 11), so on today's SDK these agree —
+  // which is exactly why the check is cheap enough to keep for the day they do
+  // not.
+  let totalDebit = 0n;
+  let totalContracts = 0n;
+  for (const state of live) {
+    const quote = state.quote!;
+    if (quote.totalCollateral > MAX_FILL_USDC) {
+      return refuse("SIZE", "cap", {
+        message: `A previewed leg came back at $${usdText(quote.totalCollateral)}, over the $${usdText(MAX_FILL_USDC)} cap.`,
+        action: "none",
+      });
+    }
+    totalDebit += quote.totalCollateral;
+    totalContracts += quote.numContracts;
+  }
+  if (totalDebit > MAX_FILL_USDC) {
+    return refuse("SIZE", "cap", {
+      message: `The previewed slip totals $${usdText(totalDebit)}; the cap is $${usdText(MAX_FILL_USDC)}.`,
+      recovery:
+        "Nothing was approved and nothing was spent. The cap is checked on the sum as well as " +
+        "on each leg, so a slip cannot climb over it one legal step at a time.",
+      action: "none",
+    });
+  }
+
+  // ── 6. one confirmation, for the whole slip ────────────────────────────────
+  emit("confirm");
+  const slip: ParlaySlipQuote = {
+    legs: live.map((s) => ({ ...s })),
+    dropped: ladder.filter((s) => s.status === "dropped").map((s) => ({ ...s })),
+    totalDebit,
+    // The same number, deliberately. Every leg is a long option: the premium is
+    // paid up front and it is the whole of the downside.
+    maxLoss: totalDebit,
+    totalContracts,
+    collateralToken: live[0]!.quote!.collateralToken,
+    policy: PARTIAL_FILL_POLICY,
+  };
+  let confirmed = false;
+  try {
+    confirmed = deps.confirmSlip
+      ? await deps.confirmSlip(slip)
+      : // The fallback still takes exactly ONE confirmation, for the aggregate.
+        // N confirmations for one slip would be N chances to approve half a
+        // position by accident.
+        await deps.confirm({
+          usdcAmount: requested,
+          numContracts: totalContracts,
+          totalCollateral: totalDebit,
+          collateralToken: slip.collateralToken,
+        });
+  } catch (error) {
+    return refuse("CONTRACT_REVERT", "confirm", classifyFillError(error, "confirm"));
+  }
+  if (!confirmed) {
+    return {
+      status: "cancelled",
+      legs: snapshot(),
+      filled: [],
+      failed: [],
+      dropped: snapshot().filter((s) => s.status === "dropped"),
+      totalDebit,
+      maxLoss: totalDebit,
+      spent: 0n,
+      unmarkable: [],
+    };
+  }
+
+  // ── 7. fill, one transaction at a time, keeping what lands ─────────────────
+  for (let i = 0; i < ladder.length; i++) {
+    const state = ladder[i]!;
+    if (state.status !== "previewed") continue;
+    const quote = state.quote!;
+
+    emit("allowance");
+    try {
+      // EXACTLY this leg's own `totalCollateral`, to the chain-configured
+      // OptionBook. Never `MaxUint256` — and never one aggregate approval
+      // covering the slip either, which would leave a live allowance for the
+      // legs that never filled.
+      const receipt = await deps.ensureAllowance(
+        quote.collateralToken,
+        canonical,
+        quote.totalCollateral,
+      );
+      // `null` is the SUCCESS case (FINDINGS): no approval was needed.
+      state.approvalSkipped = receipt === null || receipt === undefined;
+      state.status = "approved";
+    } catch (error) {
+      state.status = "failed";
+      state.error = classifyFillError(error, "allowance");
+      emit("allowance");
+      // Keep what landed. Continue. Do not unwind.
+      continue;
+    }
+    emit("allowance");
+
+    emit("fill");
+    try {
+      const receipt = await deps.fillOrder(orders[i]!, quote.usdcAmount, deps.referrer);
+      const hash = receipt?.hash ?? "";
+      if (!hash) {
+        // It may well have landed, so the copy must not claim otherwise.
+        state.status = "failed";
+        state.error = {
+          code: "CONTRACT_REVERT",
+          ...FILL_COPY.CONTRACT_REVERT,
+          message: "That leg returned no transaction hash.",
+          recovery:
+            "Check the wallet's activity before retrying — the transaction may have landed. " +
+            "The rest of the slip carried on.",
+          action: "none",
+          step: "fill",
+        };
+      } else {
+        state.status = "filled";
+        state.hash = hash;
+        state.explorer = `${BASESCAN_TX}${hash}`;
+        state.nonce = orders[i]!.order.nonce === undefined ? null : String(orders[i]!.order.nonce);
+      }
+    } catch (error) {
+      state.status = "failed";
+      state.error = classifyFillError(error, "fill");
+    }
+    emit("fill");
+  }
+
+  // ── 8. done ────────────────────────────────────────────────────────────────
+  emit("done");
+  const final = snapshot();
+  const filled = final.filter((s) => s.status === "filled");
+  const failed = final.filter((s) => s.status === "failed");
+  const dropped = final.filter((s) => s.status === "dropped");
+  return {
+    status: filled.length === 0 ? "none" : failed.length === 0 ? "filled" : "partial",
+    legs: final,
+    filled,
+    failed,
+    dropped,
+    totalDebit,
+    maxLoss: totalDebit,
+    spent: filled.reduce((acc, s) => acc + (s.quote?.totalCollateral ?? 0n), 0n),
+    // A landed leg with no venue instrument name, or no entry mark, is one the
+    // duel clock cannot score. Named here so the gap is visible on the receipt
+    // rather than discovered as a refund six hours later.
+    unmarkable: filled
+      .filter((s) => !s.instrument || s.entryMark === undefined)
+      .map((s) => s.label),
   };
 }
 
