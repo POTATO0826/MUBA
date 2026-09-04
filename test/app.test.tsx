@@ -4,20 +4,23 @@ import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
 import { bookFor } from "../src/data/lobbies.ts";
 import { mockMarketSource } from "../src/data/market.ts";
+import type { NewsSource, WireItem } from "../src/data/news.ts";
+import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS } from "../src/state/match.ts";
 
 let container: HTMLDivElement;
 let root: Root;
 
-/** Mount at a path. The app reads its route once, on mount. */
-function mount(path = "/") {
+/** Mount at a path. The app reads its route once, on mount. Passing no news
+ *  source leaves the App on its seeded default, so nothing here hits a network. */
+function mount(path = "/", newsSource?: NewsSource) {
   window.history.replaceState(null, "", path);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<App source={mockMarketSource} />);
+    root.render(<App source={mockMarketSource} newsSource={newsSource} />);
   });
 }
 
@@ -357,16 +360,28 @@ describe("the spin", () => {
 });
 
 describe("the case study", () => {
+  const STUDY = "/match/kz-semis/study?seed=424242";
+  /** The study screen has no slip to read the arena off, so it is derived the
+   *  same way the app derives it: kz-semis is a 3-leg STOCK lobby. */
+  const dealt = spinCase(bookFor("STOCK"), 3, 424242).syms;
+
+  const wireRows = (kind?: string) =>
+    Array.from(container.querySelectorAll<HTMLElement>(kind ? `[data-wire="${kind}"]` : "[data-wire]"));
+  const wireSyms = () => wireRows().map((r) => r.dataset.wireSym);
+  const pane = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.textContent ?? "";
+
   test("shows the dealt charts, a news line per ticker, and the desk talking", () => {
-    mount("/match/kz-semis/study?seed=424242");
+    mount(STUDY);
     expect(text()).toContain("Case study");
     expect(text()).toContain("STUDY PHASE · BOTH PLAYERS READING");
     expect(text()).toContain("NEWS WIRE · DESK CHATTER");
     expect(text()).toContain("kazuo.eth is reading this too");
 
-    const news = container.querySelectorAll('[data-brief="news"]');
+    const news = wireRows("news");
     const desk = container.querySelectorAll('[data-brief="desk"]');
-    expect(news).toHaveLength(3); // one per leg
+    // The terminal files several stories per ticker, never fewer than one each.
+    expect(news.length).toBeGreaterThanOrEqual(dealt.length);
+    for (const sym of dealt) expect(wireSyms()).toContain(sym);
     expect(desk).toHaveLength(2); // one exchange
     expect(text()).toContain("COACH");
     // Three sparklines, one per dealt ticker.
@@ -374,10 +389,89 @@ describe("the case study", () => {
   });
 
   test("the wire is the same wire every time for a seed", () => {
-    mount("/match/kz-semis/study?seed=424242");
-    const first = Array.from(container.querySelectorAll("[data-brief]")).map((b) => b.textContent);
-    remount("/match/kz-semis/study?seed=424242");
-    expect(Array.from(container.querySelectorAll("[data-brief]")).map((b) => b.textContent)).toEqual(first);
+    mount(STUDY);
+    const first = Array.from(container.querySelectorAll("[data-wire]")).map((b) => b.textContent);
+    remount(STUDY);
+    expect(Array.from(container.querySelectorAll("[data-wire]")).map((b) => b.textContent)).toEqual(first);
+  });
+
+  test("the detail pane is already filed before anything is clicked", () => {
+    mount(STUDY);
+    // The top row auto-opens, so an empty pane is structurally impossible.
+    expect(pane("wire-detail").length).toBeGreaterThan(0);
+    expect(pane("wire-dateline").length).toBeGreaterThan(0);
+    expect(pane("wire-signature")).toContain("(END)");
+  });
+
+  test("clicking a headline opens it in the detail pane", () => {
+    mount(STUDY);
+    const before = pane("wire-dateline");
+    const row = wireRows("news").at(-1)!;
+    const sym = row.dataset.wireSym!;
+    act(() => row.click());
+    const after = pane("wire-dateline");
+    expect(after).not.toBe(before);
+    expect(after).toContain(sym);
+    expect(pane("wire-detail")).toContain(after);
+  });
+
+  test("the source chip reads SEEDED with no live wire injected", () => {
+    mount(STUDY);
+    expect(pane("wire-status")).toBe("SEEDED");
+  });
+
+  test("a live news source swaps the feed in and flips the chip to LIVE", async () => {
+    // Held open until the test releases it, so the seeded first paint can be
+    // asserted before the swap — and so the swap lands inside act().
+    let release: (() => void) | null = null;
+    const items: readonly WireItem[] = [
+      {
+        id: "live-1",
+        kind: "news",
+        sym: dealt[0]!,
+        ts: 1_700_000_100_000,
+        time: "09:28:00",
+        headline: "Wire Desk Confirms The Live Feed Is Up",
+        publisher: "REUTERS",
+        body: "The live source answered, so these rows replaced the seeded ones.",
+        bodyKind: "wire",
+        link: "https://example.invalid/live-1",
+        dateline: `9/1/26 09:28:00: ${dealt[0]}: Wire Desk Confirms The Live Feed Is Up`,
+        signature: "(END) REUTERS / 09-01-26 0928ET / Copyright (c) 2026 Thomson Reuters.",
+      },
+      {
+        id: "live-2",
+        kind: "news",
+        sym: null,
+        ts: 1_700_000_000_000,
+        time: "09:26:40",
+        headline: "Market Wide Line With No Ticker Attached",
+        publisher: "BLOOMBERG",
+        body: "A market-wide row renders under MKT rather than a sym chip.",
+        bodyKind: "wire",
+        link: null,
+        dateline: "9/1/26 09:26:40: MKT: Market Wide Line With No Ticker Attached",
+        signature: "(END) BLOOMBERG / 09-01-26 0926ET / Copyright (c) 2026 Bloomberg L.P.",
+      },
+    ];
+    const liveSource: NewsSource = {
+      id: "live-stub",
+      wire: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, source: "live", fetchedAt: 1_700_000_100_000, items });
+        }),
+    };
+
+    mount(STUDY, liveSource);
+    expect(pane("wire-status")).toBe("SEEDED"); // seeded until the live one answers
+    expect(wireRows("news").length).toBeGreaterThanOrEqual(dealt.length);
+
+    await act(async () => release!());
+
+    expect(pane("wire-status")).toBe("LIVE");
+    expect(wireRows("news")).toHaveLength(2);
+    expect(text()).toContain("Wire Desk Confirms The Live Feed Is Up");
+    expect(wireSyms()).toContain("MKT");
   });
 });
 

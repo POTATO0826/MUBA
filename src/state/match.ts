@@ -298,6 +298,8 @@ export function useMatch(route: Route) {
       /** What the winner banks in points: the stake at their own parlay's odds. */
       pointsIfWon: mySummary.potentialPoints,
       briefs: briefsFor(arena, studySalt),
+      /** Identity of this match for anything cached per (lobby, seed) — the news wire. Null-safe: `lobby` can be null mid-render. */
+      matchKey: `${state.lobbyId ?? "none"}:${state.seed}`,
       studySalt,
       fightSalt,
       /** Print index the tape has played up to. */

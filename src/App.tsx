@@ -4,12 +4,14 @@ import { scoreOf } from "./engine/match.ts";
 import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookFor, stakePointsFor } from "./data/lobbies.ts";
 import type { MarketSource } from "./data/market.ts";
+import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
 import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
 import { useMatch } from "./state/match.ts";
+import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
 import { Battles } from "./views/Battles.tsx";
@@ -42,13 +44,31 @@ function currentRoute(): Route {
  * both of you play on, read the case, pick a parlay card, hold through the
  * tape, settle. `lobby` (home), `create` and `desk` sit beside it.
  */
-export function App({ source, route }: { source: MarketSource; route?: Route }) {
+export function App({ source, newsSource = mockNewsSource, route }: {
+  source: MarketSource;
+  /** The study wire's feed. Defaults to the seeded one, so tests and the
+   *  offline build touch no network; `client.tsx` injects the live source. */
+  newsSource?: NewsSource;
+  route?: Route;
+}) {
   // First hook in the tree: the audio context is built inside the very first
   // gesture, capture-phase, so the click that starts the session is audible.
   useSoundUnlock();
 
   const { state, derived, actions } = useMatch(route ?? currentRoute());
   const ledger = useLedger();
+
+  // The news terminal's feed. Seeded synchronously off the match's own salt, so
+  // the wire is populated on the first paint; the live source swaps under it if
+  // one is injected and answers. Presentation only — never read by settlement.
+  const { wire, status: wireStatus } = useWire({
+    source: newsSource,
+    matchKey: derived.matchKey,
+    arena: derived.arena,
+    salt: derived.studySalt,
+    deskLines: derived.briefs,
+  });
+
   const [wallet, setWallet] = useState(false);
 
   // The address follows the match, so a spin can be shared with its seed in it.
@@ -172,7 +192,8 @@ export function App({ source, route }: { source: MarketSource; route?: Route }) 
       {state.tab === "study" && lobby && opp && (
         <Study
           arena={derived.arena}
-          briefs={derived.briefs}
+          wire={wire}
+          wireStatus={wireStatus}
           salt={derived.studySalt}
           opponent={opp}
           prizeLabel={derived.prizeLabel}
