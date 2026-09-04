@@ -9,6 +9,7 @@ import {
   feedSymbols,
   greeksOf,
   implementationInfo,
+  ladderBook,
   mmStrikeBand,
   payoutTypeFor,
   productNameOf,
@@ -18,7 +19,8 @@ import {
   type RawMmQuote,
   type RawOrderEntry,
 } from "../src/server/thetanuts.ts";
-import type { PricingRow } from "../src/types.ts";
+import { deriveLadders, type LadderSnapshot } from "../src/data/box.ts";
+import type { LadderBook, PricingRow } from "../src/types.ts";
 
 /**
  * The book builder, offline.
@@ -104,13 +106,16 @@ describe("grouping", () => {
 
 describe("best bid and best ask come off the right sides", () => {
   test("bid is the highest a maker will pay; ask is the lowest anyone will take", () => {
+    // `isBuyer` is the TAKER's side — `true` is the maker's ASK. See
+    // `RawOrderEntry.order.isBuyer` for the measurement, and the real-order
+    // tests below for the version of this that a synthetic fixture cannot fake.
     const raw: RawMarket = {
       ...FIXTURE,
       orders: [
-        order({ isBuyer: true, price: "100000000", strikes: ["250000000000"] }),
-        order({ isBuyer: true, price: "120000000", strikes: ["250000000000"] }),
-        order({ isBuyer: false, price: "180000000", strikes: ["250000000000"] }),
-        order({ isBuyer: false, price: "150000000", strikes: ["250000000000"] }),
+        order({ isBuyer: false, price: "100000000", strikes: ["250000000000"] }),
+        order({ isBuyer: false, price: "120000000", strikes: ["250000000000"] }),
+        order({ isBuyer: true, price: "180000000", strikes: ["250000000000"] }),
+        order({ isBuyer: true, price: "150000000", strikes: ["250000000000"] }),
       ],
     };
     const row = buildSnapshot(raw, AT).pricing.ETH?.[0];
@@ -132,6 +137,75 @@ describe("best bid and best ask come off the right sides", () => {
     const oneSided = rowsFor("ETH").filter((r) => r.bid === "—" || r.ask === "—");
     expect(oneSided.length).toBeGreaterThan(0);
     for (const row of oneSided) expect(row.mid).toBeUndefined();
+  });
+});
+
+// ─── the polarity of `isBuyer`, pinned against real orders ───────────────────
+
+/**
+ * **`order.isBuyer === true` is the maker's ASK — the side a player can buy.**
+ *
+ * `buildSnapshot` read this backwards until it was measured. The full evidence
+ * lives on `RawOrderEntry.order.isBuyer`; the two independent readings are 142
+ * live single-strike orders joined to the venue's own two-sided MM quotes
+ * (`isBuyer === true` rests at a median 1.6× the MM's mark and *never* at or
+ * below its bid; `isBuyer === false` rests at 0.7× and never at or above its
+ * ask) and 5,635 settled on-chain RANGE positions with the MM recorded as
+ * seller and zero as buyer (`docs/plan7-measurements.md` §3.2).
+ *
+ * These tests run on **real orders from the frozen capture**, not on the
+ * `order()` helper above, because a synthetic fixture can only echo back
+ * whichever polarity its author believed. The capture cannot: its prices were
+ * set by a market maker who knew which side they were on.
+ */
+describe("`isBuyer` is the taker's side, so `true` is the maker's ask", () => {
+  test("every fillable order on the capture is an `isBuyer === true` order", () => {
+    // This is the one that costs money. `PricingRow.order` is what
+    // `src/desk/fill.ts` signs against, and filling an `isBuyer === false`
+    // order would make the player the *writer*: collateral posted, downside
+    // unbounded — the position plan 6 §5 and plan 7 §5 forbid by construction.
+    const fillable = [...rowsFor("ETH"), ...rowsFor("BTC")].filter((r) => r.order);
+    // Non-vacuity: the capture really does carry fillable rows, so the loop
+    // below is not passing on an empty array.
+    expect(fillable.length).toBeGreaterThan(0);
+    for (const row of fillable) expect(row.order?.order.isBuyer).toBe(true);
+  });
+
+  test("a level quoted only by `isBuyer === true` orders is an ask, and is fillable", () => {
+    // ETH PUT 2420 on the capture: two real orders, both `isBuyer: true`, both
+    // USDC-collateralised, at 2.3745 and 4.7831. Under the inverted reading
+    // these were the *bid* column and the level was display-only.
+    const put = rowsFor("ETH").find((r) => r.strike === "2,420" && r.type === "PUT");
+    expect(put).toBeDefined();
+    expect(put?.bid).toBe("—");
+    expect(put?.ask).toBe("2.3745");
+    expect(put?.order).toBeDefined();
+  });
+
+  test("a level quoted only by `isBuyer === false` orders is a bid, and is NOT fillable", () => {
+    // ETH CALL 2900: real orders, `isBuyer: false`, collateralised in aBasWETH
+    // and priced at ~0.7× the MM's mark — a maker bidding. You cannot buy from
+    // a bid, so the row prices and does not press.
+    const call = rowsFor("ETH").find((r) => r.strike === "2,900" && r.type === "CALL");
+    expect(call).toBeDefined();
+    expect(call?.ask).toBe("—");
+    expect(call?.bid).toBe("0.0046");
+    expect(call?.order).toBeUndefined();
+  });
+
+  test("the blotter's BUY/SELL label did not move — which is why this was invisible", () => {
+    // `OrderRow.side` is written from the **player's** seat and was always
+    // right: `isBuyer === true` is what a taker buys. It is also half of a
+    // handshake — `orderIdentity` in `src/desk/fill.ts` rebuilds this exact
+    // string as `entry.order.isBuyer ? "BUY" : "SELL"` and a fill matches only
+    // when the two agree — so it must stay keyed to `isBuyer` directly and NOT
+    // to the corrected `isBid`, or every fill fails to find its order.
+    const buyers = FIXTURE.orders.filter((o) => o.order.isBuyer).length;
+    const sellers = FIXTURE.orders.length - buyers;
+    expect(buyers).toBeGreaterThan(0);
+    expect(sellers).toBeGreaterThan(0);
+    expect(snap.orders.filter((r) => r.side === "BUY").length).toBe(buyers);
+    expect(snap.orders.filter((r) => r.side === "SELL").length).toBe(sellers);
   });
 });
 
@@ -1239,3 +1313,142 @@ function mm(over: Partial<RawMmQuote> = {}): RawMmQuote {
     ...over,
   };
 }
+
+// ─── the ladder's slice of the capture ───────────────────────────────────────
+
+/**
+ * **The strike ladder has to survive the wire, and it could not before this.**
+ *
+ * `OrderRow` is a display projection — `side`, `instrument`, `size`, `px`,
+ * `status`, `time` — and every one of the ladder's four inputs is spent
+ * building it: `rawApiData.strikes` becomes a formatted instrument string,
+ * `priceFeed` is resolved to a symbol and dropped, `order.expiry` becomes a
+ * label, `availableAmount` is summed into a size. So plan 7's arena could not
+ * draw a rung, and `src/data/box.ts` is pure and cannot fetch one.
+ *
+ * `ladderBook` is the answer: the raw capture, narrowed field-for-field to what
+ * `deriveLadders` reads, riding on the same envelope as the rows it was
+ * measured beside.
+ */
+describe("the ladder rides the wire, narrowed", () => {
+  const wire: LadderBook = ladderBook(FIXTURE);
+
+  test("it is structurally assignable to what `src/data/box.ts` reads — no adapter", () => {
+    // The compile-time half of the contract. `box.ts` may not import the server
+    // (it loads the SDK and ethers at the top level and this must stay out of a
+    // browser bundle), so the two shapes meet structurally or not at all.
+    const asRead: LadderSnapshot = wire;
+    expect(asRead.orders?.length).toBe(wire.orders.length);
+  });
+
+  test("a real ladder survives the narrowing, rung for rung", () => {
+    // The end-to-end claim, and the only one that matters: everything
+    // `deriveLadders` can find in the whole raw capture, it can still find in
+    // what the server actually sends. Deep equality over every underlying and
+    // every expiry, not a spot check.
+    const fromCapture = deriveLadders(FIXTURE as unknown as LadderSnapshot, AT);
+    const fromWire = deriveLadders(wire, AT);
+
+    // Non-vacuity: the capture really does carry ladders, and the documented
+    // ETH 5 Sep one really is irregular — three $20 rungs, then $70 and $100.
+    expect(fromCapture.length).toBeGreaterThan(0);
+    expect(fromWire).toEqual(fromCapture);
+    expect(fromWire.find((l) => l.underlying === "ETH" && l.expiry === 1_788_595_200)?.prices).toEqual([
+      2420, 2440, 2460, 2480, 2550, 2650,
+    ]);
+  });
+
+  test("it carries the five fields a ladder reads and NOT one field more", () => {
+    const first = wire.orders[0];
+    expect(first).toBeDefined();
+    expect(Object.keys(first!).sort()).toEqual(["availableAmount", "order", "rawApiData"]);
+    expect(Object.keys(first!.order)).toEqual(["expiry"]);
+    expect(Object.keys(first!.rawApiData).sort()).toEqual([
+      "orderExpiryTimestamp",
+      "priceFeed",
+      "strikes",
+    ]);
+    // The named omissions, checked rather than assumed: the 132-character
+    // signature is the largest field on a raw order and a ladder is an axis,
+    // not a trade.
+    const raw = first as unknown as Record<string, unknown>;
+    expect(raw.signature).toBeUndefined();
+    expect(raw.makerAddress).toBeUndefined();
+    expect((first!.rawApiData as unknown as Record<string, unknown>).greeks).toBeUndefined();
+    // Identity, price and side are all absent. `deriveLadders` documents at
+    // length why filtering a ladder by side would be wrong, so the field that
+    // would let a later edit try it does not travel.
+    expect((first!.order as unknown as Record<string, unknown>).isBuyer).toBeUndefined();
+    expect((first!.order as unknown as Record<string, unknown>).price).toBeUndefined();
+  });
+
+  test("only `priceFeeds` comes off the chain config", () => {
+    expect(Object.keys(wire.chainConfig)).toEqual(["priceFeeds"]);
+    expect(wire.chainConfig.priceFeeds).toEqual(FIXTURE.chainConfig.priceFeeds);
+    // 10 keys over 8 assets, carried whole: the alias collapse in `feedIndex`
+    // is by *address*, and `ETH/USD` and `ETH` hold the identical one.
+    expect(Object.keys(wire.chainConfig.priceFeeds).length).toBeGreaterThan(8);
+  });
+
+  test("the narrowing pays for itself: 39,478 bytes of capture become 6,732", () => {
+    const full = JSON.stringify({
+      orders: FIXTURE.orders,
+      prices: FIXTURE.prices,
+      chainConfig: FIXTURE.chainConfig,
+    }).length;
+    const narrow = JSON.stringify(wire).length;
+    expect(full).toBe(39_478);
+    expect(narrow).toBe(6_732);
+    // ~83% off, and it scales: a live capture is ~426 orders where this one is
+    // 30. The assertion is exact rather than a ratio so that a field quietly
+    // added back to the wire fails here and has to be argued for.
+    expect(narrow / full).toBeLessThan(0.2);
+  });
+
+  test("an order that could never be a rung is dropped whole", () => {
+    const narrowed = ladderBook({
+      ...FIXTURE,
+      orders: [
+        order({ strikes: [], expiry: 1_788_595_200 }), //                    no strikes
+        order({ strikes: ["250000000000"], expiry: 1_788_595_200, availableAmount: "0" }), // nothing left to fill
+        order({ strikes: ["250000000000"], expiry: 1_788_595_200, priceFeed: "0xnotafeed" }), // unknown underlying
+        order({ strikes: ["250000000000"] }), //                             no option expiry, so no column
+        order({ strikes: ["250000000000"], expiry: 1_788_595_200 }), //      keeps its rung
+      ],
+    });
+    // Each of the four rejections is one line of `deriveLadders`' own filter,
+    // said on this side of the wire — so dropping them loses nothing a client
+    // could have used, under any clock.
+    expect(narrowed.orders).toHaveLength(1);
+    expect(narrowed.orders[0]?.rawApiData.strikes).toEqual(["250000000000"]);
+  });
+
+  test("expiry is NOT judged here — that needs a clock, and the browser's is the current one", () => {
+    // Every order in the capture is past its signature expiry relative to a
+    // late `at`, and `deriveLadders(snap, at)` is where that gets decided. The
+    // wire carries them all, so a client with a different clock is not handed a
+    // book already filtered by a staler one.
+    const long = ladderBook(FIXTURE);
+    expect(long.orders.length).toBe(FIXTURE.orders.length);
+    expect(deriveLadders(long, 4_000_000_000_000)).toEqual([]);
+    expect(deriveLadders(long, AT).length).toBeGreaterThan(0);
+  });
+
+  test("the wire does not alias the capture's own arrays", () => {
+    const before = [...(FIXTURE.orders[0]?.rawApiData?.strikes ?? [])];
+    wire.orders[0]?.rawApiData.strikes.push("999");
+    expect(FIXTURE.orders[0]?.rawApiData?.strikes).toEqual(before);
+    wire.orders[0]?.rawApiData.strikes.pop();
+  });
+
+  test("`buildSnapshot` puts it on the snapshot, beside the rows it was measured with", () => {
+    expect(snap.ladder.orders.length).toBe(wire.orders.length);
+    expect(deriveLadders(snap.ladder, AT)).toEqual(deriveLadders(wire, AT));
+  });
+
+  test("a garbage capture narrows to an empty book rather than throwing", () => {
+    const empty = ladderBook({ orders: [], prices: {}, chainConfig: FIXTURE.chainConfig });
+    expect(empty.orders).toEqual([]);
+    expect(deriveLadders(empty, AT)).toEqual([]);
+  });
+});

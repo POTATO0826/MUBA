@@ -1470,7 +1470,12 @@ describe("runParlayFill — the duel clock's join key is copied or absent, never
     const bookOrder = {
       order: {
         price: "7140000", //             0.0714 USDC per contract, 8dp
-        isBuyer: false, //               an ask: a player can buy it
+        // `isBuyer === true` IS the ask. Measured against the venue's own
+        // two-sided quotes over 142 live orders: isBuyer=true rests at
+        // 1.58-1.66x the MM mark and NEVER at or below its bid, while
+        // isBuyer=false rests at 0.69-0.72x and never at or above the ask.
+        // The SDK's own docs contradict each other here; the market does not.
+        isBuyer: true, //                an ask: a player can buy it
         nonce: "4242",
         expiry: String(EXPIRY_UNIX), //  the OPTION's expiry, which is the join key
       },

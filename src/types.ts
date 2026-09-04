@@ -127,8 +127,19 @@ export interface FillableOrder {
   order: {
     /** Price per contract, 8dp. */
     price: string | bigint;
-    /** True when the *maker* is the buyer — i.e. this order is a bid. A card
-     *  is a purchase, so only `false` rows are fillable by a player. */
+    /**
+     * **`true` marks the side the TAKER buys — i.e. the maker's ASK, and the
+     * rows a player can fill.** The field name says the opposite; it was
+     * measured against the venue's own two-sided quotes and against settled
+     * on-chain positions, and the full evidence is on
+     * `RawOrderEntry.order.isBuyer` in `src/server/thetanuts.ts`.
+     *
+     * This docstring previously read "this order is a bid … only `false` rows
+     * are fillable by a player", which is exactly backwards. A `false` row is
+     * the maker bidding; filling it makes the player the *writer* — collateral
+     * posted, downside unbounded — which is the one position plan 6 §5 and plan
+     * 7 §5 forbid by construction.
+     */
     isBuyer: boolean;
     /** The order's identity on the book. */
     nonce?: string | bigint;
@@ -161,6 +172,109 @@ export interface FillableOrder {
     /** Undocumented upstream. Shape-checked at the boundary, never trusted. */
     greeks?: unknown;
   };
+}
+
+/**
+ * One resting order, narrowed to **exactly** what a strike ladder reads.
+ *
+ * The five fields below are the whole of what `deriveLadders` in
+ * `src/data/box.ts` touches, and the omissions are the point — see
+ * {@link LadderBook} for the accounting.
+ *
+ * Shapes here are the *wire's* shapes, not the reader's: `LadderOrder` in
+ * `src/data/box.ts` widens every one of these (`string | bigint | number |
+ * null`) because it must also accept a checked-in fixture and a truncated
+ * response. This is what the server actually emits, so it is exact. The two are
+ * asserted assignable — `LadderBook` → `LadderSnapshot`, no adapter and no cast
+ * — at compile time in `test/market-builder.test.ts`.
+ */
+export interface LadderBookOrder {
+  order: {
+    /**
+     * The **option's** expiry, unix seconds — the column of the time axis.
+     *
+     * A string, like the capture's own encoding, and not a number: this is one
+     * of the two expiries on a raw order and the *other* one
+     * (`orderExpiryTimestamp`) is a number upstream. Keeping the encodings
+     * distinct is a small standing reminder that they are different fields.
+     */
+    expiry: string;
+  };
+  /** Remaining fillable size. Carried as the fillability flag `deriveLadders`
+   *  reads it as — an order with none is not quoting a rung. */
+  availableAmount: string;
+  rawApiData: {
+    /** Chainlink feed address — how an order names its underlying. Resolved
+     *  through {@link LadderBook.chainConfig}'s `priceFeeds`, never here. */
+    priceFeed: string;
+    /** 8dp decimal strings. A multi-leg order contributes all of them. */
+    strikes: string[];
+    /** The *signature's* expiry. Absent when the capture carried none, which is
+     *  a real state: `deriveLadders` then judges the option expiry alone. */
+    orderExpiryTimestamp?: number;
+  };
+}
+
+/**
+ * The strike ladder's own slice of a raw `fetchOrders()` capture — the whole of
+ * what plan 7's arena needs from the book, and nothing else.
+ *
+ * ## Why this type exists at all
+ *
+ * `OrderRow` is a *display* projection: side, instrument, size, px, status,
+ * time. Every ladder input has been spent building it — `rawApiData.strikes`
+ * became a formatted `instrument` string, `priceFeed` was resolved to a symbol
+ * and discarded, `order.expiry` became a label. So the browser cannot rebuild a
+ * ladder from `/api/market` as it stood, and `src/data/box.ts` is pure and
+ * cannot fetch one. The raw capture has to travel, and this is the narrowest
+ * form of it that still answers.
+ *
+ * ## What was dropped, and why
+ *
+ * A live capture is ~426 orders and ~325KB; the frozen 30-order fixture is
+ * 39,478 bytes and narrows to **6,732** (an 83% cut, ~206 bytes an order).
+ * Everything below went, per order:
+ *
+ *  - `signature` — 132 hex characters, the single largest field on the object,
+ *    and only the fill path signs anything.
+ *  - `order.maker`/`taker`/`option`/`collateralToken`/`underlyingToken`/
+ *    `nonce`/`deadline`/`optionType`/`numContracts`/`strikePrice`/`price`/
+ *    `isBuyer`, and `makerAddress` — identity, counterparty and price. A ladder
+ *    is an *axis*: it says where the venue quotes, not at what, to whom, or on
+ *    which side. `deriveLadders`' docblock is explicit that filtering by side
+ *    here would be wrong (it empties the most interesting ETH ladder), so the
+ *    field that would let someone do it is not carried.
+ *  - `rawApiData.greeks`/`isCall`/`isLong`/`collateral`/`implementation`/
+ *    `optionBookAddress`/`extraOptionData`/`maxCollateralUsable` — the desk's
+ *    inputs. `/desk` is served by `pricing`, already built, on the same
+ *    envelope.
+ *  - the capture's `prices` and the rest of `chainConfig` (`tokens`,
+ *    `contracts`, `optionImplementations`). Spot has its own envelope field;
+ *    only `priceFeeds` is here, and only because the alias collapse needs it.
+ *
+ * Orders that could never contribute a rung under **any** clock are dropped
+ * whole. Nothing is dropped for being *expired*: that is a judgement against a
+ * clock, `deriveLadders(snap, at)` is where it belongs, and a server that made
+ * it here would hand the browser a book already filtered by a staler `now`.
+ *
+ * No deduplication. Collapsing orders that narrow to the same tuple was
+ * measured on the frozen capture and saves nothing — all 30 are distinct, since
+ * each carries its own `orderExpiryTimestamp` — so the pass would be complexity
+ * bought with a risk that a later reader of `availableAmount` finds the depth
+ * silently halved.
+ */
+export interface LadderBook {
+  orders: LadderBookOrder[];
+  /**
+   * `chainConfig.priceFeeds`, verbatim — 10 keys over 8 assets, ~522 bytes.
+   *
+   * Carried whole rather than pre-resolved because the collapse it feeds is
+   * *by address*: `ETH/USD` and `ETH` hold the identical address, and
+   * deduplicating by key instead would put ETH on the ladder twice. `feedIndex`
+   * in `src/data/qualify.ts` is the one place that collapse happens, and it
+   * wants the map.
+   */
+  chainConfig: { priceFeeds: Record<string, string> };
 }
 
 /**

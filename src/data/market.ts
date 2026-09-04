@@ -1,4 +1,4 @@
-import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
+import type { LadderBook, MmQuote, OrderRow, PricingRow } from "../types.ts";
 import type { Grade, QualifiedAsset } from "./qualify.ts";
 
 /**
@@ -116,6 +116,76 @@ export interface MarketSource {
    * so every caller collapses those two states the same way.
    */
   qualified?(): readonly QualifiedAsset[];
+  /**
+   * The raw book, narrowed to what a **strike ladder** reads — the box arena's
+   * only market input (`src/views/BoxBuilder.tsx`, plan 7 §2).
+   *
+   * `orders()` cannot answer this and never could: `OrderRow` is a display
+   * projection (`side`, `instrument`, `size`, `px`, `status`, `time`) and every
+   * ladder input was spent building it — strikes became a formatted instrument
+   * string, the price feed became a symbol and was dropped, the option expiry
+   * became a label. So the ladder's input travels beside the rows rather than
+   * being reconstructed from them. See {@link LadderBook} for exactly what the
+   * server narrows it to, and what that cost.
+   *
+   * **Synchronous, like `spot()`, `pricing()` and `qualified()`, and for the
+   * same reason.** The fetch resolved before this source was constructed; a
+   * promise here would put a Suspense boundary between the arena and a book
+   * already sitting in memory. The arena is a drag surface — the ladder is read
+   * on every pointer move, through `useMemo` — and an `await` on that path is
+   * not a refactor, it is a different component.
+   *
+   * ## Optional, and absence means something
+   *
+   * The same three-way distinction {@link qualified} draws, for the same reason:
+   *
+   *  - **absent** — this source never read a raw book, so it cannot say. Only
+   *    hand-built fakes in tests are in this state.
+   *  - **an empty book** ({@link NO_LADDER}) — asked and answered, with nothing
+   *    in it. That is the honest answer for the seeded fixtures, which are a
+   *    *rendered pricing table* and cannot be run backwards into a capture, and
+   *    for a live read against a 404ing indexer. The arena then draws no expiry
+   *    columns, which is correct: there is no ladder to draw.
+   *  - **a book with orders** — real rungs, measured off one real capture.
+   *
+   * Read it through {@link ladderOf} rather than calling it directly.
+   *
+   * ## It carries no clock
+   *
+   * What arrives is the book, not a reading of it. Which expiries are still
+   * live and which orders are past their signature is decided in the browser by
+   * `deriveLadders(snap, at)`, against the only clock that is current when the
+   * arena is drawn. A source that pre-filtered would be handing down a book
+   * already judged by a staler `now`.
+   */
+  ladder?(): LadderBook;
+}
+
+/**
+ * The empty book — "asked, and there is nothing in it".
+ *
+ * Frozen and shared for the reason {@link NO_QUALIFIED} is, and here the reason
+ * bites harder: `BoxBuilder`'s expiry set and ladder are `useMemo`s keyed on the
+ * snapshot's identity, so a fresh object per call would re-derive the whole
+ * ladder on every render of a drag.
+ */
+const NO_LADDER_ORDERS: LadderBook["orders"] = [];
+export const NO_LADDER: LadderBook = Object.freeze({
+  orders: Object.freeze(NO_LADDER_ORDERS) as LadderBook["orders"],
+  chainConfig: Object.freeze({ priceFeeds: Object.freeze({}) }),
+});
+
+/**
+ * The ladder's raw input from any source, total.
+ *
+ * The one reader of {@link MarketSource.ladder}, and what a view passes straight
+ * into `deriveLadder`/`liveExpiries`. A source that cannot answer and a source
+ * that read an empty book both come back {@link NO_LADDER} here — the
+ * distinction matters at the implementation boundary and nowhere above it, and
+ * both derive to no ladders, which is the same screen.
+ */
+export function ladderOf(source: MarketSource): LadderBook {
+  return source.ladder?.() ?? NO_LADDER;
 }
 
 /** The empty measurement, shared so a source that has nothing to report keeps a
@@ -239,4 +309,17 @@ export const mockMarketSource: MarketSource = {
   // failure: the lobby greys its live groups with a reason and the six seeded
   // sector chips still publish a lobby.
   qualified: () => NO_QUALIFIED,
+  // Asked, and the book is empty — for the same reason `qualified` is empty,
+  // said one step more strictly.
+  //
+  // A ladder is derived from `rawApiData.strikes`, `rawApiData.priceFeed` and
+  // `order.expiry` on a raw `fetchOrders()` capture. `PRICING` above is a
+  // *rendered* table — `"4,000"` with a thousands separator, `"27 SEP"` with no
+  // year, no feed address, no capture at all — and running it backwards would
+  // mean inventing feed addresses and unix expiries so the arena could draw
+  // rungs off them. That arena would look exactly like a live one and would be
+  // showing a ladder no venue quotes, which is the single failure plans 6 and 7
+  // both exist to delete. So: nothing, honestly, and the arena draws no
+  // columns.
+  ladder: () => NO_LADDER,
 };

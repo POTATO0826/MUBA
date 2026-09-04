@@ -7,6 +7,9 @@ import {
   type RawMarket,
   type RawMmQuote,
 } from "../src/server/thetanuts.ts";
+import { sourceFrom, type Wire } from "../src/data/thetanuts.tsx";
+import { NO_LADDER, ladderOf, mockMarketSource } from "../src/data/market.ts";
+import { deriveLadder, deriveLadders, liveExpiries } from "../src/data/box.ts";
 
 /**
  * The market service, offline.
@@ -622,5 +625,125 @@ describe("THETADUEL_MARKET=off", () => {
     const res = await createMarketService({ client: fakeClient().client }).handle();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: false, reason: "disabled" });
+  });
+});
+
+// ─── the ladder, all the way to a source ─────────────────────────────────────
+
+/**
+ * **Capture → envelope → `Response.json()` → source → a real strike ladder.**
+ *
+ * Plan 7's arena is a pure function of one thing: the strike ladder
+ * `src/data/box.ts` derives from a raw `fetchOrders()` capture. Nothing in
+ * `OrderRow` can rebuild one — it is a display projection and every ladder
+ * input was spent making it — so the narrowed capture rides the envelope, and
+ * the only test worth writing is the one that drives the whole path and then
+ * checks that real rungs come out.
+ *
+ * It runs `handle()` rather than `snapshot()` on purpose: `Response.json()` is
+ * a lossy step (it drops `undefined`, it throws on a `bigint`) and the arena is
+ * downstream of it. A ladder that survives `buildSnapshot` but not
+ * serialisation is a ladder the browser never sees.
+ */
+describe("the ladder reaches the client", () => {
+  /** One frozen capture, taken the whole way to the object a view holds. */
+  async function liveSource() {
+    const fake = fakeClient();
+    const service = createMarketService({ client: fake.client, now: fakeClock().now });
+    const res = await service.handle();
+    const wire = (await res.json()) as Wire;
+    expect(wire.ok).toBe(true);
+    return { wire, source: sourceFrom(wire, false) };
+  }
+
+  const AT = 1_788_500_000_000;
+
+  test("a real ladder comes out the far side of the wire", async () => {
+    const { source } = await liveSource();
+    const book = ladderOf(source);
+
+    // Non-vacuity first: the narrowed book actually arrived, with orders in it.
+    expect(book.orders.length).toBeGreaterThan(0);
+    expect(Object.keys(book.chainConfig.priceFeeds).length).toBeGreaterThan(0);
+
+    // And it is the documented ETH 5 Sep ladder, rung for rung — three $20
+    // steps and then $70 and $100. Irregular, because the book is.
+    const ladder = deriveLadder(book, "ETH", 1_788_595_200, AT);
+    expect(ladder?.strikes).toEqual([
+      "242000000000",
+      "244000000000",
+      "246000000000",
+      "248000000000",
+      "255000000000",
+      "265000000000",
+    ]);
+    expect(ladder?.prices).toEqual([2420, 2440, 2460, 2480, 2550, 2650]);
+
+    // The expiry selector's whole vocabulary, which is what the arena draws
+    // columns from. Real dates off the book, ascending, nothing invented.
+    expect(liveExpiries(book, "ETH", AT)).toEqual([
+      1_788_595_200, 1_788_681_600, 1_789_113_600, 1_789_718_400,
+    ]);
+    expect(liveExpiries(book, "DOGE", AT)).toEqual([]);
+  });
+
+  test("the accessor is synchronous and keeps one identity across calls", async () => {
+    const { source } = await liveSource();
+    // Not a promise: the arena reads the ladder through `useMemo` on every
+    // pointer move, and an `await` on that path is a different component.
+    expect(ladderOf(source)).not.toBeInstanceOf(Promise);
+    // And the same object each time — `BoxBuilder` keys its expiry set and its
+    // ladder on this identity, so a fresh object per call would re-derive the
+    // whole ladder on every render of a drag.
+    expect(ladderOf(source)).toBe(ladderOf(source));
+  });
+
+  test("a stale source serves the stale book, like it serves the stale gate", async () => {
+    const { wire } = await liveSource();
+    const stale = sourceFrom({ ...wire, note: "stale — refresh failed" }, true);
+    expect(stale.meta.source).toBe("stale");
+    // The rows, the gate and the ladder are one reading of one moment. Serving
+    // fresh-looking emptiness beside stale prices would read as a bug rather
+    // than as age; `meta.source` is what discloses it, once, for all three.
+    expect(deriveLadders(ladderOf(stale), AT).length).toBeGreaterThan(0);
+  });
+
+  test("an envelope with no ladder field yields the empty book, never undefined", () => {
+    // What a client gets from a server that predates the field. `ladderOf` is
+    // total, so the arena renders "no columns" rather than throwing.
+    const old = sourceFrom({ ok: true, at: AT, underlyings: ["ETH"] }, false);
+    expect(ladderOf(old)).toBe(NO_LADDER);
+    expect(deriveLadders(ladderOf(old), AT)).toEqual([]);
+  });
+});
+
+// ─── the mock answers honestly ───────────────────────────────────────────────
+
+describe("the seeded source has no book, and says so", () => {
+  test("the mock answers the ladder accessor, and the answer is nothing", () => {
+    // Answered rather than absent: `ladder()` being missing means "this source
+    // never read a raw book", and only hand-built fakes are in that state.
+    expect(mockMarketSource.ladder).toBeDefined();
+    expect(ladderOf(mockMarketSource)).toBe(NO_LADDER);
+  });
+
+  test("nothing can be derived from it — no ladder, no expiry, no rung", () => {
+    const book = ladderOf(mockMarketSource);
+    expect(deriveLadders(book)).toEqual([]);
+    expect(liveExpiries(book, "ETH")).toEqual([]);
+    expect(deriveLadder(book, "ETH", 1_788_595_200)).toBeNull();
+  });
+
+  test("and that is honesty, not emptiness — the seeded source is otherwise full", () => {
+    // The point of the two tests above. This source has a complete pricing
+    // table for ETH and BTC; what it does not have is a *capture*. Its rows are
+    // `"4,000"` and `"27 SEP"` — a rendered table, with no feed address and no
+    // unix expiry — and running them backwards into rungs would draw an arena
+    // that looks exactly like a live one over a ladder no venue quotes. That is
+    // the single failure plans 6 and 7 both exist to delete, so the honest
+    // answer is nothing and the arena draws no columns.
+    expect(mockMarketSource.pricing("ETH").length).toBeGreaterThan(0);
+    expect(mockMarketSource.orders().length).toBeGreaterThan(0);
+    expect(mockMarketSource.underlyings()).toEqual(["ETH", "BTC"]);
   });
 });

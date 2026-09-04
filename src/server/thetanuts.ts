@@ -1,7 +1,14 @@
 import { ThetanutsClient, getOptionImplementationInfo } from "@thetanuts-finance/thetanuts-client";
 import type { PayoutType, ThetanutsLogger } from "@thetanuts-finance/thetanuts-client";
 import { JsonRpcProvider } from "ethers";
-import type { FillPreview, MmQuote, OrderRow, PricingRow } from "../types.ts";
+import type {
+  FillPreview,
+  LadderBook,
+  LadderBookOrder,
+  MmQuote,
+  OrderRow,
+  PricingRow,
+} from "../types.ts";
 import { qualifiedAssets, type QualifiedAsset } from "../data/qualify.ts";
 
 /**
@@ -126,7 +133,49 @@ export interface RawOrderEntry {
   order: {
     /** Price per contract, 8dp. */
     price: string | bigint;
-    /** True when the *maker* is the buyer — i.e. this order is a bid. */
+    /**
+     * **`true` marks the side the TAKER buys — i.e. the maker's ASK.**
+     *
+     * Read that twice, because the field name says the opposite and this app
+     * believed the name for four commits. The SDK's own declaration is
+     * `"Whether maker is buyer (true) or seller (false) from taker's
+     * perspective"` (index.d.ts:773) — it is the trailing clause that governs,
+     * and `normalizeOdetteOrder`'s comment `"isLong=true means maker sells"`
+     * (index.js:3343, with `isBuyer = !isLong` at :3360) says the reverse. Two
+     * vendor comments, one contradiction, and no way to pick between them by
+     * reading.
+     *
+     * So it was measured, twice, against two independent feeds:
+     *
+     *  1. **The venue's own two-sided quotes.** 142 live single-strike orders
+     *     joined to `mmPricing.getPricingArray` on (underlying, call/put,
+     *     strike, option expiry), each priced in the collateral's own units:
+     *
+     *     | `isBuyer` | n | median price ÷ MM mark | ≥ MM ask | ≤ MM bid |
+     *     |---|---|---|---|---|
+     *     | `true`  | 49 | **1.58–1.66×** | 36 | **0** |
+     *     | `false` | 93 | **0.69–0.72×** | **0** | 16 |
+     *
+     *     A resting order priced at 1.6× the market maker's own mark, never at
+     *     or below its bid, is an offer to sell. The separation is total: not
+     *     one `isBuyer === true` order sits at or below the bid, and not one
+     *     `isBuyer === false` order sits at or above the ask.
+     *
+     *  2. **Settled on-chain positions** (`docs/plan7-measurements.md` §3.2):
+     *     of 9,766 RANGE positions the MM is recorded as `seller` 5,635 times
+     *     and as `buyer` zero times, and RANGE orders on the book carry
+     *     `isLong === false`, i.e. `isBuyer === true`.
+     *
+     * Both readings agree: **`isBuyer === true` ⟹ the maker is short ⟹ the
+     * taker buys.** `buildSnapshot` files these as **asks**, and they are the
+     * orders a player can actually fill — which is what plan 6 §5 and plan 7 §5
+     * mean by long-only. Filling an `isBuyer === false` order would make the
+     * player the *writer*: collateral posted, downside unbounded, the precise
+     * position both plans forbid by construction.
+     *
+     * `test/market-builder.test.ts` pins the direction against real fixture
+     * orders so it cannot flip back silently.
+     */
     isBuyer: boolean;
     /** The order's identity on the book. */
     nonce?: string | bigint;
@@ -336,6 +385,25 @@ export interface MarketSnapshot {
    * draw", this is "can be dealt as a round", and the second is much stricter.
    */
   qualified: QualifiedAsset[];
+  /**
+   * The strike ladder's raw input, narrowed — see {@link ladderBook}.
+   *
+   * It rides here for the same reason {@link qualified} does, and the reason is
+   * sharper in this case: the ladder's four inputs are *destroyed* by the
+   * builder above. `rawApiData.strikes` is formatted into an `instrument`
+   * string, `priceFeed` is resolved to a symbol and dropped, `order.expiry`
+   * becomes a display label, and `availableAmount` is summed into a `size`. A
+   * browser holding `OrderRow[]` has no way back to any of them, and
+   * `src/data/box.ts` is pure and may not fetch.
+   *
+   * Unlike `qualified`, this is **not** a measurement — it is the book itself,
+   * with the columns a ladder does not read taken out. Every judgement about it
+   * (which expiries are still live, which strikes carry a fillable order, where
+   * the rungs are) is made client-side by `deriveLadders(snap, at)`, against the
+   * *browser's* clock, which is the only one that is current by the time an
+   * arena is drawn.
+   */
+  ladder: LadderBook;
   /** Set when this snapshot is being served past its TTL because the refresh
    *  failed. */
   note?: string;
@@ -1055,9 +1123,11 @@ export function buildMmQuotes(rows: readonly RawMmQuote[]): MmQuote[] {
 /**
  * One side of one instrument, accumulated across every order quoting it.
  *
- * The book is one-sided per order — `isBuyer` says which. Grouping by
- * instrument and keeping the best of each side is what turns a list of orders
- * into a bid/ask table.
+ * The book is one-sided per order — `isBuyer` says which, **inverted**: it is
+ * the taker's side, so `isBuyer === true` is the maker's *ask*. See
+ * `RawOrderEntry.order.isBuyer` for the measurement that settled it. Grouping
+ * by instrument and keeping the best of each side is what turns a list of
+ * orders into a bid/ask table.
  */
 interface Level {
   underlying: string;
@@ -1207,6 +1277,89 @@ function edgeOf(level: Level, medianIv: Map<string, number>): number | undefined
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The ladder's slice of the capture
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Total, non-throwing positive-integer read for `availableAmount`. Mirrors
+ *  `hasSize` in `src/data/box.ts`, which is the reader this narrowing serves —
+ *  the two must agree or the wire drops a rung the client would have kept. */
+function fillable(raw: string | bigint | number | null | undefined): boolean {
+  if (raw === null || raw === undefined) return false;
+  try {
+    if (typeof raw === "bigint") return raw > 0n;
+    if (typeof raw === "number") return Number.isFinite(raw) && raw > 0;
+    return BigInt(String(raw).trim()) > 0n;
+  } catch {
+    return Number(raw) > 0;
+  }
+}
+
+/**
+ * The raw capture, narrowed to the strike ladder and nothing else.
+ *
+ * {@link LadderBook} carries the full accounting of what was dropped and what
+ * it cost; this is the transformation. Two rules govern it:
+ *
+ *  1. **Field-for-field, no reshaping.** The result is structurally assignable
+ *     to `LadderSnapshot` in `src/data/box.ts` with no adapter, so the browser
+ *     calls `deriveLadder(snapshot, …)` on what came off the wire directly.
+ *     Interning the repeated 42-character feed addresses would shave ~20% more
+ *     and would cost exactly that property — the client would need a
+ *     rehydration step, and a second shape of the same data is how the two
+ *     start disagreeing.
+ *  2. **Only structurally-empty orders are dropped.** No strikes, no fillable
+ *     size, or a feed address `priceFeeds` does not name: none of the three can
+ *     contribute a rung under any clock, so dropping them loses nothing and each
+ *     is one line of `deriveLadders`' own filter, said here. Expiry is
+ *     deliberately **not** judged — that needs a `now`, and the browser's is the
+ *     current one.
+ *
+ * Pure and total, like everything else in this section: a truncated or garbage
+ * capture yields fewer orders, never a throw.
+ */
+export function ladderBook(raw: RawMarket): LadderBook {
+  const priceFeeds = raw.chainConfig?.priceFeeds ?? {};
+  // By address, because that is how an order names its underlying and how
+  // `feedIndex` collapses the `ETH`/`ETH/USD` alias on the far side.
+  const known = new Set(
+    Object.values(priceFeeds)
+      .filter((a): a is string => typeof a === "string" && a !== "")
+      .map((a) => a.toLowerCase()),
+  );
+
+  const orders: LadderBookOrder[] = [];
+  for (const entry of raw.orders ?? []) {
+    const api = entry?.rawApiData;
+    if (!api) continue;
+    if (!Array.isArray(api.strikes) || api.strikes.length === 0) continue;
+    if (!fillable(entry.availableAmount)) continue;
+
+    const priceFeed = typeof api.priceFeed === "string" ? api.priceFeed : "";
+    if (!known.has(priceFeed.toLowerCase())) continue;
+
+    const expiry = entry.order?.expiry;
+    if (expiry === null || expiry === undefined) continue;
+
+    const signature = api.orderExpiryTimestamp;
+    orders.push({
+      order: { expiry: String(expiry) },
+      availableAmount: String(entry.availableAmount),
+      rawApiData: {
+        priceFeed,
+        // Copied, not aliased: the wire object must not share an array with the
+        // capture, or a later edit to one silently edits the other.
+        strikes: api.strikes.map(String),
+        ...(typeof signature === "number" && Number.isFinite(signature)
+          ? { orderExpiryTimestamp: signature }
+          : {}),
+      },
+    });
+  }
+
+  return { orders, chainConfig: { priceFeeds } };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The builder
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1249,7 +1402,21 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     const isCall = Boolean(api.isCall);
     const price = fromUnits(entry.order.price, PRICE_DECIMALS);
     const available = collateralUsd(entry.availableAmount, api.collateral, tokens);
-    const isBid = entry.order.isBuyer;
+    /**
+     * **`isBuyer` is the TAKER's side, not the maker's.** See
+     * `RawOrderEntry.order.isBuyer` for the measurement; the one-line version
+     * is that `isBuyer === true` marks the orders a taker can *buy*, so it is
+     * the maker's **ask**, and this line read `const isBid = entry.order.isBuyer`
+     * until it was measured against the venue's own two-sided quotes.
+     *
+     * The two names below are kept apart on purpose, because they are opposite
+     * by definition and collapsing them is what caused the inversion:
+     *  - `takerBuys` — what the *player* would do. It labels `OrderRow.side`.
+     *  - `isBid`     — what the *maker* is doing. It fills the bid/ask columns
+     *                  and decides `askEntry`, the order a fill signs against.
+     */
+    const takerBuys = entry.order.isBuyer;
+    const isBid = !takerBuys;
 
     const greeks = greeksOf(api.greeks);
     if (greeks.delta !== null || greeks.iv !== null) greeksSeen += 1;
@@ -1301,7 +1468,13 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     levels.set(key, level);
 
     rows.push({
-      side: isBid ? "BUY" : "SELL",
+      // `takerBuys`, NOT `!isBid` — the blotter is written from the player's
+      // seat, and this string is also half of a handshake: `orderIdentity` in
+      // `src/desk/fill.ts` rebuilds it as `entry.order.isBuyer ? "BUY" : "SELL"`
+      // and a fill matches only when the two agree. It was correct before the
+      // line above was fixed and it is correct after, which is precisely why
+      // the inversion was invisible on screen.
+      side: takerBuys ? "BUY" : "SELL",
       instrument: `${underlying}-${expiryLabel(expiry).replace(" ", "")}-${strikes[0]!.toFixed(0)}-${isCall ? "C" : "P"}`,
       size: compact(available),
       px: price.toFixed(4),
@@ -1488,6 +1661,11 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
     // this builder is the one place that knows what time the capture is from.
     // The purity rule survives — `at` is still an argument, never a clock.
     qualified: [...qualifiedAssets(raw, at)],
+    // Also off `raw`, and for a stricter version of the same reason: the four
+    // fields a ladder reads have all been consumed by the rows above. No `at`
+    // here — this is the book, not a reading of it, and the clock that decides
+    // which of it is still live belongs to the browser drawing the arena.
+    ladder: ladderBook(raw),
   };
 }
 

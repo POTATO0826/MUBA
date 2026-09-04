@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { MmQuote, OrderRow, PricingRow } from "../types.ts";
-import { NO_QUALIFIED, mockMarketSource, type MarketSource } from "./market.ts";
+import type { LadderBook, MmQuote, OrderRow, PricingRow } from "../types.ts";
+import { NO_LADDER, NO_QUALIFIED, mockMarketSource, type MarketSource } from "./market.ts";
 import type { QualifiedAsset } from "./qualify.ts";
 
 /**
@@ -33,7 +33,7 @@ import type { QualifiedAsset } from "./qualify.ts";
 
 /** The `/api/market` envelope. Every field optional: the route always answers
  *  200 and `ok` is the only thing worth trusting before reading the rest. */
-interface Wire {
+export interface Wire {
   ok?: boolean;
   at?: number;
   underlyings?: string[];
@@ -47,6 +47,11 @@ interface Wire {
    *  an envelope from a server that predates it; `[]` means "measured, nothing
    *  qualified", which is the ordinary answer on a thin or unreachable book. */
   qualified?: QualifiedAsset[];
+  /** The strike ladder's raw input, narrowed server-side. Absent on an envelope
+   *  from a server that predates it, which is exactly the `ladder()`-absent
+   *  state on the far side; an empty `orders` array means the book was read and
+   *  had nothing a ladder can use. */
+  ladder?: LadderBook;
   greeksSeen?: number;
   note?: string;
   reason?: string;
@@ -56,8 +61,15 @@ interface Wire {
  *  two clients polling out of phase still cost about one upstream read. */
 export const REFRESH_MS = 30_000;
 
-/** A snapshot the client actually holds, live or stale. */
-function sourceFrom(wire: Wire, stale: boolean): MarketSource {
+/**
+ * A snapshot the client actually holds, live or stale.
+ *
+ * Exported for `test/market-route.test.ts`, which drives one frozen capture the
+ * whole way — `buildSnapshot` → envelope → `Response.json()` → here → a real
+ * strike ladder — so nothing between the server and the arena can quietly drop
+ * a field the ladder needs. It is not part of the app's API; `useLiveMarket` is.
+ */
+export function sourceFrom(wire: Wire, stale: boolean): MarketSource {
   const pricing = wire.pricing ?? {};
   const mmPricing = wire.mmPricing ?? {};
   const spot = wire.spot ?? {};
@@ -67,6 +79,11 @@ function sourceFrom(wire: Wire, stale: boolean): MarketSource {
   // this source. `qualifiedAssetsOf(source)` is called in render, and a fresh
   // array per call would re-run every memo hanging off the lobby's live groups.
   const qualified = wire.qualified ?? NO_QUALIFIED;
+  // Hoisted for the same reason, and it matters more here: `BoxBuilder` keys its
+  // expiry set and its ladder on this object's identity through `useMemo`, and
+  // a fresh object per call would re-derive the whole ladder on every render of
+  // a drag.
+  const ladder = wire.ladder ?? NO_LADDER;
   const note = wire.note;
   return {
     // The footer prints this, so the provenance line updates itself.
@@ -100,6 +117,15 @@ function sourceFrom(wire: Wire, stale: boolean): MarketSource {
     // prices are still on screen, which reads as a bug rather than as age. The
     // `stale` label on `meta` is what discloses the age, once, for all of it.
     qualified: () => qualified,
+    // Narrowed on the server, off the same capture, and NOT rebuilt here: the
+    // ladder needs `rawApiData.strikes`, `rawApiData.priceFeed`, `order.expiry`
+    // and `availableAmount`, and all four are consumed by `buildSnapshot`
+    // before `orders` above exists. See `MarketSource.ladder`.
+    //
+    // A stale source keeps the stale book, exactly as it keeps the stale gate.
+    // The rows, the gate and the ladder are one reading of one moment; the
+    // `stale` label on `meta` discloses the age, once, for all three.
+    ladder: () => ladder,
   };
 }
 
