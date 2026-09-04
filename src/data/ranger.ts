@@ -549,6 +549,35 @@ export function zoneEconomics(
 }
 
 /**
+ * The zone's **real** premium, per contract, in dollars — or `null`.
+ *
+ * The only source the arena's `premium` prop may have for a listed zone:
+ * `previewFillOrder`'s own `pricePerContract`, read off the wire and parsed.
+ * Not a mid, not a mark, not an estimate (plan7 §9), and not a division of two
+ * rounded figures — the venue publishes this number and this reads it.
+ *
+ * `null` — never a zero, never a placeholder — for every way of not having a
+ * quote, which are all the same answer to a player:
+ *
+ *  - the order was never quoted (the mock, a non-`RANGER` order, or an SDK
+ *    `ORDER_EXPIRED` on a row the indexer is still serving);
+ *  - `fillable === false`, i.e. `numContracts === 0n`: the maker's remaining
+ *    collateral will not absorb the quote notional, so there is no size at
+ *    which this box can be bought;
+ *  - the figure is unparseable or non-positive.
+ *
+ * `zoneEconomics` then yields `payoutMultiple: null` and the panel renders no
+ * multiple at all, which is plan7 §4.4's rule stated as arithmetic rather than
+ * as a branch in a view.
+ */
+export function zoneQuote(zone: ListedZone): number | null {
+  const quote = zone.order?.quote;
+  if (!quote || quote.fillable === false) return null;
+  const premium = Number(quote.premium);
+  return Number.isFinite(premium) && premium > 0 ? premium : null;
+}
+
+/**
  * What one contract is worth if settlement prints at `price`.
  *
  * Terminal, and only terminal — the TWAP consumer smooths the settlement print

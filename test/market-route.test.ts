@@ -505,7 +505,10 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
 
   /** The base fake plus an `optionBook` whose preview the test controls. */
   function withBook(
-    impl: (usdc?: bigint, referrer?: string) => { numContracts: bigint; totalCollateral: bigint },
+    impl: (
+      usdc?: bigint,
+      referrer?: string,
+    ) => { numContracts: bigint; totalCollateral: bigint; pricePerContract?: bigint },
   ) {
     const base = fakeClient();
     const seen: { usdc?: bigint; referrer?: string }[] = [];
@@ -528,7 +531,16 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
 
     expect(env.ok).toBe(true);
     if (!env.ok) return;
-    expect(fake.seen).toHaveLength(env.orders.length);
+    // The blotter's rows, plus one more call per listed zone: the arena reads
+    // `pricePerContract` off the same `previewFillOrder`, through its own
+    // curried `zoneQuote`, and only for the orders the registry names RANGER.
+    // Two of those in the frozen capture.
+    expect(fake.seen).toHaveLength(env.orders.length + 2);
+    // ...and this fake answers only the two fields the desk reads, so the arena
+    // gets no premium from it. Absence, not a derived one: `totalCollateral /
+    // numContracts` off rendered strings is the rounding trap `ZoneQuote` was
+    // added to avoid.
+    expect(env.ladder.orders.filter((o) => o.quote !== undefined)).toHaveLength(0);
     // $1.00 in USDC 6dp, and our referrer on every one — the same attribution
     // string P3's fill will carry.
     for (const call of fake.seen) expect(call).toEqual({ usdc: 1_000000n, referrer: "0xReferrer" });
@@ -537,6 +549,26 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
       collateral: "1.00", //  6dp
       fillable: true,
     });
+  });
+
+  test("a listed zone carries pricePerContract, verbatim, as its premium", async () => {
+    // 33392222284 at 8dp is $333.92 — the price a live BTC RANGER charged for
+    // one contract on 2026-09-05, and the number `zoneQuote` hands the arena as
+    // its `premium` prop. The desk's own `contracts` figure for the same order
+    // rounds to "0.0000" at $1.00, which is why the arena reads this field and
+    // not that one.
+    const fake = withBook(() => ({
+      numContracts: 2994n,
+      totalCollateral: 1_000000n,
+      pricePerContract: 33_392222284n,
+    }));
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    const quoted = env.ladder.orders.filter((o) => o.quote !== undefined);
+    expect(quoted).toHaveLength(2);
+    for (const order of quoted) expect(order.quote).toEqual({ premium: "333.92", fillable: true });
   });
 
   test("no referrer configured passes undefined rather than an empty address", async () => {

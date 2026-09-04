@@ -377,6 +377,21 @@ export interface BoxBuilderProps {
    * {@link segments} cuts the line.
    */
   history?: PriceHistory | null;
+  /**
+   * The asset chip changed. Fired **only** on a real change, never at mount.
+   *
+   * The asset is this screen's own state — it is chosen by clicking a chip
+   * here, and nothing above needs to control it. But {@link BoxBuilderProps.history}
+   * is one asset's price line, fetched by the caller, and a caller that cannot
+   * hear the switch would keep drawing ETH's prints behind BTC's ladder. They
+   * would all clip out (`fitToLadder` filters, it never rescales) and the panel
+   * would read "33 prints ran outside the ladder" instead of showing BTC, which
+   * is an honest sentence about a chart nobody asked for.
+   *
+   * So: a notification, not a controlled value. The screen still owns the
+   * selection, and a caller that omits this simply gets one asset's history.
+   */
+  onUnderlying?: (underlying: string) => void;
   /** Names the feed the line came from. Defaults to the history module's own
    *  `PRICE_SOURCE`; rendered only when there is a line to attribute. */
   priceSource?: string;
@@ -521,6 +536,7 @@ export function BoxBuilder({
   spot,
   qualified,
   history,
+  onUnderlying,
   priceSource,
   settlementNote,
   now,
@@ -817,10 +833,11 @@ export function BoxBuilder({
               disabled={!playable}
               title={playable ? undefined : `${a} has no condor market — ETH and BTC only`}
               onClick={() => {
-                if (!playable) return;
+                if (!playable || a === underlying) return;
                 setUnderlying(a);
                 setExpiry(null);
                 reset();
+                onUnderlying?.(a);
               }}
               style={sx(CHIP(a === underlying, !playable))}
             >

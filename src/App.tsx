@@ -1,11 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MatchSpin } from "./components/MatchSpin.tsx";
 import { scoreOf } from "./engine/match.ts";
 import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/lobbies.ts";
 import type { RoomView } from "./data/room.ts";
 import type { WalletSource } from "./data/wallet.ts";
-import { qualifiedAssetsOf, type MarketSource } from "./data/market.ts";
+import {
+  ladderOf,
+  qualifiedAssetsOf,
+  qualifiedNames,
+  type MarketSource,
+} from "./data/market.ts";
+import { createHistorySource, type PriceHistory } from "./data/history.ts";
+import { zoneQuote } from "./data/ranger.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
@@ -23,19 +30,18 @@ import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
 import { MockWalletBanner } from "./ui/MockWalletBanner.tsx";
 import { Battles } from "./views/Battles.tsx";
+import { BoxBuilder, type ListedFill } from "./views/BoxBuilder.tsx";
 import { Create } from "./views/Create.tsx";
 import { CreateLobby } from "./views/CreateLobby.tsx";
 import { Hub } from "./views/Hub.tsx";
 import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
 import { Parlay } from "./views/Parlay.tsx";
-import { ParlayRfq } from "./views/ParlayRfq.tsx";
 import { ParlayPick } from "./views/ParlayPick.tsx";
 import { Ranking } from "./views/Ranking.tsx";
 import { Result } from "./views/Result.tsx";
 import { Room } from "./views/Room.tsx";
 import { RoomLobby } from "./views/RoomLobby.tsx";
-import { SpotDiff } from "./views/SpotDiff.tsx";
 import { Study } from "./views/Study.tsx";
 import { useMockWallet } from "./wallet/mock.ts";
 
@@ -346,10 +352,87 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
     actions.go("arena")();
   }, [actions, arenaActions, roomState]);
 
-  const lockArenaPick = useCallback(
-    (pick: string) => void roomState.pick(pick),
-    [roomState],
-  );
+  // `lockArenaPick` — `(pick) => roomState.pick(pick)` — used to live here, and
+  // it is gone with the two screens that called it. Nothing in the box arena
+  // locks a room pick yet: that is plan 7 §8 **step 4** ("lock, duel, reveal,
+  // both boxes on one chart"), which `BoxBuilder` does not implement — it takes
+  // no room, no seat and no opponent. `onConfirm` is deliberately not wired to
+  // it either: that prop's button reads "Buy this box" and is the execution
+  // path, and firing a duel commit from it would be a mislabelled action rather
+  // than a missing one. `roomState.pick` is still there for step 4 to call.
+
+  // ── The box arena ───────────────────────────────────────────────────────
+  //
+  // plan 7 §8 step 6. `BoxBuilder` was built, tested and screenshotted with no
+  // route rendering it; this is that route. Everything below is a seam the
+  // screen declared as a prop rather than importing, so this is the only place
+  // in the app that knows the arena reads a book, a spot feed and a price line.
+
+  /**
+   * The Chainlink reader behind the chart, built once.
+   *
+   * A `useMemo` with no dependencies rather than a module constant: the source
+   * holds a TTL cache, and one per mounted app is what keeps a remount from
+   * inheriting another session's window. It opens nothing until `history()` is
+   * called, which happens only on the arena route.
+   */
+  const historySource = useMemo(() => createHistorySource(), []);
+  /**
+   * Which asset's line is loaded. `BoxBuilder` owns the selection and tells us
+   * through `onUnderlying`; this mirrors it so the fetch can follow. It opens on
+   * `"ETH"` because the screen does.
+   */
+  const [boxAsset, setBoxAsset] = useState("ETH");
+  const [boxHistory, setBoxHistory] = useState<PriceHistory | null>(null);
+  const boxTab = state.tab === "arena" && !showArenaRoom && arena.tab === "box";
+  useEffect(() => {
+    if (!boxTab) return;
+    let live = true;
+    // Cleared first: a stale ETH line behind a BTC ladder would clip to nothing
+    // and read as "33 prints ran outside the ladder", which is a true sentence
+    // about the wrong asset.
+    setBoxHistory(null);
+    // `history()` always resolves — a dead RPC is data, not an exception — so
+    // there is no rejection path to handle and absence is the ordinary state.
+    void historySource.history(boxAsset).then((h) => {
+      if (live) setBoxHistory(h);
+    });
+    return () => {
+      live = false;
+    };
+  }, [boxTab, boxAsset, historySource]);
+
+  /**
+   * The **real** premium for the box on screen, per contract, or `null`.
+   *
+   * `null` is the ordinary state and is not a placeholder: plan 7 §4.4 says the
+   * payout multiple is absent until a premium exists, and the only premium this
+   * app will show for a box is `previewFillOrder`'s. A drawn box that matches no
+   * listed zone has no price until a market maker answers an RFQ, which is plan
+   * 7 §5 and is not built — so `onQuote` sets `null` for it rather than reaching
+   * for a mid.
+   */
+  const [boxPremium, setBoxPremium] = useState<number | null>(null);
+
+  /**
+   * The asset chips' list, memoised on the source rather than recomputed.
+   *
+   * `qualifiedNames` maps, so it hands back a fresh array every call — and the
+   * arena's own asset set is a `useMemo` keyed on this prop. Unmemoised it would
+   * re-derive on every render of an app that re-renders on a duel clock, which
+   * is not expensive but is the kind of churn a drag surface should not have
+   * under it. `source` is a new object per book refresh, so this changes exactly
+   * when the book does.
+   */
+  const boxAssets = useMemo(() => qualifiedNames(source), [source]);
+  const quoteBox = useCallback((_spec: unknown, _strikes: unknown, match: ListedFill | null) => {
+    // One quote per released box (§4.1), and it is a synchronous read of a
+    // number the wire already carries: `previewFillOrder` ran on the server, at
+    // snapshot build time, against the maker's full order — the browser holds
+    // neither the order's price nor its signature and cannot preview one itself.
+    // Nothing here signs, spends or asks the network anything.
+    setBoxPremium(match ? zoneQuote(match.zone) : null);
+  }, []);
 
   return (
     <div style={sx(PAGE)}>
@@ -416,25 +499,26 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
         />
       )}
 
-      {state.tab === "arena" && !showArenaRoom && arena.tab === "parlay" && (
-        <ParlayRfq
-          source={source}
-          room={roomState.room}
-          seat={roomState.seat}
-          busy={roomState.busy}
-          onLock={lockArenaPick}
-          onBack={backToArenaHub}
-        />
-      )}
-
-      {state.tab === "arena" && !showArenaRoom && arena.tab === "spotdiff" && (
-        <SpotDiff
-          source={source}
-          room={roomState.room}
-          seat={roomState.seat}
-          address={identity.address}
-          busy={roomState.busy}
-          onLock={lockArenaPick}
+      {/* The arena — plan 7. Every prop is a seam the screen declared rather
+          than an import it made: the book it draws is `source.ladder()`, the
+          spot marker is `source.spot`, the line behind the grid is one
+          `createHistorySource().history()` answer, and the premium is the
+          server's `previewFillOrder`. `BoxBuilder` reads no market source, opens
+          no socket and asks `/api/config` for the trade flag itself, so nothing
+          it can do from here spends anything. */}
+      {boxTab && (
+        <BoxBuilder
+          snapshot={ladderOf(source)}
+          spot={(u) => source.spot(u)}
+          // Everything the venue has a book for — so an asset that cannot carry
+          // a condor still appears, greyed, with the reason (§2.1). `[]` on the
+          // seeded source and while the indexer is down, which greys them all
+          // and is the honest answer rather than a hidden list.
+          qualified={boxAssets}
+          history={boxHistory}
+          onUnderlying={setBoxAsset}
+          premium={boxPremium}
+          onQuote={quoteBox}
           onBack={backToArenaHub}
         />
       )}

@@ -13,7 +13,20 @@ const BTN =
   `height:32px;padding:0 14px;border-radius:8px;cursor:pointer;font:700 11px/1 ${SANS};` +
   `border:1px solid ${C.borderMid};background:transparent;color:${C.text}`;
 
-/** The two modes, as the hub presents them. */
+/**
+ * The mode, as the hub presents it.
+ *
+ * One entry. It was two — `PARLAY` ("Build a multi-leg RFQ on one asset") and
+ * `FIND A DIFFERENCE` — and plan 7 §8 step 6 retires both: the box arena is
+ * what they were reaching for, and §7 is explicit that the blurb above is the
+ * sentence that gets you caught. A screen is not an RFQ. RFQ is one of the two
+ * ways a drawn box gets executed, and the other one — a zone already resting on
+ * the OptionBook — sends no quote request at all.
+ *
+ * Still an array of one rather than a single object, because the shape is what
+ * the grid below and `ModeCard` read, and a second mode should cost a row here
+ * and nothing else.
+ */
 const MODES: readonly {
   key: GameMode;
   title: string;
@@ -22,18 +35,12 @@ const MODES: readonly {
   tone: string;
 }[] = [
   {
-    key: "parlay",
-    title: "PARLAY",
+    key: "box",
+    title: "DRAW A BOX",
     kicker: "ENTER ARENA",
-    blurb: "Build a multi-leg RFQ on one asset · set stake · invite your opponent",
+    blurb:
+      "Draw a price band and an expiry on the chart — the box is the option · set stake · invite your opponent",
     tone: C.accent,
-  },
-  {
-    key: "spotdiff",
-    title: "FIND A DIFFERENCE",
-    kicker: "ENTER ARENA",
-    blurb: "Spot the strike whose volatility sits furthest off its own smile",
-    tone: C.blue,
   },
 ];
 
@@ -126,8 +133,8 @@ interface HubProps {
 /**
  * The screen a player lands on after connect.
  *
- * Identity, then the two modes, then the duels already in flight. No draft, no
- * tape, no case library — a player should reach a game in one click.
+ * Identity, then the mode, then the duels already in flight. No draft, no tape,
+ * no case library — a player should reach a game in one click.
  */
 export function Hub({
   identity,
@@ -179,7 +186,15 @@ export function Hub({
         </button>
       </div>
 
-      <div style={sx("display:grid;grid-template-columns:1fr 1fr;gap:16px")}>
+      {/* One column per mode, centred. With a single entry a `1fr 1fr` grid
+          left a half-width card against an empty half, which reads as a mode
+          that failed to load rather than as the only one there is. */}
+      <div
+        style={sx(
+          `display:grid;grid-template-columns:repeat(${MODES.length},minmax(0,1fr));gap:16px;` +
+            `width:100%;max-width:${MODES.length === 1 ? "520px" : "none"};margin:0 auto`,
+        )}
+      >
         {MODES.map((m) => (
           <ModeCard
             key={m.key}
@@ -192,7 +207,7 @@ export function Hub({
 
       {!connected && (
         <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};text-align:center`)}>
-          Both modes stake real USDC on Base. Connect a wallet to enter.
+          The arena stakes real USDC on Base. Connect a wallet to enter.
         </span>
       )}
 

@@ -216,6 +216,26 @@ export interface LadderOrder {
      */
     isLong?: boolean | null;
   } | null;
+  /**
+   * `previewFillOrder`'s `pricePerContract` for this order, in dollars — the
+   * **only** premium the arena is allowed to show for a listed zone, and the
+   * reason `LadderBookOrder.quote` exists on the far side.
+   *
+   * The ladder itself never reads it: an axis has no price. {@link file://./ranger.ts}
+   * does, through `zoneQuote`, and that is the one reader in this repo.
+   *
+   * Widened and all-optional like every other field here, for the same two
+   * reasons: a checked-in fixture must be assignable, and a truncated response
+   * must degrade to "not quoted" rather than throw. Absent, `null` and
+   * unparseable are one answer — no premium, so no multiple.
+   */
+  quote?: {
+    /** Premium per contract, US dollars. */
+    premium?: string | number | null;
+    /** `numContracts > 0n` — the book-depth guard. `false` is an ordinary
+     *  reading of a thin book, not an error. */
+    fillable?: boolean | null;
+  } | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

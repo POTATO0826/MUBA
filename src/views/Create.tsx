@@ -8,6 +8,7 @@ import {
 import { sx } from "../lib/sx.ts";
 import type { BattleState } from "../state/battle.ts";
 import { C, MONO, SANS } from "../theme.ts";
+import type { GameMode } from "../types.ts";
 
 const CARD =
   "border:1px solid #27272a;border-radius:14px;background:linear-gradient(180deg,#101012,#0c0c0e)";
@@ -17,7 +18,15 @@ const STEP_BTN =
   `width:34px;height:34px;border:1px solid ${C.borderMid};border-radius:8px;background:transparent;` +
   `color:${C.text};font:700 16px/1 ${MONO};cursor:pointer`;
 
-const MODE_TITLE = { parlay: "PARLAY · RFQ", spotdiff: "FIND A DIFFERENCE" } as const;
+/**
+ * The mode's name on the setup screen, keyed by `GameMode`.
+ *
+ * `"PARLAY · RFQ"` used to live here, and it is the second half of plan 7 §7's
+ * caught sentence: the screen is not an RFQ, RFQ is one of the two paths a
+ * drawn box takes to execution. Kept as a map rather than inlined because it is
+ * keyed by the mode a room was created in, and that is a value, not a constant.
+ */
+const MODE_TITLE: Record<GameMode, string> = { box: "DRAW A BOX" };
 
 /**
  * The invite link, shown only after the arena exists.

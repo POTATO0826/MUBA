@@ -140,7 +140,13 @@ export function createRoom(input: {
     lobbyName,
     // Any integer works; the salts multiply it. Kept small enough to stay exact.
     seed: Math.floor(Math.random() * 1_000_000),
-    mode: input.mode === "spotdiff" ? "spotdiff" : "parlay",
+    // Coerced rather than validated, and it collapses to the one mode there is.
+    // A stale tab still holding `"parlay"` or `"spotdiff"` — the two screens
+    // plan 7 §8 step 6 retired — opens a box room rather than a 400, which is
+    // the same clamping the stake and the duration above get and for the same
+    // reason: the client already enforces the shape, so anything else is an old
+    // tab rather than something the host can fix.
+    mode: "box",
     picks: [null, null],
     ready: [false, false],
     readyBothAt: null,

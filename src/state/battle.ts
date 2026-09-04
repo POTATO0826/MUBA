@@ -10,20 +10,32 @@ import {
 } from "../data/stake.ts";
 import type { GameMode } from "../types.ts";
 
-/** Screens inside the live-data arena. Kept separate from the legacy match
- * tabs because both flows have their own create and parlay screens. */
-export type ArenaTab = "hub" | "create" | "parlay" | "spotdiff";
+/**
+ * Screens inside the live-data arena. Kept separate from the legacy match tabs
+ * because both flows have their own create screen.
+ *
+ * `"box"` is deliberately spelled the same as the only {@link GameMode}: the
+ * hub picks a mode, `App` routes on the tab, and `enterArenaDuel` hands one
+ * straight to the other (`arenaActions.go(room.mode)`). Two vocabularies for
+ * one thing is how a room created in one mode opens in another.
+ */
+export type ArenaTab = "hub" | "create" | "box";
 
 /**
  * Arena setup.
  *
  * This used to hold a whole draft-and-tape game: picks, bans, a seeded random
- * walk, an autopilot. Both PvP modes now run on live Thetanuts data, so none of
+ * walk, an autopilot. The PvP mode now runs on live Thetanuts data, so none of
  * that survives. What is left is the four things a player sets before a duel.
  */
 export interface BattleState {
   tab: ArenaTab;
-  /** Which of the two PvP modes this arena plays. */
+  /**
+   * Which PvP mode this arena plays. One member today — a room still carries
+   * it, because the room store is what a second mode would have to be
+   * distinguishable in, and dropping the field would make adding one a
+   * migration rather than a union member.
+   */
   mode: GameMode;
   /** What each player stakes, in USDC. The pot is twice this. */
   stakeUsdc: number;
@@ -37,7 +49,7 @@ export interface BattleState {
 
 export const INITIAL_STATE: BattleState = {
   tab: "hub",
-  mode: "parlay",
+  mode: "box",
   stakeUsdc: 10,
   stakeText: "10.00",
   durationMinutes: 1,

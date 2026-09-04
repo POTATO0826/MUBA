@@ -4,8 +4,18 @@ export type Market = "STOCK" | "CRYPTO";
 export type MarketFilter = Market | "MIXED";
 export type Direction = "over" | "under";
 
-/** Live-data duel modes introduced by the invite-room flow. */
-export type GameMode = "parlay" | "spotdiff";
+/**
+ * Live-data duel modes introduced by the invite-room flow.
+ *
+ * One member, deliberately. The two it replaced — `"parlay"` and `"spotdiff"`
+ * — were the options chain and the order ticket wearing different hats, and
+ * plan 7 §8 step 6 retires both in favour of the box arena. The name is what
+ * the screen *is*: a box drawn on a price chart. It is **not** `"rfq"` — plan 7
+ * §7 — because RFQ is one of the two execution paths a drawn box can take, and
+ * the other one (a listed zone off the OptionBook) sends no quote request at
+ * all.
+ */
+export type GameMode = "box";
 
 /** The six sector groups the 12 raw `Asset.sector` values roll up into.
  *  Defined in `src/data/sectors.ts`; the groups partition the board. */
@@ -244,6 +254,63 @@ export interface LadderBookOrder {
      */
     isLong?: boolean;
   };
+  /**
+   * What one contract of this zone costs — carried **only** for orders the
+   * implementation registry names `RANGER`, which are the only ones the arena
+   * can fill straight off the book (plan7 §3.1, `src/data/ranger.ts`).
+   *
+   * ## Why it travels rather than being computed in the browser
+   *
+   * `previewFillOrder` reads `order.price`, `order.maker`, `rawApiData.collateral`,
+   * `rawApiData.isCall` and `rawApiData.maxCollateralUsable`
+   * (`dist/index.js:1713`). **The narrowing above carries none of them**, and
+   * they are not carried on purpose — they are the fill path's fields, and the
+   * signature that would make them useful is the single largest thing this type
+   * exists to drop. So the browser cannot preview a zone, and the arena's
+   * premium is either this number or nothing at all.
+   *
+   * Absent is ordinary and means "not quoted": the mock has no book, a
+   * non-`RANGER` order is never asked, and the SDK throws `ORDER_EXPIRED` on
+   * orders the indexer is still serving. The arena then renders no multiple at
+   * all, which is plan7 §4.4's rule — never a placeholder, never an estimate.
+   */
+  quote?: ZoneQuote;
+}
+
+/**
+ * What one contract of a listed zone costs, off `previewFillOrder`.
+ *
+ * ## Why this is not {@link FillPreview}
+ *
+ * The desk asks "what does a dollar buy"; the arena asks "what does one
+ * contract cost", because plan7 §4.4's payout multiple is `max payout ÷
+ * premium` and the max payout is per contract. `FillPreview` answers the first
+ * question and cannot be run backwards into the second at the precision the
+ * arena needs: its `contracts` is rendered to four decimals, and on a live BTC
+ * `RANGER` at $333.92 a contract, one dollar buys 0.002994 — which prints
+ * `"0.0000"`, and a premium derived from that is a division by zero.
+ *
+ * So this carries `pricePerContract`, **verbatim**, which is one of
+ * `previewFillOrder`'s own ten fields and is exactly `order.price`. It is not a
+ * mid, not a mark, and not a re-derivation: the same call answers both shapes,
+ * and each surface is handed the field it actually renders.
+ */
+export interface ZoneQuote {
+  /**
+   * `pricePerContract`, US dollars, from 8dp. The premium a player pays for one
+   * contract and — plan7 §4.3 — the whole of what they can lose.
+   */
+  premium: string;
+  /**
+   * `numContracts > 0n` at the quote notional — the book-depth guard, the same
+   * one {@link FillPreview.fillable} is.
+   *
+   * `false` means the maker's remaining collateral will not absorb even the
+   * notional we asked about, so there is no size at which this zone can be
+   * bought right now. An ordinary reading of a thin book, not an error, and the
+   * arena shows no premium for it rather than a price nobody can trade.
+   */
+  fillable: boolean;
 }
 
 /**
@@ -406,7 +473,16 @@ export interface PricingRow {
    * publishes no fair value, so a quote's distance from its neighbours is the
    * only honest mispricing signal available. `undefined` means "unscoreable",
    * which is a real state (`rawApiData.greeks` is undocumented and may be
-   * absent) and is what `playableRows` filters on. Never set on the mock.
+   * absent). Never set on the mock.
+   *
+   * **Nothing reads it today.** `src/data/board.ts`'s `playableRows` filtered on
+   * it for the two edge-scored arena modes, and plan 7 §8 step 6 retired the
+   * screens and the module together — §9's "`edge`-based scoring has no
+   * remaining call sites". It is still computed and still asserted by
+   * `test/market-builder.test.ts` because it is a measurement of the live book
+   * rather than a fixture, and the arena's own scoring is not built yet; the
+   * honest state of the field is "published, unread", and it says so here
+   * rather than reading as load-bearing.
    */
   edge?: number;
   /** `(bid + ask) / 2`, 4dp, only when both sides are quoted. A one-sided

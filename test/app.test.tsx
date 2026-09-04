@@ -139,7 +139,11 @@ describe("landing", () => {
     expect(text()).toContain("MM pricing");
 
     click("Live arena");
-    expect(text()).toContain("FIND A DIFFERENCE");
+    // One mode, and it is the box arena. `FIND A DIFFERENCE` and `PARLAY` were
+    // the two entries here until plan 7 §8 step 6 retired both screens; the
+    // hub's own docblock and `MODES` are the assertion's other half.
+    expect(text()).toContain("DRAW A BOX");
+    expect(text()).not.toContain("FIND A DIFFERENCE");
     expect(text()).toContain("ACTIVE DUELS");
     expect(window.location.pathname).toBe("/arena");
 

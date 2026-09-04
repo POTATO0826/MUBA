@@ -1422,7 +1422,9 @@ describe("the quote line", () => {
 
   test("only the rows that ship are previewed", () => {
     // Previewing all 426 live orders to draw 40 would be forty times the work
-    // for the same screen.
+    // for the same screen. The arena's own quote is a **separate** curried call
+    // (`RawMarket.zoneQuote`) asked only of listed zones, so this budget is
+    // unchanged by it — see "the ladder's zone quote" below.
     let calls = 0;
     const built = buildSnapshot(
       {
@@ -1469,6 +1471,73 @@ describe("the quote line", () => {
       .filter((o) => (o.rawApiData?.strikes ?? []).length > 0)
       .map((o) => String(o.rawApiData!.strikes![0]));
     expect(seen).toEqual(expected.slice(0, seen.length));
+  });
+});
+
+// ─── the arena's premium ─────────────────────────────────────────────────────
+
+describe("the ladder's zone quote", () => {
+  /** `pricePerContract` as the server renders it — plan7 §4.4's premium. */
+  const quote = () => ({ premium: "333.92", fillable: true });
+
+  test("only listed zones are quoted, and every one of them is", () => {
+    // The premium is the only number in the arena that is not arithmetic on the
+    // strikes, and it may exist exactly where a box can be filled off the book.
+    // A vanilla call carrying one would be a price on a rung nothing can buy;
+    // a zone without one is a box whose multiple silently disappears.
+    let calls = 0;
+    const built = buildSnapshot(
+      {
+        ...FIXTURE,
+        zoneQuote: () => {
+          calls += 1;
+          return quote();
+        },
+      },
+      AT,
+    );
+    const registry = built.ladder.chainConfig.optionImplementations ?? {};
+    const quoted = built.ladder.orders.filter((o) => o.quote !== undefined);
+    expect(quoted).toHaveLength(2); // both BTC RANGERs in the frozen capture
+    expect(calls).toBe(quoted.length); // and nothing else was even asked
+    for (const order of built.ladder.orders) {
+      const name = registry[String(order.rawApiData.implementation ?? "").toLowerCase()]?.name;
+      expect(order.quote !== undefined).toBe(name === "RANGER");
+    }
+    for (const order of quoted) expect(order.quote).toEqual(quote());
+  });
+
+  test("the quoter reads the order it was built from", () => {
+    const seen: string[][] = [];
+    buildSnapshot(
+      {
+        ...FIXTURE,
+        zoneQuote: (entry) => {
+          seen.push((entry.rawApiData?.strikes ?? []).map(String));
+          return null;
+        },
+      },
+      AT,
+    );
+    // Four strikes each, and the capture's own values — the entry itself is
+    // handed over, never a reconstruction of it.
+    expect(seen).toHaveLength(2);
+    for (const strikes of seen) expect(strikes).toHaveLength(4);
+  });
+
+  test("a zone the SDK refuses to quote carries none at all", () => {
+    // `null` is "asked and could not answer": `ORDER_EXPIRED` on a row the
+    // indexer is still serving, or a client whose preview omits
+    // `pricePerContract`. It reaches the browser as absence, because a player
+    // cannot act on the difference.
+    const built = buildSnapshot({ ...FIXTURE, zoneQuote: () => null }, AT);
+    for (const order of built.ladder.orders) expect(order.quote).toBeUndefined();
+  });
+
+  test("no quoter at all leaves the ladder unpriced", () => {
+    // The state of every snapshot built by a client with no `optionBook`, and
+    // of the seeded source. The arena then renders no multiple (plan7 §4.4).
+    for (const order of snap.ladder.orders) expect(order.quote).toBeUndefined();
   });
 });
 

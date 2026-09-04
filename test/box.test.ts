@@ -82,6 +82,7 @@ import {
   zoneCoversSpot,
   zoneEconomics,
   zonePayoff,
+  zoneQuote,
   zoneStrikes,
   zoneToRanger,
   zoneWingUsd,
@@ -1242,6 +1243,43 @@ describe("a listed zone's economics", () => {
     expect(zoneEconomics(zone(), 10, 1).payoutMultiple).toBe(50);
     expect(zoneEconomics(zone(), 0, 1).payoutMultiple).toBeNull();
     expect(zoneEconomics(zone(), Number.NaN, 1).payoutMultiple).toBeNull();
+  });
+
+  /** The same zone with a `previewFillOrder` answer attached, as the wire
+   *  carries one: `LadderBookOrder.quote`, verbatim from the server. */
+  const quoted = (quote: unknown): ListedZone => {
+    const z = zone();
+    return { ...z, order: { ...z.order, quote } as typeof z.order };
+  };
+
+  test("the premium is previewFillOrder's own pricePerContract", () => {
+    // $333.92 is what a live BTC zone charged for one contract on 2026-09-05.
+    // Read, not derived: `totalCollateral / numContracts` off the desk's
+    // 4-decimal render would be 1.00 / 0.0000, which is why the arena carries a
+    // shape of its own.
+    expect(zoneQuote(quoted({ premium: "333.92", fillable: true }))).toBe(333.92);
+
+    // And it is the number the multiple divides into the maker's own wing: a
+    // $500 zone bought for $333.92 pays 1.50×, which is what a one-in-four
+    // outcome on a $2,000-wide instrument ought to look like.
+    expect(zoneEconomics(zone(), 333.92, 1).payoutMultiple).toBeCloseTo(500 / 333.92, 8);
+  });
+
+  test("every way of not having a quote is the same answer: none", () => {
+    // Never a zero and never a placeholder — `zoneEconomics` then yields a null
+    // multiple and the panel renders none at all (plan7 §4.4).
+    expect(zoneQuote(zone())).toBeNull(); // never quoted
+    expect(zoneQuote(quoted(undefined))).toBeNull();
+    expect(zoneQuote(quoted(null))).toBeNull();
+    // `numContracts === 0n` — the maker's collateral will not absorb the quote
+    // notional. There is no size at which this box can be bought, which is an
+    // ordinary reading of a thin book and not an error.
+    expect(zoneQuote(quoted({ premium: "333.92", fillable: false }))).toBeNull();
+    // Unparseable or non-positive.
+    expect(zoneQuote(quoted({ premium: "0.00", fillable: true }))).toBeNull();
+    expect(zoneQuote(quoted({ premium: "-1", fillable: true }))).toBeNull();
+    expect(zoneQuote(quoted({ premium: "nope", fillable: true }))).toBeNull();
+    expect(zoneQuote(quoted({ fillable: true }))).toBeNull();
   });
 
   test("the payoff is flat across the band and zero outside the wings", () => {

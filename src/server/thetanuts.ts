@@ -8,8 +8,13 @@ import type {
   MmQuote,
   OrderRow,
   PricingRow,
+  ZoneQuote,
 } from "../types.ts";
 import { qualifiedAssets, type QualifiedAsset } from "../data/qualify.ts";
+// The registry name of the one product a drawn box can fill off the book. Named
+// once, in the module that reads it on the far side, so the wire and the arena
+// cannot disagree about what a listed zone is.
+import { RANGER_PRODUCT } from "../data/ranger.ts";
 
 /**
  * Live Thetanuts market data, read on the server.
@@ -335,6 +340,15 @@ export interface RawMarket {
    * one bad order must not cost the other thirty-nine their quote line.
    */
   preview?: (entry: RawOrderEntry) => FillPreview | null;
+  /**
+   * The same call read for the arena — `pricePerContract` rather than "what
+   * does a dollar buy". Held as a parameter for the same purity reason
+   * {@link RawMarket.preview} is, and asked only of the orders the registry
+   * names `RANGER`, which are the ~42 of ~360 a drawn box can fill off the
+   * book. See {@link zoneQuoter} for why it is a second shape and not a
+   * derivation of the first.
+   */
+  zoneQuote?: (entry: RawOrderEntry) => ZoneQuote | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -524,7 +538,20 @@ export interface MarketClient {
       orderWithSig: RawOrderEntry,
       usdcAmount?: bigint,
       referrer?: string,
-    ): { numContracts: bigint; totalCollateral: bigint };
+    ): {
+      numContracts: bigint;
+      totalCollateral: bigint;
+      /**
+       * `order.price`, 8dp — the third of the ten fields the shipped
+       * `previewFillOrder` returns, and the arena's premium (`ZoneQuote`).
+       *
+       * Optional here rather than required, because the fakes in
+       * `test/market-route.test.ts` predate the arena and answer the two fields
+       * the desk reads. A quoter that cannot see it says so by absence, which
+       * is the same "not quoted" every other miss collapses to.
+       */
+      pricePerContract?: bigint;
+    };
   };
 }
 
@@ -759,7 +786,11 @@ const NO_GREEKS: Greeks = { delta: null, iv: null };
  * `{ delta, iv, gamma, theta, vega }`, all numbers, and the live API does send
  * that — but the docs never mention the field, so nothing obliges it to stay.
  * A `null` here is a first-class outcome: the row is quoted and simply not
- * scoreable, which `playableRows` (`src/data/board.ts`) already filters on.
+ * scoreable. `src/data/board.ts` used to filter on exactly that for the two
+ * edge-scored arena modes; both screens and the module went with plan 7 §8
+ * step 6, and `PricingRow.edge` below now has no reader in the app at all —
+ * `docs/plan7-measurements.md` §9's "`edge`-based scoring has no remaining call
+ * sites", satisfied by deletion rather than by disuse.
  *
  * `Number.isFinite` rather than `typeof === "number"` on purpose: JSON `null`,
  * a string, `NaN` from a bad divide and `Infinity` are all things an API has
@@ -1448,9 +1479,30 @@ export function ladderBook(raw: RawMarket): LadderBook {
     const signature = api.orderExpiryTimestamp;
     const implementation = typeof api.implementation === "string" ? api.implementation : "";
     if (implementation) present.add(implementation.toLowerCase());
+    // The zone's price, and only a zone's.
+    //
+    // `previewFillOrder` reads five fields this narrowing deliberately drops —
+    // `order.price`, `order.maker`, `rawApiData.collateral`/`isCall`/
+    // `maxCollateralUsable` — so the browser cannot ask this question itself,
+    // and the arena's alternative to carrying the answer is showing no premium
+    // and therefore no multiple at all (plan7 §4.4).
+    //
+    // Restricted to `RANGER` because that is the whole of what a drawn box can
+    // fill off the book (`src/data/ranger.ts`, `docs/plan7-measurements.md` §3):
+    // 42 of the 360 orders on a live read. Quoting all of them to price those
+    // 42 would be the same waste `RawMarket.preview`'s own docblock refuses for
+    // the desk's forty rows.
+    const quote =
+      raw.zoneQuote && implementationInfo(implementation, raw.chainConfig)?.name === RANGER_PRODUCT
+        ? raw.zoneQuote(entry)
+        : null;
     orders.push({
       order: { expiry: String(expiry) },
       availableAmount: String(entry.availableAmount),
+      // `null` is "asked and could not answer", which reaches the far side as
+      // absence — `zoneQuote` collapses the two, because a player cannot act on
+      // the difference.
+      ...(quote ? { quote } : {}),
       rawApiData: {
         priceFeed,
         // Copied, not aliased: the wire object must not share an array with the
@@ -1945,6 +1997,47 @@ function previewer(client: MarketClient): RawMarket["preview"] {
   };
 }
 
+/**
+ * The same call, curried for the **arena** — what one contract of a listed zone
+ * costs, rather than what a dollar buys.
+ *
+ * Two shapes off one `previewFillOrder` because the two surfaces render
+ * different fields of it, and neither can be derived from the other at the
+ * precision it needs. `FillPreview.contracts` is rendered to four decimals; a
+ * live BTC `RANGER` at $333.92 a contract answers `numContracts` such that one
+ * dollar buys 0.002994, which prints `"0.0000"` — a premium recovered from that
+ * would be a division by zero. So the arena reads `pricePerContract` verbatim,
+ * which is `order.price` and is the number a fill will actually charge.
+ *
+ * Called only for orders the registry names `RANGER` — see {@link ladderBook}.
+ * `undefined` when the client has no `optionBook`, `null` when the SDK refused
+ * this order, and no `quote` field at all in both cases: absence is "not
+ * quoted", and plan7 §4.4 renders that as no multiple rather than as a zero.
+ */
+function zoneQuoter(client: MarketClient): RawMarket["zoneQuote"] {
+  const book = client.optionBook;
+  if (!book) return undefined;
+  const referrer = Bun.env.THETADUEL_REFERRER || undefined;
+
+  return (entry: RawOrderEntry): ZoneQuote | null => {
+    try {
+      const preview = book.previewFillOrder(entry, QUOTE_USDC, referrer);
+      // Absent on a fake that answers only the two fields the desk reads. There
+      // is no fallback to `totalCollateral / numContracts`: that is the
+      // rounded-division this shape exists to avoid, and a second way of
+      // computing one number is a second number.
+      if (preview.pricePerContract === undefined) return null;
+      return {
+        premium: fromUnits(preview.pricePerContract, PRICE_DECIMALS).toFixed(2),
+        // The same book-depth guard the desk's rows carry, at the same notional.
+        fillable: preview.numContracts > 0n,
+      };
+    } catch {
+      return null;
+    }
+  };
+}
+
 function reasonOf(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.length > 200 ? `${message.slice(0, 197)}…` : message;
@@ -1982,6 +2075,7 @@ export function createMarketService(deps: MarketDeps = {}): MarketService {
         chainConfig: client.chainConfig,
         mmPricing,
         preview: previewer(client),
+        zoneQuote: zoneQuoter(client),
       },
       now(),
     );
@@ -2038,7 +2132,38 @@ export function createMarketService(deps: MarketDeps = {}): MarketService {
   return {
     snapshot,
     async handle(): Promise<Response> {
-      return Response.json(await snapshot(), { headers: { "cache-control": "no-store" } });
+      // `Response.json` would throw `TypeError: JSON.stringify cannot serialize
+      // BigInt` on every live snapshot, and did: `PricingRow.order` is
+      // `level.askEntry`, the SDK's own order object, attached verbatim so the
+      // fill path gets the maker's exact signed fields — and its `price`,
+      // `nonce`, `expiry`, `strikes` and `availableAmount` are all `bigint`.
+      // The route then 500s and the browser falls back to the seeded fixtures,
+      // so *nothing* live reaches any screen: not the desk, not the footer's
+      // freshness chip, not the arena's ladder. This turns them into decimal
+      // strings, which is the encoding `FillableOrder` already declares
+      // (`string | bigint`, "JSON has no bigint") — the type was written for
+      // this wire and the wire was not writing it.
+      //
+      // Lossless and total: a decimal string round-trips through `BigInt()`
+      // exactly, and every reader on the far side already accepts one —
+      // `LadderOrder`, `QualifyOrder` and `RawFillOrder` are widened the same
+      // way, and `desk/fill.ts`'s `units()` and `expiryMs()` parse either.
+      //
+      // **What this does not fix:** `runParlayFill` hands `leg.order` — this
+      // object — straight to `previewFillOrder`, which multiplies `order.price`
+      // by a `bigint`. With a string price that throws, and the leg is dropped
+      // `NO_FILL` rather than crashing the slip, so the failure is graceful and
+      // already handled — but a live parlay fill needs the order rehydrated at
+      // this seam before it will price. That is plan 6's path and plan 6's file
+      // (`src/desk/fill.ts`); it is recorded here rather than fixed, because
+      // this route was serving nothing at all until now and no fill has ever
+      // executed from this repo (`docs/plan6-audit.md` #20/#21).
+      const body = JSON.stringify(await snapshot(), (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value,
+      );
+      return new Response(body, {
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
     },
   };
 }
