@@ -241,8 +241,8 @@ export function SpotDiff({
       </div>
 
       <span style={sx(`font:400 11px/1.5 ${SANS};color:${C.faint}`)}>
-        Edge is the gap between a strike's implied volatility and the median of its own expiry and
-        type, from live resting orders on Base. Both picks stay hidden until both players lock.
+        Edge is the gap between a strike's IV and the median of its own expiry and type, from live
+        resting orders on Base. Both picks stay hidden until both players lock.
       </span>
     </div>
   );
