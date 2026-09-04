@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CatMascot } from "../components/CatMascot.tsx";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import type { InjectedWallet } from "../wallet/injected.ts";
@@ -22,7 +23,7 @@ import type { InjectedWallet } from "../wallet/injected.ts";
 
 /** The sticker tile, in px. Every number in `STICKER_SEAT` is derived from
  *  this one, so the arithmetic there has to be redone if it changes. */
-const STICKER = 64;
+const STICKER = 88;
 
 /**
  * Where the sticker comes to rest, relative to the row's top-right corner.
@@ -34,43 +35,46 @@ const STICKER = 64;
  * penciled out as safe still landed 2px under the button.
  *
  * Working in the panel's 360px border-box (1px border, 20px padding → a 318px
- * content column at x 21…339), with the header's 36px bottom margin putting
- * row 1's top edge at y=83, each row 48px tall on an 8px gap, and the tile at
+ * content column at x 21…339), with the header's 44px bottom margin putting
+ * row 1's top edge at y=91, each row 48px tall on an 8px gap, and the tile at
  * its widest (8° settled + 3° of wobble):
  *
  * - `right:4` puts the tile's right edge at x=335; tilted, its box reaches
- *   x≈347, a deliberate overhang into the panel's padding that still leaves
- *   11.8px to the panel's inner border. It never crosses the panel edge on any
+ *   x≈352, a deliberate overhang into the panel's padding that still leaves
+ *   ~7px to the panel's inner border. It never crosses the panel edge on any
  *   row, so nothing needs clipping and nothing needs to be clipped.
- * - `top:-16` is the largest lift that keeps the tile's bottom edge at or above
- *   the row's own bottom (−16 + 64 = 48 = the row height). That matters because
- *   each row wrapper is its own `z-index:0` stacking context painted in document
- *   order: anything bleeding *below* a row is painted over by the next row.
- *   Rising is free — the row above is earlier in the document — but sinking is
- *   not, so the tile is not allowed to sink at all.
- * - On row 1 that leaves 9px between the tile's box and the bottom of the close
- *   button. Two of those 9px are bought by the header's 36px margin rather than
- *   its original 16px; at 16px the tile ran under the close button, which is
- *   exactly what "blocked" looked like.
+ * - `top:-20` centres the tile on the row's top-right corner: 20px of an 88px
+ *   tile rises above the row and 20px falls below it. Sinking is only allowed
+ *   because the sticker outranks *every* row rather than only its own — see the
+ *   wrapper in `WalletRow`. When each row was its own stacking context the tile
+ *   could not pass below its row at all, and that rule alone capped it at 64px.
+ * - On row 1 that leaves ~9px between the tile's box and the bottom of the
+ *   close button, which is the ceiling on all of this: the tile is as large as
+ *   it can be and still clear the one piece of chrome it can reach. Every extra
+ *   pixel of height costs 1.17px of that clearance, and the header's margin —
+ *   16px originally, 44px now — is what has been buying it back.
  *
  * Measured on all four cases that differ — first row, a middle row, the last
  * row, and a two-row picker — since the first row is the only one the close
  * button can reach and the last is the only one with nothing beneath it.
  */
-const STICKER_SEAT = `top:-16px;right:4px;width:${STICKER}px;height:${STICKER}px`;
+const STICKER_SEAT = `top:-20px;right:4px;width:${STICKER}px;height:${STICKER}px`;
 
 /**
- * Sparkles, placed around the sticker's seat and staggered so they twinkle on
- * three different clocks rather than pulsing as one.
+ * Sparkles, thrown clear of the tile at three sizes and staggered so they
+ * twinkle on three different clocks rather than pulsing as one.
  *
- * Each is inside the row's own vertical band (−34 … +35 of the row's top edge)
- * for the same paint-order reason the tile may not sink: a sparkle below the
- * row's bottom edge would be painted over by the next row.
+ * The largest is deliberately flung well up and to the left, into the gap under
+ * the header — the source's confetti clears the card's edge entirely, and a
+ * sparkle that stays inside the row reads as decoration on the row rather than
+ * as something the sticker knocked loose. All three are checked against the
+ * panel's inner edge and the close button's box in the same measurement pass as
+ * the tile.
  */
 const SPARKS: { at: string; size: number; delay: number }[] = [
-  { at: "top:-28px;right:56px", size: 12, delay: 90 },
-  { at: "top:26px;right:-8px", size: 9, delay: 230 },
-  { at: "top:-10px;right:-6px", size: 8, delay: 350 },
+  { at: "top:-46px;right:98px", size: 14, delay: 90 },
+  { at: "top:52px;right:-12px", size: 10, delay: 230 },
+  { at: "top:-6px;right:-8px", size: 8, delay: 350 },
 ];
 
 /* ------------------------------------------------------------------ *
@@ -115,9 +119,37 @@ const BRANDS: { rdns: string; name: string; color: string }[] = [
  *  the sampler cannot read, and for the mock. */
 const NEUTRAL = { bg: C.cardAlt, border: C.borderMid, ink: C.muted } as const;
 
-/** How much of the brand goes into the row's background — the source's pastel
- *  header wash, which is a tint and not a fill. */
-const WASH = 0.1;
+/**
+ * How much of the brand goes into the hovered row's background.
+ *
+ * This started at the source's pastel 10% and the answer was that the row
+ * barely moved. On a near-black ground a tint that reads as "soft" on the
+ * source's white card reads as nothing at all, so the row is the piece that
+ * carries the colour statement now — 22% of the brand over `#0a0a0c`, which is
+ * plainly the wallet's colour at a glance and still dark enough to keep
+ * `C.text` at full legibility over it.
+ */
+const WASH = 0.22;
+
+/** The tile is near-white, so the cat's tint is judged against *it*, not
+ *  against the dialog: `forDarkUi`'s lift would wash a pastel brand out to
+ *  nearly the tile's own colour. */
+const CAT_ON_LIGHT: [number, number] = [0.5, 0.68];
+
+/**
+ * The mascot's colour for wallets that resolve to none.
+ *
+ * The mascot ships cream (`#f7f7f4`) and cream was the plan here, back when the
+ * tile it stands on was dark. On the near-white tile the tile became, a cream
+ * cat is a cream cat on cream — the render was a pair of floating eyes. So the
+ * uncoloured cat takes the palette's mid grey instead, which is the same
+ * neutral the row's border and chip fall back to and reads cleanly on white.
+ */
+const CAT_NEUTRAL = C.muted;
+
+/** The tile's near-white, top and bottom of a shallow vertical shade. */
+const TILE_TOP = "#fbfbfd";
+const TILE_BOTTOM = "#dcdce4";
 
 type Rgb = [number, number, number];
 
@@ -150,6 +182,34 @@ function hslToHex(h: number, s: number, l: number): string {
   return toHex([f(0), f(8), f(4)] as Rgb);
 }
 
+/** Hue, saturation and lightness of a hex colour, or `null` if it is grey. */
+function toHsl(hex: string): { h: number; s: number; l: number } | null {
+  const rgb = parseHex(hex);
+  if (!rgb) return null;
+  const [r, g, b] = rgb.map((v) => v / 255) as Rgb;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return null; // grey has no hue to preserve
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
+}
+
+/** Hold a hue, force its lightness into `[lo, hi]` and keep it saturated
+ *  enough to read as a colour rather than as a tinted grey. */
+function band(hex: string, lo: number, hi: number): string {
+  const c = toHsl(hex);
+  if (!c) return hex;
+  return hslToHex(c.h, Math.max(0.42, Math.min(c.s, 0.92)), Math.max(lo, Math.min(c.l, hi)));
+}
+
 /**
  * Pull a colour into a band that works as ink on this dialog.
  *
@@ -158,24 +218,11 @@ function hslToHex(h: number, s: number, l: number): string {
  * clear case. Everything, table entry or sampled, goes through here so the chip
  * is legible and the wash is a tint of the same hue the row's border shows.
  */
-function forDarkUi(hex: string): string {
-  const rgb = parseHex(hex);
-  if (!rgb) return hex;
-  const [r, g, b] = rgb.map((v) => v / 255) as Rgb;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  if (d === 0) return hex; // grey in, grey out
-  const s = d / (1 - Math.abs(2 * l - 1));
-  let h: number;
-  if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  h *= 60;
-  if (h < 0) h += 360;
-  return hslToHex(h, Math.max(0.42, Math.min(s, 0.92)), Math.max(0.58, Math.min(l, 0.78)));
-}
+const forDarkUi = (hex: string): string => band(hex, 0.58, 0.78);
+
+/** Sparkles are small and thrown clear of everything, so they get a lighter,
+ *  airier cut of the brand than the chrome does. */
+const forSparkle = (hex: string): string => band(hex, 0.68, 0.84);
 
 /**
  * The dominant hue of an icon, or `null` if it hasn't got one.
@@ -370,8 +417,11 @@ function Spark({
           (on ? `animation:vcSparkle 1500ms ease-in-out ${delay}ms infinite` : ""),
       )}
     >
+      {/* A rounded square stood on its corner, not a four-point star — the
+          source throws soft confetti diamonds, and a star reads as sharper and
+          more "magic sparkle" than the character wants. */}
       <svg viewBox="0 0 24 24" width={size} height={size} style={sx("display:block")}>
-        <path d="M12 0 L14.6 9.4 L24 12 L14.6 14.6 L12 24 L9.4 14.6 L0 12 L9.4 9.4 Z" fill={color} />
+        <rect x="5" y="5" width="14" height="14" rx="3" fill={color} transform="rotate(45 12 12)" />
       </svg>
     </span>
   );
@@ -433,8 +483,9 @@ function WalletRow({
   const hot = hovered || focused;
   /**
    * EIP-6963 promises a data: URI, but a wallet that announces a broken one
-   * would otherwise leave two empty boxes: the row's icon and the sticker.
-   * One flag, both call sites, because they share the src.
+   * would leave an empty box in the row. The sticker is unaffected — it wears
+   * the mascot now, and the icon's only remaining job there is to have been
+   * *sampled* for its colour, which fails to `null` on its own.
    */
   const [broken, setBroken] = useState(false);
   const hasIcon = wallet.icon !== "" && !broken;
@@ -449,22 +500,33 @@ function WalletRow({
    *  icon, an unreadable one, the mock — takes the neutral column. */
   const paint = {
     bg: hot ? (brand ? mix("#0a0a0c", brand, WASH) : NEUTRAL.bg) : "#0a0a0c",
-    border: hot ? (brand ? `${brand}55` : NEUTRAL.border) : C.border,
+    border: hot ? (brand ?? NEUTRAL.border) : C.border,
     ink: hot ? (brand ?? NEUTRAL.ink) : C.dim,
-    spark: brand ?? NEUTRAL.ink,
+    spark: brand ? forSparkle(brand) : NEUTRAL.ink,
+    /** The mascot is read against the near-white tile, so it is banded for a
+     *  light ground; with no brand it keeps its own cream. */
+    cat: brand ? band(brand, CAT_ON_LIGHT[0], CAT_ON_LIGHT[1]) : CAT_NEUTRAL,
+    /** The tile: white, warmed by a few percent of the wallet's colour so it
+     *  belongs to the same object as the cat standing on it. */
+    tileTop: brand ? mix(TILE_TOP, brand, 0.07) : TILE_TOP,
+    tileBottom: brand ? mix(TILE_BOTTOM, brand, 0.12) : TILE_BOTTOM,
+    tileRing: brand ? `${brand}59` : "rgba(255,255,255,.28)",
   };
 
   const initial = (wallet.name.trim()[0] ?? "?").toUpperCase();
 
   return (
     <div
-      // Owns the stacking context the sticker and sparkles are ordered in.
-      // `z-index:0` rather than `auto` so that ordering is sealed inside this
-      // row: the tile outranks its own button here without outranking the
-      // dialog's chrome out there. It also fixes each row against its
-      // neighbours by document order — which is why the sticker may rise over
-      // the row above but must never sink toward the row below.
-      style={sx("position:relative;z-index:0")}
+      // Positioned so the sticker has something to be absolute against, and
+      // pointedly *without* a z-index, so it does not become a stacking
+      // context. That is what lets the tile grow: sealed inside its own row the
+      // sticker outranked only that row's button, so any part of it hanging
+      // below the row was painted over by the next row and the tile was capped
+      // at the row's own height. Unsealed, the sticker's `z-index:2` is measured
+      // against every row's `z-index:1` at once and wins over all of them,
+      // whichever direction it overhangs. The dialog's chrome sits above it on
+      // the same scale — see the close button.
+      style={sx("position:relative")}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -490,30 +552,27 @@ function WalletRow({
           )}
         >
           <span
-            // The wobble's own element. Its transition is what eases the
-            // hand-back when the animation is removed on mouse-leave.
+            // The wobble's own element, and the tile proper.
+            //
+            // Near-white, because that is what makes a sticker read as stuck
+            // *on* the dialog rather than cut out of it: the source's tile is
+            // white against a pale page, and the equivalent move on a near-black
+            // panel is the same white, not another dark surface. A faint wash of
+            // the wallet's colour warms it; the shadow underneath is what sells
+            // the height.
+            //
+            // `overflow:hidden` is load-bearing — it is what crops the cat's
+            // head against the corner radius and gives the art its framing.
             style={sx(
-              `display:grid;place-items:center;width:100%;height:100%;border-radius:17px;` +
-                // The tile's edge picks up the same brand tint as the row's, so
-                // the sticker reads as belonging to the wallet rather than as a
-                // grey chip that happens to carry its icon.
-                `background:${C.raised};border:1px solid ${launched ? paint.border : C.border};` +
-                "box-shadow:0 18px 38px rgba(0,0,0,.6);" +
-                "transition:transform 300ms ease,border-color 200ms ease;" +
+              "display:block;width:100%;height:100%;overflow:hidden;border-radius:24px;" +
+                `background:linear-gradient(170deg,${paint.tileTop},${paint.tileBottom});` +
+                `box-shadow:0 0 0 1px ${paint.tileRing},0 26px 46px rgba(0,0,0,.72),` +
+                "0 10px 20px rgba(0,0,0,.5);" +
+                "transition:transform 300ms ease,background 220ms ease;" +
                 (launched ? "animation:vcStickerWobble 2400ms ease-in-out 440ms infinite alternate" : ""),
             )}
           >
-            {hasIcon ? (
-              // Same src as the row's own icon — the browser has it cached, so
-              // the sticker costs no second fetch.
-              <img
-                src={wallet.icon}
-                alt=""
-                style={sx("width:40px;height:40px;border-radius:11px;display:block")}
-              />
-            ) : (
-              <span style={sx(`font:700 20px/1 ${MONO};color:${C.muted}`)}>{initial}</span>
-            )}
+            <CatMascot color={paint.cat} wink={launched} />
           </span>
         </span>
       )}
@@ -637,24 +696,25 @@ export function WalletPicker({
             "box-shadow:0 24px 64px rgba(0,0,0,.6)",
         )}
       >
-        {/* 36px, not the 16px this header used to carry: the extra 20px is the
-            clearance that keeps the first row's sticker out from under the
-            close button. `STICKER_SEAT` does that arithmetic; changing this
-            number invalidates it. */}
-        <div style={sx("display:flex;align-items:center;gap:12px;margin-bottom:36px")}>
+        {/* 44px, not the 16px this header used to carry. The extra 28px is
+            clearance: it is what the first row's sticker rises through, and
+            every pixel of it is a pixel of tile size. `STICKER_SEAT` does that
+            arithmetic; changing this number invalidates it. */}
+        <div style={sx("display:flex;align-items:center;gap:12px;margin-bottom:44px")}>
           <span style={sx(`font:700 14px/1 ${SANS};letter-spacing:-.01em`)}>Connect a wallet</span>
           <div style={sx("flex:1")} />
           <button
             onClick={onCancel}
             aria-label="Close"
             style={sx(
-              // Lifted above the rows' stacking contexts (each is `z-index:0`).
-              // This is insurance, not the mechanism: the first row's sticker is
-              // seated clear of this button's box entirely, and hiding a sticker
+              // Above the stickers (2) and their sparkles (3), now that the rows
+              // no longer seal those into per-row stacking contexts. Insurance
+              // rather than mechanism: the first row's sticker is seated clear
+              // of this button's box by ~9px measured, and hiding a sticker
               // under the close button is precisely the bug that seat exists to
-              // avoid. If some future seat does stray up here, the chrome wins
-              // and the close button stays legible.
-              `position:relative;z-index:2;width:26px;height:26px;border:1px solid ${C.border};border-radius:8px;` +
+              // avoid. If a future seat does stray up here, the chrome wins and
+              // the close button stays legible.
+              `position:relative;z-index:6;width:26px;height:26px;border:1px solid ${C.border};border-radius:8px;` +
                 `background:transparent;color:${C.muted};font:500 13px/1 ${SANS};cursor:pointer`,
             )}
           >

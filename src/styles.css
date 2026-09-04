@@ -294,6 +294,18 @@ button {
   to { transform: rotate(3deg); }
 }
 
+/* The mascot blinks once, a beat after the sticker lands — long enough after
+ * that it reads as the cat noticing you rather than as part of the launch.
+ * Runs once, not on a loop: a cat that blinks forever is a broken cat.
+ * `CatMascot` sets `transform-box:fill-box` so this squashes the eye about its
+ * own centre. */
+@keyframes vcCatWink {
+  0%,
+  100% { transform: scaleY(1); }
+  42%,
+  58% { transform: scaleY(0.08); }
+}
+
 /* Sparkles pop and fade on their own clocks; the component staggers them with
  * an animation-delay per sparkle. */
 @keyframes vcSparkle {
