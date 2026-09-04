@@ -9,6 +9,8 @@ export {
   __setTestSink,
   audioAvailable,
   isSoundOn,
+  playClip,
+  preloadClip,
   setPalette,
   setSoundOn,
   sfx,

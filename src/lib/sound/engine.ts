@@ -215,6 +215,11 @@ function ensureGraph(): boolean {
     // A view that asked for a track before the first gesture parked it; the
     // graph it was waiting for now exists.
     flushPendingTracks();
+    // The button clips, on the other hand, are never queued (see `playClip`),
+    // so the gesture that builds the graph is also the moment to warm them:
+    // the fetch+decode runs while the player is still reading the screen and
+    // the first press finds a decoded buffer.
+    for (const url of CLIP_PRELOAD) preloadClip(url);
     return true;
   } catch {
     return false;
@@ -429,15 +434,17 @@ interface TrackState {
 
 /**
  * Decoded audio, per url, for the life of the tab — re-entering the room must
- * not refetch. A failed load caches its `null` too: the promise IS the
+ * not refetch, and a button pressed twenty times must fetch once. Shared by
+ * the tracks here and the one-shot clips below, because the rule is the same
+ * for both. A failed load caches its `null` too: the promise IS the
  * one-attempt guarantee, so a missing file costs one 404 and never a retry
  * storm on every mount.
  */
-const trackBuffers = new Map<string, Promise<AudioBuffer | null>>();
+const audioBuffers = new Map<string, Promise<AudioBuffer | null>>();
 const tracks = new Map<TrackId, TrackState>();
 
-function loadTrack(c: AudioContext, url: string): Promise<AudioBuffer | null> {
-  const hit = trackBuffers.get(url);
+function loadBuffer(c: AudioContext, url: string): Promise<AudioBuffer | null> {
+  const hit = audioBuffers.get(url);
   if (hit) return hit;
   const pending = (async (): Promise<AudioBuffer | null> => {
     try {
@@ -449,7 +456,7 @@ function loadTrack(c: AudioContext, url: string): Promise<AudioBuffer | null> {
       return null; // offline, aborted, or bytes that are not audio
     }
   })();
-  trackBuffers.set(url, pending);
+  audioBuffers.set(url, pending);
   return pending;
 }
 
@@ -459,7 +466,7 @@ async function beginTrack(id: TrackId, st: TrackState): Promise<void> {
   const c = ctx;
   if (!c) return;
   try {
-    const buf = await loadTrack(c, st.url);
+    const buf = await loadBuffer(c, st.url);
     // The load takes a network round trip; the player may have readied up or
     // walked out inside it. A state no longer in the map has been stopped.
     if (!buf || !ambienceBus || tracks.get(id) !== st) return;
@@ -538,6 +545,125 @@ export function stopTrack(id: TrackId, fadeMs: number = TRACK_STOP_FADE_MS): voi
   } catch {
     // Nothing to unwind that the garbage collector will not take.
   }
+}
+
+// ── One-shot clips (recordings, on the sfx bus) ───────────────────────────
+
+/**
+ * A recorded one-shot behind a button — the same file discipline as the
+ * tracks above, the same buffer cache, the opposite end of the mix.
+ *
+ * It hangs off `sfxBus`, where the synth confirmations live, and NOT off
+ * `ambienceBus`: these fire because the player pressed something, so they are
+ * foreground by definition. Routing one through the bed's bus would also put
+ * it on the wrong side of R7 — the duck exists to get quiet things out of the
+ * way of loud ones, and a clip that ducked itself would be inside out.
+ *
+ * The asset is optional exactly like a track: a missing file, a refused
+ * decode or a context that was never unlocked all end in silence, with no
+ * throw and no rejected promise.
+ */
+
+/**
+ * The foreground counterpart to TRACK_GAIN, tuned the same way. `TIER_GAIN`
+ * (action 0.22, event 0.38, moment 0.6) is calibrated for raw oscillators,
+ * where the number IS the peak of a thin, single-voice signal; a mastered clip
+ * arrives dense and near full scale, so the two scales cannot be compared
+ * digit for digit. The one recorded level already tuned in this app is the
+ * anchor: the room track sits at 0.22 and reads as "behind everything". A
+ * button clip has to read as the loudest thing the player just caused — but a
+ * moment (a win, a rank-up) still has to top it, so it stops short of that
+ * tier's presence. 0.45, twice the bed, lands there: plainly foreground and
+ * punchy at action/event tier, under the moment. The master compressor is the
+ * backstop if a future clip is mastered hotter than these two.
+ */
+const CLIP_GAIN = 0.45;
+
+/**
+ * A double-click, a re-render, or a second press while the first is still
+ * loading must not stack two transients on the same sample.
+ */
+const CLIP_COOLDOWN_MS = 150;
+
+/**
+ * Deliberately NOT `budget.request`. That machinery is keyed by `SfxName` and
+ * hands back a voice id the caller owes back through `live` / `evict` /
+ * `release`; a clip has no name in `SFX_MAP`, no recipe and no tier, so every
+ * one of those fields would be a value invented at the call site to satisfy a
+ * signature. A per-id timestamp is the entire rule a button clip needs, and
+ * density downstream is still the compressor's job.
+ */
+const clipLastPlayedAt = new Map<string, number>();
+
+/** Preloaded the moment the graph exists — the clips wired to buttons. */
+const CLIP_PRELOAD: readonly string[] = ["/assets/exo-kill-2.mp3", "/assets/exo-kill-4.mp3"];
+
+/**
+ * Warm the cache for `url` without playing it, so the first press pays for a
+ * `createBufferSource` and nothing else. Safe to call repeatedly: the cache
+ * is the one-fetch guarantee. A no-op before the graph exists, since decoding
+ * needs a context — `ensureGraph` calls it when there is one.
+ */
+export function preloadClip(url: string): void {
+  if (!audioAvailable || !ctx) return;
+  void loadBuffer(ctx, url); // never rejects
+}
+
+/**
+ * Play `url` once, now, as the audible half of a press. `id` is the cooldown
+ * key, not the url, so the same file behind two different buttons still gets
+ * a gate each.
+ *
+ * Gates, in order: no context (happy-dom — nothing is fetched in tests),
+ * muted, and not yet unlocked. That last one drops the clip on the floor
+ * rather than parking it the way `startTrack` does: a bed that starts late is
+ * still a bed, but a button sound that arrives seconds after the button reads
+ * as a different, phantom event. In practice it is unreachable — the gesture
+ * that presses the button is itself an unlock — and it is not gated on
+ * reduced motion, which drops atmosphere and keeps discrete confirmations.
+ *
+ * Fire and forget: never throws, never rejects.
+ */
+export function playClip(id: string, url: string, opts?: { gain?: number }): void {
+  if (!audioAvailable) return;
+  if (!current().on) return;
+  const c = ctx;
+  if (!c || !sfxBus) return;
+
+  const now = clock();
+  const last = clipLastPlayedAt.get(id);
+  if (last !== undefined && now - last < CLIP_COOLDOWN_MS) return;
+  // Stamped before the load, not after it: the cooldown has to cover the
+  // first press's fetch, or a nervous double-click would queue two plays that
+  // both start when the buffer lands.
+  clipLastPlayedAt.set(id, now);
+
+  void (async (): Promise<void> => {
+    try {
+      const buf = await loadBuffer(c, url);
+      // A 404, or a context torn down/rebuilt while the bytes were in flight.
+      if (!buf || ctx !== c || !sfxBus) return;
+
+      const gain = c.createGain();
+      gain.gain.value = CLIP_GAIN * clampGain(opts?.gain);
+      const source = c.createBufferSource();
+      source.buffer = buf;
+      source.connect(gain);
+      gain.connect(sfxBus);
+      source.onended = () => {
+        try {
+          source.disconnect();
+          gain.disconnect();
+        } catch {
+          // Already torn down with the context.
+        }
+      };
+      source.start(c.currentTime);
+    } catch {
+      // A node the browser refused, or bytes that decoded to nothing usable.
+      // A clip fails the way the music does: by not being there.
+    }
+  })();
 }
 
 // ── Palette ───────────────────────────────────────────────────────────────

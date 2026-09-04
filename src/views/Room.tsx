@@ -3,7 +3,7 @@ import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
 import { sectorChips } from "../data/sectors.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
-import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
+import { playClip, sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
 import type { LobbyDef, Player } from "../types.ts";
@@ -113,7 +113,11 @@ export function Room(p: RoomProps) {
             p.ready.me ? null : (
               <button
                 onClick={() => {
-                  sfx("room.ready.me");
+                  // The recorded clip REPLACES `room.ready.me` — the two
+                  // together are one doubled transient. The opponent's ready
+                  // and the both-ready chime stay synth: they are not this
+                  // button.
+                  playClip("exo-4", "/assets/exo-kill-4.mp3");
                   stopTrack("room");
                   p.onReady();
                 }}

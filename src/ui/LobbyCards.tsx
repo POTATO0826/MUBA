@@ -2,7 +2,7 @@ import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, sectorChips } from "../data/sectors.ts";
-import { sfx, useSoundHover } from "../lib/sound/index.ts";
+import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag, wall } from "../theme.ts";
 import type { LobbyDef } from "../types.ts";
@@ -180,7 +180,10 @@ export function LobbyCard({
             ) : (
               <button
                 onClick={() => {
-                  sfx(ready ? "card.start" : "card.accept");
+                  // The recorded clip REPLACES `card.start` / `card.accept`:
+                  // both at once is one doubled transient, which reads as a
+                  // bug rather than as emphasis.
+                  playClip("exo-2", "/assets/exo-kill-2.mp3");
                   (ready ? onStart : onAccept)();
                 }}
                 style={sx(
