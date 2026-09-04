@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Stance } from "../engine/parlay.ts";
+import { REFERENCE_MOVE, type Stance } from "../engine/parlay.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import {
@@ -53,6 +53,22 @@ import { C, MONO } from "../theme.ts";
  * not carry the number, the face says so. A made-up figure beside a real one is
  * worse than a dash, and the dash is also the tell that this card came off the
  * seeded tape rather than the venue.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHAT A `×` MEANS — one glyph, one question
+ * ────────────────────────────────────────────────────────────────────────────
+ * A board deals up to five tickers and only two of them have an options book,
+ * so a live face and a seeded face are always on screen together. `×` on either
+ * of them is `1 / prob`: fair odds that this leg lands. It is the seeded card's
+ * headline (`×6.67`) and it is what the ticker header and the slip print for
+ * every leg, live or not.
+ *
+ * The other multiple a live card knows — `calculatePayout ÷ premium` at the
+ * reference move, which for a cheap far-OTM option runs into the hundreds — is
+ * a different question and never wears the `×`. It appears here as
+ * {@link FaceValues.winAt}, in dollars, on the line under `MAX LOSS`, with the
+ * move it is read at printed beside it. Both figures keep their true magnitude;
+ * only the glyph is exclusive.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,11 +85,41 @@ export interface FaceValues {
   spot: number;
   /** `|delta|` — the chance it lands, and the greek. One quantity. */
   prob: number;
-  /** The payout multiple at the card's reference move. */
+  /**
+   * **Fair odds on `prob`** — `1 / prob`, on both paths. The `×` figure, and
+   * the only quantity on this face that is comparable card-to-card across a
+   * board where some tickers are live and some are seeded.
+   *
+   * It is NOT the payout multiple. See {@link FaceValues.winAt}.
+   */
   mult: number;
   /** What a buyer pays per contract. **This is also the max loss.** `null`
    *  where no live quote backs the card. */
   premium: number | null;
+  /**
+   * What one contract pays, in dollars, if the underlying finishes at the
+   * reference move — `premium × LiveCard.payoutMult`, so the protocol's own
+   * payout arithmetic is what produced it. `null` on a seeded card, where
+   * nothing was bought and there is no premium to turn into anything.
+   *
+   * ## Why this is a field and not `premium × mult`
+   *
+   * It used to be exactly that, and that is what put `×430.75` on a live card
+   * beside `×6.67` on the seeded card in the next ticker's grid — two answers
+   * to two different questions wearing one glyph, the larger of which looked
+   * sixty-five times better and was not. The two quantities are now separate
+   * fields because they are separate quantities: `mult` is how likely, `winAt`
+   * is how much. The face prints the second in dollars, under the max loss it
+   * is measured against and beside the move it is read at, and never divides
+   * one by the other in front of the player.
+   *
+   * `premium !== null` implies `winAt !== null`: both come off the dealt card
+   * or neither does. Optional in the type for the same reason `theta` and `iv`
+   * are — a caller that has nothing to say about it should not have to say
+   * `null` — and a premium with no win figure behind it prints `WIN —` rather
+   * than a fabricated `WIN $0`.
+   */
+  winAt?: number | null;
   /** `θ` per day. Nothing in the feed carries it yet — see the report. */
   theta?: number | null;
   /** IV as a fraction (`0.58`). Not on `OptionQuote` yet — see the report. */
@@ -164,9 +210,24 @@ export function faceText(
       // above it is denominated in and therefore the only comparison worth
       // offering. Without one there is no dollar payout to state, and the
       // multiple is the whole of what the seeded card knows.
-      return v.premium === null
-        ? { value: `×${v.mult.toFixed(2)}`, aside: null }
-        : { value: `WIN ${usd(v.premium * v.mult)}`, aside: `×${v.mult.toFixed(2)}` };
+      //
+      // The aside used to be `×430.75` — the dollar figure divided by the
+      // premium — and that was the one number on this screen a player could
+      // misread catastrophically: the seeded DEGEN card in the next ticker's
+      // grid prints `×6.67`, which is fair odds on a 15% chance, and the two
+      // are not the same kind of thing. So the live card's aside now states
+      // the BASIS instead of a ratio: this is what the premium above becomes
+      // if the underlying finishes the reference move away. Nothing is
+      // clamped — `winAt` carries the payout multiple at full magnitude, in
+      // the unit it is actually denominated in.
+      if (v.premium === null) return { value: `×${v.mult.toFixed(2)}`, aside: null };
+      return {
+        value:
+          v.winAt === null || v.winAt === undefined
+            ? `WIN ${DASH}`
+            : `WIN ${usd(v.winAt)}`,
+        aside: `payout at ±${Math.round(REFERENCE_MOVE * 100)}%`,
+      };
 
     case "strike":
       return { value: `$${price(v.strike)} strike`, aside: null };

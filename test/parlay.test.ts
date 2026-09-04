@@ -23,8 +23,10 @@ import {
   fullLadderSlice,
   impliedProbability,
   legForCard,
+  legFromLiveCard,
   legsForPicks,
   multipleAt,
+  oddsOf,
   slipLabel,
   summarize,
   tierOdds,
@@ -336,7 +338,8 @@ function card(stance: "bull" | "bear", tier: "SAFE" | "EVEN" | "SHARP" | "DEGEN"
     expiryAt: EXPIRY,
     prob: Math.abs(delta),
     premium,
-    mult: 0,
+    odds: oddsOf(Math.abs(delta)),
+    payoutMult: 0,
     mark: null,
     row: row({ strike: strikeAt, delta, ask: premium }),
   };
@@ -580,11 +583,95 @@ describe("multipleAt", () => {
     expect(multipleAt(card("bull", "SHARP", 0.3, 20, 2100), SPOT, Number.NaN, calc)).toBe(0);
   });
 
-  test("cardsForSlice fills `mult` with exactly what multipleAt returns", () => {
+  test("cardsForSlice fills `payoutMult` with exactly what multipleAt returns", () => {
     const r = row({ strike: 2100, delta: 0.3, ask: 20 });
     const dealt = deal([r]).get("sharp-bull")!;
-    expect(dealt.mult).toBeCloseTo(multipleAt(dealt, SPOT, REFERENCE_MOVE, calc), 10);
-    expect(dealt.mult).toBeCloseTo(400 / 20, 8);
+    expect(dealt.payoutMult).toBeCloseTo(multipleAt(dealt, SPOT, REFERENCE_MOVE, calc), 10);
+    expect(dealt.payoutMult).toBeCloseTo(400 / 20, 8);
+  });
+
+  /**
+   * The mixed-basis guard, at the source.
+   *
+   * A dealt card carries two multiples and they answer different questions:
+   * `odds` is `1 / |delta|` — the chance this leg lands — and `payoutMult` is
+   * `calculatePayout ÷ premium` at the reference move. On a cheap far-OTM card
+   * the second is two orders of magnitude larger than the first, which is the
+   * whole reason they must not share the `×` glyph on a screen where a seeded
+   * ticker's `tierOdds` sits in the next grid down.
+   */
+  test("a dealt card carries `odds` and `payoutMult` as two separate numbers", () => {
+    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    // `odds` is the same construction the seeded card uses, over the option's
+    // own delta rather than a band midpoint.
+    expect(dealt.odds).toBeCloseTo(oddsOf(0.3), 10);
+    expect(dealt.odds).toBeCloseTo(1 / 0.3, 10);
+    expect(dealt.odds * dealt.prob).toBeCloseTo(1, 10);
+    // …and it is NOT the payout multiple. ×3.33 against ×20 here; against a
+    // real DEGEN ask it is ×4 against ×430.
+    expect(dealt.payoutMult).toBeCloseTo(20, 8);
+    expect(dealt.odds).not.toBeCloseTo(dealt.payoutMult, 1);
+
+    // The far-OTM case the report caught: a 1-cent DEGEN call still in the
+    // money at +25%. `payoutMult` runs away; `odds` stays on the tier ladder.
+    const degen = card("bull", "DEGEN", 0.08, 0.01, 2400);
+    const pm = multipleAt(degen, SPOT, REFERENCE_MOVE, calc);
+    expect(pm).toBeGreaterThan(1000);
+    expect(degen.odds).toBeCloseTo(1 / 0.08, 10);
+    // `odds` is bounded by the tier ladder itself — DEGEN's band floor is 0.05,
+    // so no DEGEN card can print more than ×20 however cheap the ask is.
+    // `payoutMult` has no such ceiling, and that asymmetry is exactly why one
+    // of them may wear the `×` and the other may not.
+    expect(degen.odds).toBeLessThan(1 / TIER_BANDS.DEGEN[0]!);
+  });
+
+  /**
+   * The leg is the object every other surface reads — the slip, the ticker
+   * header, the result screen, the tape. It carries `odds`, not `payoutMult`.
+   *
+   * This is the pin that moved. `test/app.test.tsx` used to assert
+   * `leg.mult === multipleAt(...)`, which is what put `×430.75` on an ETH leg
+   * beside `×6.67` on an AVAX one. The provenance claim it was protecting —
+   * that no rendered multiplier is a house invention — is intact and is now
+   * checked on the dollar figure instead: see `payoutMult` above and the
+   * `WIN $` face in `test/detail.test.ts`.
+   */
+  test("legFromLiveCard puts the card's odds on the leg, never its payout multiple", () => {
+    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    const seeded = legForCard("ETH", PARLAY_CARDS.find((c) => c.id === "sharp-bull")!);
+    const leg = legFromLiveCard(seeded, dealt, SPOT);
+
+    expect(leg.mult).toBeCloseTo(dealt.odds, 10);
+    expect(leg.mult).not.toBeCloseTo(dealt.payoutMult, 1);
+    // The invariant the seeded leg has always had, now true on both paths — so
+    // one glyph on one screen means one thing.
+    expect(leg.mult * leg.prob).toBeCloseTo(1, 10);
+    // And it is not the seeded number either: the option's delta, not the band.
+    expect(leg.prob).toBeCloseTo(0.3, 10);
+    expect(leg.mult).not.toBeCloseTo(tierOdds("SHARP"), 3);
+  });
+
+  /**
+   * The property the split buys, and the reason it is not merely cosmetic: the
+   * slip's own `×` is `degeneracyScore` = `Π(1 / prob)`, so the leg multiples a
+   * player reads down the slip must multiply into it. They did not while a live
+   * leg carried `multipleAt`.
+   */
+  test("a mixed slip's leg multiples multiply into the slip's own multiple", () => {
+    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    const live = legFromLiveCard(
+      legForCard("ETH", PARLAY_CARDS.find((c) => c.id === "sharp-bull")!),
+      dealt,
+      SPOT,
+    );
+    const seededLegs = [
+      legForCard("NVDA", PARLAY_CARDS.find((c) => c.id === "degen-bull")!),
+      legForCard("AAPL", PARLAY_CARDS.find((c) => c.id === "safe-bear")!),
+    ];
+    const legs = [live, ...seededLegs];
+    const product = legs.reduce((a, l) => a * l.mult, 1);
+    expect(summarize(legs, 100).mult).toBeCloseTo(product, 8);
+    expect(degeneracyScore(legs)).toBeCloseTo(product, 8);
   });
 });
 

@@ -20,13 +20,26 @@ import { fmtPx } from "./tape.ts";
  *  - **The live path** (`cardsForSlice`, `multipleAt`, `basketPayoff`) builds
  *    cards from resting orders. A card exists only if an order backs it; its
  *    strike is one the venue lists, its probability is that option's own delta,
- *    its premium is what a buyer pays, and its multiple comes from the
+ *    its premium is what a buyer pays, and its dollar payout comes from the
  *    protocol's own payout math. When nothing in the book falls in a tier's
  *    band, that card is **not dealt** — see `cardsForSlice` step 6.
  *  - **The seeded path** (`buildLeg`, `legForCard`, `summarize`) still deals a
  *    replayable tape game offline. It reads its probability out of
  *    `TIER_BANDS` and prices it at fair odds, so the two paths cannot drift:
  *    there is exactly one place in the tree that says what `SHARP` means.
+ *
+ * ## `×` is odds. Dollars are dollars. (the two paths share a screen)
+ *
+ * A board deals up to five tickers and only ETH and BTC have a book, so a live
+ * grid and a seeded grid are always on screen together. That makes the *units*
+ * a correctness question rather than a styling one, and there is exactly one
+ * rule: **`×` is `oddsOf(prob)` — fair odds on the chance the leg lands — on
+ * both paths, everywhere.** `tierOdds` is that over a band midpoint; a live
+ * card's `odds` is that over the option's own `|delta|`. What a bought option's
+ * premium turns into at the reference move is a different question with a
+ * different answer, it is kept (`LiveCard.payoutMult`, `multipleAt`), and it
+ * reaches the screen in dollars beside the max loss it is measured against.
+ * See {@link oddsOf} and {@link legFromLiveCard}.
  *
  * ## The determinism seam
  *
@@ -98,15 +111,45 @@ export function tierProb(tier: Tier): number {
 }
 
 /**
+ * **The one meaning of `×` on a parlay surface: fair odds on the chance a leg
+ * lands.** `1 / p`, and nothing else, ever.
+ *
+ * This function exists because the screen had two different quantities wearing
+ * the same glyph. The seeded card printed `×6.67` — fair odds on DEGEN's band
+ * midpoint — and the market-priced card beside it printed `×430.75`, which is
+ * `multipleAt`: what one contract's *premium* returns if the underlying happens
+ * to finish 25% away. Both are true; neither is an answer to the other's
+ * question; and a player reading them side by side concludes the first bet is
+ * sixty-five times worse. See {@link LiveCard.payoutMult} for where that second
+ * number went and why it is denominated in dollars now.
+ *
+ * The parlay's own arithmetic had already settled this and only the leg had not
+ * caught up: {@link degeneracyScore} is `Π(1 / prob)` *specifically* so a slip's
+ * `×` "cannot be inflated by a generous-looking payout table". A leg carrying
+ * `multipleAt` under the same name broke the one property that made the slip
+ * legible — that the leg multiples multiply into the slip multiple.
+ *
+ * `0` on a non-positive probability rather than `Infinity`: a `×∞` on a card is
+ * a render bug wearing a number, and `degeneracyScore` already answers `0` here.
+ */
+export function oddsOf(prob: number): number {
+  return prob > 0 ? 1 / prob : 0;
+}
+
+/**
  * The fair price of a tier: `1 / probability`.
  *
  * No house edge, no invented ladder. If a thing lands 35% of the time then even
  * money on it is ×2.857, and that is the number the seeded card prints. The old
  * table said `SHARP: ×3.6, 25%` — a 44% overround dressed as generosity, on a
  * game where nothing was ever paid.
+ *
+ * {@link oddsOf} over the band midpoint, so the seeded card and the live card
+ * now print the same construction over two different probabilities rather than
+ * two constructions over one glyph.
  */
 export function tierOdds(tier: Tier): number {
-  return 1 / tierProb(tier);
+  return oddsOf(tierProb(tier));
 }
 
 /** Below this implied probability the card goes loud. */
@@ -138,7 +181,10 @@ export interface ParlayLeg extends Leg {
   tier: Tier;
   /** The asset's own target, before the tier scaled it. */
   baseT: number;
-  /** Fair odds on `prob`. Never a table lookup. */
+  /** Fair odds on `prob` — `oddsOf(prob)`, on **both** paths. Never a table
+   *  lookup, never a payout ratio: see {@link oddsOf} and
+   *  {@link legFromLiveCard} for why a live leg does not carry `payoutMult`
+   *  here. `mult * prob === 1` is an invariant of this field. */
   mult: number;
   /** The tier's band midpoint on the seeded path; the option's own |delta|
    *  once `optionize` has re-denominated the leg against a real quote. */
@@ -471,9 +517,33 @@ export interface LiveCard extends ParlayCard {
    *  the max loss**, and A7 requires it on the card face at every detail
    *  level, above the upside figure. */
   premium: number;
-  /** Payout multiple if the option finishes at the reference move.
-   *  Derived on every build, never persisted — see `multipleAt`. */
-  mult: number;
+  /**
+   * **Fair odds on this option's own delta** — `oddsOf(prob)`, the same
+   * construction `tierOdds` is over a band midpoint. This is the card's `×`,
+   * and it is the only figure on it that is comparable with the seeded card in
+   * the next ticker's grid.
+   *
+   * It is also what {@link legFromLiveCard} puts on the leg, which is what
+   * makes `Π(leg.mult)` equal the slip's own `×` ({@link degeneracyScore}).
+   */
+  odds: number;
+  /**
+   * **Payout multiple on the premium, at the reference move** — `multipleAt`.
+   * Not odds, and deliberately no longer called `mult`.
+   *
+   * A far-OTM DEGEN call costs almost nothing and pays a great deal at +25%, so
+   * this is routinely in the hundreds. That is a true fact about a bought
+   * option and it is not clamped, capped or hidden — but it answers "what does
+   * my premium turn into at one particular terminal price", while `odds`
+   * answers "how likely is this leg to land at all", and the two must never
+   * share a glyph. So this number reaches the screen **denominated in dollars**
+   * (`MAX LOSS $6.70` → `WIN $606.64 · payout at ±25%`, `ParlayCardFace`),
+   * where its magnitude is fully visible and its basis is printed beside it,
+   * and never as a bare `×430.75` next to a seeded `×6.67`.
+   *
+   * Derived on every build, never persisted — see {@link multipleAt}.
+   */
+  payoutMult: number;
   /**
    * `markPrice` as a number, or `null`.
    *
@@ -674,6 +744,7 @@ export function cardsForSlice(
     // 6 — the dead slot.
     if (best === null) return null;
 
+    const prob = Math.abs(best.delta);
     const draft: LiveCard = {
       ...card,
       underlying: slice.underlying,
@@ -681,13 +752,17 @@ export function cardsForSlice(
       strikeAt: fromUnits(best.strike, PRICE_DECIMALS),
       expiry: best.row.expiry,
       expiryAt: best.expiry,
-      prob: Math.abs(best.delta),
+      prob,
       premium: best.ask,
-      mult: 0,
+      odds: oddsOf(prob),
+      payoutMult: 0,
       mark: parseNum(best.row.mark),
       row: best.row,
     };
-    return { ...draft, mult: multipleAt(draft, deps.spot, movePct, deps.calculatePayout) };
+    return {
+      ...draft,
+      payoutMult: multipleAt(draft, deps.spot, movePct, deps.calculatePayout),
+    };
   });
 }
 
@@ -699,6 +774,12 @@ export function cardsForSlice(
  * render because both inputs move: the premium moves with the book, and the
  * reference move moves with the mode's window. A stored multiplier goes stale
  * silently, which is the exact failure the old `TIERS` constant had.
+ *
+ * **It is not odds and it is not a `×` on any screen.** It lands on the card as
+ * {@link LiveCard.payoutMult} and reaches the player multiplied back into
+ * dollars (`premium × payoutMult` = `WIN $606.64`), directly under the premium
+ * it is measured against. `oddsOf` is what wears the `×`. See the module
+ * docblock's "`×` is odds" section.
  *
  * ## Units, and the one assumption
  *
@@ -804,13 +885,41 @@ export function slotFor(
  * One seeded leg, re-denominated against the card the book actually dealt.
  *
  * **This is where a market-priced leg gets its numbers, and it is the only
- * place.** Five fields move and five stay. The multiple is the dealt card's
- * `mult` — `multipleAt(card, spot, REFERENCE_MOVE, calculatePayout)`, the
- * protocol's payout arithmetic over the ask a buyer actually pays — so the ×N
- * on the slip, on the card, and on every other surface that reads a leg is one
- * number with one provenance. The probability is the option's own `|delta|`;
- * the strike is one the venue lists; the reference price is the live spot the
- * strike is quoted against.
+ * place.** Five fields move and five stay. The probability is the option's own
+ * `|delta|`; the strike is one the venue lists; the reference price is the live
+ * spot the strike is quoted against.
+ *
+ * ## The multiple, and the one thing about it that changed
+ *
+ * `mult` is the dealt card's {@link LiveCard.odds} — `oddsOf(|delta|)` — and
+ * **not** its {@link LiveCard.payoutMult}. It used to be the latter, and that
+ * was the defect: a leg then carried "what my premium returns at +25%" under
+ * the same name a seeded leg carries "fair odds that this lands", and the two
+ * were rendered side by side, in one glyph, on the ticker header, on the slip
+ * and on the card face. With the options flag on, ETH DEGEN read `×430.75`
+ * beside AVAX DEGEN `×6.67` and nothing on screen said they were answers to
+ * different questions.
+ *
+ * The fix is not a clamp — plan 6 retired a clamped ratio for exactly that
+ * reason, and a `Math.min` here would only have hidden the disagreement. It is
+ * that `×` now means one thing on both paths, and the payout multiple keeps its
+ * full magnitude in the unit it is actually denominated in: dollars, on the
+ * card face, as `WIN $606.64` under `MAX LOSS $6.70`, with `payout at ±25%`
+ * printed beside it. Nothing is capped and nothing is dropped.
+ *
+ * Two properties follow, neither of which held before:
+ *
+ *  - `leg.mult * leg.prob === 1` on **both** paths — the invariant
+ *    `test/parlay.test.ts` already pinned for the seeded leg.
+ *  - `Π(leg.mult)` is the slip's own `×` ({@link degeneracyScore}, times the
+ *    mode's boost). A slip whose legs read `×4.00 ×6.67 ×2.86` and whose ODDS
+ *    read `×76.3` is now arithmetic a player can check.
+ *
+ * `multipleAt` and `calculatePayout` have not left the screen: `WIN $` is
+ * `premium × payoutMult`, so the protocol's payout arithmetic is still the
+ * provenance of a rendered figure (plan 6 §9 item 2). What moved is which
+ * figure carries it — from a bare ratio that had no comparable neighbour to a
+ * dollar amount that sits directly under the max loss it is measured against.
  *
  * `t` is the hinge, and it is the same arithmetic `desk/optionize.thresholdFor`
  * has always done: the strike written as the percentage move `legState` already
@@ -841,7 +950,7 @@ export function legFromLiveCard(leg: ParlayLeg, card: LiveCard, spot: number): P
     // 2dp, matching `buildLeg`'s own `+(...).toFixed(2)`, so a market-derived
     // `t` and a seeded one are the same kind of number.
     t: +(move * 100).toFixed(2),
-    mult: card.mult,
+    mult: card.odds,
     prob: card.prob,
     px: spot,
     strike: card.strikeAt,

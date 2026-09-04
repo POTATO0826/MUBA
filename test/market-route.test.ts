@@ -922,3 +922,78 @@ describe("the seeded source has no book, and says so", () => {
     expect(mockMarketSource.underlyings()).toEqual(["ETH", "BTC"]);
   });
 });
+
+// ─── /api/config: the envelope, and the flags it must carry ──────────────────
+
+const ROOT = join(import.meta.dir, "..");
+const INDEX_SRC = await Bun.file(join(ROOT, "index.ts")).text();
+
+/** The `features: { … }` object literal inside the `/api/config` handler, as
+ *  source text. Read rather than executed: `index.ts` imports
+ *  `src/index.html`, which only Bun's HTML bundler resolves, so the handler
+ *  cannot be imported into a test process. The invariant is structural anyway
+ *  — it is about which keys the literal contains. */
+const FEATURES = (() => {
+  const from = INDEX_SRC.indexOf("features: {", INDEX_SRC.indexOf('"/api/config"'));
+  return from < 0 ? "" : INDEX_SRC.slice(from, INDEX_SRC.indexOf("}", from) + 1);
+})();
+
+/** `market: …` → `market`. */
+const EMITTED = new Set(
+  [...FEATURES.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)\s*:/gm)].map((m) => m[1]!),
+);
+
+/** Every `features?.<key>` any module under `src/` reads. */
+const READ = await (async () => {
+  const keys = new Set<string>();
+  for (const f of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: join(ROOT, "src") })) {
+    const src = await Bun.file(join(ROOT, "src", f)).text();
+    for (const m of src.matchAll(/features\?\.\s*([A-Za-z][A-Za-z0-9]*)/g)) keys.add(m[1]!);
+  }
+  return keys;
+})();
+
+/**
+ * **The one line that hid the product, pinned.**
+ *
+ * `src/state/options.ts` gates the entire market-priced parlay card on
+ * `body.features?.options === true`. `index.ts` emitted `market`, `stake` and
+ * `trade` — and not `options` — so `THETADUEL_OPTIONS=on` read nothing at all,
+ * in any configuration, and all 24 cards on the pick screen fell back to seeded
+ * with `MAX LOSS —` while the home page promised live Thetanuts pricing. A flag
+ * the server never emits is not "off"; it is unreachable, and no test could see
+ * the difference because the flag path was never exercised.
+ *
+ * The third test is the general form, and it is the one that matters: **every
+ * `features.<key>` any client reads must be a key this envelope emits.** Wire a
+ * flag into a hook and forget the server, and it fails by name.
+ */
+describe("/api/config carries every feature flag a client reads", () => {
+  test("the block read is the one the handler serves", () => {
+    expect(FEATURES.startsWith("features: {")).toBe(true);
+    expect(EMITTED.size).toBeGreaterThanOrEqual(4);
+  });
+
+  test("`options` is emitted, and it is opt-in on `=== \"on\"` exactly", () => {
+    expect(EMITTED.has("options")).toBe(true);
+    // The same shape `stake` and `trade` use, and for the same reason: absence
+    // of the flag is absence of the feature. `!== "off"` here would turn every
+    // build's parlay cards live by default, and a dealt card is a claim about a
+    // venue rather than a display preference.
+    expect(FEATURES).toContain('options: Bun.env.THETADUEL_OPTIONS === "on"');
+    expect(FEATURES).toContain('stake: Bun.env.THETADUEL_STAKE === "on"');
+    expect(FEATURES).toContain('trade: Bun.env.THETADUEL_TRADE === "on"');
+    // …and `market` stays the one opt-OUT flag: read-only display data, so the
+    // safe default is on and a dead API degrades to the mock.
+    expect(FEATURES).toContain('market: Bun.env.THETADUEL_MARKET !== "off"');
+  });
+
+  test("no client reads a flag the server does not emit", () => {
+    // The four the app gates on today, named so a fifth appearing without a
+    // server key fails with a readable message rather than a set diff.
+    expect([...READ].sort()).toEqual(["market", "options", "stake", "trade"]);
+    for (const key of READ) {
+      expect({ key, emitted: EMITTED.has(key) }).toEqual({ key, emitted: true });
+    }
+  });
+});

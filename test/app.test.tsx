@@ -17,6 +17,7 @@ import {
   REFERENCE_MOVE,
   buildLeg,
   multipleAt,
+  oddsOf,
   tierOdds,
   tierProb,
   vanillaPayout,
@@ -1898,25 +1899,55 @@ describe("a market-priced leg carries the dealt card's number — at the source"
     expiryAt: EXPIRY,
     prob: 0.3,
     premium: 20,
-    mult: 0,
+    odds: oddsOf(0.3),
+    payoutMult: 0,
     mark: null,
     row: CHAIN[1]!,
   };
 
-  test("`derived.myLegs` carries `multipleAt`, not the retired clamped ratio and not the seeded odds", () => {
+  /**
+   * **This pin moved, deliberately, and here is the whole of it.**
+   *
+   * It used to read `expect(leg.mult).toBeCloseTo(multipleAt(...))`. That was
+   * right about provenance and wrong about units, and the unit error only
+   * became visible the day `/api/config` started emitting `features.options`
+   * and a live grid appeared beside a seeded one: ETH DEGEN printed `×430.75`
+   * next to AVAX DEGEN's `×6.67`, on the ticker header, on the slip and on the
+   * card face. Those are answers to different questions — "what does my premium
+   * turn into at +25%" and "how likely is this to land" — and a player who
+   * compares them draws exactly the wrong conclusion.
+   *
+   * What the old pin was protecting is intact: no rendered multiplier is a
+   * house invention, and `calculatePayout` still reaches the screen. It reaches
+   * it as MONEY — `WIN $400` under `MAX LOSS $20` — which
+   * `test/detail.test.ts` now asserts on the rendered DOM, at full magnitude
+   * and with the reference move printed beside it. Nothing is clamped; plan 6
+   * retired a clamped ratio for this exact reason.
+   *
+   * What the leg carries instead is `oddsOf(|delta|)` — the *same construction*
+   * the seeded leg carries over its band midpoint. Two properties follow, and
+   * neither held before: `mult * prob === 1` on both paths, and the leg
+   * multiples on a mixed slip multiply into the slip's own `×`
+   * (`degeneracyScore`), which is what makes that column addable.
+   */
+  test("`derived.myLegs` carries the card's own odds — not the payout multiple, not the clamped ratio, not the seeded band", () => {
     mountProbe(BOOK);
     const leg = legAfterPicking("sharp-bull");
 
-    const expected = multipleAt(SHARP_CARD, SPOT, REFERENCE_MOVE, vanillaPayout);
-    // Worked by hand too: ETH 2,000 +25% settles at 2,500; a 2,100 call is worth
-    // 400 there; at a premium of 20 that is ×20.
-    expect(expected).toBeCloseTo(20, 8);
-    expect(leg.mult).toBeCloseTo(expected, 10);
+    // The option's own delta at fair odds: 1/0.30 = ×3.33.
+    expect(leg.mult).toBeCloseTo(oddsOf(0.3), 10);
+    expect(leg.mult * leg.prob).toBeCloseTo(1, 10);
 
-    // …and it is neither of the two numbers it used to be. `multiplierFor` reads
-    // 0.25 × 2100/2000 ÷ 20 = 0.013 and clamps up to MULT_MIN — the hand-rolled
-    // ratio plan 6 §9.2 retired, and what `optionize()` put on this leg until
-    // now. `tierOdds("SHARP")` = 1/0.35 = ×2.86 is the seeded fallback.
+    // NOT the payout multiple. That number is real, it is ×20 here, and it is
+    // on the card face in dollars — it is simply not what a `×` means.
+    const payoutMult = multipleAt(SHARP_CARD, SPOT, REFERENCE_MOVE, vanillaPayout);
+    expect(payoutMult).toBeCloseTo(20, 8);
+    expect(leg.mult).not.toBeCloseTo(payoutMult, 1);
+
+    // …and it is neither of the two numbers it was before that. `multiplierFor`
+    // reads 0.25 × 2100/2000 ÷ 20 = 0.013 and clamps up to MULT_MIN — the
+    // hand-rolled ratio plan 6 §9.2 retired. `tierOdds("SHARP")` = 1/0.35 =
+    // ×2.86 is the seeded fallback, and a live leg is not on the band.
     expect(multiplierFor(2100, 20, SPOT)).toBeCloseTo(MULT_MIN, 10);
     expect(leg.mult).not.toBeCloseTo(MULT_MIN, 2);
     expect(leg.mult).not.toBeCloseTo(tierOdds("SHARP"), 2);
@@ -2065,5 +2096,93 @@ describe("the lobby builder's live book grades only what was graded", () => {
     expect(eth.textContent).toContain("THIN");
     expect(eth.textContent).not.toContain("NOT GRADED");
     expect(eth.title).toContain(GRADE_BLURB.THIN);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The lobby board's own grade tag — plan6 §9 item 19's third surface
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The audit's finding, twice over: `<LobbyCard>` had declared a `grades` prop
+// since plan 6 and NO CALLER had ever supplied one, so `GradeTag` could not say
+// DEEP or THIN on the board however good the measurement behind it was. These
+// mount the real `App` at the two routes that render cards and read the chips
+// off the DOM, so a caller that stops passing `grades` fails here rather than
+// in a third audit.
+
+describe("the lobby board wears the grade the gate measured", () => {
+  const asset = (underlying: string, grade: Grade): QualifiedAsset => ({
+    underlying,
+    grade,
+    spot: 2000,
+    orders: 9,
+    greeked: 6,
+    depthUsd: 1_000_000,
+  });
+
+  /** The seeded book, with a measurement bolted on — the shape a live source
+   *  arrives in. Everything else about the app is unchanged. */
+  const gradedSource = (qualified: readonly QualifiedAsset[]): MarketSource => ({
+    ...mockMarketSource,
+    qualified: () => qualified,
+  });
+
+  /** A card's grade chips, in render order, as `"ETH DEEP"` strings. */
+  const gradeChips = (lobby: string) =>
+    Array.from(
+      container.querySelectorAll<HTMLElement>(`[data-lobby="${lobby}"] [data-chip*="-grade-"]`),
+    ).map((n) => n.textContent?.trim() ?? "");
+
+  test("every card on the board names its own book and its grade", () => {
+    mount("/battles", undefined, gradedSource([asset("ETH", "DEEP"), asset("BTC", "THIN")]));
+    // `kz-semis` is a MAJORS lobby: `bookForSectors` leads it with ETH then BTC,
+    // which is the spin's own order and not an alphabetical sort.
+    expect(gradeChips("kz-semis")).toEqual(["ETH DEEP", "BTC THIN"]);
+    // Not one card — every card. A prop supplied at one call site and forgotten
+    // at the other is exactly the defect this closes.
+    for (const card of lobbyCards()) {
+      expect(gradeChips(card.dataset.lobby!)).toEqual(["ETH DEEP", "BTC THIN"]);
+    }
+  });
+
+  test("home renders the same chip as the board — one prop, both call sites", () => {
+    mount("/", undefined, gradedSource([asset("ETH", "DEEP"), asset("BTC", "THIN")]));
+    expect(lobbyCards().length).toBeGreaterThan(0);
+    expect(gradeChips("kz-semis")).toEqual(["ETH DEEP", "BTC THIN"]);
+  });
+
+  test("a name the gate did not qualify says NOT GRADED, never THIN", () => {
+    // ETH qualified, BTC did not. THIN is a verdict — *resting orders and
+    // greeks, no market-maker feed* — and printing it for a name nobody
+    // measured would be a measurement nobody made.
+    mount("/battles", undefined, gradedSource([asset("ETH", "DEEP")]));
+    expect(gradeChips("kz-semis")).toEqual(["ETH DEEP", "BTC NOT GRADED"]);
+    expect(text()).not.toContain("BTC THIN");
+    const btc = container.querySelector<HTMLElement>('[data-chip="kz-semis-grade-BTC"]')!;
+    expect(btc.title).toContain("not graded");
+    expect(btc.title).not.toContain(GRADE_BLURB.THIN);
+  });
+
+  test("with no book read at all the board grades nothing, and says so", () => {
+    // The seeded source measures nothing (`qualified` absent ⇒ `[]`), which is
+    // the honest state offline and while the indexer 404s. Not one THIN on the
+    // whole board.
+    mount("/battles");
+    expect(gradeChips("kz-semis")).toEqual(["ETH NOT GRADED", "BTC NOT GRADED"]);
+    expect(text()).not.toContain("DEEP");
+    expect(text()).not.toContain("THIN");
+  });
+
+  test("a lobby is never shown another lobby's book", () => {
+    // `dr-mixed` is MAJORS + MEME and `no-grind` is MAJORS only; both lead with
+    // the majors, and DOGE — the one name only the mixed lobby can deal — is
+    // never claimed by a card that cannot deal it.
+    mount("/battles", undefined, gradedSource([asset("DOGE", "THIN")]));
+    for (const card of lobbyCards()) {
+      const syms = bookForSectors(LOBBIES.find((l) => l.id === card.dataset.lobby)!.sectors);
+      for (const chip of gradeChips(card.dataset.lobby!)) {
+        expect(syms).toContain(chip.split(" ")[0]!);
+      }
+    }
   });
 });

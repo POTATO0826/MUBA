@@ -65,9 +65,14 @@ import { MODES } from "../src/data/modes.ts";
 import {
   PARLAY_CARDS,
   PRICE_DECIMALS,
+  TIER_BANDS,
   REFERENCE_MOVE,
+  cardsForTicker,
   legForCard,
+  legFromLiveCard,
   multipleAt,
+  oddsOf,
+  slotFor,
   summarize,
   type LiveCard,
 } from "../src/engine/parlay.ts";
@@ -539,20 +544,37 @@ describe("§E5 — ITM/OTM/ATM, and IV is never spelled out", () => {
 // The face — §E3/§E4 as rendered DOM, not as a table
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A market-priced card: every figure the book supplies, supplied. */
+/**
+ * A market-priced card: every figure the book supplies, supplied.
+ *
+ * `mult` and `winAt` are the two quantities the face keeps apart, and this
+ * fixture is honest about both. `mult` is `oddsOf(prob)` — 1/0.70 = ×1.43,
+ * fair odds that a 70-delta call lands — and `winAt` is the contract's own
+ * example payout, `WIN $160`, which is `premium × payoutMult` = 40 × 4. They
+ * are 1.43 and 4 here and hundreds apart on a real DEGEN card; that they are
+ * two fields is the point.
+ */
 const LIVE_FACE: FaceValues = {
   stance: "bull",
   strike: 4200,
   spot: 4000,
   prob: 0.7,
-  mult: 4,
+  mult: oddsOf(0.7),
   premium: 40,
+  winAt: 160,
   theta: -0.4,
   iv: 0.58,
 };
 
-/** A seeded card: a real line and a real chance, and no premium anywhere. */
-const SEEDED_FACE: FaceValues = { ...LIVE_FACE, premium: null, theta: null, iv: null };
+/** A seeded card: a real line and a real chance, and no premium anywhere — so
+ *  no dollar payout either, and the `×` is all it knows. */
+const SEEDED_FACE: FaceValues = {
+  ...LIVE_FACE,
+  premium: null,
+  winAt: null,
+  theta: null,
+  iv: null,
+};
 
 /** The `data-q` of every quantity the face put on screen, top to bottom. */
 const rendered = (): readonly CardQuantity[] =>
@@ -771,8 +793,10 @@ describe("a card with no live premium says so rather than inventing one", () => 
     // draw — an invented one would show no loss region at all.
     expect(container.querySelector("svg")).toBeNull();
     expect(valueOf("payoffCurve")).toBe(`payoff curve ${DASH}`);
-    // The upside is all the seeded card knows, and it is a multiple.
-    expect(valueOf("payout")).toBe("×4.00");
+    // The upside is all the seeded card knows, and it is a multiple — fair
+    // odds on the chance above it, 1/0.70, and never a payout ratio.
+    expect(valueOf("payout")).toBe(`×${oddsOf(0.7).toFixed(2)}`);
+    expect(valueOf("payout")).toBe("×1.43");
     // The line and the chance are real on both paths, so neither is dashed.
     expect(valueOf("strike")).toBe("$4,200 strike");
     expect(valueOf("delta")).toBe("Δ 0.70");
@@ -917,9 +941,23 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     chain: { ETH: CHAIN },
   };
 
-  function pickScreen(book?: OptionBook) {
+  /**
+   * `pick` mirrors `src/state/match.ts` exactly: deal the ticker off the frozen
+   * book, then derive the leg from the card it dealt. That is what makes the
+   * header and the slip below assert the numbers the app really renders rather
+   * than numbers this file computed a second way.
+   */
+  function pickScreen(book?: OptionBook, pickId?: string) {
     const arena = ["ETH"] as const;
-    const legs = arena.map((s) => legForCard(s, PARLAY_CARDS[0]!));
+    const picked = pickId ? PARLAY_CARDS.find((c) => c.id === pickId)! : null;
+    const dealt = book
+      ? cardsForTicker("ETH", book.chain.ETH ?? [], book.spot.ETH ?? 0, vanillaPayout)
+      : null;
+    const legs = arena.map((sym) => {
+      const seeded = legForCard(sym, picked ?? PARLAY_CARDS[0]!);
+      const card = picked ? slotFor(dealt, picked.tier, picked.stance) : null;
+      return card ? legFromLiveCard(seeded, card, book?.spot[sym] ?? 0) : seeded;
+    });
     mount(
       createElement(ParlayPick, {
         lobbyName: "T",
@@ -928,8 +966,8 @@ describe("the live card path — the multiplier's provenance and the dead slot",
         mode: MODES.NORMAL,
         opponent: OPPONENT,
         arena,
-        picks: {},
-        allPicked: false,
+        picks: picked ? { ETH: picked } : {},
+        allPicked: picked !== null,
         secondsLeft: null,
         myLegs: legs,
         summary: summarize(legs, 100),
@@ -942,8 +980,8 @@ describe("the live card path — the multiplier's provenance and the dead slot",
   }
 
   /** The whole payout row. With a premium on the face it reads `WIN $400` with
-   *  the multiple as its aside; with none it is the multiple alone — so the row
-   *  is the thing to read, and the multiple is asserted inside it. */
+   *  the reference move as its aside; with none it is the multiple alone — so
+   *  the row is the thing to read, and the figure is asserted inside it. */
   const payoutOf = (id: string) =>
     container.querySelector(`[data-testid="payout-ETH:${id}"]`)?.textContent ?? "";
 
@@ -951,32 +989,38 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     container.querySelector<HTMLElement>(`[data-parlay="ETH:${id}"]`) ??
     container.querySelector<HTMLElement>(`[data-parlay-dead="ETH:${id}"]`);
 
-  test("a dealt card's payout is exactly `multipleAt` over the live ask — not the retired ratio", () => {
+  /** The engine's own answer for the fixture's SHARP BULLISH card, computed
+   *  here from the same inputs the screen was handed. Equality with THIS is
+   *  the provenance claim; a literal would only pin today's arithmetic. */
+  const SHARP: LiveCard = {
+    ...PARLAY_CARDS.find((c) => c.id === "sharp-bull")!,
+    underlying: "ETH",
+    strike: "2,100",
+    strikeAt: 2100,
+    expiry: "12 SEP",
+    expiryAt: EXPIRY,
+    prob: 0.3,
+    premium: 20,
+    odds: oddsOf(0.3),
+    payoutMult: 0,
+    mark: null,
+    row: CHAIN[1]!,
+  };
+
+  test("a dealt card's payout is exactly `multipleAt` over the live ask — in dollars, not the retired ratio", () => {
     pickScreen(BOOK);
 
-    // The engine's own answer, computed here from the same inputs the screen
-    // was handed. Equality with THIS is the provenance claim; a literal would
-    // only pin today's arithmetic.
-    const card: LiveCard = {
-      ...PARLAY_CARDS.find((c) => c.id === "sharp-bull")!,
-      underlying: "ETH",
-      strike: "2,100",
-      strikeAt: 2100,
-      expiry: "12 SEP",
-      expiryAt: EXPIRY,
-      prob: 0.3,
-      premium: 20,
-      mult: 0,
-      mark: null,
-      row: CHAIN[1]!,
-    };
-    const expected = multipleAt(card, SPOT, REFERENCE_MOVE, vanillaPayout);
+    const expected = multipleAt(SHARP, SPOT, REFERENCE_MOVE, vanillaPayout);
     // Worked by hand as well: ETH 2,000 +25% settles at 2,500; a 2,100 call is
     // worth 400 there; at a 20 premium that is ×20.
     expect(expected).toBeCloseTo(20, 8);
-    expect(payoutOf("sharp-bull")).toContain(`×${expected.toFixed(2)}`);
-    // The same number in dollars, beside it: 20 of premium at ×20.
+    // `calculatePayout` still reaches the screen — plan 6 §9 item 2 — and it
+    // reaches it as MONEY: 20 of premium at ×20 is $400. The multiple's full
+    // magnitude is in that figure; nothing is clamped and nothing is dropped.
+    expect(payoutOf("sharp-bull")).toContain(`$${(20 * expected).toFixed(0)}`);
     expect(payoutOf("sharp-bull")).toContain("$400");
+    // The basis, beside it, rather than a ratio — see the mixed-basis suite.
+    expect(payoutOf("sharp-bull")).toContain("payout at ±25%");
 
     // …and it is NOT what the screen printed before. `desk/optionize`'s
     // `multiplierFor` reads 0.25 × 2100/2000 ÷ 20 = 0.013, clamped up to its
@@ -988,6 +1032,55 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     // The max loss beside it is the ask itself, which is what a bought option
     // can cost you and not a cent more.
     expect(text("max-loss-ETH:sharp-bull")).toContain("20");
+    unmount();
+  });
+
+  /**
+   * The mixed-basis guard, on the rendered DOM.
+   *
+   * A board deals ETH beside tickers with no options book, so a live grid and a
+   * seeded grid are on screen together — always. The seeded card's headline is
+   * `×tierOdds`, fair odds on a band midpoint. If a live card printed
+   * `×payoutMult` — `calculatePayout ÷ premium`, which on a cheap far-OTM call
+   * runs into the hundreds — a player would read the two as one quantity and
+   * conclude the live bet was a hundred times better. It is not; it is an
+   * answer to a different question.
+   *
+   * So: **no `×` on a live face at all**, and the payout multiple appears in
+   * dollars with its basis printed beside it. Not clamped — plan 6 retired a
+   * clamped ratio for exactly this reason and a `Math.min` here would be the
+   * same mistake wearing new clothes.
+   */
+  test("a live card prints no bare `×` — the multiple is money, and the odds are the chance", () => {
+    pickScreen(BOOK);
+
+    // The live payout row is a dollar figure and a basis. No `×` anywhere in it.
+    const live = payoutOf("sharp-bull");
+    expect(live).toContain("$400");
+    expect(live).not.toContain("×");
+    // The seeded control, at the same detail level, in the grid below: `×` is
+    // still the seeded card's headline, and it still means fair odds.
+    unmount();
+    pickScreen();
+    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    unmount();
+  });
+
+  test("the `×` a live card DOES put on screen is odds, on the same basis as the seeded card", () => {
+    pickScreen(BOOK, "sharp-bull");
+    // The ticker header prints the picked card's multiple, directly above a
+    // grid that may be live while the next ticker's is seeded. It is
+    // `oddsOf(|delta|)` = 1/0.30 = ×3.33 — NOT `payoutMult` (×20), and not the
+    // seeded band midpoint (×2.86).
+    const header = container.querySelector('[data-leg-picker="ETH"]')?.textContent ?? "";
+    expect(header).toContain(`×${oddsOf(0.3).toFixed(2)}`);
+    expect(header).toContain("×3.33");
+    expect(header).not.toContain("×20.00");
+    expect(header).not.toContain("×2.86");
+    // And the slip's leg row, which is the column a player adds up.
+    const slipLeg = container.querySelector('[data-leg="ETH"]')?.textContent ?? "";
+    expect(slipLeg).toContain("×3.3");
+    expect(slipLeg).not.toContain("×20");
     unmount();
   });
 
@@ -1061,6 +1154,145 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     expect(container.querySelectorAll("[data-parlay-dead]")).toHaveLength(0);
     expect(payoutOf("sharp-bull")).toBe("×2.86");
     expect(text("book-state-ETH")).toBe("SEEDED");
+    unmount();
+  });
+
+  // ── the flag off, and the seeded ticker beside a live one ─────────────────
+
+  /**
+   * Two tickers, one of which the book prices and one of which it never will.
+   * That is the real board — the reel deals up to five names and only ETH and
+   * BTC have an options book — and it is the configuration the mixed-basis
+   * question is actually about.
+   */
+  function board(book?: OptionBook) {
+    const arena = ["ETH", "AAPL"] as const;
+    const legs = arena.map((sym) => legForCard(sym, PARLAY_CARDS[0]!));
+    mount(
+      createElement(ParlayPick, {
+        lobbyName: "T",
+        source: mockMarketSource,
+        book,
+        mode: MODES.NORMAL,
+        opponent: OPPONENT,
+        arena,
+        picks: {},
+        allPicked: false,
+        secondsLeft: null,
+        myLegs: legs,
+        summary: summarize(legs, 100),
+        stakePoints: 100,
+        prizeLabel: "1,000",
+        onPick: () => {},
+        onLock: () => {},
+      }),
+    );
+  }
+
+  /** Every card face in one ticker's grid, as markup. */
+  const grid = (sym: string) =>
+    [...container.querySelectorAll<HTMLElement>(`[data-parlay^="${sym}:"]`)].map(
+      (el) => `${el.getAttribute("data-parlay")}
+${el.innerHTML}`,
+    );
+
+  /**
+   * **The rollback story, held as a string comparison.**
+   *
+   * `THETADUEL_OPTIONS` unset means `useOptionBook` answers `undefined`, `book`
+   * is absent, and this screen must be the screen that shipped before any of
+   * the live path existed — not "close to it". Byte-for-byte over the rendered
+   * card faces is the only version of that claim worth asserting, because every
+   * near-miss (a stray chip, a reordered row, a re-rounded number) is invisible
+   * to a substring check.
+   */
+  test("with no book the grid is the seeded grid, byte for byte, and carries nothing live", () => {
+    board();
+    const seeded = grid("AAPL");
+    const eth = grid("ETH");
+    expect(seeded).toHaveLength(PARLAY_CARDS.length);
+    const html = container.innerHTML;
+    // None of the live path's own marks: no chip, no note, no provenance line,
+    // no dollar payout, no reference-move aside, no dead slot.
+    for (const mark of ["WIN $", "payout at ±", "book-state-", "options-chip", "options-note", "data-parlay-dead", "NOT DEALT"]) {
+      expect({ mark, present: html.includes(mark) }).toEqual({ mark, present: false });
+    }
+    // And the payout row on every card is a bare multiple, which is what the
+    // seeded card has always printed.
+    for (const el of container.querySelectorAll<HTMLElement>('[data-q="payout"]')) {
+      expect(el.textContent).toMatch(/^×\d+\.\d\d$/);
+    }
+    unmount();
+
+    // The same board with the book present: ETH goes live, AAPL does not, and
+    // AAPL's eight faces are the identical markup they were with no book at
+    // all. Turning the flag on perturbs a seeded ticker in no way whatever.
+    board(BOOK);
+    expect(grid("AAPL")).toEqual(seeded);
+    expect(grid("ETH")).not.toEqual(eth);
+    unmount();
+  });
+
+  /**
+   * The headline of the report, as an assertion: `×430.75` beside `×6.67`.
+   *
+   * With the flag on, the two grids are on screen together. Every `×` a player
+   * can see must be fair odds on a chance — the seeded card's over its band
+   * midpoint, the live card's over the option's own delta — and the payout
+   * multiple must be somewhere else entirely, in dollars.
+   */
+  test("across a mixed board every `×` on screen is odds, and no two of them are on different bases", () => {
+    board(BOOK);
+    const html = container.innerHTML;
+    // The one live number that could have been a `×`: ×20 here (a $400 payout
+    // over a $20 ask), ×430 on a real DEGEN card. It is money, and it says so.
+    expect(html).toContain("WIN $400");
+    expect(html).toContain("payout at ±25%");
+    expect(html).not.toContain("×20.00");
+
+    // Every `×N` in the rendered DOM, from every surface at once — card faces,
+    // ticker headers, slip rows, the combined ODDS stat.
+    // Every per-LEG `×` on screen, from all three surfaces that print one: the
+    // card faces, the ticker headers and the slip rows. The combined ODDS stat
+    // is deliberately excluded — it is a product of leg odds and legitimately
+    // exceeds any single leg's ceiling.
+    const legMultiples = () =>
+      [
+        ...container.querySelectorAll<HTMLElement>('[data-q="payout"]'),
+        ...container.querySelectorAll<HTMLElement>("[data-leg-picker] > div:first-child"),
+        ...container.querySelectorAll<HTMLElement>("[data-leg]"),
+      ]
+        .flatMap((el) => [...(el.textContent ?? "").matchAll(/×(\d+(?:\.\d+)?)/g)])
+        .map((m) => Number(m[1]!));
+
+    const shown = legMultiples();
+    // AAPL's eight seeded faces at minimum; more as picks land on the header
+    // and the slip.
+    expect(shown.length).toBeGreaterThanOrEqual(PARLAY_CARDS.length);
+    // Fair odds on a delta are bounded by the tier ladder itself: every band
+    // sits inside [0.05, 0.85), so no `×` anywhere on this screen can be below
+    // ×1.18 or above ×20 — on either path. A payout multiple has no such
+    // ceiling (×430 on the report's live DEGEN card), which is precisely why
+    // the two may not share the glyph. This loop is the guard: one number out
+    // of that range means a payout multiple has leaked back into a `×`.
+    const CEIL = 1 / TIER_BANDS.DEGEN[0]!;
+    const FLOOR = 1 / TIER_BANDS.SAFE[1]!;
+    for (const n of shown) {
+      expect({ n, inRange: n >= FLOOR && n <= CEIL }).toEqual({ n, inRange: true });
+    }
+    unmount();
+
+    // …and the same sweep with a live card actually picked, so the ticker
+    // header and the slip row are in the sample too.
+    pickScreen(BOOK, "sharp-bull");
+    const picked = legMultiples();
+    // The header and the slip both print the live leg now: ×3.33, the option's
+    // own delta at fair odds — not ×20, its payout multiple.
+    expect(picked).toContain(3.33);
+    expect(picked).not.toContain(20);
+    for (const n of picked) {
+      expect({ n, inRange: n >= FLOOR && n <= CEIL }).toEqual({ n, inRange: true });
+    }
     unmount();
   });
 });

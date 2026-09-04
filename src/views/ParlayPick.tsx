@@ -461,10 +461,17 @@ export function ParlayPick(p: ParlayPickProps) {
                   )}
                   <div style={sx("flex:1")} />
                   <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${picked ? TIER_COLOR[picked.tier] : C.faint}`)}>
+                    {/* The `×` here sits directly above a grid that may be
+                        live while the ticker below it is seeded, so it is
+                        `oddsOf(prob)` on both paths and nothing else — the
+                        dealt card's own delta where there is one, the tier's
+                        band midpoint where there is not. Printing the card's
+                        `payoutMult` here is what made ETH read `×430.75` over
+                        AVAX's `×6.67`. */}
                     {picked
                       ? `${picked.label} · ×${
                           pickedCard
-                            ? pickedCard.mult.toFixed(2)
+                            ? pickedCard.odds.toFixed(2)
                             : legForCard(sym, picked).mult.toFixed(2)
                         }`
                       : "pick one"}
@@ -626,10 +633,16 @@ export function ParlayPick(p: ParlayPickProps) {
                  * retired — and the card was the only number on screen that
                  * could be defended. That override is gone: the match now
                  * derives every leg from the card the book dealt
-                 * (`legFromLiveCard`), so `l.mult` IS `multipleAt(card, spot,
-                 * REFERENCE_MOVE, vanillaPayout)` on a market-priced leg and
-                 * `tierOdds(tier)` on a seeded one. Reading it twice could only
-                 * ever hide a disagreement rather than prevent one.
+                 * (`legFromLiveCard`), so reading it twice could only ever hide
+                 * a disagreement rather than prevent one.
+                 *
+                 * `l.mult` is `oddsOf(l.prob)` on **both** paths — the option's
+                 * own delta on a market-priced leg, the tier's band midpoint on
+                 * a seeded one. That is what makes this column addable: the
+                 * three legs printed here multiply to the ODDS figure directly
+                 * below them (`degeneracyScore` × the mode's boost), which was
+                 * false while a live leg carried `multipleAt`. The money the
+                 * dealt option pays is on the card face, in dollars.
                  */
                 return (
                   <div
@@ -749,13 +762,27 @@ export function ParlayPick(p: ParlayPickProps) {
  * did not, every figure is the seeded leg's and `premium` is `null`, which is
  * what makes the face print `MAX LOSS —` instead of a number nobody quoted.
  *
- * **`mult` is the item this whole change exists for.** On a dealt card it is
- * `LiveCard.mult`, which `cardsForSlice` computed as `multipleAt(card, spot,
- * REFERENCE_MOVE, calculatePayout)` — the payout at the reference move over the
- * ask a buyer actually pays. Nothing about it is a table, a clamp or a
- * midpoint. On a seeded card it is `tierOdds(tier)` = `1 / band midpoint`,
- * which is the fair price of the seeded game and the only defensible number
- * where there is no book to read.
+ * **`mult` and `winAt` are two quantities, and keeping them apart is the point.**
+ *
+ * `mult` is the `×`, and it means one thing on both paths: fair odds that this
+ * leg lands, `oddsOf(prob)`. On a dealt card that is over the option's own
+ * `|delta|` (`LiveCard.odds`); on a seeded card it is over the tier's band
+ * midpoint (`tierOdds`). Nothing about either is a table, a clamp or a house
+ * number, and — crucially — they are the *same construction*, so a player
+ * scanning a board where ETH is live and AVAX is not is comparing like with
+ * like.
+ *
+ * `winAt` is the money: `premium × LiveCard.payoutMult`, where `payoutMult` is
+ * `multipleAt(card, spot, REFERENCE_MOVE, calculatePayout)` — the protocol's
+ * payout arithmetic over the ask a buyer actually pays. `null` on a seeded
+ * card, because nothing was bought.
+ *
+ * These were one field until the options flag was first switched on and the two
+ * grids appeared together. A dealt DEGEN call is cheap and pays enormously at
+ * +25%, so `payoutMult` under the `×` glyph printed `×430.75` on ETH beside
+ * `×6.67` on AVAX — a sixty-five-fold difference that meant nothing, because
+ * the two numbers answer different questions. Splitting the field is the fix;
+ * capping the larger one would have been the same mistake in new clothes.
  *
  * `iv` is decoded off the dealt row's own percent string, so the ÷100 exactly
  * undoes the server's ×100 and recovers the greek's original value rather than
@@ -783,8 +810,9 @@ function faceValues(
     strike: card ? card.strikeAt : leg.strike,
     spot: card ? spot : leg.px,
     prob: card ? card.prob : leg.prob,
-    mult: card ? card.mult : leg.mult,
+    mult: card ? card.odds : leg.mult,
     premium: card ? card.premium : null,
+    winAt: card ? card.premium * card.payoutMult : null,
     theta: null,
     iv: card ? ivOf(card.row) : null,
   };

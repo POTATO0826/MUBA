@@ -229,9 +229,23 @@ const server = Bun.serve({
      *   - `market` is OPT-OUT (`THETADUEL_MARKET=off` is the kill switch): live
      *     market data is read-only and display-only, so the safe default is on
      *     and a dead API degrades to the mock rather than to a broken page.
+     *   - `options` is OPT-IN (`=on` exactly). It moves no money — it decides
+     *     whether a match's parlay cards are dealt off the live Thetanuts book
+     *     (`src/state/options.ts`) instead of the seeded tape. It is opt-in
+     *     rather than opt-out because a dealt card is a *claim about a venue*:
+     *     with the flag off the screen is the offline game it has always been,
+     *     and nothing on it says otherwise. Absent means absent —
+     *     `useOptionBook` requires `=== true` and fails closed on anything
+     *     else, so this key must be emitted for the flag to exist at all.
      *   - `stake` and `trade` are OPT-IN (`=on` exactly): both move real money
      *     on Base mainnet. Anything that can spend USDC is off until an
      *     operator says otherwise, in this process, on purpose.
+     *
+     * **Every key a client reads must appear here.** A flag the server never
+     * emits is not "off", it is unreachable: `THETADUEL_OPTIONS=on` read
+     * nothing at all until this envelope carried `options`, so the
+     * market-priced parlay card could not be turned on in any configuration.
+     * `test/market-route.test.ts` pins the two sets equal.
      *
      * `no-store`, like the alias: flipping a kill switch must take effect on
      * the next reload, not after a cache expires.
@@ -245,6 +259,7 @@ const server = Bun.serve({
           escrow: Bun.env.THETADUEL_ESCROW ?? "",
           features: {
             market: Bun.env.THETADUEL_MARKET !== "off",
+            options: Bun.env.THETADUEL_OPTIONS === "on",
             stake: Bun.env.THETADUEL_STAKE === "on",
             trade: Bun.env.THETADUEL_TRADE === "on",
           },
