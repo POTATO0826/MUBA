@@ -37,14 +37,24 @@
   README's "Thetanuts — what is actually live" table is current.
 - IN FLIGHT at handoff time (two Opus builders; if they died mid-work, see
   the mid-flight section at the bottom — their briefs are summarized here):
-  1) WALLET BRAND COLOURS — src/ui/WalletPicker.tsx + src/styles.css ONLY.
-     The hover sticker (shipped, then fixed twice) must additionally tint
-     the hovered row in THAT wallet's brand colour at the Daniluk
-     reference's density (~10% wash + the INSTALLED chip going solid
-     brand): rdns-keyed map for majors (Phantom violet, MetaMask orange)
-     + canvas dominant-colour fallback for unknown wallets, mock = neutral,
-     resting state unchanged. Owner has already rejected: lime accents on
-     hover, sticker hidden under the × button, sticker clipped by the row.
+  1) WALLET HOVER, ROUND 4 (CAT MASCOT) — src/ui/WalletPicker.tsx +
+     src/styles.css + optionally new src/components/CatMascot.tsx ONLY.
+     Already SHIPPED (6368c9d): sticker launch + brand colours (rdns map
+     for 6 majors, canvas dominant-colour fallback, all failure→neutral).
+     IN FLIGHT: the sticker's face becomes the owner's CAT mascot instead
+     of the wallet icon — asset at repo root "Cat Icon.zip" (SVG inside:
+     cream #f7f7f4 head paths + #050608 features; clean the metadata bloat,
+     inline as JSX, tint cream→wallet brand); tile more pronounced (lighter
+     surface, real shadow, bigger if the 28-check geometry harness in the
+     builder's history allows — never under the ×, never clipped); the
+     hovered ROW reads clearly brand-coloured (~18-25% mix, the reference's
+     black→green CTA move — owner explicitly upgraded this from the subtle
+     10% wash); optional one-time wink after launch. Owner steers to date:
+     NOT an exact copy of the Daniluk reference — priorities are cat
+     pop-up + wallet colour driving cat AND buttons, animated; lime
+     accents rejected; sticker-under-× rejected; sticker-covering-chip
+     ACCEPTED (the row carries the colour). Reference gifs:
+     chrome-capture-2026-09-04.gif + " (1).gif" at repo root.
   2) CHROME-CANDLES REWORK — src/components/ChromeCandles.tsx +
      src/ui/LobbyCards.tsx ONLY (styles.css belongs to builder 1). v1
      (committed) was rejected by the owner: capsules too huge, sheens are

@@ -158,6 +158,11 @@ expired and pressed are byte for byte the same transition.
 - **No re-roll, nothing to press.** The system spins once, for both players,
   holds on the locked board for a beat, and the case study opens on its own.
   `Skip ↦` only jumps the animation to its landing.
+- **Live spot annotates, never replaces.** Where Thetanuts publishes a price
+  for a dealt name, the reel tile and the pointer readout add a green
+  `· live` line beside the seeded print under the `LIVE SPOT · SEEDED TAPE`
+  chip (`src/data/spot.ts`). The tape still settles on the seeded numbers —
+  the annotation is honesty, not input.
 
 ## The case study
 
@@ -188,6 +193,13 @@ synchronously in the state initialiser, so the first paint already carries a
 full terminal — no spinner, no empty pane — and the live source only ever swaps
 in over the top. Offline, rate-limited, or `THETADUEL_NEWS=off`, the seeded feed
 simply stays up and the header chip keeps reading SEEDED instead of LIVE.
+
+The wire filters by ticker: click a case card or any row's sym chip and only
+that asset's stories remain (a `FILTER · SOL ×` chip appears in the header;
+clicking the active handle again — or the × — restores the full wire). One
+piece of state in `Study.tsx` drives all three handles, the filtering is
+display-only, and the arrival tick still keys on the real feed, so narrowing
+the view never sounds like news arriving.
 
 ## The parlay cards
 
@@ -230,13 +242,24 @@ Copy-trade unlocks at SHARK. Followers copy the slip and the trader takes
 `COPY_FEE` — 3.5%, one literal shared by the Result panel and the ladder's copy
 column, so the two can never print different percentages.
 
-`/ranks` is the ladder. Row A picks the metric — COPY HEAT, SECTOR × MODE, WIN
-RATE, EARNINGS — and under SECTOR × MODE a second row of sector and mode chips
-picks the pool: OR inside a group, AND across them, an empty group meaning all.
-Nothing on the page is authored. Every figure is a reduction over the same
-roster (`src/data/leaderboard.ts`), and each persona's numbers all read from one
-seeded skill scalar, so a WHALE with a 41% win rate cannot exist. Your row sorts
-into the table under the same rule as everyone else's.
+`/ranks` is the ladder. Row A picks the metric — COPY HEAT, GAIN 12M, SECTOR ×
+MODE, WIN RATE, EARNINGS — and under SECTOR × MODE a second row of sector and
+mode chips picks the pool: OR inside a group, AND across them, an empty group
+meaning all. Nothing on the page is authored. Every figure is a reduction over
+the same roster (`src/data/leaderboard.ts`), and each persona's numbers all
+read from one seeded skill scalar, so a WHALE with a 41% win rate cannot exist.
+Your row sorts into the table under the same rule as everyone else's.
+
+The copy-trade surface speaks the vocabulary of a copy-trading app: a GAIN 12M
+headline, a RISK 1–10 chip, 30-day copier deltas that agree with the sparkline
+by construction, copy capital, profitable months, and a COPY button that says
+out loud it moves nothing. Its dollars are the fiction's own currency, derived
+fresh from the same pinned persona fields — no PTS→$ rate exists anywhere, and
+XP stays XP on every rank line. Every player renders as a `PlayerMark`
+(`src/components/PlayerMark.tsx`): a 5×5 mirrored pixel glyph hashed from the
+name, so each trader carries a unique deterministic emblem instead of initials
+on a colour chip; the Room's seat cards read the same roster into a dossier —
+rank, career P/L, record, form, copiers — beside each player's mark.
 
 ## Sound
 
@@ -258,12 +281,14 @@ compressor across the master bus is the backstop: density can never become
 loudness. The header carries the mute toggle, and `prefers-reduced-motion`
 defaults it off.
 
-Three optional mp3s hook in: the ready room's looping track, and two one-shots
-that stand in for the synth events on the board's battle button and on *Ready
-up*. Drop them into `src/assets/` (its README names them) and they are served
-from an allowlist; leave them out and the server answers 404, which the engine
-already treats as silence. They are gitignored, so a licensed track never leaves
-the machine that owns the licence.
+Optional mp3s hook in — the ready room's looping track, the parlay pick
+screen's bed (the hero-pick moment; `src/assets/parlay-pick.mp3`), the four
+EX.O clips, and the case-open tick and landing slices the reel plays (the
+landing is the recording alone; the reveal arpeggio was cut so one settle is
+one transient). Drop them into `src/assets/` (its README names them) and they
+are served from an allowlist; leave them out and the server answers 404, which
+the engine already treats as silence. They are gitignored, so a licensed track
+never leaves the machine that owns the licence.
 
 ## What is behind a hook
 
