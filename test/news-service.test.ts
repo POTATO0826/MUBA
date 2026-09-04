@@ -891,3 +891,146 @@ describe("createNewsService — the kill switch", () => {
     expect(env.ok).toBe(true);
   });
 });
+
+/**
+ * Midnight — the case the wire has always got right and never been able to say.
+ *
+ * The feed is newest-first and a `when:7d` query routinely spans a week, but a
+ * row prints `hh:mm:ss` with no date. Cross a day boundary and the terminal
+ * shows `00:37:58` sitting directly above `23:07:06`: a *correct* descent that
+ * reads as a scrambled one, because a time-only stamp cannot say "yesterday".
+ * The reported bug was this, and it was never a sort bug — so what these tests
+ * pin is (a) the order really is right across the boundary, and (b) `day` says
+ * which session each row belongs to, formatted in New York where `time` is.
+ *
+ * The fixture is built so the two facts cannot be confused: every item below is
+ * on 2025-09-01 in UTC, and they straddle ET midnight. A `day` read off UTC
+ * would file all of them under one session and prove nothing.
+ */
+describe("createNewsService — the wire crosses midnight", () => {
+  /** A Google News item with an explicit pubDate — the fixture generators above
+   *  all pin the same hour, which is exactly what a midnight test cannot use. */
+  const atItem = (headline: string, guid: string, pubDate: string) =>
+    `<item><title>${headline} - Reuters</title>` +
+    `<link>https://news.google.com/rss/articles/${guid}?oc=5</link>` +
+    `<guid isPermaLink="false">${guid}</guid>` +
+    `<pubDate>${pubDate}</pubDate>` +
+    `<description>Desks reading Nvidia risk into the close said the tape had not yet ` +
+    `given back the session's move, with front-expiry volatility still offered.</description>` +
+    `<source url="https://www.example.com">Reuters</source></item>`;
+
+  /**
+   * Five NVDA rows straddling ET midnight, newest first in real time.
+   *
+   * UTC             ET                       printed
+   * 09-01 04:47:31  Mon 09-01 00:47:31 EDT   00:47:31
+   * 09-01 04:37:58  Mon 09-01 00:37:58 EDT   00:37:58
+   * 09-01 03:07:06  Sun 08-31 23:07:06 EDT   23:07:06   ← the apparent jump
+   * 09-01 01:02:19  Sun 08-31 21:02:19 EDT   21:02:19
+   * 08-31 22:02:19  Sun 08-31 18:02:19 EDT   18:02:19
+   *
+   * Seconds are non-zero throughout on purpose: `stampOf` spreads on-the-minute
+   * publishers by a hash-derived second, which would make the printed clock
+   * unpredictable and this table a lie.
+   */
+  const MIDNIGHT_DOC = doc(
+    atItem("Nvidia Holds Its Gain as the Overnight Session Opens", "mn-1", "Mon, 01 Sep 2025 04:47:31 GMT"),
+    atItem("Nvidia Draws Fresh Bids in Thin Overnight Trade", "mn-2", "Mon, 01 Sep 2025 04:37:58 GMT"),
+    atItem("Nvidia Closes Out the Session With Volatility Offered", "mn-3", "Mon, 01 Sep 2025 03:07:06 GMT"),
+    atItem("Nvidia Options Volume Runs Ahead of the Twenty-Day", "mn-4", "Mon, 01 Sep 2025 01:02:19 GMT"),
+    atItem("Nvidia Guidance Still Anchoring the Semis Complex", "mn-5", "Sun, 31 Aug 2025 22:02:19 GMT"),
+  );
+
+  /** NVDA's Google News feed serves the straddling doc; Yahoo serves nothing,
+   *  so the five rows above are the whole wire and the table holds exactly. */
+  const midnightFetch = () =>
+    makeFetch((url) => (url.includes("news.google.com") ? { doc: MIDNIGHT_DOC } : { doc: doc() }));
+
+  test("the order is right across the boundary — the clock is what looks wrong", async () => {
+    const svc = createNewsService({ fetch: midnightFetch().fetch });
+    const env = ok(await ask(svc, q("mid:1", "NVDA")));
+
+    expect(env.items).toHaveLength(5);
+    // Newest-first holds, exactly as it does inside one session.
+    expect(inOrder(env.items)).toBe(true);
+    expect(env.items.map((i) => i.time)).toEqual([
+      "00:47:31",
+      "00:37:58",
+      "23:07:06",
+      "21:02:19",
+      "18:02:19",
+    ]);
+
+    // …and here is the report, reproduced: a row whose printed clock is LARGER
+    // than the row above it, while its timestamp is strictly smaller. Nothing
+    // about the sort is wrong; the stamp simply cannot express the day.
+    const above = env.items[1]!;
+    const below = env.items[2]!;
+    expect(below.ts).toBeLessThan(above.ts);
+    expect(below.time > above.time).toBe(true);
+  });
+
+  test("day names the session, so the apparent jump is explained rather than hidden", async () => {
+    const svc = createNewsService({ fetch: midnightFetch().fetch });
+    const env = ok(await ask(svc, q("mid:2", "NVDA")));
+
+    expect(env.items.map((i) => i.day)).toEqual([
+      "MON · 09-01-25",
+      "MON · 09-01-25",
+      "SUN · 08-31-25",
+      "SUN · 08-31-25",
+      "SUN · 08-31-25",
+    ]);
+
+    // The whole list is one session or a run of them, never a day reopening —
+    // that is what lets the terminal band on change alone.
+    const opened: string[] = [];
+    for (const it of env.items) if (opened.at(-1) !== it.day) opened.push(it.day!);
+    expect(opened).toEqual(["MON · 09-01-25", "SUN · 08-31-25"]);
+    expect(new Set(opened).size).toBe(opened.length);
+
+    // And the rule the band lets a reader apply: inside one day the printed
+    // clock descends; only a new day may show a larger one.
+    for (let i = 1; i < env.items.length; i++) {
+      const prev = env.items[i - 1]!;
+      const cur = env.items[i]!;
+      if (cur.day === prev.day) expect(cur.time < prev.time).toBe(true);
+    }
+  });
+
+  test("the day is New York's, not UTC's — every one of these rows is 09-01 in UTC", async () => {
+    const svc = createNewsService({ fetch: midnightFetch().fetch });
+    const env = ok(await ask(svc, q("mid:3", "NVDA")));
+
+    // The four newest all fall on 2025-09-01 by the clock the feed published
+    // in. ET splits them across two sessions, which is the only reason the
+    // bands below the fold say anything at all.
+    const utcDates = env.items.slice(0, 4).map((i) => new Date(i.ts).toISOString().slice(0, 10));
+    expect(new Set(utcDates)).toEqual(new Set(["2025-09-01"]));
+    expect(new Set(env.items.slice(0, 4).map((i) => i.day)).size).toBe(2);
+
+    // day, dateline and signature are three renderings of one instant; if they
+    // ever disagree the wire is telling a reader two different days at once.
+    for (const it of env.items) {
+      const [, date] = it.day!.split(" · ");
+      const [mm, dd, yy] = date!.split("-");
+      expect(it.signature).toContain(`${mm}-${dd}-${yy} `);
+      expect(it.dateline.startsWith(`${Number(mm)}/${Number(dd)}/${yy} `)).toBe(true);
+    }
+  });
+
+  test("the frozen replay carries the same days, so both players band identically", async () => {
+    const f = midnightFetch();
+    const svc = createNewsService({ fetch: f.fetch });
+
+    const first = ok(await ask(svc, q("mid:freeze", "NVDA")));
+    const calls = f.calls.length;
+    const second = ok(await ask(svc, q("mid:freeze", "NVDA")));
+
+    // No second fetch, and byte-identical rows: the day band is part of the
+    // frozen envelope, not something a client recomputes off its own clock.
+    expect(f.calls).toHaveLength(calls);
+    expect(second).toEqual(first);
+    expect(second.items.map((i) => i.day)).toEqual(first.items.map((i) => i.day));
+  });
+});

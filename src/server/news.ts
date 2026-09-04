@@ -36,6 +36,15 @@ import { parseRss, unwrapCdata, type RssItem } from "../lib/rss.ts";
  * America/New_York for the same reason — a client-side `toLocaleTimeString()`
  * would desync two players in two zones.
  *
+ * That covers the clock but not the calendar, and a `when:7d` query routinely
+ * hands back six days of headlines. A time-only stamp cannot express
+ * "yesterday", so a correctly ordered wire still reads as broken the moment it
+ * crosses midnight — `04:08` above `21:23` looks like a sort bug and is not
+ * one. Every row therefore also carries `day`, formatted off the same ET parts
+ * bag as `time`, and the terminal opens a day band whenever it changes. The
+ * order is fixed at the source, in `merge`; the *legibility* of that order is
+ * this field's job, and it is frozen with everything else.
+ *
  * ## Feeds are derived, never tabulated
  *
  * `feedsFor(sym)` builds its queries out of `meta(sym)` — the name and the
@@ -220,9 +229,9 @@ const yahoo = (s: string): string =>
 /**
  * `Intl.DateTimeFormat` construction is the expensive part — the format call is
  * cheap — so the one formatter this module needs is built lazily and kept.
- * Every field the wire prints (clock, dateline date, signature stamp) is read
- * off a single `formatToParts` call, which is also the only way to get an
- * unambiguous 24-hour value out of Intl across engines.
+ * Every field the wire prints (clock, day band, dateline date, signature stamp)
+ * is read off a single `formatToParts` call, which is also the only way to get
+ * an unambiguous 24-hour value out of Intl across engines.
  */
 let ET_FMT: Intl.DateTimeFormat | null = null;
 
@@ -230,6 +239,10 @@ function etFormatter(): Intl.DateTimeFormat {
   if (!ET_FMT) {
     ET_FMT = new Intl.DateTimeFormat("en-US", {
       timeZone: "America/New_York",
+      // The weekday is here so `day` can be read off the same parts bag as the
+      // clock. One formatter, one call, one timezone: the band a row sits under
+      // and the stamp printed on it can never land on different days.
+      weekday: "short",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -245,6 +258,8 @@ function etFormatter(): Intl.DateTimeFormat {
 interface EtParts {
   /** "07:47:14" */
   time: string;
+  /** "THU · 09-04-26" — the day band this row is grouped under. */
+  day: string;
   /** "9/1/26" — the dateline's American short date, as `data/wire.ts` writes it. */
   shortDate: string;
   /** "09-01-26" */
@@ -272,8 +287,13 @@ function etParts(ts: number): EtParts {
   const mi = bag.minute ?? "00";
   const ss = bag.second ?? "00";
   const yy = yyyy.slice(-2);
+  // `weekday: "short"` is "Thu"; the terminal shouts, so the band does too. The
+  // fallback is a dash rather than a guessed weekday — an unformattable date
+  // must not be able to file a row under the wrong session.
+  const wd = (bag.weekday ?? "").toUpperCase() || "———";
   return {
     time: `${hh}:${mi}:${ss}`,
+    day: `${wd} · ${mm}-${dd}-${yy}`,
     shortDate: `${Number(mm)}/${Number(dd)}/${yy}`,
     stamp: `${mm}-${dd}-${yy}`,
     hhmm: `${hh}${mi}`,
@@ -704,6 +724,10 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       sym: spec.sym,
       ts,
       time: et.time,
+      // Formatted here, in New York, for the same reason `time` is: the live
+      // wire spans days, and two players in two zones must agree about which
+      // day a row fell on, not merely about the hour printed on it.
+      day: et.day,
       headline,
       publisher,
       body,

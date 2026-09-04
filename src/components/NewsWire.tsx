@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { WireItem } from "../data/wire.ts";
 import { meta } from "../data/universe.ts";
 import { sfx } from "../lib/sound/index.ts";
@@ -6,7 +6,16 @@ import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
 
 interface NewsWireProps {
-  /** The feed, newest first. Desk rows are pinned to the top on render. */
+  /**
+   * The feed, newest first. Desk rows are pinned to the top on render.
+   *
+   * "Newest first" is the *producer's* job and it is done at the source —
+   * `merge()` in `server/news.ts` for the live feed, one descending stamp walk
+   * in `data/wire.ts` for the seeded one. Nothing here re-sorts, and nothing
+   * here may: the live envelope is frozen per match so both players read the
+   * same order, and a client-side re-sort after the freeze would be exactly the
+   * bug that guarantee exists to prevent.
+   */
   items: readonly WireItem[];
   /** Where the feed came from — drawn as the header chip. */
   status: "mock" | "live" | "partial";
@@ -42,13 +51,33 @@ const LIST_H = 288;
 const TICK_ROWS = 6;
 const TICK_GAP_MS = 90;
 
+/** How tall a day band is, near enough. Rows carry it as `scroll-margin-top` so
+ *  ↑/↓ cannot walk the selected row underneath the sticky band above it. */
+const BAND_H = 25;
+
 const rowStyle = (selected: boolean, desk: boolean): string =>
   `display:grid;grid-template-columns:76px 46px minmax(0,1fr);gap:10px;align-items:center;` +
-  `padding:6px 14px;cursor:pointer;text-align:left;width:100%;border:none;` +
+  `padding:6px 14px;cursor:pointer;text-align:left;width:100%;border:none;scroll-margin-top:${BAND_H}px;` +
   `border-bottom:1px solid ${C.lineSoft};font:400 11.5px/1.45 ${MONO};` +
   (selected
     ? `background:rgba(200,255,0,.08);box-shadow:inset 2px 0 0 ${C.accent};color:${C.text}`
     : `background:${desk ? C.panelAlt : "transparent"};color:${C.textSoft}`);
+
+/**
+ * The day band: a dated rule that opens each session's run of rows.
+ *
+ * Sticky rather than merely inserted, and that is the whole point. A band
+ * scrolled past the top of the list would leave the rows under it wearing bare
+ * `hh:mm:ss` again — exactly the ambiguity this exists to remove — so it pins
+ * to the top edge of the scroller and whatever the reader is looking at is
+ * always sitting under a visible date. Opaque background for the same reason: a
+ * translucent one would smear the rows travelling beneath it.
+ */
+const bandStyle =
+  `position:sticky;top:0;z-index:1;display:grid;grid-template-columns:auto minmax(0,1fr);` +
+  `gap:12px;align-items:center;padding:7px 14px;background:${C.panelAlt};` +
+  `border-top:1px solid ${C.border};border-bottom:1px solid ${C.border};` +
+  `font:700 8.5px/1 ${MONO};letter-spacing:.16em;color:${C.dim}`;
 
 /** One line, clipped rather than wrapped — a wire never reflows. */
 const CLIP = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0";
@@ -61,6 +90,13 @@ const symChip = (color: string): string =>
 /**
  * The study terminal's news wire: a scrolling headline list over a filed-story
  * detail pane, dressed as a Dow Jones terminal.
+ *
+ * Rows descend by time and a live feed carries up to a week of them, so the
+ * list is grouped under sticky day bands. That is a *display* fix for a display
+ * problem: the feed's order was never wrong, but `hh:mm:ss` with no date cannot
+ * say "yesterday", so `04:08:51` sitting above `21:23:32` read as a sort bug to
+ * anyone looking at it. The band names the session; the order it bands is taken
+ * exactly as given.
  *
  * The wire is flavour and nothing else — settlement never reads it — so this
  * component is handed a finished `WireItem[]` and owns only presentation and
@@ -97,6 +133,34 @@ export function NewsWire({ items, status, filterSym = null, onSymToggle }: NewsW
         : [...items.filter((i) => i.kind === "desk"), ...items.filter((i) => i.kind === "news")],
     [items, filterSym],
   );
+
+  /**
+   * Which rows open a new session — row id → the band to draw above it.
+   *
+   * The wire is newest-first and a live feed spans up to a week of it, so a
+   * bare `hh:mm:ss` column reads as scrambled the moment the list crosses
+   * midnight: `04:08:51` above `21:23:32` is a *correct* descent that looks
+   * like a broken one. The band is the disambiguation, and it is drawn off the
+   * `day` the feed was built with — formatted once, in ET, by whoever built the
+   * feed — never from `ts` and the viewer's own clock, which would put two
+   * players in two zones on two different day boundaries.
+   *
+   * Grouped over `rows` rather than `items`, so a filtered wire bands only the
+   * days that survived the filter and cannot leave an empty session heading
+   * behind. A feed whose rows carry no `day` (an older `/api/news` envelope,
+   * say) yields an empty map and the terminal draws exactly what it drew before
+   * bands existed.
+   */
+  const bands = useMemo(() => {
+    const out = new Map<string, string>();
+    let open: string | undefined;
+    for (const it of rows) {
+      if (!it.day || it.day === open) continue;
+      open = it.day;
+      out.set(it.id, it.day);
+    }
+    return out;
+  }, [rows]);
 
   /** Selection survives a mock → live swap: the id is looked up again, and a
    *  miss falls through to the top row rather than blanking the pane. A filter
@@ -210,70 +274,87 @@ export function NewsWire({ items, status, filterSym = null, onSymToggle }: NewsW
           // own click handler — `item.sym` is a property, and a closure would
           // widen it straight back to `string | null`.
           const sym = item.sym;
+          const band = bands.get(item.id);
           return (
-            <div
-              key={item.id}
-              id={`wire-row-${item.id}`}
-              role="option"
-              aria-selected={on}
-              data-wire={item.kind}
-              // Desk rows answer to the old selector as well: one standing
-              // assertion counts `[data-brief="desk"]` on this screen.
-              {...(desk ? { "data-brief": "desk" } : {})}
-              data-wire-id={item.id}
-              data-wire-sym={item.sym ?? "MKT"}
-              onClick={() => open(item)}
-              style={sx(rowStyle(on, desk))}
-            >
-              <span style={sx(`color:${on ? C.textSoft : C.faint};${CLIP}`)}>{item.time}</span>
-              {desk ? (
-                <span
-                  style={sx(
-                    `font:700 9px/1 ${MONO};letter-spacing:.1em;text-align:center;` +
-                      // Study's own mapping, kept verbatim: the coach speaks in
-                      // accent, the desk in blue.
-                      `color:${item.who === "COACH" ? C.accent : C.blue};${CLIP}`,
-                  )}
-                >
-                  {item.who ?? "DESK"}
-                </span>
-              ) : sym ? (
-                // The chip is the wire's own handle on the filter. It sits
-                // inside a row that is itself a click target, so the toggle
-                // stops the event dead: pressing SOL narrows the feed, it does
-                // not also file SOL's story into the pane underneath. Handed no
-                // `onSymToggle`, it renders as the inert label it always was.
-                <span
-                  style={sx(symChip(sectorColor(meta(sym).sector)) + (onSymToggle ? ";cursor:pointer" : ""))}
-                  {...(onSymToggle
-                    ? {
-                        "data-wire-chip": sym,
-                        role: "button",
-                        // Off the tab order on purpose: the row already answers
-                        // ↑/↓, and forty chips ahead of the detail pane would
-                        // make the terminal unkeyboardable.
-                        tabIndex: -1,
-                        "aria-pressed": sym === filterSym,
-                        title:
-                          sym === filterSym
-                            ? `Showing ${sym} only — click to clear the filter`
-                            : `Filter the wire to ${sym}`,
-                        onClick: (e: MouseEvent<HTMLSpanElement>) => {
-                          e.stopPropagation();
-                          onSymToggle(sym);
-                        },
-                      }
-                    : {})}
-                >
-                  {sym}
-                </span>
-              ) : (
-                <span style={sx(`font:500 8px/1 ${MONO};letter-spacing:.06em;text-align:center;color:${C.dim};${CLIP}`)}>
-                  MKT
-                </span>
-              )}
-              <span style={sx(CLIP)}>{desk ? `“${item.headline}”` : item.headline}</span>
-            </div>
+            <Fragment key={item.id}>
+              {band ? (
+                // `presentation` keeps the listbox's children valid — a band is
+                // not an option and must not be walked by ↑/↓ or counted by the
+                // `[data-wire]` selectors the suite reads rows off. The date is
+                // not lost to a screen reader: every row below carries it in its
+                // own `title`, which is also what a mouse gets on hover.
+                <div role="presentation" data-wire-day={band} style={sx(bandStyle)}>
+                  <span>{band}</span>
+                  <span style={sx(`height:1px;background:${C.line}`)} />
+                </div>
+              ) : null}
+              <div
+                id={`wire-row-${item.id}`}
+                role="option"
+                aria-selected={on}
+                // The full stamp, day included, on every row — the band answers
+                // "which session am I in" for a run of rows, this answers it for
+                // one row without the reader having to scroll up to find out.
+                title={item.day ? `${item.day} · ${item.time} ET` : `${item.time} ET`}
+                data-wire={item.kind}
+                // Desk rows answer to the old selector as well: one standing
+                // assertion counts `[data-brief="desk"]` on this screen.
+                {...(desk ? { "data-brief": "desk" } : {})}
+                data-wire-id={item.id}
+                data-wire-sym={item.sym ?? "MKT"}
+                onClick={() => open(item)}
+                style={sx(rowStyle(on, desk))}
+              >
+                <span style={sx(`color:${on ? C.textSoft : C.faint};${CLIP}`)}>{item.time}</span>
+                {desk ? (
+                  <span
+                    style={sx(
+                      `font:700 9px/1 ${MONO};letter-spacing:.1em;text-align:center;` +
+                        // Study's own mapping, kept verbatim: the coach speaks in
+                        // accent, the desk in blue.
+                        `color:${item.who === "COACH" ? C.accent : C.blue};${CLIP}`,
+                    )}
+                  >
+                    {item.who ?? "DESK"}
+                  </span>
+                ) : sym ? (
+                  // The chip is the wire's own handle on the filter. It sits
+                  // inside a row that is itself a click target, so the toggle
+                  // stops the event dead: pressing SOL narrows the feed, it does
+                  // not also file SOL's story into the pane underneath. Handed no
+                  // `onSymToggle`, it renders as the inert label it always was.
+                  <span
+                    style={sx(symChip(sectorColor(meta(sym).sector)) + (onSymToggle ? ";cursor:pointer" : ""))}
+                    {...(onSymToggle
+                      ? {
+                          "data-wire-chip": sym,
+                          role: "button",
+                          // Off the tab order on purpose: the row already answers
+                          // ↑/↓, and forty chips ahead of the detail pane would
+                          // make the terminal unkeyboardable.
+                          tabIndex: -1,
+                          "aria-pressed": sym === filterSym,
+                          title:
+                            sym === filterSym
+                              ? `Showing ${sym} only — click to clear the filter`
+                              : `Filter the wire to ${sym}`,
+                          onClick: (e: MouseEvent<HTMLSpanElement>) => {
+                            e.stopPropagation();
+                            onSymToggle(sym);
+                          },
+                        }
+                      : {})}
+                  >
+                    {sym}
+                  </span>
+                ) : (
+                  <span style={sx(`font:500 8px/1 ${MONO};letter-spacing:.06em;text-align:center;color:${C.dim};${CLIP}`)}>
+                    MKT
+                  </span>
+                )}
+                <span style={sx(CLIP)}>{desk ? `“${item.headline}”` : item.headline}</span>
+              </div>
+            </Fragment>
           );
         })}
       </div>

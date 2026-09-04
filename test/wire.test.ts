@@ -90,6 +90,90 @@ describe("mockWire — shape", () => {
   });
 });
 
+/**
+ * The stamp has to be readable as an *order*, not merely be one.
+ *
+ * A wire is newest-first and prints `hh:mm:ss` with no date. That is fine
+ * inside one session and unreadable across two: `04:08:51` above `21:23:32` is
+ * a correct descent that looks like a broken one, and a time-only stamp has no
+ * way to say "yesterday". `day` is what closes that hole, so these tests pin
+ * that it exists, that it agrees with the row's own `ts`, and that it can only
+ * ever run backwards alongside the clock it labels.
+ */
+describe("mockWire — the day the stamp belongs to", () => {
+  const boards: readonly (readonly string[])[] = [STOCKS, CRYPTO, MIXED];
+
+  test("every row carries a day band label, weekday and date", () => {
+    for (const syms of boards) {
+      for (const salt of [1, 424242, 918273]) {
+        for (const it of wireFor(syms, salt)) {
+          expect(it.day).toMatch(/^(SUN|MON|TUE|WED|THU|FRI|SAT) · \d{2}-\d{2}-\d{2}$/);
+        }
+      }
+    }
+  });
+
+  test("the day agrees with the row's own ts, dateline and signature", () => {
+    for (const syms of boards) {
+      for (const it of wireFor(syms, 424242)) {
+        const d = new Date(it.ts);
+        const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+        const dd = String(d.getUTCDate()).padStart(2, "0");
+        const yy = String(d.getUTCFullYear()).slice(2);
+        expect(it.day).toContain(`${mm}-${dd}-${yy}`);
+        // The signature prints the same date in the same shape; the dateline
+        // prints it unpadded. All three are read off one timestamp, so a drift
+        // between them is a bug in whichever one moved.
+        expect(it.signature).toContain(`${mm}-${dd}-${yy}`);
+        expect(it.dateline.startsWith(`${Number(mm)}/${Number(dd)}/${yy} `)).toBe(true);
+      }
+    }
+  });
+
+  test("the day never runs forwards while the clock runs backwards", () => {
+    for (const syms of boards) {
+      for (const salt of [3, 424242, 777777]) {
+        const items = wireFor(syms, salt);
+        for (let i = 1; i < items.length; i++) {
+          const prev = items[i - 1]!;
+          const cur = items[i]!;
+          // Same day means the printed clock must itself be descending; a new
+          // day is the only licence a row has to show a *larger* hh:mm:ss than
+          // the row above it — which is precisely the case the band exists for.
+          if (cur.day === prev.day) expect(cur.time < prev.time).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("a run of rows changes day at most once per day-boundary crossing", () => {
+    // Bands are emitted on change, so a day may not reappear after it closes —
+    // that would draw two bands for one session and read as a re-sort.
+    for (const syms of boards) {
+      const items = wireFor(syms, 424242);
+      const opened: string[] = [];
+      for (const it of items) if (opened.at(-1) !== it.day) opened.push(it.day!);
+      expect(new Set(opened).size).toBe(opened.length);
+    }
+  });
+
+  test("the desk rows pinned on top are the newest rows, so the pin never re-orders", () => {
+    // `NewsWire` renders `[...desk, ...news]`. That concatenation ignores time,
+    // so it is only honest while the desk half really is the newest half — and
+    // if it ever stops being, the terminal would draw a day band that runs
+    // backwards. Pin it here rather than discover it on screen.
+    for (const syms of [STOCKS, CRYPTO, MIXED]) {
+      for (const salt of [1, 424242, 777777]) {
+        const items = mockWire(syms, salt, briefsFor(syms, salt));
+        const desk = items.filter((i) => i.kind === "desk");
+        const news = items.filter((i) => i.kind === "news");
+        expect(desk.length).toBeGreaterThan(0);
+        expect(Math.min(...desk.map((d) => d.ts))).toBeGreaterThan(Math.max(...news.map((n) => n.ts)));
+      }
+    }
+  });
+});
+
 describe("mockWire — composition", () => {
   test("the desk exchange is pinned on top, exactly one pair", () => {
     const briefs = briefsFor(MIXED, 424242);

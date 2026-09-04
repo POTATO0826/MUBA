@@ -32,6 +32,28 @@ export interface WireItem {
   ts: number;
   /** "07:47:14", ET session clock. */
   time: string;
+  /**
+   * The ET calendar day that clock belongs to — "THU · 09-04-26".
+   *
+   * `time` alone cannot say "yesterday", and a live wire routinely spans a week
+   * (`when:7d` on the Google News query), so a feed that is *perfectly*
+   * ts-descending still reads as scrambled the moment it crosses midnight:
+   * `04:08:51` sits directly above `21:23:32` and every reader calls that a
+   * sort bug. The order was never wrong; the stamp was ambiguous. This is the
+   * field that makes it unambiguous — `NewsWire` opens a day band whenever it
+   * changes, so the descent is legible rather than merely true.
+   *
+   * Formatted wherever `time` is formatted and never anywhere else: here for
+   * the seeded wire, and SERVER-side in America/New_York for the live one. A
+   * client-side `new Date(ts).getUTCDate()` would put two players in two zones
+   * on two different day boundaries, which is the exact desync the server-side
+   * ET formatting exists to prevent.
+   *
+   * Optional because a `WireItem` also arrives as untyped JSON off `/api/news`:
+   * a payload without it draws the terminal exactly as it drew before day bands
+   * existed, rather than throwing or inventing a date.
+   */
+  day?: string;
   headline: string;
   /** "REUTERS", "COINDESK", … */
   publisher: string;
@@ -362,6 +384,23 @@ function timeOf(ts: number): string {
   return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
 }
 
+const WEEKDAY = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"] as const;
+
+/**
+ * "THU · 09-04-26" — the day band's label.
+ *
+ * Read out of the same UTC frame `timeOf` reads, for the same reason: the
+ * seeded session is *declared* to be ET rather than converted into it, so the
+ * band and the clock above it can never disagree about which day a row is on.
+ * The weekday is carried because "MON" beside a stamp is what tells a reader at
+ * a glance that a run of rows is a different session, not a different minute.
+ */
+function dayOf(ts: number): string {
+  const d = new Date(ts);
+  const date = `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}-${String(d.getUTCFullYear()).slice(2)}`;
+  return `${WEEKDAY[d.getUTCDay()]} · ${date}`;
+}
+
 /** "9/1/26" — the dateline's American short date. */
 function shortDate(ts: number): string {
   const d = new Date(ts);
@@ -496,6 +535,7 @@ export function mockWire(
       sym: null,
       ts,
       time: timeOf(ts),
+      day: dayOf(ts),
       headline: b.text,
       publisher: DESK_PUB,
       body: `“${b.text}” — ${who}, on the desk channel. ${deskBody}`,
@@ -514,6 +554,7 @@ export function mockWire(
       sym: d.sym,
       ts,
       time: timeOf(ts),
+      day: dayOf(ts),
       headline: d.headline,
       publisher: d.publisher,
       body: d.body,
