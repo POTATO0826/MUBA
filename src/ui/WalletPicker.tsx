@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CatMascot } from "../components/CatMascot.tsx";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
@@ -11,85 +11,140 @@ import type { InjectedWallet } from "../wallet/injected.ts";
  * wallet installed there is nothing to choose and `connect()` goes straight to
  * its prompt.
  *
- * Hovering (or keyboard-focusing) a row springs a big sticker of that wallet's
- * own icon out of the row's top-right corner — see `WalletRow` for the
- * choreography and `styles.css` for the two loops it uses.
+ * One cat lives at the top of this dialog. It springs in when the dialog opens,
+ * stays for as long as the dialog is up, and *recolours* to whichever wallet
+ * the pointer is over — see `CatSeat` for the seat and the choreography, the
+ * brand section for where a wallet's colour comes from, and `styles.css` for
+ * the two loops it uses.
  *
- * Nothing in this dialog clips: the backdrop, the panel, the list and the rows
- * all keep `overflow:visible`, and the seat below keeps the tile inside the
- * panel's padding box anyway. The hazard here was never clipping but *paint
- * order* — see `STICKER_SEAT`.
+ * That is a deliberate replacement for what was here before: a sticker per row,
+ * each springing out of its own row's corner. Six cats taking turns read as six
+ * cats. One cat that changes colour reads as *the* cat, watching you shop —
+ * which is the whole idea, and is also what the reference motion study does.
+ *
+ * Nothing in this dialog clips: the backdrop, the panel and the rows all keep
+ * `overflow:visible`, and the cat deliberately overhangs the panel's top-right
+ * corner. The hazard here was never clipping but *paint order* and the close
+ * button — see `CAT_SEAT`.
  */
 
-/** The sticker tile, in px. Every number in `STICKER_SEAT` is derived from
- *  this one, so the arithmetic there has to be redone if it changes. */
-const STICKER = 88;
+/** The mascot tile, in px — 34% of the panel's 360, which is the reference's
+ *  proportion (its mascot is 163 of a 446px card). Every number in `CAT_SEAT`
+ *  is derived from this one. */
+const CAT = 124;
+
+/** The settled tilt. `vcStickerWobble` adds ±3° on top of it for as long as the
+ *  dialog is open, so -13° is the worst case — the widest the tile's box ever
+ *  gets, and the angle every clearance in `CAT_SEAT` is measured at. */
+const CAT_TILT = -10;
+
+/** The tile's corner radius, at the same 27% of its edge the 88px sticker
+ *  used. Load-bearing with the `overflow:hidden` below it: together they crop
+ *  the cat's head and give the art its sticker framing. */
+const CAT_RADIUS = 34;
 
 /**
- * Where the sticker comes to rest, relative to the row's top-right corner.
+ * Where the cat sits, against the panel's padding box.
  *
- * This seat is arithmetic, not taste, and the arithmetic was checked against
- * measured `getBoundingClientRect`s rather than done on paper — a tilted tile's
- * *bounding box* is what can collide with the close button, and it is fatter
- * than the tile's own rotated outline, which is how an earlier seat that
- * penciled out as safe still landed 2px under the button.
+ * Arithmetic, not taste, and taken from measured `getBoundingClientRect`s
+ * rather than done on paper — a tilted tile's *bounding box* is what can
+ * collide with chrome, and it is fatter than the tile's own rotated outline. At
+ * -13° (settled -10 plus the wobble's far end) a 124px tile measures 148.7px
+ * each way.
  *
- * Working in the panel's 360px border-box (1px border, 20px padding → a 318px
- * content column at x 21…339), with the header's 44px bottom margin putting
- * row 1's top edge at y=91, each row 48px tall on an 8px gap, and the tile at
- * its widest (8° settled + 3° of wobble):
+ * The one thing paper gets wrong here, and did: the seat rotates about
+ * `transform-origin:100% 100%`, not about its centre. The origin belongs to the
+ * launch — it is what makes the cat grow *out of* the panel's corner — but it
+ * also means the tile pivots on its own bottom-right corner, which stays put
+ * while everything else swings up and to the left. A seat computed for a
+ * centred rotation puts the tile ~16px lower and ~6px further right than it
+ * actually lands, and the first draft of these numbers duly had the cat's
+ * bottom-left corner 4px into the first row.
  *
- * - `right:4` puts the tile's right edge at x=335; tilted, its box reaches
- *   x≈352, a deliberate overhang into the panel's padding that still leaves
- *   ~7px to the panel's inner border. It never crosses the panel edge on any
- *   row, so nothing needs clipping and nothing needs to be clipped.
- * - `top:-20` centres the tile on the row's top-right corner: 20px of an 88px
- *   tile rises above the row and 20px falls below it. Sinking is only allowed
- *   because the sticker outranks *every* row rather than only its own — see the
- *   wrapper in `WalletRow`. When each row was its own stacking context the tile
- *   could not pass below its row at all, and that rule alone capped it at 64px.
- * - On row 1 that leaves ~9px between the tile's box and the bottom of the
- *   close button, which is the ceiling on all of this: the tile is as large as
- *   it can be and still clear the one piece of chrome it can reach. Every extra
- *   pixel of height costs 1.17px of that clearance, and the header's margin —
- *   16px originally, 44px now — is what has been buying it back.
+ * Measured, in the panel's 360px border-box (1px border, 20px padding → a 318px
+ * content column at x 21…339), at the worst-case -13°:
  *
- * Measured on all four cases that differ — first row, a middle row, the last
- * row, and a two-row picker — since the first row is the only one the close
- * button can reach and the last is the only one with nothing beneath it.
+ * - Box `[216.3,-51.8 → 365.0,96.9]`.
+ * - `right:-6` hangs the pivot corner 5px past the panel's right border. The
+ *   panel's `max-width:calc(100vw - 32px)` keeps 16px either side of it on the
+ *   narrowest viewport, so 5px of overhang cannot push the page sideways.
+ * - `top:-56` lifts 51.8px of the tile clear of the panel into the backdrop and
+ *   leaves the rest lying over the header band, straddling the corner the way
+ *   the reference's mascot straddles its card's.
+ * - The close button ends at x=47 and the title's text at x=129.2, against the
+ *   cat's left edge at x=216.3: 169.3px and 87.0px of clearance. That margin is
+ *   why the close button could stay a real, full-size, fully visible button
+ *   rather than being shrunk or shoved somewhere odd.
+ * - The first row's top is y=108.8 when it is hovered — its -1.5° lean raises
+ *   it from 113 — against the cat's bottom at y=96.9: 12.0px, so the cat never
+ *   reaches a row's `INSTALLED` chip. That gap is the ceiling on all of this.
+ *   Every extra pixel of tile costs 1.2px of it, and `HEADER_GAP` is what has
+ *   been buying it back.
+ *
+ * Checked on the cases that differ — resting, a hovered first row, a hovered
+ * last row, and a two-row picker — since the first row is the only one the cat
+ * can reach and a short list is the only case where the panel itself is short.
  */
-const STICKER_SEAT = `top:-20px;right:4px;width:${STICKER}px;height:${STICKER}px`;
+const CAT_SEAT = `top:-56px;right:-6px;width:${CAT}px;height:${CAT}px`;
 
 /**
- * Sparkles, thrown clear of the tile at three sizes and staggered so they
+ * The header's two gaps, which are the price of the cat's size.
+ *
+ * The close button's row, then 34px, then the title, then 14px, then the list —
+ * 109px of header against the 90px this dialog carried when the mascot was a
+ * per-row sticker. The owner explicitly traded panel height for cat size; this
+ * is that trade, and it is 19px.
+ *
+ * The close button leads on its own line rather than sitting opposite the title
+ * because the top-right is the cat's now. The title then falls to the foot of
+ * the band, which is where the reference puts its own headline — under the
+ * badge, beside the mascot's chin — so the swap reads as the intended
+ * composition rather than as a close button that got moved.
+ */
+const HEADER_GAP = 34;
+const TITLE_GAP = 14;
+
+/**
+ * Sparkles, clustered around the one cat at three sizes and staggered so they
  * twinkle on three different clocks rather than pulsing as one.
  *
- * The largest is deliberately flung well up and to the left, into the gap under
- * the header — the source's confetti clears the card's edge entirely, and a
- * sparkle that stays inside the row reads as decoration on the row rather than
- * as something the sticker knocked loose. All three are checked against the
- * panel's inner edge and the close button's box in the same measurement pass as
- * the tile.
+ * Positioned against the panel, not the cat, because the cat wobbles and
+ * sparkles that wobbled with it would read as glued on. The largest is flung
+ * well up and to the left, clear of the panel's top edge entirely — the
+ * reference's confetti leaves its card, and a sparkle that stays inside the
+ * panel reads as decoration on the panel rather than as something the cat
+ * knocked loose. All three are checked against the tile, the close button, the
+ * title and the first row in the same measurement pass as the seat.
  */
 const SPARKS: { at: string; size: number; delay: number }[] = [
-  { at: "top:-46px;right:98px", size: 14, delay: 90 },
-  { at: "top:52px;right:-12px", size: 10, delay: 230 },
-  { at: "top:-6px;right:-8px", size: 8, delay: 350 },
+  { at: "top:-72px;right:138px", size: 16, delay: 620 },
+  { at: "top:-8px;right:152px", size: 11, delay: 800 },
+  { at: "top:96px;right:34px", size: 9, delay: 940 },
 ];
+
+/**
+ * The entrance, in ms.
+ *
+ * The cat launches once, on open, instead of once per hover. `LAUNCH` is the
+ * spring; the wobble picks up as it lands, and the sparkles start a beat after
+ * that so they read as thrown by the landing rather than as arriving with it.
+ * `CatMascot` winks on its own 640ms clock, which falls in the same window.
+ */
+const LAUNCH = 520;
+const WOBBLE_IN = LAUNCH + 40;
 
 /* ------------------------------------------------------------------ *
  *  Brand colour
  *
  *  A hovered row answers in the hovered wallet's *own* colour — Phantom's
- *  violet, MetaMask's orange — at the density the source motion study used: a
- *  soft wash plus one solid accent. The app's own lime never appears here.
- *  Hovering a wallet is not a selection, and the accent is the vocabulary of
- *  selection everywhere else in this app.
+ *  violet, MetaMask's orange — and so, now, does the cat. The app's own lime
+ *  never appears here: hovering a wallet is not a selection, and the accent is
+ *  the vocabulary of selection everywhere else in this app.
  *
  *  Two sources, in order. A short table for wallets worth being exact about,
  *  then — because EIP-6963 is open and the next wallet to announce itself is
  *  one nobody has heard of — the icon the wallet already handed us, sampled at
- *  runtime. Anything that fails either way falls to a neutral grey treatment.
+ *  runtime. Anything that fails either way falls to a neutral treatment.
  * ------------------------------------------------------------------ */
 
 /**
@@ -122,12 +177,12 @@ const NEUTRAL = { bg: C.cardAlt, border: C.borderMid, ink: C.muted } as const;
 /**
  * How much of the brand goes into the hovered row's background.
  *
- * This started at the source's pastel 10% and the answer was that the row
- * barely moved. On a near-black ground a tint that reads as "soft" on the
- * source's white card reads as nothing at all, so the row is the piece that
- * carries the colour statement now — 22% of the brand over `#0a0a0c`, which is
- * plainly the wallet's colour at a glance and still dark enough to keep
- * `C.text` at full legibility over it.
+ * This started at the reference's pastel 10% and the answer was that the row
+ * barely moved. On a near-black ground a tint that reads as "soft" on a white
+ * card reads as nothing at all, so the row is the piece that carries the colour
+ * statement now — 22% of the brand over `#0a0a0c`, which is plainly the
+ * wallet's colour at a glance and still dark enough to keep `C.text` at full
+ * legibility over it.
  */
 const WASH = 0.22;
 
@@ -137,15 +192,23 @@ const WASH = 0.22;
 const CAT_ON_LIGHT: [number, number] = [0.5, 0.68];
 
 /**
- * The mascot's colour for wallets that resolve to none.
+ * The cat's colour when no row is hovered — which, now that there is only one
+ * cat and it is up the whole time the dialog is, is the state most people will
+ * actually see.
  *
- * The mascot ships cream (`#f7f7f4`) and cream was the plan here, back when the
- * tile it stands on was dark. On the near-white tile the tile became, a cream
- * cat is a cream cat on cream — the render was a pair of floating eyes. So the
- * uncoloured cat takes the palette's mid grey instead, which is the same
- * neutral the row's border and chip fall back to and reads cleanly on white.
+ * Rendered against zinc (`C.muted`), the mascot's shipped cream (`#f7f7f4`) and
+ * two warmer creams. Zinc reads as a *disabled* cat: it is the same grey as the
+ * dimmed chip two rows below it, so the mascot looks switched off rather than
+ * waiting. The shipped cream is cream on cream — the tile is near-white, and
+ * the render was a pair of floating eyes. `#d8d0bd` is the one that has body
+ * against the tile's `#dcdce4` foot and still reads warm rather than khaki: a
+ * cat at rest, not a placeholder.
  */
-const CAT_NEUTRAL = C.muted;
+const CAT_NEUTRAL = "#d8d0bd";
+
+/** Sparkles at rest, a shade lighter than the resting cat so they twinkle
+ *  rather than sit. */
+const SPARK_NEUTRAL = "#e9e3d4";
 
 /** The tile's near-white, top and bottom of a shallow vertical shade. */
 const TILE_TOP = "#fbfbfd";
@@ -337,37 +400,51 @@ function tableBrand(rdns: string, name: string): string | undefined {
 }
 
 /**
- * The colour a row answers in, or `null` for the neutral treatment.
+ * Every wallet's colour, by `rdns`, resolved in one place.
+ *
+ * This is a picker-level hook rather than a row-level one because the cat is
+ * picker-level: the row knows which wallet the pointer is on, but the thing
+ * that has to be *painted* in that wallet's colour lives two levels up. Having
+ * the picker own the whole table means the hover handler passes an `rdns` and
+ * nothing has to be threaded back up through a callback that could arrive a
+ * frame late or out of order.
  *
  * The table is synchronous, so a known wallet is coloured on its first paint.
- * Sampling needs the icon decoded, so it lands a frame or two later — before
- * any pointer could plausibly arrive, and harmless if it doesn't.
+ * Sampling needs each icon decoded, so it lands a frame or two later — before
+ * any pointer could plausibly arrive, and harmless if it doesn't. `SAMPLED`
+ * makes the whole pass a no-op on every open after the first.
  */
-function useBrand(rdns: string, name: string, icon: string): string | null {
-  const table = tableBrand(rdns, name);
-  const [sampled, setSampled] = useState<string | null>(
-    () => table ?? SAMPLED.get(icon) ?? null,
-  );
+function useBrands(wallets: InjectedWallet[]): Record<string, string | null> {
+  const [sampledAt, setSampledAt] = useState(0);
 
   useEffect(() => {
-    if (table || !icon) return;
-    const cached = SAMPLED.get(icon);
-    if (cached !== undefined) {
-      setSampled(cached);
-      return;
-    }
+    const pending = wallets.filter(
+      (w) => !tableBrand(w.rdns, w.name) && w.icon !== "" && !SAMPLED.has(w.icon),
+    );
+    if (pending.length === 0) return;
     let live = true;
-    void loadAndSample(icon).then((c) => {
-      SAMPLED.set(icon, c);
-      if (live) setSampled(c);
+    void Promise.all(
+      pending.map((w) => loadAndSample(w.icon).then((c) => SAMPLED.set(w.icon, c))),
+    ).then(() => {
+      // One bump for the whole batch: the icons decode within a frame or two of
+      // each other and re-rendering the dialog per wallet buys nothing.
+      if (live) setSampledAt((n) => n + 1);
     });
     return () => {
       live = false;
     };
-  }, [table, icon]);
+  }, [wallets]);
 
-  const raw = table ?? sampled;
-  return raw ? forDarkUi(raw) : null;
+  return useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const w of wallets) {
+      const raw = tableBrand(w.rdns, w.name) ?? SAMPLED.get(w.icon) ?? null;
+      out[w.rdns] = raw ? forDarkUi(raw) : null;
+    }
+    return out;
+    // `sampledAt` is the dependency that matters — `SAMPLED` is a module-level
+    // map and mutating it cannot invalidate anything on its own.
+  }, [wallets, sampledAt]);
 }
 
 /**
@@ -392,19 +469,17 @@ function focusVisible(el: HTMLElement): boolean {
   }
 }
 
-/** A four-point diamond, the sparkle shape from the source motion study, in the
- *  hovered wallet's own colour. */
+/** A four-point diamond, the sparkle shape from the reference motion study, in
+ *  whichever colour the cat is currently wearing. */
 function Spark({
   size,
   delay,
   at,
-  on,
   color,
 }: {
   size: number;
   delay: number;
   at: string;
-  on: boolean;
   color: string;
 }) {
   return (
@@ -413,250 +488,279 @@ function Spark({
       aria-hidden="true"
       style={sx(
         `position:absolute;${at};width:${size}px;height:${size}px;z-index:3;pointer-events:none;` +
-          "opacity:0;transform:scale(.2);transition:opacity 180ms ease;" +
-          (on ? `animation:vcSparkle 1500ms ease-in-out ${delay}ms infinite` : ""),
+          `opacity:0;transform:scale(.2);animation:vcSparkle 1500ms ease-in-out ${delay}ms infinite`,
       )}
     >
       {/* A rounded square stood on its corner, not a four-point star — the
-          source throws soft confetti diamonds, and a star reads as sharper and
-          more "magic sparkle" than the character wants. */}
+          reference throws soft confetti diamonds, and a star reads as sharper
+          and more "magic sparkle" than the character wants. */}
       <svg viewBox="0 0 24 24" width={size} height={size} style={sx("display:block")}>
-        <rect x="5" y="5" width="14" height="14" rx="3" fill={color} transform="rotate(45 12 12)" />
+        <rect
+          x="5"
+          y="5"
+          width="14"
+          height="14"
+          rx="3"
+          fill={color}
+          transform="rotate(45 12 12)"
+          // Retints with the cat, on the cat's clock.
+          style={sx("transition:fill 220ms ease")}
+        />
       </svg>
     </span>
   );
 }
 
 /**
- * One wallet, and the sticker that springs out of it.
+ * The one cat, and its seat at the top of the dialog.
  *
- * The geometry, in one place, because it is the whole trick:
+ * The geometry is `CAT_SEAT`'s. What lives here is the choreography, and there
+ * are two clocks in it that must not be confused:
  *
- * - The sticker sits at `z-index:2`, *above* the row's opaque `z-index:1`
- *   button, inside a wrapper that owns the stacking context. An earlier draft
- *   had it at `z-index:0`, genuinely behind the row, on the theory that a
- *   sticker should emerge from behind the card the way the source's does. It
- *   looked broken: the seat overlaps the row by design, so the row's own
- *   background ate the middle of the tile — icon included — and the effect read
- *   as a clipped half-sticker. Nothing was clipping anything; it was paint
- *   order. The tile now always paints whole, and "from behind" survives as
- *   motion rather than as z-order: at rest it is parked scaled to 42% in the
- *   row's corner at `opacity:0`, so it still grows *out of* that corner.
- * - On hover it travels to `STICKER_SEAT`, overshooting on the way with
- *   `cubic-bezier(.34,1.56,.64,1)`: it arrives tilted -14°, swings past +11°
- *   and settles at +8°, which is the source's spring. The settle is 8° rather
- *   than the source's ~10-12° because the tilt is what swings the tile's corner
- *   toward the panel edge, and `STICKER_SEAT`'s clearances are computed from
- *   this angle plus the wobble's ±3°.
- * - Once seated, an inner span picks up `vcStickerWobble` on a 440ms delay
- *   (i.e. as the launch lands) and drifts ±3° for as long as the pointer stays.
- *   Two elements, because a keyframe and a transition cannot share a
- *   `transform`.
- * - Leaving reverses every one of those, on a shorter, non-springy curve: a
- *   bouncing *retraction* reads as indecision rather than as recoil.
+ * - **The entrance runs once, on open.** `landed` flips on the frame after
+ *   mount, which turns a resting transform into the seated one and lets a
+ *   transition carry it: the tile arrives from the panel's top-right corner at
+ *   46% scale and -38°, overshoots on `cubic-bezier(.34,1.56,.64,1)` and settles
+ *   at -10°. `transform-origin:100% 100%` is what makes it grow *out of* that
+ *   corner rather than swelling in place. The picker unmounts when it closes, so
+ *   the next open replays this from scratch with no reset to manage.
+ * - **The colour runs on the pointer.** `brand` changes as the pointer crosses
+ *   rows and every coloured surface here transitions over 220ms — the cat's fur
+ *   (a `fill` transition inside `CatMascot`), the tile's warm cast, its ring,
+ *   the sparkles. Nothing moves when it does. That separation is the point of
+ *   the redesign: the cat is a fixture, and the wallet under the pointer is the
+ *   only variable.
  *
- * Alongside the motion, the row answers in the hovered wallet's own colour —
- * see the brand section above for where that colour comes from and why it is
- * never the app's accent. Colour keys off `hot` rather than `launched`, so a
- * reduced-motion reader loses the sticker, the sparkles and the lean but keeps
- * the wash, the border and the chip; a hue costs nobody a vestibular symptom.
- * The resting state is untouched by all of it.
+ * The wobble is a third element inside the tile, because a keyframe and a
+ * transition cannot share a `transform`; it picks up as the launch lands and
+ * drifts ±3° for as long as the dialog is open.
+ */
+function CatSeat({ brand, still }: { brand: string | null; still: boolean }) {
+  /**
+   * `false` for exactly one frame after mount, which is what gives the
+   * transition two different values to interpolate between. A `useEffect` that
+   * sets state immediately would be flushed before paint and the browser would
+   * see only the final value; the nested `requestAnimationFrame` guarantees the
+   * resting frame is painted first.
+   */
+  const [landed, setLanded] = useState(false);
+  useEffect(() => {
+    if (still) return;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setLanded(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [still]);
+
+  /** The mascot is read against the near-white tile, so it is banded for a
+   *  light ground; with no wallet hovered it takes the resting cream. */
+  const fur = brand ? band(brand, CAT_ON_LIGHT[0], CAT_ON_LIGHT[1]) : CAT_NEUTRAL;
+  /** The tile: white, warmed by a few percent of the wallet's colour so it
+   *  belongs to the same object as the cat standing on it. */
+  const tileTop = brand ? mix(TILE_TOP, brand, 0.07) : TILE_TOP;
+  const tileBottom = brand ? mix(TILE_BOTTOM, brand, 0.12) : TILE_BOTTOM;
+  const ring = brand ? `${brand}59` : "rgba(255,255,255,.28)";
+  const spark = brand ? forSparkle(brand) : SPARK_NEUTRAL;
+
+  /** Reduced motion: seated from the first frame, and never a launch. */
+  const seated = still || landed;
+
+  return (
+    <>
+      <span
+        data-wcat=""
+        aria-hidden="true"
+        style={sx(
+          `position:absolute;${CAT_SEAT};z-index:2;pointer-events:none;` +
+            "transform-origin:100% 100%;" +
+            (seated
+              ? `opacity:1;transform:translate(0,0) scale(1) rotate(${CAT_TILT}deg);`
+              : "opacity:0;transform:translate(6px,22px) scale(.46) rotate(-38deg);") +
+            (still
+              ? ""
+              : `transition:transform ${LAUNCH}ms cubic-bezier(.34,1.56,.64,1),opacity 200ms ease`),
+        )}
+      >
+        <span
+          // The wobble's own element, and the tile proper.
+          //
+          // Near-white, because that is what makes a sticker read as stuck *on*
+          // the dialog rather than cut out of it: the reference's tile is white
+          // against a pale page, and the equivalent move on a near-black panel
+          // is the same white, not another dark surface. A faint wash of the
+          // wallet's colour warms it; the shadow underneath is what sells the
+          // height.
+          //
+          // `overflow:hidden` is load-bearing — it is what crops the cat's head
+          // against the corner radius and gives the art its framing.
+          style={sx(
+            `display:block;width:100%;height:100%;overflow:hidden;border-radius:${CAT_RADIUS}px;` +
+              `background:linear-gradient(170deg,${tileTop},${tileBottom});` +
+              `box-shadow:0 0 0 1px ${ring},0 30px 54px rgba(0,0,0,.72),` +
+              "0 12px 24px rgba(0,0,0,.5);" +
+              "transition:background 220ms ease,box-shadow 220ms ease;" +
+              (still
+                ? ""
+                : `animation:vcStickerWobble 2400ms ease-in-out ${WOBBLE_IN}ms infinite alternate`),
+          )}
+        >
+          <CatMascot color={fur} wink={!still} />
+        </span>
+      </span>
+
+      {/* Pure twinkle, so a reduced-motion reader gets none of them — there is
+          no static state of a sparkle worth keeping. */}
+      {!still &&
+        SPARKS.map((s) => (
+          <Spark key={s.at} at={s.at} size={s.size} delay={s.delay} color={spark} />
+        ))}
+    </>
+  );
+}
+
+/**
+ * One wallet.
+ *
+ * The row keeps the colour treatment it has always had — a 22% wash of the
+ * wallet's own brand on the background, a solid brand border, the brand-tinted
+ * `INSTALLED` chip and a -1.5° lean — and has lost the sticker that used to
+ * spring out of its corner. What replaces it is a report upward: while the
+ * pointer (or the keyboard) is on this row, the picker's one cat wears this
+ * wallet's colour.
+ *
+ * Hover and focus are tracked apart because they overlap: a keyboard user who
+ * tabs to a row and then happens to sweep the pointer across it would otherwise
+ * have the row handed back by the mouse-leave while it was still focused.
+ *
+ * Colour keys off `hot` rather than off any motion flag, so a reduced-motion
+ * reader loses the lean and keeps the wash, the border, the chip *and* the
+ * cat's retint. A hue costs nobody a vestibular symptom. The resting state is
+ * untouched by all of it.
  */
 function WalletRow({
   wallet,
+  brand,
   onChoose,
+  onHot,
   still,
 }: {
   wallet: InjectedWallet;
+  /** This wallet's colour, or `null` for the neutral treatment. */
+  brand: string | null;
   onChoose: (rdns: string) => void;
-  /** `prefers-reduced-motion` — the sticker, sparkles and lean are all off. */
+  /** Reports this row entering or leaving the pointer, to the one cat. */
+  onHot: (rdns: string, on: boolean) => void;
+  /** `prefers-reduced-motion` — the lean is off. */
   still: boolean;
 }) {
-  /**
-   * Two sources, one treatment. They are tracked apart because they overlap:
-   * a keyboard user who tabs to a row and then happens to sweep the pointer
-   * across it would otherwise have the sticker torn away by the mouse-leave
-   * while the row was still focused.
-   */
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const hot = hovered || focused;
+
   /**
    * EIP-6963 promises a data: URI, but a wallet that announces a broken one
-   * would leave an empty box in the row. The sticker is unaffected — it wears
-   * the mascot now, and the icon's only remaining job there is to have been
-   * *sampled* for its colour, which fails to `null` on its own.
+   * would leave an empty box in the row. The cat is unaffected — the icon's
+   * only job up there is to have been *sampled* for its colour, which fails to
+   * `null` on its own.
    */
   const [broken, setBroken] = useState(false);
   const hasIcon = wallet.icon !== "" && !broken;
 
-  /** Hover state that *moves* things. Colour answers to `hot` instead, so the
-   *  reduced-motion path keeps the full brand treatment: a wash is not motion,
-   *  and a row that only ever dims would be the poorer for losing it. */
-  const launched = hot && !still;
+  // Reported from an effect rather than from the handlers so that focus and
+  // hover fold into one answer before the picker hears about it. Leaving row A
+  // for row B lands both updates in the same React batch — the mouseleave and
+  // mouseenter come off one native mousemove — so the cat never flickers
+  // through neutral on the way across.
+  useEffect(() => {
+    onHot(wallet.rdns, hot);
+  }, [hot, wallet.rdns, onHot]);
 
-  const brand = useBrand(wallet.rdns, wallet.name, wallet.icon);
   /** Everything the hover paints, resolved once. `null` brand — a monochrome
    *  icon, an unreadable one, the mock — takes the neutral column. */
   const paint = {
     bg: hot ? (brand ? mix("#0a0a0c", brand, WASH) : NEUTRAL.bg) : "#0a0a0c",
     border: hot ? (brand ?? NEUTRAL.border) : C.border,
     ink: hot ? (brand ?? NEUTRAL.ink) : C.dim,
-    spark: brand ? forSparkle(brand) : NEUTRAL.ink,
-    /** The mascot is read against the near-white tile, so it is banded for a
-     *  light ground; with no brand it keeps its own cream. */
-    cat: brand ? band(brand, CAT_ON_LIGHT[0], CAT_ON_LIGHT[1]) : CAT_NEUTRAL,
-    /** The tile: white, warmed by a few percent of the wallet's colour so it
-     *  belongs to the same object as the cat standing on it. */
-    tileTop: brand ? mix(TILE_TOP, brand, 0.07) : TILE_TOP,
-    tileBottom: brand ? mix(TILE_BOTTOM, brand, 0.12) : TILE_BOTTOM,
-    tileRing: brand ? `${brand}59` : "rgba(255,255,255,.28)",
   };
 
   const initial = (wallet.name.trim()[0] ?? "?").toUpperCase();
 
   return (
-    <div
-      // Positioned so the sticker has something to be absolute against, and
-      // pointedly *without* a z-index, so it does not become a stacking
-      // context. That is what lets the tile grow: sealed inside its own row the
-      // sticker outranked only that row's button, so any part of it hanging
-      // below the row was painted over by the next row and the tile was capped
-      // at the row's own height. Unsealed, the sticker's `z-index:2` is measured
-      // against every row's `z-index:1` at once and wins over all of them,
-      // whichever direction it overhangs. The dialog's chrome sits above it on
-      // the same scale — see the close button.
-      style={sx("position:relative")}
+    <button
+      onClick={() => onChoose(wallet.rdns)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // Focus gets the hover treatment verbatim — the modal is keyboard
+      // navigable, and a focus ring alone would hide half the affordance.
+      // `:focus-visible` keeps the cat from retinting on a mouse click.
+      onFocus={(e) => {
+        if (focusVisible(e.currentTarget)) setFocused(true);
+      }}
+      onBlur={() => setFocused(false)}
+      style={sx(
+        // `z-index:1` against the cat's 2: the cat overhangs the panel's header
+        // and must paint over anything it reaches, and the close button's 6
+        // outranks both.
+        "position:relative;z-index:1;width:100%;display:flex;align-items:center;gap:12px;" +
+          "padding:10px 12px;border-radius:12px;cursor:pointer;text-align:left;" +
+          // Composited to a flat colour rather than layered translucently, so
+          // what shows is a tint of the row's real resting black and not of the
+          // panel gradient behind it.
+          `border:1px solid ${paint.border};background-color:${paint.bg};` +
+          // Leaning the top-right corner up, toward the cat, and lifting the row
+          // off the panel to match.
+          (hot && !still
+            ? "transform:rotate(-1.5deg);box-shadow:0 12px 30px rgba(0,0,0,.5);"
+            : "transform:rotate(0deg);box-shadow:0 0 0 0 rgba(0,0,0,0);") +
+          "transition:transform 240ms cubic-bezier(.2,.8,.2,1),border-color 200ms ease," +
+          "background-color 200ms ease,box-shadow 240ms ease",
+      )}
     >
-      {!still && (
+      {/* Wallets announce their icon as a data: URI, so nothing loads over the
+          network here. */}
+      {hasIcon ? (
+        <img
+          src={wallet.icon}
+          alt=""
+          onError={() => setBroken(true)}
+          style={sx("width:26px;height:26px;border-radius:7px;flex:none")}
+        />
+      ) : (
         <span
-          data-wsticker=""
-          aria-hidden="true"
           style={sx(
-            `position:absolute;${STICKER_SEAT};z-index:2;pointer-events:none;` +
-              // Scaling about the bottom-right corner is what tucks it *into*
-              // the row: the corner it shrinks toward is the corner it emerges
-              // from, so at rest the tile is a small patch sitting in the row's
-              // right-hand end, and the launch reads as growing out of it.
-              "transform-origin:100% 100%;" +
-              (launched
-                ? "opacity:1;transform:translate(0,0) scale(1) rotate(8deg);" +
-                  "transition:transform 420ms cubic-bezier(.34,1.56,.64,1),opacity 150ms ease"
-                : // The tile now paints above the row, so opacity is the only
-                  // thing hiding it at rest — it fades marginally faster than it
-                  // retracts so it cannot ghost over the row on the way out.
-                  "opacity:0;transform:translate(-12px,-6px) scale(.42) rotate(-14deg);" +
-                  "transition:transform 260ms cubic-bezier(.4,0,.6,1),opacity 180ms ease"),
+            `width:26px;height:26px;border-radius:7px;flex:none;display:grid;place-items:center;` +
+              `background:${C.raised};font:700 12px/1 ${MONO};color:${C.muted}`,
           )}
         >
-          <span
-            // The wobble's own element, and the tile proper.
-            //
-            // Near-white, because that is what makes a sticker read as stuck
-            // *on* the dialog rather than cut out of it: the source's tile is
-            // white against a pale page, and the equivalent move on a near-black
-            // panel is the same white, not another dark surface. A faint wash of
-            // the wallet's colour warms it; the shadow underneath is what sells
-            // the height.
-            //
-            // `overflow:hidden` is load-bearing — it is what crops the cat's
-            // head against the corner radius and gives the art its framing.
-            style={sx(
-              "display:block;width:100%;height:100%;overflow:hidden;border-radius:24px;" +
-                `background:linear-gradient(170deg,${paint.tileTop},${paint.tileBottom});` +
-                `box-shadow:0 0 0 1px ${paint.tileRing},0 26px 46px rgba(0,0,0,.72),` +
-                "0 10px 20px rgba(0,0,0,.5);" +
-                "transition:transform 300ms ease,background 220ms ease;" +
-                (launched ? "animation:vcStickerWobble 2400ms ease-in-out 440ms infinite alternate" : ""),
-            )}
-          >
-            <CatMascot color={paint.cat} wink={launched} />
-          </span>
+          {initial}
         </span>
       )}
+      <span style={sx(`font:700 13px/1 ${SANS};color:${C.text};flex:1`)}>{wallet.name}</span>
+      {/* The reference's CTA — solid brand colour on hover, ~200ms — and this
+          chip inherits that job, in the tinted-tag shape `theme.miniTag` uses:
+          brand ink over a 10% wash inside a 30% border.
 
-      {!still &&
-        SPARKS.map((s) => (
-          <Spark
-            key={s.at}
-            at={s.at}
-            size={s.size}
-            delay={s.delay}
-            on={launched}
-            color={paint.spark}
-          />
-        ))}
-
-      <button
-        onClick={() => onChoose(wallet.rdns)}
-        // Focus gets the hover treatment verbatim — the modal is keyboard
-        // navigable, and a focus ring alone would hide half the affordance.
-        // `:focus-visible` keeps the sticker from firing on a mouse click.
-        onFocus={(e) => {
-          if (focusVisible(e.currentTarget)) setFocused(true);
-        }}
-        onBlur={() => setFocused(false)}
+          The padding and border are cancelled by an exactly equal negative
+          margin, which is what lets the chip grow a box on hover without moving
+          by a pixel at rest: `4+1` vertical and `6+1` horizontal, so the flex
+          item measures precisely the same as the bare text it was before, and
+          the wash paints outward into the row's own padding. */}
+      <span
         style={sx(
-          "position:relative;z-index:1;width:100%;display:flex;align-items:center;gap:12px;" +
-            "padding:10px 12px;border-radius:12px;cursor:pointer;text-align:left;" +
-            // The wallet's own colour, at the source's density: a 10% wash on
-            // the background and a 33% tint on the border. Composited to a flat
-            // colour rather than layered translucently, so what shows is a tint
-            // of the row's real resting black and not of the panel behind it.
-            `border:1px solid ${paint.border};background-color:${paint.bg};` +
-            // Leaning the top-right corner up, toward the sticker that just
-            // pulled it, and lifting the row off the panel to match.
-            (launched
-              ? "transform:rotate(-1.5deg);box-shadow:0 12px 30px rgba(0,0,0,.5);"
-              : "transform:rotate(0deg);box-shadow:0 0 0 0 rgba(0,0,0,0);") +
-            "transition:transform 240ms cubic-bezier(.2,.8,.2,1),border-color 200ms ease," +
-            "background-color 200ms ease,box-shadow 240ms ease",
+          `font:500 9px/1 ${MONO};letter-spacing:.1em;color:${paint.ink};` +
+            "padding:4px 6px;margin:-5px -7px;border-radius:5px;" +
+            `border:1px solid ${hot && brand ? `${brand}4d` : "transparent"};` +
+            `background-color:${hot && brand ? `${brand}1a` : "transparent"};` +
+            "transition:color 200ms ease,border-color 200ms ease,background-color 200ms ease",
         )}
       >
-        {/* Wallets announce their icon as a data: URI, so nothing loads
-            over the network here. */}
-        {hasIcon ? (
-          <img
-            src={wallet.icon}
-            alt=""
-            onError={() => setBroken(true)}
-            style={sx("width:26px;height:26px;border-radius:7px;flex:none")}
-          />
-        ) : (
-          <span
-            style={sx(
-              `width:26px;height:26px;border-radius:7px;flex:none;display:grid;place-items:center;` +
-                `background:${C.raised};font:700 12px/1 ${MONO};color:${C.muted}`,
-            )}
-          >
-            {initial}
-          </span>
-        )}
-        <span style={sx(`font:700 13px/1 ${SANS};color:${C.text};flex:1`)}>{wallet.name}</span>
-        {/* The source's CTA — solid brand colour on hover, ~200ms — and this
-            chip inherits that job, in the tinted-tag shape `theme.miniTag`
-            uses: brand ink over a 10% wash inside a 30% border.
-
-            The padding and border are cancelled by an exactly equal negative
-            margin, which is what lets the chip grow a box on hover without
-            moving by a pixel at rest: `4+1` vertical and `6+1` horizontal, so
-            the flex item measures precisely the same as the bare text it was
-            before, and the wash paints outward into the row's own padding. */}
-        <span
-          style={sx(
-            `font:500 9px/1 ${MONO};letter-spacing:.1em;color:${paint.ink};` +
-              "padding:4px 6px;margin:-5px -7px;border-radius:5px;" +
-              `border:1px solid ${hot && brand ? `${brand}4d` : "transparent"};` +
-              `background-color:${hot && brand ? `${brand}1a` : "transparent"};` +
-              "transition:color 200ms ease,border-color 200ms ease,background-color 200ms ease",
-          )}
-        >
-          INSTALLED
-        </span>
-      </button>
-    </div>
+        INSTALLED
+      </span>
+    </button>
   );
 }
 
@@ -674,6 +778,21 @@ export function WalletPicker({
   // Read once per render of the picker, not per row: `matchMedia` is cheap but
   // there is no reason to ask it five times for the same answer.
   const still = stillMotion();
+  const brands = useBrands(wallets);
+
+  /**
+   * Which wallet the cat is wearing. Held by `rdns` rather than as a colour so
+   * that a sampled colour arriving late still reaches the cat: `brands` is what
+   * resolves, and this only says *whose*.
+   *
+   * Cleared by identity, never unconditionally — a row that reports itself cold
+   * after another row has already claimed the cat must not take it away.
+   */
+  const [hotRdns, setHotRdns] = useState<string | null>(null);
+  const onHot = useCallback((rdns: string, on: boolean) => {
+    setHotRdns((cur) => (on ? rdns : cur === rdns ? null : cur));
+  }, []);
+  const hotBrand = hotRdns ? (brands[hotRdns] ?? null) : null;
 
   return (
     <div
@@ -690,30 +809,29 @@ export function WalletPicker({
           "width:360px;max-width:calc(100vw - 32px);border:1px solid #27272a;border-radius:16px;" +
             "background:linear-gradient(180deg,#101012,#0b0b0d);padding:20px;" +
             // `overflow:visible` is load-bearing, not the default falling
-            // through: a row's sticker hangs outside the row's box and into
-            // this padding, and anything that clipped here would behead it.
+            // through: the cat hangs 51.8px above this box and 5px past its
+            // right edge, and anything that clipped here would behead it.
             "overflow:visible;position:relative;" +
             "box-shadow:0 24px 64px rgba(0,0,0,.6)",
         )}
       >
-        {/* 44px, not the 16px this header used to carry. The extra 28px is
-            clearance: it is what the first row's sticker rises through, and
-            every pixel of it is a pixel of tile size. `STICKER_SEAT` does that
-            arithmetic; changing this number invalidates it. */}
-        <div style={sx("display:flex;align-items:center;gap:12px;margin-bottom:44px")}>
-          <span style={sx(`font:700 14px/1 ${SANS};letter-spacing:-.01em`)}>Connect a wallet</span>
-          <div style={sx("flex:1")} />
+        <CatSeat brand={hotBrand} still={still} />
+
+        {/* The close button leads on its own line: the top-right corner, where
+            it used to sit opposite the title, is the cat's seat now. Measured
+            clear of the cat's widest box by 169.3px — see `CAT_SEAT` — so this
+            is composition rather than a dodge, and the button keeps its full
+            26px target. */}
+        <div style={sx(`margin-bottom:${HEADER_GAP}px`)}>
           <button
             onClick={onCancel}
             aria-label="Close"
             style={sx(
-              // Above the stickers (2) and their sparkles (3), now that the rows
-              // no longer seal those into per-row stacking contexts. Insurance
-              // rather than mechanism: the first row's sticker is seated clear
-              // of this button's box by ~9px measured, and hiding a sticker
-              // under the close button is precisely the bug that seat exists to
-              // avoid. If a future seat does stray up here, the chrome wins and
-              // the close button stays legible.
+              // Above the cat (2) and its sparkles (3). Insurance rather than
+              // mechanism: the seat is measured clear of this button in both
+              // axes, and hiding the close button under a mascot is precisely
+              // the bug that measurement exists to avoid. If a future seat does
+              // stray over here, the chrome wins and the button stays legible.
               `position:relative;z-index:6;width:26px;height:26px;border:1px solid ${C.border};border-radius:8px;` +
                 `background:transparent;color:${C.muted};font:500 13px/1 ${SANS};cursor:pointer`,
             )}
@@ -722,9 +840,20 @@ export function WalletPicker({
           </button>
         </div>
 
+        <div style={sx(`margin-bottom:${TITLE_GAP}px`)}>
+          <span style={sx(`font:700 14px/1 ${SANS};letter-spacing:-.01em`)}>Connect a wallet</span>
+        </div>
+
         <div style={sx("display:flex;flex-direction:column;gap:8px")}>
           {wallets.map((w) => (
-            <WalletRow key={w.rdns} wallet={w} onChoose={onChoose} still={still} />
+            <WalletRow
+              key={w.rdns}
+              wallet={w}
+              brand={brands[w.rdns] ?? null}
+              onChoose={onChoose}
+              onHot={onHot}
+              still={still}
+            />
           ))}
         </div>
 

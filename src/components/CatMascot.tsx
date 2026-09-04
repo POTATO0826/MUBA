@@ -15,11 +15,11 @@ import { sx } from "../lib/sx.ts";
  *
  * Two further departures from the export, both deliberate:
  *
- * - **The tile is gone.** The sticker in `WalletPicker` is the tile, and it
+ * - **The tile is gone.** `CatSeat` in `WalletPicker` is the tile, and it
  *   supplies the light surface, the radius and the shadow. The cat is drawn
  *   edge to edge inside it and clipped by its corner radius, which is what
  *   gives the head its cropped, sticker-like framing.
- * - **The art no longer carries its own -9° tilt.** The sticker rotates as one
+ * - **The art no longer carries its own -9° tilt.** The seat rotates as one
  *   piece, so a counter-tilt inside it read as the face refusing to lean with
  *   its own tile. The rest of the export's placement — the off-centre
  *   translate, the 2.9x blow-up that crops the head — is kept verbatim.
@@ -55,6 +55,20 @@ const MOUTH =
  *  brand-coloured eye stops reading as an eye. */
 const INK = "#050608";
 
+/**
+ * The fur retints rather than cutting.
+ *
+ * There is one cat in the wallet picker now and it wears whichever wallet the
+ * pointer is over, so `color` changes while the mascot is on screen — several
+ * times a second if someone runs the pointer down the list. `fill` is a
+ * presentation attribute, which puts it in the cascade like any other
+ * declaration and makes it transitionable; 220ms is the same clock the row's
+ * wash and the tile's warm cast run on, so the whole dialog changes colour as
+ * one object. Nothing here moves: a retint is not motion, which is why it
+ * survives `prefers-reduced-motion` untouched.
+ */
+const FUR = "transition:fill 220ms ease";
+
 const EYES = [
   { x: 157.2, y: 169.6, w: 19.3, h: 43 },
   { x: 204.6, y: 167.8, w: 20.9, h: 43 },
@@ -70,9 +84,9 @@ export function CatMascot({ color, wink }: { color: string; wink: boolean }) {
       style={sx("display:block")}
     >
       <g transform={ART}>
-        <path d={EAR_L} fill={color} />
-        <path d={EAR_R} fill={color} />
-        <path d={HEAD} fill={color} />
+        <path d={EAR_L} fill={color} style={sx(FUR)} />
+        <path d={EAR_R} fill={color} style={sx(FUR)} />
+        <path d={HEAD} fill={color} style={sx(FUR)} />
         {EYES.map((e, i) => (
           <rect
             key={e.x}
