@@ -5,6 +5,7 @@ import { poolOf, usdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import type { Room } from "../state/room.ts";
+import { STAKES_OFF_COPY, stakeBasisLine, type DuelCustody } from "./BoxBuilder.tsx";
 import { C, MONO, SANS } from "../theme.ts";
 
 const CARD =
@@ -144,9 +145,23 @@ interface RoomLobbyProps {
   state: Room;
   walletConnected: boolean;
   onEnterDuel: () => void;
+  /**
+   * What is actually holding this room's two stakes — `null`, the default, when
+   * nothing is.
+   *
+   * The same seam `BoxBuilder` carries, for the same reason and with the same
+   * default: see {@link DuelCustody}.
+   */
+  custody?: DuelCustody | null;
 }
 
-export function RoomLobby({ room, state, walletConnected, onEnterDuel }: RoomLobbyProps) {
+export function RoomLobby({
+  room,
+  state,
+  walletConnected,
+  onEnterDuel,
+  custody = null,
+}: RoomLobbyProps) {
   const { seat, started, error, busy } = state;
   const iAmReady = seat === "host" ? room.ready[0] : seat === "guest" ? room.ready[1] : false;
   const bystander = seat === null;
@@ -171,14 +186,24 @@ export function RoomLobby({ room, state, walletConnected, onEnterDuel }: RoomLob
         >
           {started ? "BOTH READY" : full ? "LOBBY · PICK READY" : "WAITING FOR OPPONENT"}
         </span>
+        {/* The same line the duel strip prints, from the same helper, so the
+            lobby and the board a player walks into cannot disagree about who
+            holds the money. */}
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.1em;color:${C.dim}`)}>
-          {usdc(room.stakeUsdc)} EACH · {room.durationMinutes} MIN
+          {stakeBasisLine(room.stakeUsdc, custody).toUpperCase()} · {room.durationMinutes} MIN
         </span>
         <div style={sx("flex:1")} />
-        <span style={sx(LABEL)}>WINNER TAKES</span>
-        <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>
-          {usdc(poolOf(room.stakeUsdc))}
-        </span>
+        {/* WINNER TAKES $20.00 stood here unconditionally. It is a claim about
+            custody — a pot, held, paid to whoever wins — and it is now gated on
+            the thing that would do the holding. */}
+        {custody !== null && (
+          <>
+            <span style={sx(LABEL)}>WINNER TAKES</span>
+            <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>
+              {usdc(poolOf(room.stakeUsdc))}
+            </span>
+          </>
+        )}
       </div>
 
       <div style={sx("display:grid;gap:14px")}>
@@ -255,8 +280,12 @@ export function RoomLobby({ room, state, walletConnected, onEnterDuel }: RoomLob
           </button>
         </div>
 
+        {/* Headed HOW THIS SETTLES, over a paragraph that describes how the duel
+            *runs* — one book, blind picks, a simultaneous reveal. Nothing in it
+            was ever about settlement, and nothing in this build settles, so the
+            heading was the only untrue word in the panel. */}
         <div style={sx(`${CARD};display:flex;flex-direction:column;gap:8px`)}>
-          <span style={sx(LABEL)}>HOW THIS SETTLES</span>
+          <span style={sx(LABEL)}>HOW THIS DUEL RUNS</span>
           <span style={sx(`font:500 12px/1.5 ${SANS};color:${C.muted}`)}>
             Both players read the same live Thetanuts book on Base. Picks stay hidden until both
             sides lock, then reveal together.{" "}
@@ -264,6 +293,14 @@ export function RoomLobby({ room, state, walletConnected, onEnterDuel }: RoomLob
               ? `Agreed start ${new Date(room.readyBothAt).toLocaleTimeString()}.`
               : "The start instant is fixed when the second player reports ready."}
           </span>
+          {custody === null && (
+            <span
+              data-role="notional-stake"
+              style={sx(`font:400 11px/1.5 ${SANS};color:${C.amber};text-wrap:pretty`)}
+            >
+              {STAKES_OFF_COPY}
+            </span>
+          )}
         </div>
       </div>
     </div>

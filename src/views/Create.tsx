@@ -7,6 +7,7 @@ import {
 } from "../data/stake.ts";
 import { sx } from "../lib/sx.ts";
 import type { BattleState } from "../state/battle.ts";
+import { NOTIONAL_STAKE_COPY, stakeBasisLine, type DuelCustody } from "./BoxBuilder.tsx";
 import { C, MONO, SANS } from "../theme.ts";
 import type { GameMode } from "../types.ts";
 
@@ -110,6 +111,14 @@ interface CreateProps {
   creating: boolean;
   createError: string | null;
   walletConnected: boolean;
+  /**
+   * What would actually hold the two stakes this screen is setting — `null`,
+   * the default, when nothing would.
+   *
+   * The same seam `BoxBuilder` carries, for the same reason and with the same
+   * default: see {@link DuelCustody}.
+   */
+  custody?: DuelCustody | null;
   onBack: () => void;
   onStakeInput: (raw: string) => void;
   onStakeBlur: () => void;
@@ -124,6 +133,7 @@ interface CreateProps {
 /** Arena setup: stake, duration, name. Four fields, then a link. */
 export function Create(p: CreateProps) {
   const { state } = p;
+  const custody = p.custody ?? null;
 
   return (
     <div style={sx("padding:26px 28px;max-width:760px;margin:0 auto;display:grid;gap:14px")}>
@@ -184,14 +194,34 @@ export function Create(p: CreateProps) {
           </div>
         </div>
 
+        {/* The figure is real arithmetic — twice the number in the field beside
+            it — and it stays. What went is the claim about what happens to it.
+
+            This panel used to be headed WINNER TAKES and footed "Both stakes —
+            $10.00 from each player. Settled in USDC." Nothing settles: the
+            arena is not routed through `useDuelStake`, and `DuelEscrow` is
+            written and reviewed but not deployed. TWICE THE STAKE is the same
+            number with only the arithmetic asserted. */}
         <div style={sx("padding:20px")}>
-          <div style={sx(LABEL)}>WINNER TAKES</div>
+          <div style={sx(LABEL)}>{custody ? "WINNER TAKES" : "TWICE THE STAKE"}</div>
           <div style={sx(`margin-top:14px;font:700 30px/1 ${MONO};letter-spacing:-.02em`)}>
             {p.prizeLabel}
           </div>
           <div style={sx(`margin-top:12px;font:400 11.5px/1.55 ${SANS};color:${C.muted}`)}>
-            Both stakes — {p.entryLabel} from each player. Settled in USDC.
+            {custody
+              ? `Both stakes — ${p.entryLabel} from each player. Settled in USDC.`
+              : stakeBasisLine(state.stakeUsdc, null)}
           </div>
+          {custody === null && (
+            <div
+              data-role="notional-stake"
+              style={sx(
+                `margin-top:10px;font:400 10.5px/1.5 ${SANS};color:${C.amber};text-wrap:pretty`,
+              )}
+            >
+              {NOTIONAL_STAKE_COPY}
+            </div>
+          )}
         </div>
       </div>
 
@@ -259,7 +289,15 @@ export function Create(p: CreateProps) {
               (p.creating || !p.walletConnected ? ";opacity:.45;cursor:not-allowed" : ""),
           )}
         >
-          {p.creating ? "Creating…" : `Create arena & link · ${p.entryLabel}`}
+          {/* The amount used to ride on this label — "Create arena & link ·
+              $10.00" — which is how a price on a button reads: press it and you
+              are charged. Pressing it writes a row in the room store and mints
+              an invite link. Nothing is charged, so nothing is priced here. */}
+          {p.creating
+            ? "Creating…"
+            : custody
+              ? `Create arena & link · ${p.entryLabel}`
+              : "Create arena & link"}
         </button>
       </div>
 

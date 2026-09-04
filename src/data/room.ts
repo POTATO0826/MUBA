@@ -18,7 +18,16 @@ export interface RoomView {
   host: string;
   /** Lowercased wallet address of the challenger, `null` until the slot is claimed. */
   guest: string | null;
-  /** What each player stakes, in USDC. The winner takes both. */
+  /**
+   * The stake each seat *names*, in USDC — **a setting, not a transfer.**
+   *
+   * Nothing on the arena path takes it: no approval, no transfer, no escrow.
+   * `useDuelStake` reaches the seeded match flow only, and `DuelEscrow` is
+   * compiled and reviewed but not deployed, so no winner takes anything here.
+   * The screens say so out loud (`NOTIONAL_STAKE_COPY`), and a test greps the
+   * rendered DOM to keep them saying it. This comment said "the winner takes
+   * both" for a long time, which is how the screens came to say it too.
+   */
   stakeUsdc: number;
   /** How long the tape runs, in whole minutes. */
   durationMinutes: number;

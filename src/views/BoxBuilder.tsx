@@ -289,15 +289,50 @@ export function stakeBasisLine(stakeUsdc: number, custody: DuelCustody | null): 
 }
 
 /**
- * Said once, in the duel strip, in the same register as the Review panel's
- * "Buying is switched off in this build".
+ * The load-bearing clause, held once so it cannot drift between screens.
  *
- * The house voice for a switched-off capability on this screen is: name the
- * thing that is off, say what *is* real, and say exactly what would have to
- * change. This does all three.
+ * Four surfaces have to say this — the duel strip here, the hub, the create
+ * screen and the room lobby — and they need it in two shapes: one that points at
+ * an amount rendered directly above it, and one that stands alone where there is
+ * no amount to point at. Two *sentences* would be two vocabularies for the same
+ * fact, and the one that got read less would rot. Two framings of one clause is
+ * a single fact with a single place to correct it.
+ *
+ * Everything checkable lives in here: the approval, the transfer, the escrow,
+ * and the deployment status of the contract that would do all three.
+ */
+const STAKES_OFF_CLAUSE =
+  "no USDC is approved, transferred or escrowed on this path, and DuelEscrow is written and reviewed but not deployed";
+
+/**
+ * Said in the duel strip, in the same register as the Review panel's "Buying is
+ * switched off in this build".
+ *
+ * The house voice for a switched-off capability is: name the thing that is off,
+ * say what *is* real, and say exactly what would have to change. This does all
+ * three.
+ *
+ * "The amount above" is a deictic and it is load-bearing, so this form is only
+ * correct where an amount really is rendered above it — the duel strip, the
+ * create screen's pot panel. Where there is none, use {@link STAKES_OFF_COPY},
+ * which is the same clause without the pointer.
  */
 export const NOTIONAL_STAKE_COPY =
-  "Stakes are switched off in this build. The amount above is a number this room carries, not money anyone took — no USDC is approved, transferred or escrowed on this path, and DuelEscrow is written and reviewed but not deployed. The duel is for pride.";
+  "Stakes are switched off in this build. The amount above is a number this room carries, " +
+  `not money anyone took — ${STAKES_OFF_CLAUSE}. The duel is for pride.`;
+
+/**
+ * The same fact where no amount is on screen to point at — the hub's line before
+ * a wallet is connected, and the room lobby's settlement panel.
+ *
+ * The hub's version of this sentence used to be "The arena stakes real USDC on
+ * Base. Connect a wallet to enter." That is the worst placement the untruth had:
+ * a flat, unhedged claim about custody, read by a player who has not yet
+ * committed to anything and is deciding whether to.
+ */
+export const STAKES_OFF_COPY =
+  `Stakes are switched off in this build: ${STAKES_OFF_CLAUSE}. ` +
+  "A duel's stake is a number its room carries, not money anyone took. The duel is for pride.";
 
 /**
  * §6.1, stated as the fact it currently is rather than as a rule for later.

@@ -49,12 +49,19 @@ import {
   NO_FILL_COPY,
   PICK_VERSION,
   REVEAL_COPY,
+  STAKES_OFF_COPY,
   decodeBoxPick,
   encodeBoxPick,
   noFillCopy,
   stakeBasisLine,
   type DuelCustody,
 } from "../src/views/BoxBuilder.tsx";
+import { Create } from "../src/views/Create.tsx";
+import { Hub } from "../src/views/Hub.tsx";
+import { RoomLobby } from "../src/views/RoomLobby.tsx";
+import { INITIAL_STATE } from "../src/state/battle.ts";
+import type { Room } from "../src/state/room.ts";
+import type { WalletIdentity } from "../src/data/wallet.ts";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
   LadderSnapshot & { prices: Record<string, number> };
@@ -418,6 +425,32 @@ describe("§6.1 — no fill, no verdict", () => {
  * escrowed", which a regex cannot tell from a promise. It is subtracted from the
  * text and separately asserted to be present, so the exemption cannot be used to
  * smuggle anything back in.
+ *
+ * ## Four screens, not one
+ *
+ * The duel strip was where this was first caught, and it was never the only
+ * place. `Hub` told a player who had not connected anything that "the arena
+ * stakes real USDC on Base" and headed every room card with a `$20.00 pot`;
+ * `Create` headed the figure WINNER TAKES and closed with "Both stakes — $10.00
+ * from each player. Settled in USDC."; `RoomLobby` printed WINNER TAKES $20.00
+ * beside the seats. All four now share `stakeBasisLine`, the two denial
+ * constants and the `custody` seam, and all four are scanned here — because a
+ * promise deleted from one screen and left standing on the next is not deleted.
+ */
+/**
+ * The words a promise about custody is made of.
+ *
+ * Three of these were added when the scan reached the other three screens,
+ * because the list as it stood would have let two of the four real sentences
+ * through — proof that a word list drawn from one screen's mistakes does not
+ * generalise on its own:
+ *
+ *  - `" pot"` (with the space, so `spot` is not a hit) for the hub card's
+ *    `$20.00 pot`, which `"the pot"` missed for want of an article.
+ *  - `"real usdc"` for `The arena stakes real USDC on Base`, the flattest form
+ *    the untruth took and the one none of the original eight words matched.
+ *  - `"settled in"` for `Settled in USDC`, which was only caught by accident,
+ *    via the `both stakes` in the same sentence.
  */
 const CUSTODY_PROMISES = [
   "winner takes",
@@ -425,17 +458,44 @@ const CUSTODY_PROMISES = [
   "rake",
   "escrow",
   "both stakes",
-  "the pot",
+  " pot",
   "held in",
   "returns both",
+  "real usdc",
+  "settled in",
 ];
 
+/** The only two sentences allowed to contain a banned word, because their
+ *  entire job is to deny the thing the word names. */
+const DENIALS = [NOTIONAL_STAKE_COPY, STAKES_OFF_COPY];
+
 describe("custody is claimed only when something holds the stake", () => {
-  /** The screen's whole text minus the one sentence that denies custody. */
-  function readableWithoutTheDenial(): string {
-    const denial = container.querySelector('[data-role="notional-stake"]')?.textContent ?? "";
-    expect(denial).toBe(NOTIONAL_STAKE_COPY);
-    return text().split(denial).join(" ");
+  /**
+   * The screen's whole text minus the sentences that deny custody.
+   *
+   * Every exempted node has to be one of `DENIALS` verbatim, so the exemption
+   * is a fixed list of two argued-for sentences rather than an attribute anyone
+   * can spray on a promise. `least` guards the other direction: a screen that
+   * shows an amount and no denial at all would otherwise pass by saying nothing.
+   */
+  function readableWithoutTheDenial(least = 1): string {
+    const nodes = [...container.querySelectorAll('[data-role="notional-stake"]')];
+    expect(nodes.length).toBeGreaterThanOrEqual(least);
+    let body = text();
+    for (const node of nodes) {
+      const denial = node.textContent ?? "";
+      expect(DENIALS).toContain(denial);
+      body = body.split(denial).join(" ");
+    }
+    return body;
+  }
+
+  /** Grep one mounted screen and report the state and the words together, so a
+   *  failure names both rather than printing the whole page. */
+  function scan(label: string, least = 1) {
+    const body = readableWithoutTheDenial(least).toLowerCase();
+    const found = CUSTODY_PROMISES.filter((p) => body.includes(p));
+    expect({ state: label, promises: found }).toEqual({ state: label, promises: [] });
   }
 
   test("no state of an unstaked duel promises money to anyone", () => {
@@ -478,14 +538,7 @@ describe("custody is claimed only when something holds the stake", () => {
     for (const state of states) {
       const ui = state.ui();
       mount(ui);
-      const body = readableWithoutTheDenial().toLowerCase();
-      const found = CUSTODY_PROMISES.filter((p) => body.includes(p));
-      // Reported as a pair so a failure names the state and the word, rather
-      // than printing the whole screen.
-      expect({ state: state.label, promises: found }).toEqual({
-        state: state.label,
-        promises: [],
-      });
+      scan(state.label);
       // The stake itself is still shown — it is a real setting both seats
       // agreed to, and hiding it would make the create screen's field look
       // like it did nothing. It is shown labelled.
@@ -536,6 +589,208 @@ describe("custody is claimed only when something holds the stake", () => {
     expect(text()).toContain(`winner takes ${usdc(20)}`);
     expect(text()).toContain("6-hour refund returns both stakes, rake-free");
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // The other three screens that claimed custody of the same money
+  // ───────────────────────────────────────────────────────────────────────────
+
+  const DISCONNECTED: WalletIdentity = {
+    address: null,
+    chainId: null,
+    walletName: null,
+    connected: false,
+    connecting: false,
+    wrongNetwork: false,
+  };
+
+  const CONNECTED: WalletIdentity = {
+    ...DISCONNECTED,
+    address: HOST,
+    chainId: 8453,
+    walletName: "MetaMask",
+    connected: true,
+  };
+
+  const noop = () => {};
+
+  function hub(
+    identity: WalletIdentity,
+    rooms: readonly RoomView[],
+    custody: DuelCustody | null = null,
+  ) {
+    return (
+      <Hub
+        identity={identity}
+        rooms={rooms}
+        custody={custody}
+        onEnterMode={noop}
+        onOpenRoom={noop}
+        onConnect={noop}
+        onDisconnect={noop}
+        onRefresh={noop}
+      />
+    );
+  }
+
+  function create(custody: DuelCustody | null = null) {
+    return (
+      <Create
+        state={INITIAL_STATE}
+        entryLabel={usdc(10)}
+        prizeLabel={usdc(20)}
+        inviteUrl={null}
+        creating={false}
+        createError={null}
+        walletConnected
+        custody={custody}
+        onBack={noop}
+        onStakeInput={noop}
+        onStakeBlur={noop}
+        onStakeUp={noop}
+        onStakeDown={noop}
+        onLobbyName={noop}
+        onDuration={noop}
+        onCreateArena={noop}
+        onOpenLobby={noop}
+      />
+    );
+  }
+
+  /** A `useRoom` return with nothing but the two fields the lobby branches on. */
+  function roomState(seat: Room["seat"], started: boolean): Room {
+    return {
+      room: null,
+      inviteUrl: null,
+      arrivedFromLink: false,
+      seat,
+      started,
+      error: null,
+      busy: false,
+      create: async () => {},
+      open: async () => {},
+      pick: async () => {},
+      join: async () => {},
+      ready: async () => {},
+      leave: noop,
+      dismissError: noop,
+    };
+  }
+
+  test("the hub promises nothing, connected or not", () => {
+    const id = openRoom();
+    const states: { label: string; ui: () => React.ReactElement }[] = [
+      // The worst placement the untruth had: read before a player has committed
+      // to anything, while they are deciding whether to connect a wallet.
+      { label: "no wallet, no duels", ui: () => hub(DISCONNECTED, []) },
+      { label: "no wallet, duels listed", ui: () => hub(DISCONNECTED, [view(id)]) },
+      { label: "connected, duels listed", ui: () => hub(CONNECTED, [view(id)]) },
+    ];
+
+    for (const state of states) {
+      mount(state.ui());
+      scan(state.label);
+      unmount();
+    }
+
+    // The card still carries the amount, labelled — same sentence as the strip.
+    mount(hub(CONNECTED, [view(id)]));
+    expect(text()).toContain(stakeBasisLine(10, null));
+    unmount();
+  });
+
+  test("the create screen prices a setting, not a transfer", () => {
+    mount(create());
+    scan("create, before the arena exists");
+    // Twice the stake is arithmetic and stays on screen; the claim about where
+    // it goes is what left.
+    expect(text()).toContain(usdc(20));
+    expect(text()).toContain(stakeBasisLine(10, null));
+    // The button is not a price tag. "Create arena & link · $10.00" reads as a
+    // charge, and pressing it writes a row in a `Map`.
+    expect(button("Create arena & link")).toBeDefined();
+    unmount();
+  });
+
+  test("the room lobby promises nothing from any seat", () => {
+    const id = openRoom();
+    const states: { label: string; ui: () => React.ReactElement }[] = [
+      {
+        label: "host, both ready",
+        ui: () => (
+          <RoomLobby
+            room={view(id)}
+            state={roomState("host", true)}
+            walletConnected
+            onEnterDuel={noop}
+          />
+        ),
+      },
+      {
+        label: "guest, both ready",
+        ui: () => (
+          <RoomLobby
+            room={view(id)}
+            state={roomState("guest", true)}
+            walletConnected
+            onEnterDuel={noop}
+          />
+        ),
+      },
+      {
+        label: "bystander on the invite link",
+        ui: () => (
+          <RoomLobby
+            room={view(id)}
+            state={roomState(null, true)}
+            walletConnected={false}
+            onEnterDuel={noop}
+          />
+        ),
+      },
+    ];
+
+    for (const state of states) {
+      mount(state.ui());
+      scan(state.label);
+      expect(text()).toContain(stakeBasisLine(10, null).toUpperCase());
+      unmount();
+    }
+  });
+
+  test("all three screens hand the promise back when an escrow really holds it", () => {
+    const id = openRoom();
+    const held: DuelCustody = {
+      escrow: "0x00000000000000000000000000000000000dead0",
+      refundHours: 6,
+    };
+
+    // One seam, one switch, three screens — and the switch is an address, not a
+    // flag, so nothing here can be turned on by optimism.
+    mount(hub(CONNECTED, [view(id)], held));
+    expect(text()).toContain(`winner takes ${usdc(20)}`);
+    expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
+    unmount();
+
+    mount(create(held));
+    expect(text()).toContain("WINNER TAKES");
+    expect(text()).toContain("Both stakes");
+    expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
+    unmount();
+
+    mount(
+      <RoomLobby
+        room={view(id)}
+        state={roomState("host", true)}
+        walletConnected
+        custody={held}
+        onEnterDuel={noop}
+      />,
+    );
+    expect(text()).toContain("WINNER TAKES");
+    expect(text()).toContain(usdc(20));
+    expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
+    unmount();
   });
 
   test("App hands the arena no custody, because the arena has none", async () => {

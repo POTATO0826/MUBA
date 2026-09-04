@@ -1,8 +1,8 @@
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import type { RoomView } from "../data/room.ts";
-import { poolOf, usdc } from "../data/stake.ts";
 import { addressInitials, shortAddress, type WalletIdentity } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
+import { STAKES_OFF_COPY, stakeBasisLine, type DuelCustody } from "./BoxBuilder.tsx";
 import { C, MONO, SANS } from "../theme.ts";
 import type { GameMode } from "../types.ts";
 
@@ -84,10 +84,12 @@ function ModeCard({
 function DuelRow({
   room,
   address,
+  custody,
   onOpen,
 }: {
   room: RoomView;
   address: string | null;
+  custody: DuelCustody | null;
   onOpen: (id: string) => void;
 }) {
   const me = address?.toLowerCase() ?? "";
@@ -108,8 +110,12 @@ function DuelRow({
         <span style={sx(`font:700 12px/1 ${MONO};color:${C.text}`)}>
           {shortAddress(room.host)} vs {other ? shortAddress(other) : "—"}
         </span>
+        {/* The same line the duel strip prints, from the same helper. It said
+            "$20.00 pot", which named a pot: two stakes, pooled, waiting for a
+            winner. Nothing pools them — `room.stakeUsdc` is a number in the
+            room store's `Map` and no code path turns it into money. */}
         <span style={sx(`font:400 10.5px/1 ${MONO};color:${C.dim}`)}>
-          {usdc(poolOf(room.stakeUsdc))} pot · {room.durationMinutes} min · {state}
+          {stakeBasisLine(room.stakeUsdc, custody)} · {room.durationMinutes} min · {state}
         </span>
       </div>
       <div style={sx("flex:1")} />
@@ -128,6 +134,15 @@ interface HubProps {
   onConnect: () => void;
   onDisconnect: () => void;
   onRefresh: () => void;
+  /**
+   * What is actually holding these duels' stakes — `null`, the default, when
+   * nothing is.
+   *
+   * The same seam `BoxBuilder` carries, for the same reason and with the same
+   * default: see {@link DuelCustody}. A caller who does not think about custody
+   * gets a hub that promises none.
+   */
+  custody?: DuelCustody | null;
 }
 
 /**
@@ -144,6 +159,7 @@ export function Hub({
   onConnect,
   onDisconnect,
   onRefresh,
+  custody = null,
 }: HubProps) {
   const connected = Boolean(identity.address);
 
@@ -205,9 +221,29 @@ export function Hub({
         ))}
       </div>
 
+      {/* What is true about connecting, and what is true about the stake, said
+          apart from each other.
+
+          One sentence used to carry both: "The arena stakes real USDC on Base.
+          Connect a wallet to enter." The second half is right — the wallet is a
+          real wallet on Base and the address it returns is the seat. The first
+          half was the flattest form the custody untruth took anywhere, and the
+          worst placed: read before a player has committed to anything, at the
+          moment they are deciding whether to. */}
       {!connected && (
         <span style={sx(`font:400 11.5px/1.5 ${SANS};color:${C.muted};text-align:center`)}>
-          The arena stakes real USDC on Base. Connect a wallet to enter.
+          Connect a wallet to enter — your address is your seat at the table.
+        </span>
+      )}
+      {custody === null && (
+        <span
+          data-role="notional-stake"
+          style={sx(
+            `font:400 11px/1.5 ${SANS};color:${C.amber};text-align:center;` +
+              "max-width:64ch;margin:0 auto;text-wrap:pretty",
+          )}
+        >
+          {STAKES_OFF_COPY}
         </span>
       )}
 
@@ -226,7 +262,13 @@ export function Hub({
         ) : (
           <div style={sx("display:grid;gap:8px")}>
             {rooms.map((r) => (
-              <DuelRow key={r.id} room={r} address={identity.address} onOpen={onOpenRoom} />
+              <DuelRow
+                key={r.id}
+                room={r}
+                address={identity.address}
+                custody={custody}
+                onOpen={onOpenRoom}
+              />
             ))}
           </div>
         )}
