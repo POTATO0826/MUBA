@@ -1,8 +1,9 @@
+import { useEffect } from "react";
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
 import { sectorChips } from "../data/sectors.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
-import { sfx } from "../lib/sound/index.ts";
+import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
 import type { LobbyDef, Player } from "../types.ts";
@@ -32,6 +33,14 @@ const stepsFor = (mode: ModeSpec): readonly (readonly [string, string])[] => [
 ];
 
 /**
+ * Served by `index.ts` when the operator has dropped a file at
+ * `src/assets/room-inspect.mp3`, and 404'd cleanly when they have not. The
+ * engine treats both answers as normal, so the room is silent rather than
+ * broken on a checkout without the asset.
+ */
+const ROOM_TRACK = "/assets/room-inspect.mp3";
+
+/**
  * The lobby room. Both seats are taken; nothing happens until both players
  * have readied up. Readying is the moment your entry leaves the balance —
  * before that you can still walk out and the seat reopens.
@@ -41,6 +50,19 @@ export function Room(p: RoomProps) {
   const mode = MODES[p.lobby.mode];
   const steps = stepsFor(mode);
   const both = p.ready.me && p.ready.opp;
+
+  /**
+   * The waiting music. Leaving, navigating and the spin all unmount this view,
+   * so the cleanup is the general case; the ready press stops it eagerly on
+   * top of that, so the fade is already running while the seat locks rather
+   * than starting when the reel takes the screen.
+   */
+  useEffect(() => {
+    startTrack("room", ROOM_TRACK);
+    return () => {
+      stopTrack("room");
+    };
+  }, []);
 
   return (
     <div style={sx("padding:24px 28px;max-width:1100px;margin:0 auto")}>
@@ -92,6 +114,7 @@ export function Room(p: RoomProps) {
               <button
                 onClick={() => {
                   sfx("room.ready.me");
+                  stopTrack("room");
                   p.onReady();
                 }}
                 style={sx(

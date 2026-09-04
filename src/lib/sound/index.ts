@@ -14,8 +14,10 @@ export {
   sfx,
   startAmbience,
   startRiser,
+  startTrack,
   stopAmbience,
   stopRiser,
+  stopTrack,
   subscribeSound,
 } from "./engine.ts";
 

@@ -212,6 +212,9 @@ function ensureGraph(): boolean {
     sfxBus = mk(1);
     tickBus = mk(0.85);
     ambienceBus = mk(1);
+    // A view that asked for a track before the first gesture parked it; the
+    // graph it was waiting for now exists.
+    flushPendingTracks();
     return true;
   } catch {
     return false;
@@ -387,6 +390,154 @@ export function stopRiser(resolve?: boolean): void {
   if (played.voice >= 0) budget.release(played.voice);
   live.delete(played.voice);
   if (played.handle && ctx) played.handle.stop(ctx.currentTime, resolve ? 0.12 : 0.25);
+}
+
+// ── Music tracks (R9, on the ambience bus) ────────────────────────────────
+
+/**
+ * The one thing in the app that is a recording rather than a recipe: a looping
+ * bed of music behind a screen. It follows the ambience singleton idiom —
+ * one voice per id, a second start is a no-op, a stop ramps and only then
+ * disconnects — and hangs off `ambienceBus`, so R7's duck and the master mute
+ * reach it for free without the track knowing either exists.
+ *
+ * Every asset here is OPTIONAL. A missing file, a refused decode or a context
+ * that was never unlocked all end the same way: silence, no throw, no rejected
+ * promise, and exactly one fetch per url for the life of the tab.
+ */
+
+type TrackId = "room";
+
+/**
+ * The ambience tier's ROLE at a level a recording can actually carry.
+ * `TIER_GAIN.ambient` (0.06) is calibrated for raw oscillators, whose peak is
+ * their whole signal; a mastered MP3 arrives near full scale already, so it
+ * sits well below the synth beds in headroom while landing at the same
+ * "behind everything else" loudness. Still background — never foreground.
+ */
+const TRACK_GAIN = 0.22;
+const TRACK_FADE_IN_MS = 800;
+const TRACK_STOP_FADE_MS = 600;
+
+interface TrackState {
+  readonly url: string;
+  /** False while the track is parked waiting for the unlock gesture. */
+  started: boolean;
+  gain: GainNode | null;
+  source: AudioBufferSourceNode | null;
+}
+
+/**
+ * Decoded audio, per url, for the life of the tab — re-entering the room must
+ * not refetch. A failed load caches its `null` too: the promise IS the
+ * one-attempt guarantee, so a missing file costs one 404 and never a retry
+ * storm on every mount.
+ */
+const trackBuffers = new Map<string, Promise<AudioBuffer | null>>();
+const tracks = new Map<TrackId, TrackState>();
+
+function loadTrack(c: AudioContext, url: string): Promise<AudioBuffer | null> {
+  const hit = trackBuffers.get(url);
+  if (hit) return hit;
+  const pending = (async (): Promise<AudioBuffer | null> => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null; // 404 is a legitimate answer: the asset is optional
+      const bytes = await res.arrayBuffer();
+      return (await c.decodeAudioData(bytes)) ?? null;
+    } catch {
+      return null; // offline, aborted, or bytes that are not audio
+    }
+  })();
+  trackBuffers.set(url, pending);
+  return pending;
+}
+
+/** Never rejects: the caller fires it with `void` and forgets it. */
+async function beginTrack(id: TrackId, st: TrackState): Promise<void> {
+  st.started = true;
+  const c = ctx;
+  if (!c) return;
+  try {
+    const buf = await loadTrack(c, st.url);
+    // The load takes a network round trip; the player may have readied up or
+    // walked out inside it. A state no longer in the map has been stopped.
+    if (!buf || !ambienceBus || tracks.get(id) !== st) return;
+
+    const gain = c.createGain();
+    const source = c.createBufferSource();
+    source.buffer = buf;
+    source.loop = true;
+    source.connect(gain);
+    gain.connect(ambienceBus);
+
+    const now = c.currentTime;
+    gain.gain.setValueAtTime(SILENT, now);
+    gain.gain.exponentialRampToValueAtTime(TRACK_GAIN, now + TRACK_FADE_IN_MS / 1000);
+    source.start(now);
+
+    st.gain = gain;
+    st.source = source;
+  } catch {
+    // A node the browser refused, or a decode that produced nothing usable.
+    // Music is decoration: it fails by not being there.
+  }
+}
+
+function flushPendingTracks(): void {
+  for (const [id, st] of tracks) if (!st.started) void beginTrack(id, st);
+}
+
+/**
+ * Start `url` looping under `id`. Idempotent per id — the second call while a
+ * track is live does nothing, so a re-render can never stack two copies.
+ * Called before the first gesture, it parks the request and the unlock flow
+ * picks it up.
+ */
+export function startTrack(id: TrackId, url: string): void {
+  if (!audioAvailable) return; // happy-dom: no context, and no fetch either
+  if (prefersReducedMotion()) return; // same rule the ambience beds follow
+  if (tracks.has(id)) return; // R9: one voice per id
+
+  const st: TrackState = { url, started: false, gain: null, source: null };
+  tracks.set(id, st);
+  if (ctx) void beginTrack(id, st);
+}
+
+/**
+ * Ramp `id` out and release it. The ramp is a `setTargetAtTime` toward
+ * `SILENT` and the source is stopped only after the tail has run out, so the
+ * loop never ends on a step — R9's no-click rule.
+ */
+export function stopTrack(id: TrackId, fadeMs: number = TRACK_STOP_FADE_MS): void {
+  const st = tracks.get(id);
+  if (!st) return;
+  tracks.delete(id); // an in-flight load will now find itself orphaned
+
+  const { gain, source } = st;
+  st.gain = null;
+  st.source = null;
+  if (!gain || !source || !ctx) return;
+
+  try {
+    const now = ctx.currentTime;
+    const fade = Math.max(0.01, fadeMs / 1000);
+    fadeParam(gain.gain, now, fade);
+    // `fadeParam`'s time constant is fade/3, so twice the fade puts the signal
+    // ~60dB down — inaudible — before the source is cut.
+    const tail = fade * 2 + 0.05;
+    source.onended = () => {
+      try {
+        source.disconnect();
+        gain.disconnect();
+      } catch {
+        // Already torn down with the context.
+      }
+    };
+    source.stop(now + tail);
+  } catch {
+    // Nothing to unwind that the garbage collector will not take.
+  }
 }
 
 // ── Palette ───────────────────────────────────────────────────────────────
