@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
+import { ParlayCardFace, type FaceValues } from "../components/ParlayCardFace.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
 import type { MarketSource } from "../data/market.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
+import { PLAYER } from "../data/rewards.ts";
 import {
   LIVE_COLOR,
   SPOT_CHIP,
@@ -19,6 +21,7 @@ import {
   hasBook,
   quoteFor,
   type OptionBook,
+  type OptionQuote,
 } from "../desk/optionize.ts";
 import {
   PARLAY_CARDS,
@@ -29,12 +32,16 @@ import {
   type ParlayCard,
   type ParlayLeg,
   type ParlaySummary,
+  type Stance,
   type Tier,
 } from "../engine/parlay.ts";
+import { rankAt } from "../engine/rank.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
+import { useCardDetail } from "../state/detail.ts";
 import { C, FEED_STATE, MONO, SANS, sectorColor, stateChip, tag } from "../theme.ts";
+import { DetailToggle } from "../ui/DetailToggle.tsx";
 import type { Player } from "../types.ts";
 
 /**
@@ -103,6 +110,20 @@ interface ParlayPickProps {
   summary: ParlaySummary;
   stakePoints: number;
   prizeLabel: string;
+  /**
+   * Season XP now — `ledger.xp`, unmodified (`state/ledger.ts` already folds
+   * `PLAYER.xp` in as the opening balance, so a caller must not add it twice).
+   *
+   * It sets the card face's **opening default** and nothing else: `rankAt(xp)`
+   * gives the tier, `defaultDetail` gives the level, and the first press of the
+   * toggle outranks both forever (§E2). It is never a gate — there is no level
+   * this screen can refuse, at any XP.
+   *
+   * Defaults to `PLAYER.xp`, which is exactly what `useLedger` opens a season
+   * at, so an un-wired caller sees the tier the ledger itself would give it
+   * before the first settlement rather than an invented one.
+   */
+  xp?: number;
   onPick: (sym: string, cardId: string) => void;
   onLock: () => void;
 }
@@ -135,6 +156,17 @@ export function ParlayPick(p: ParlayPickProps) {
   const s = p.summary;
   const counting = p.secondsLeft !== null;
   const hot = p.secondsLeft !== null && p.secondsLeft <= HOT;
+
+  /**
+   * How much of each card face is shown (§E2).
+   *
+   * The tier picks the opening default; the toggle in the header pins a choice
+   * that outranks it in either direction from then on. Nothing below reads
+   * `detail.level` to decide *whether* a player may see something — only
+   * `quantitiesAt` inside `ParlayCardFace` reads it at all, and it answers with
+   * an ordered list of quantities rather than a permission.
+   */
+  const detail = useCardDetail(rankAt(p.xp ?? PLAYER.xp).tier);
 
   /**
    * Live spot for the dealt tickers, `null` for most of them. Three to five
@@ -243,6 +275,10 @@ export function ParlayPick(p: ParlayPickProps) {
           </span>
         )}
         <div style={sx("flex:1")} />
+        {/* On the surface, beside the cards it governs — not three menus deep.
+            A player who never touches it still gets their tier's default; a
+            reviewer who wants the greeks is one press away, at any rank. */}
+        <DetailToggle level={detail.level} onChange={detail.setLevel} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>
         <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{p.prizeLabel}</span>
       </div>
@@ -323,14 +359,13 @@ export function ParlayPick(p: ParlayPickProps) {
                     const leg = legForCard(sym, card);
                     const tc = TIER_COLOR[card.tier];
                     const on = picked?.id === card.id;
-                    const bull = card.stance === "bull";
                     /**
                      * The book's own read on this card's line — advisory, and
                      * only where a book exists.
                      *
-                     * The moneyness is `strike / px`, both taken off the leg the
+                     * The ratio is `strike / px`, both taken off the leg the
                      * card would build, which is the leg the duel would settle.
-                     * The tier's `~n%` above it is untouched — the advisory
+                     * The card's own delta above it is untouched — the advisory
                      * cannot move the odds, because it never sees them.
                      */
                     /**
@@ -372,49 +407,29 @@ export function ParlayPick(p: ParlayPickProps) {
                             (on ? `box-shadow:0 0 0 2px ${tc}33` : ""),
                         )}
                       >
-                        <div style={sx("display:flex;align-items:center;justify-content:space-between;gap:6px")}>
-                          <span style={sx(tag(tc))}>{card.tier}</span>
-                          <span style={sx(`font:700 9.5px/1 ${MONO};letter-spacing:.08em;color:${bull ? C.green : C.red}`)}>
-                            {bull ? "↑ BULL" : "↓ BEAR"}
-                          </span>
-                        </div>
-                        {/* A7 — max loss, above the upside figure, on every
-                            card face, unconditionally and at every detail
-                            level. A bought option's downside is bounded and
-                            known, and that is the single most valuable habit
-                            this product can build; it is also the honest reason
-                            DEGEN is survivable, because it is cheap.
+                        {/* The face, and the ONLY thing that decides what is on
+                            it is `quantitiesAt(detail.level)` inside
+                            `ParlayCardFace` — no branch here, and none there
+                            either. §A7 rides on that: `maxLoss` is above
+                            `payout` in `CARD_FACE_ORDER`, so it is above it on
+                            screen at SIMPLE, STANDARD and FULL alike, in type
+                            no smaller than the upside figure.
 
-                            On a market-priced card the number is the premium
-                            the venue is charging — the exact max loss. On a
-                            seeded card there is no premium, and the line says
-                            so rather than inventing one: a made-up dollar
-                            figure beside a real one is worse than a dash. */}
-                        <div
-                          data-testid={`max-loss-${sym}:${card.id}`}
-                          style={sx(`margin-top:9px;font:500 9.5px/1.3 ${MONO};letter-spacing:.04em;color:${C.dim}`)}
-                        >
-                          {quote
-                            ? `max loss $${quote.premium.toFixed(4)} · premium paid`
-                            : "max loss — · no live premium"}
-                        </div>
-                        <div style={sx(`margin-top:4px;font:700 22px/1 ${MONO};letter-spacing:-.02em;color:${tc}`)}>
-                          ×{quote ? quote.multiplier.toFixed(2) : leg.mult.toFixed(2)}
-                        </div>
-                        <div style={sx(`margin-top:6px;font:400 10px/1.4 ${MONO};color:${C.dim}`)}>
-                          {/* Same sentence, same shape, same place. On the
-                              seeded path the percentage is the tier's own
-                              `TIER_BANDS` midpoint and the line comes off the
-                              asset's base move; on the market path the strike
-                              is one the venue lists and the percentage is that
-                              option's own delta. The card never claims the
-                              tier's `~35%` over a Δ0.51 option — it prints the
-                              delta it actually found, and the line below says
-                              the tier's target was missed. */}
-                          {bull ? "above" : "below"}{" "}
-                          {fmtPx(quote ? quote.strike : leg.strike)} · ~
-                          {Math.round((quote ? quote.impliedProb : leg.prob) * 100)}%
-                        </div>
+                            Every number is the same number the leg carries. On
+                            a market-priced card the strike is one the venue
+                            lists, the chance is that option's own delta and the
+                            premium is what a buyer pays — which is exactly the
+                            max loss. On a seeded card there is no premium at
+                            all, and the face prints a dash rather than
+                            inventing one: a made-up dollar figure beside a real
+                            one is worse than an absence. */}
+                        <ParlayCardFace
+                          level={detail.level}
+                          values={faceValues(card.stance, leg, quote)}
+                          accent={tc}
+                          lead={<span style={sx(tag(tc))}>{card.tier}</span>}
+                          testKey={`${sym}:${card.id}`}
+                        />
                         {quote && (
                           <div
                             data-testid={`option-${sym}:${card.id}`}
@@ -595,6 +610,35 @@ export function ParlayPick(p: ParlayPickProps) {
       </div>
     </div>
   );
+}
+
+/**
+ * One card's numbers, whichever path priced it.
+ *
+ * The two paths are the same six quantities read off two sources, and this is
+ * the single place the choice is made — so a face cannot show a live strike
+ * beside a seeded delta. Where the book priced the card every figure is the
+ * venue's; where it did not, every figure is the seeded leg's and `premium` is
+ * `null`, which is what makes the face print `MAX LOSS —` instead of a number
+ * nobody quoted.
+ *
+ * `theta` and `iv` are `null` on **both** paths today, and that is a data gap
+ * rather than a rendering choice: `OptionQuote` carries neither, and no row in
+ * the feed carries theta at all (`PricingRow` has `iv`, `delta`, `bid`, `ask`,
+ * `mark` — no greeks beyond delta). The FULL face prints `θ —  ·  IV —` until
+ * the desk layer carries them.
+ */
+function faceValues(stance: Stance, leg: ParlayLeg, quote: OptionQuote | null): FaceValues {
+  return {
+    stance,
+    strike: quote ? quote.strike : leg.strike,
+    spot: quote ? quote.spot : leg.px,
+    prob: quote ? quote.impliedProb : leg.prob,
+    mult: quote ? quote.multiplier : leg.mult,
+    premium: quote ? quote.premium : null,
+    theta: null,
+    iv: null,
+  };
 }
 
 function Stat({ label, value, color, testid }: { label: string; value: string; color?: string; testid: string }) {

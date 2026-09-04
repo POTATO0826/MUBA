@@ -48,6 +48,22 @@ import {
   type CardQuantity,
 } from "../src/state/detail.ts";
 import { DetailToggle } from "../src/ui/DetailToggle.tsx";
+import {
+  ATM_BAND,
+  DASH,
+  FACE_TYPE,
+  ParlayCardFace,
+  breakevenAt,
+  faceOrder,
+  faceRows,
+  faceText,
+  itmOtmAt,
+  type FaceValues,
+} from "../src/components/ParlayCardFace.tsx";
+import { mockMarketSource } from "../src/data/market.ts";
+import { MODES } from "../src/data/modes.ts";
+import { PARLAY_CARDS, legForCard, summarize } from "../src/engine/parlay.ts";
+import { ParlayPick } from "../src/views/ParlayPick.tsx";
 
 const ROOT = join(import.meta.dir, "..");
 const rel = (p: string) => relative(ROOT, p).replaceAll("\\", "/");
@@ -506,6 +522,318 @@ describe("§E5 — ITM/OTM/ATM, and IV is never spelled out", () => {
     expect(BANNED.some((re) => re.test("the card's moneyness"))).toBe(true);
     expect(BANNED.some((re) => re.test("Implied Volatility 58%"))).toBe(true);
     expect(BANNED.some((re) => re.test("implied vol"))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The face — §E3/§E4 as rendered DOM, not as a table
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A market-priced card: every figure the book supplies, supplied. */
+const LIVE_FACE: FaceValues = {
+  stance: "bull",
+  strike: 4200,
+  spot: 4000,
+  prob: 0.7,
+  mult: 4,
+  premium: 40,
+  theta: -0.4,
+  iv: 0.58,
+};
+
+/** A seeded card: a real line and a real chance, and no premium anywhere. */
+const SEEDED_FACE: FaceValues = { ...LIVE_FACE, premium: null, theta: null, iv: null };
+
+/** The `data-q` of every quantity the face put on screen, top to bottom. */
+const rendered = (): readonly CardQuantity[] =>
+  [...container.querySelectorAll<HTMLElement>("[data-q]")].map(
+    (el) => el.getAttribute("data-q") as CardQuantity,
+  );
+
+/** The text a quantity rendered. */
+const valueOf = (q: CardQuantity): string =>
+  container.querySelector(`[data-q="${q}"]`)?.textContent ?? "";
+
+/** The type size a rendered quantity is set in, off its own style attribute. */
+function sizeOf(q: CardQuantity): number {
+  const style = container.querySelector(`[data-q="${q}"]`)?.getAttribute("style") ?? "";
+  const hit = /(\d+(?:\.\d+)?)px/.exec(style);
+  expect({ q, style }).toEqual({ q, style: hit ? style : "no px size found" });
+  return Number(hit![1]);
+}
+
+function face(level: CardDetail, values: FaceValues = LIVE_FACE) {
+  mount(createElement(ParlayCardFace, { level, values, accent: "#c8ff00", testKey: "ETH:safe-bull" }));
+}
+
+describe("§E3 — the face is rendered from the contract, never from a level branch", () => {
+  test("what reaches the DOM at each level is exactly what `quantitiesAt` names", () => {
+    for (const level of CARD_DETAILS) {
+      face(level);
+      // Same set, every time — the face may group quantities onto one line but
+      // it may not add one the contract withheld or drop one it granted.
+      expect({ level, shown: [...rendered()].sort() }).toEqual({
+        level,
+        shown: [...quantitiesAt(level)].sort(),
+      });
+      // …and the DOM order is the order `faceRows` derived from the contract.
+      expect({ level, order: rendered() }).toEqual({ level, order: faceOrder(level) });
+      unmount();
+    }
+  });
+
+  test("no view in the tree decides the face by testing the level", async () => {
+    // The contract is the single source of truth precisely so a face cannot
+    // drift from it. A `switch (level)` — or any comparison of the level to a
+    // literal — is how that drift starts, so neither surface may contain one.
+    for (const path of ["src/components/ParlayCardFace.tsx", "src/views/ParlayPick.tsx"]) {
+      const src = stripComments(await Bun.file(abs(path)).text());
+      expect({ path, hit: /switch\s*\(\s*level/.test(src) }).toEqual({ path, hit: false });
+      for (const d of CARD_DETAILS) {
+        expect({ path, d, hit: src.includes(`"${d}"`) }).toEqual({ path, d, hit: false });
+      }
+    }
+  });
+
+  test("SIMPLE really is three lines, and FULL adds without removing", () => {
+    face("SIMPLE");
+    expect(rendered()).toEqual(["direction", "maxLoss", "payout"]);
+    unmount();
+    face("FULL");
+    for (const q of ["direction", "maxLoss", "payout"] as const) expect(rendered()).toContain(q);
+    expect(rendered()).toContain("payoffCurve");
+    unmount();
+  });
+
+  test("the greeks are one line, in the contract's order", () => {
+    face("FULL");
+    const strip = faceRows("FULL").find((r) => r.length > 1);
+    expect(strip).toEqual(["delta", "theta", "iv"]);
+    // One line means one parent: the three spans hang off the same row.
+    const rows = (["delta", "theta", "iv"] as const).map(
+      (q) => container.querySelector(`[data-q="${q}"]`)!.parentElement!.parentElement,
+    );
+    expect(new Set(rows).size).toBe(1);
+    expect(valueOf("delta")).toBe("Δ 0.70");
+    unmount();
+  });
+});
+
+describe("§E4.1 — the face prints the contract's own words", () => {
+  /**
+   * Fed the contract's example numbers, the view must produce the contract's
+   * example strings — character for character. This is the tie that stops a
+   * synonym ever appearing on a card: to reword the face you must reword
+   * `CARD_CONTRACT`, and `CARD_CONTRACT` is what §E5's scan reads.
+   */
+  const CASES: readonly (readonly [CardQuantity, CardDetail, FaceValues])[] = [
+    ["maxLoss", "SIMPLE", LIVE_FACE],
+    ["maxLoss", "FULL", LIVE_FACE],
+    ["payout", "SIMPLE", LIVE_FACE],
+    ["strike", "STANDARD", LIVE_FACE],
+    ["strike", "FULL", LIVE_FACE],
+    ["delta", "STANDARD", LIVE_FACE],
+    ["delta", "FULL", LIVE_FACE],
+    ["itmOtm", "STANDARD", LIVE_FACE],
+    ["breakeven", "FULL", { ...LIVE_FACE, premium: 140 }],
+    ["theta", "FULL", LIVE_FACE],
+    ["iv", "FULL", LIVE_FACE],
+    ["premium", "FULL", { ...LIVE_FACE, premium: 18 }],
+  ];
+
+  test("every quantity the contract states as a string is rendered as that string", () => {
+    for (const [q, level, values] of CASES) {
+      expect({ q, level, text: faceText(q, level, values)?.value ?? null }).toEqual({
+        q,
+        level,
+        text: CARD_CONTRACT[q].face[level],
+      });
+    }
+  });
+
+  test("the two quantities the table cannot pin are pinned here instead", () => {
+    // `direction` — this app's one word for it is BULL/BEAR, on the tier label,
+    // in `slipLabel` and on the result screen. The contract table's `LONG /
+    // SHORT` is illustrative; printing it on the card would be the second word
+    // for one quantity that §E4.1 forbids.
+    expect(faceText("direction", "SIMPLE", LIVE_FACE)?.value).toBe("↑ BULL");
+    expect(faceText("direction", "FULL", { ...LIVE_FACE, stance: "bear" })?.value).toBe("↓ BEAR");
+    // `payoffCurve` is a drawing, so it has no string at all.
+    expect(faceText("payoffCurve", "FULL", LIVE_FACE)).toBeNull();
+    face("FULL");
+    expect(container.querySelector("svg")).not.toBeNull();
+    unmount();
+  });
+
+  test("the curve is drawn in two runs — the loss leg and the win leg", () => {
+    // The breakeven is the zero crossing by construction, so it must land on
+    // both runs. Left to float error it lands on neither and the winning half
+    // of the curve silently disappears; this is that regression, pinned.
+    face("FULL");
+    const runs = [...container.querySelectorAll("polyline")];
+    expect(runs.length).toBe(2);
+    expect(runs[0]!.getAttribute("stroke")).toBe("#f87171"); // C.red, below zero
+    expect(runs[1]!.getAttribute("stroke")).toBe("#c8ff00"); // the accent, above
+    unmount();
+
+    // A card whose breakeven is past the drawn band never turns a profit on
+    // screen, so it is one run and it is all loss.
+    face("FULL", { ...LIVE_FACE, strike: 9000, premium: 40 });
+    expect([...container.querySelectorAll("polyline")].length).toBe(1);
+    unmount();
+  });
+
+  test("delta is one number wearing one name — the contract picks the rendering", () => {
+    // 0.70 at both levels. Only the rendering moves, and it moves because
+    // `CARD_CONTRACT.delta.face[level]` says so, not because the view branched.
+    expect(faceText("delta", "STANDARD", LIVE_FACE)?.value).toBe("70% chance");
+    expect(faceText("delta", "FULL", LIVE_FACE)?.value).toBe("Δ 0.70");
+    expect(termFor("delta")).toBe("delta");
+  });
+
+  test("ITM / OTM / ATM, from the strike and the spot", () => {
+    // A long call is in the money below its strike; a long put, above it.
+    expect(itmOtmAt("bull", 3800, 4000)).toBe("ITM");
+    expect(itmOtmAt("bull", 4200, 4000)).toBe("OTM");
+    expect(itmOtmAt("bear", 4200, 4000)).toBe("ITM");
+    expect(itmOtmAt("bear", 3800, 4000)).toBe("OTM");
+    // Inside the band, neither — and the band is symmetric.
+    expect(itmOtmAt("bull", 4000 * (1 + ATM_BAND / 2), 4000)).toBe("ATM");
+    expect(itmOtmAt("bear", 4000 * (1 - ATM_BAND / 2), 4000)).toBe("ATM");
+    // No spot, no claim.
+    expect(itmOtmAt("bull", 4200, 0)).toBe(DASH);
+  });
+
+  test("breakeven is the strike moved by the premium, the buyer's way", () => {
+    expect(breakevenAt("bull", 4200, 140)).toBe(4340);
+    expect(breakevenAt("bear", 4200, 140)).toBe(4060);
+  });
+});
+
+describe("§A7 — the downside is read first, and never in smaller type", () => {
+  test("max loss is above the payout in the rendered DOM at every level", () => {
+    for (const level of CARD_DETAILS) {
+      face(level);
+      const order = rendered();
+      expect({ level, above: order.indexOf("maxLoss") < order.indexOf("payout") }).toEqual({
+        level,
+        above: true,
+      });
+      unmount();
+    }
+  });
+
+  test("and it is never set smaller than the upside figure", () => {
+    // Stated once, in the component, so the clause cannot erode into a style
+    // string nobody reads.
+    expect(FACE_TYPE.maxLoss).toBeGreaterThanOrEqual(FACE_TYPE.payout);
+    for (const level of CARD_DETAILS) {
+      face(level);
+      expect({ level, loss: sizeOf("maxLoss"), win: sizeOf("payout") }).toEqual({
+        level,
+        loss: FACE_TYPE.maxLoss,
+        win: FACE_TYPE.payout,
+      });
+      unmount();
+    }
+  });
+
+  test("no tooltip, no hover, no press — it is on the face as text", () => {
+    face("SIMPLE");
+    const el = container.querySelector('[data-q="maxLoss"]')!;
+    expect(el.textContent).toBe("MAX LOSS $40");
+    expect(el.getAttribute("title")).toBeNull();
+    expect(container.querySelector('[data-testid="max-loss-ETH:safe-bull"]')).not.toBeNull();
+    unmount();
+  });
+});
+
+describe("a card with no live premium says so rather than inventing one", () => {
+  test("the figures the book did not supply are dashes, at every level", () => {
+    face("FULL", SEEDED_FACE);
+    expect(valueOf("maxLoss")).toBe(`MAX LOSS ${DASH}`);
+    expect(container.querySelector('[data-testid="max-loss-ETH:safe-bull"]')?.textContent).toContain(
+      "no live premium",
+    );
+    expect(valueOf("breakeven")).toBe(`B/E ${DASH}`);
+    expect(valueOf("premium")).toBe(`${DASH} premium`);
+    // The curve's offset IS the premium, so without one there is no curve to
+    // draw — an invented one would show no loss region at all.
+    expect(container.querySelector("svg")).toBeNull();
+    expect(valueOf("payoffCurve")).toBe(`payoff curve ${DASH}`);
+    // The upside is all the seeded card knows, and it is a multiple.
+    expect(valueOf("payout")).toBe("×4.00");
+    // The line and the chance are real on both paths, so neither is dashed.
+    expect(valueOf("strike")).toBe("$4,200 strike");
+    expect(valueOf("delta")).toBe("Δ 0.70");
+    unmount();
+  });
+
+  test("θ and IV are dashed because nothing in the feed carries them yet", () => {
+    face("FULL", SEEDED_FACE);
+    expect(valueOf("theta")).toBe(`θ ${DASH}`);
+    expect(valueOf("iv")).toBe(`IV ${DASH}`);
+    unmount();
+  });
+});
+
+describe("the parlay screen wears the toggle and the faces obey it", () => {
+  const OPPONENT = { name: "KZ", initial: "K", bg: "#6366f1" };
+
+  function pickScreen() {
+    const arena = ["BTC"] as const;
+    const legs = arena.map((s) => legForCard(s, PARLAY_CARDS[0]!));
+    mount(
+      createElement(ParlayPick, {
+        lobbyName: "T",
+        source: mockMarketSource,
+        mode: MODES.NORMAL,
+        opponent: OPPONENT,
+        arena,
+        picks: {},
+        allPicked: false,
+        secondsLeft: null,
+        myLegs: legs,
+        summary: summarize(legs, 100),
+        stakePoints: 100,
+        prizeLabel: "1,000",
+        onPick: () => {},
+        onLock: () => {},
+      }),
+    );
+  }
+
+  test("the control is on the surface, and it moves every card at once", () => {
+    pickScreen();
+    // SHARK's opening default — `PLAYER.xp` is what `useLedger` opens at.
+    expect(container.querySelector('[data-testid="detail-STANDARD"]')?.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    const cards = () => [...container.querySelectorAll("[data-parlay]")];
+    expect(cards().length).toBe(PARLAY_CARDS.length);
+    const quantities = (card: Element) =>
+      [...card.querySelectorAll("[data-q]")].map((el) => el.getAttribute("data-q"));
+    for (const card of cards()) expect(quantities(card)).toEqual([...faceOrder("STANDARD")]);
+
+    // One press, from any rank, and every face on the screen changes with it.
+    click("detail-FULL");
+    for (const card of cards()) expect(quantities(card)).toEqual([...faceOrder("FULL")]);
+    click("detail-SIMPLE");
+    for (const card of cards()) expect(quantities(card)).toEqual([...faceOrder("SIMPLE")]);
+    unmount();
+  });
+
+  test("every card on the screen shows its max loss above its payout", () => {
+    pickScreen();
+    click("detail-FULL");
+    for (const card of container.querySelectorAll("[data-parlay]")) {
+      const order = [...card.querySelectorAll("[data-q]")].map((el) => el.getAttribute("data-q"));
+      expect(order.indexOf("maxLoss")).toBeLessThan(order.indexOf("payout"));
+      // The seeded board has no premium anywhere, and the face says so on all
+      // eight cards rather than dealing a number the book never quoted.
+      expect(card.querySelector('[data-q="maxLoss"]')?.textContent).toBe(`MAX LOSS ${DASH}`);
+    }
+    unmount();
   });
 });
 
