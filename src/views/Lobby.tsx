@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { CursorField } from "../components/CursorField.tsx";
 import { DitherReveal } from "../components/DitherReveal.tsx";
+import { PlayerMark } from "../components/PlayerMark.tsx";
 import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
@@ -197,9 +198,12 @@ function BiggestPayoffs() {
               style={sx(`flex:none;width:172px;padding:14px;border-right:1px solid ${C.line};background:` + (w.win ? "transparent" : "rgba(248,113,113,.045)"))}
             >
               <div style={sx("display:flex;align-items:center;gap:8px")}>
-                <div style={sx(`width:22px;height:22px;border-radius:7px;flex:none;display:grid;place-items:center;font:700 9px/1 ${SANS};color:${C.bg};background:${w.bg}`)}>
-                  {w.initial}
-                </div>
+                {/* The last hand-rolled initials chip in the app. It predates
+                    `PlayerMark` and was the one avatar `avatarStyle` never
+                    owned, which is exactly how it survived — so it goes the
+                    same way as the rest: the settled-cases faces are the same
+                    people the ladder ranks, and they wear the same mark here. */}
+                <PlayerMark name={w.who} initials={w.initial} bg={w.bg} size={26} />
                 <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{w.legs}</span>
               </div>
               <div style={sx(`margin-top:14px;font:700 15px/1 ${MONO};color:${w.win ? C.accent : C.red}`)}>{w.payout}</div>

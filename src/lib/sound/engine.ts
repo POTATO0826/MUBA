@@ -414,7 +414,16 @@ export function stopRiser(resolve?: boolean): void {
  * promise, and exactly one fetch per url for the life of the tab.
  */
 
-type TrackId = "room";
+/**
+ * One id per screen that owns a bed. `room` is the lobby's waiting music;
+ * `parlay` is the pick phase's. They are separate ids rather than one shared
+ * `"music"` because the singleton rule above is PER ID: a single id would make
+ * a start during a stop's fade a no-op and leave the room's bed playing under
+ * the pick screen. Two ids means the two beds are independent voices — and the
+ * views are then responsible for stopping the one they are leaving, which they
+ * each do on unmount.
+ */
+type TrackId = "room" | "parlay";
 
 /**
  * The ambience tier's ROLE at a level a recording can actually carry.

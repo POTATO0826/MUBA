@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NewsWire } from "../components/NewsWire.tsx";
 import { Sparkline } from "../components/Sparkline.tsx";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
@@ -5,7 +6,7 @@ import type { WireItem } from "../data/news.ts";
 import { meta } from "../data/universe.ts";
 import { buildChartCard } from "../engine/chart.ts";
 import { fmtPx, series } from "../engine/tape.ts";
-import { playClip } from "../lib/sound/index.ts";
+import { playClip, sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -28,10 +29,52 @@ interface StudyProps {
   onDone: () => void;
 }
 
+/**
+ * The case card, resting and filtering.
+ *
+ * The lit branch is `rowStyle`'s selected read in card form — the accent, the
+ * same 8% wash — but drawn as a border rather than an inset bar, because a card
+ * has four sides where a wire row has one. Both branches carry a 1px border and
+ * the same padding, so the grid is laid out identically either way: pressing a
+ * card must not shuffle the charts beside it by a pixel.
+ */
+const caseCardStyle = (on: boolean): string =>
+  `border-radius:12px;padding:14px;cursor:pointer;` +
+  (on
+    ? `border:1px solid ${C.accent}99;background:rgba(200,255,0,.06);box-shadow:inset 0 0 0 1px rgba(200,255,0,.18)`
+    : `border:1px solid ${C.border};background:${C.panel}`);
+
 /** Both players read the same charts and the same wire before picking a parlay. */
 export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent, prizeLabel, onDone }: StudyProps) {
   const cols = Math.min(3, Math.max(2, arena.length));
   const firstTarget = meta(arena[0] ?? "ETH").t;
+
+  /**
+   * Which ticker the terminal is reading, or `null` for the whole board.
+   *
+   * One piece of state with two handles on it: the case card above and the sym
+   * chip on a wire row below. Both call `toggleSym`, both read `filterSym`, and
+   * neither owns it — which is the only arrangement where pressing SOL on a
+   * card and pressing SOL on a row cannot disagree about what the wire is
+   * showing. It lives here rather than in `NewsWire` because the cards are
+   * here; the wire is handed the value and a way to flip it.
+   *
+   * Nothing downstream of this reaches settlement. The filter is a view over an
+   * already-built feed — `data/wire.ts` is never re-run, never re-ordered, and
+   * never even told a filter exists.
+   */
+  const [filterSym, setFilterSym] = useState<string | null>(null);
+
+  /** Press the active ticker again and the wire comes back whole. Written as a
+   *  read-then-set rather than a functional update on purpose: the sound is a
+   *  side effect, and a state updater is not allowed to have one. */
+  const toggleSym = (sym: string) => {
+    const next = filterSym === sym ? null : sym;
+    // Narrowing latches, clearing releases — the two-blip toggle the rest of
+    // the app already uses for exactly this gesture.
+    sfx(next ? "ui.toggle.on" : "ui.toggle.off");
+    setFilterSym(next);
+  };
 
   const notes = [
     {
@@ -86,10 +129,28 @@ export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent,
               const hi = Math.max(...tape);
               const lo = Math.min(...tape);
 
+              const on = filterSym === sym;
+
               return (
+                // A case card is now a switch as well as a chart: it narrows the
+                // terminal below to this name's stories. `role="button"` rather
+                // than a real `<button>` because the card's layout is the grid's
+                // — a button element brings its own box, and the charts would
+                // move the first time anyone pressed one.
                 <div
                   key={sym}
-                  style={sx(`border:1px solid ${C.border};border-radius:12px;background:${C.panel};padding:14px`)}
+                  data-case={sym}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={on}
+                  title={on ? `The wire is showing ${sym} only — click to clear` : `Filter the wire to ${sym}`}
+                  onClick={() => toggleSym(sym)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault(); // Space scrolls the study page otherwise.
+                    toggleSym(sym);
+                  }}
+                  style={sx(caseCardStyle(on))}
                 >
                   <div style={sx("display:flex;align-items:flex-start;justify-content:space-between")}>
                     <div>
@@ -127,8 +188,10 @@ export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent,
           </div>
 
           {/* The terminal: filed stories over a detail pane, desk chatter pinned
-              on top. Presentation only — settlement never reads a headline. */}
-          <NewsWire items={wire} status={wireStatus} />
+              on top. Presentation only — settlement never reads a headline.
+              The filter travels down as a value and comes back as a call: the
+              sym chips on the rows are the same switch the cards are. */}
+          <NewsWire items={wire} status={wireStatus} filterSym={filterSym} onSymToggle={toggleSym} />
         </div>
 
         <div style={sx("display:flex;flex-direction:column;gap:16px")}>

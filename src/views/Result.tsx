@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { PlayerMark } from "../components/PlayerMark.tsx";
 import { ExitRow, RankUpSequence } from "../components/RankUpSequence.tsx";
 import { CHAMP_ART } from "../data/fixtures.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
@@ -8,7 +9,7 @@ import { legState, type MatchVerdict } from "../engine/match.ts";
 import { conditionText, type ParlayLeg } from "../engine/parlay.ts";
 import { sfx, useCountUp } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
+import { C, MONO, SANS, miniTag, tag } from "../theme.ts";
 import type { Player, SectorKey } from "../types.ts";
 import { TIER_COLOR } from "./ParlayPick.tsx";
 
@@ -145,7 +146,7 @@ export function Result(p: ResultProps) {
             {sides.map((s, i) => (
               <div key={s.who.name} data-summary={s.who.name} style={sx(`padding:16px;${i === 0 ? `border-right:1px solid ${C.line}` : ""}`)}>
                 <div style={sx("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
-                  <div style={sx(avatarStyle(s.who.bg, 24))}>{s.who.initial}</div>
+                  <PlayerMark name={s.who.name} initials={s.who.initial} bg={s.who.bg} size={24} />
                   <span style={sx(`font:700 12.5px/1 ${SANS}`)}>{s.who.name}</span>
                   <span
                     style={sx(

@@ -596,6 +596,32 @@ describe("the case study", () => {
   const wireSyms = () => wireRows().map((r) => r.dataset.wireSym);
   const pane = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)?.textContent ?? "";
 
+  // ── the wire filter ───────────────────────────────────────────────────────
+  // One piece of state, two handles: the case card above the terminal and the
+  // sym chip on a wire row inside it.
+  const caseCard = (sym: string) => container.querySelector<HTMLElement>(`[data-case="${sym}"]`)!;
+  const clickCase = (sym: string) => act(() => caseCard(sym).click());
+  const pressed = (sym: string) => caseCard(sym).getAttribute("aria-pressed");
+  /** The row's own sym chip — the handle that sits inside the click target. */
+  const chipIn = (row: HTMLElement) => row.querySelector<HTMLElement>("[data-wire-chip]")!;
+  const rowById = (id: string) => container.querySelector<HTMLElement>(`[data-wire-id="${id}"]`)!;
+  const filterChip = () => container.querySelector<HTMLElement>('[data-testid="wire-filter"]');
+  /** The whole terminal's markup — the detail pane's parent is the panel. */
+  const terminal = () => container.querySelector<HTMLElement>('[data-testid="wire-detail"]')!.parentElement!.innerHTML;
+
+  /** A live source held open, so the swap can be released inside `act()`. */
+  function heldWire(items: readonly WireItem[]): { source: NewsSource; release: () => void } {
+    let release: (() => void) | null = null;
+    const source: NewsSource = {
+      id: "live-stub",
+      wire: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, source: "live", fetchedAt: 1_700_000_100_000, items });
+        }),
+    };
+    return { source, release: () => release!() };
+  }
+
   test("shows the dealt charts, a news line per ticker, and the desk talking", () => {
     mount(STUDY);
     expect(text()).toContain("Case study");
@@ -649,7 +675,6 @@ describe("the case study", () => {
   test("a live news source swaps the feed in and flips the chip to LIVE", async () => {
     // Held open until the test releases it, so the seeded first paint can be
     // asserted before the swap — and so the swap lands inside act().
-    let release: (() => void) | null = null;
     const items: readonly WireItem[] = [
       {
         id: "live-1",
@@ -680,24 +705,155 @@ describe("the case study", () => {
         signature: "(END) BLOOMBERG / 09-01-26 0926ET / Copyright (c) 2026 Bloomberg L.P.",
       },
     ];
-    const liveSource: NewsSource = {
-      id: "live-stub",
-      wire: () =>
-        new Promise((resolve) => {
-          release = () => resolve({ ok: true, source: "live", fetchedAt: 1_700_000_100_000, items });
-        }),
-    };
+    const live = heldWire(items);
 
-    mount(STUDY, liveSource);
+    mount(STUDY, live.source);
     expect(pane("wire-status")).toBe("SEEDED"); // seeded until the live one answers
     expect(wireRows("news").length).toBeGreaterThanOrEqual(dealt.length);
 
-    await act(async () => release!());
+    await act(async () => live.release());
 
     expect(pane("wire-status")).toBe("LIVE");
     expect(wireRows("news")).toHaveLength(2);
     expect(text()).toContain("Wire Desk Confirms The Live Feed Is Up");
     expect(wireSyms()).toContain("MKT");
+  });
+
+  test("a case card narrows the wire to its own ticker, and a second press hands it back", () => {
+    mount(STUDY);
+    const whole = wireSyms();
+    // A wire worth filtering: more than one name on it, and the desk talking.
+    expect(new Set(whole).size).toBeGreaterThan(1);
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(2);
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[0]!)).toBe("false");
+
+    clickCase(dealt[0]!);
+
+    expect(wireRows().length).toBeGreaterThan(0);
+    // The asset, full stop: no other ticker, no desk chatter, no MKT rows.
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[0]]));
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(0);
+    // …and the terminal says so, in the header, next to the source chip.
+    expect(pane("wire-filter")).toContain(dealt[0]!);
+    expect(pane("wire-status")).toBe("SEEDED");
+    expect(pressed(dealt[0]!)).toBe("true");
+    // The pane is still filed — the first surviving row took over.
+    expect(pane("wire-dateline")).toContain(dealt[0]!);
+
+    clickCase(dealt[0]!);
+
+    expect(wireSyms()).toEqual(whole);
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[0]!)).toBe("false");
+  });
+
+  test("the sym chip is the other handle on the same switch, and it never moves the open story", () => {
+    mount(STUDY);
+    // Two rows on the SAME ticker: open the first, then press the SECOND one's
+    // chip. Both rows survive the filter, so if the chip's click reached the
+    // row under it the pane would swing to the other story — which is exactly
+    // what the assertion below would catch. Pressing the open row's own chip
+    // would prove nothing, since re-selecting it is a no-op.
+    const news = wireRows("news");
+    const sym = news[0]!.dataset.wireSym!;
+    const same = news.filter((r) => r.dataset.wireSym === sym);
+    expect(same.length).toBeGreaterThan(1);
+    const openerId = same[0]!.dataset.wireId!;
+    const otherId = same[1]!.dataset.wireId!;
+
+    act(() => rowById(openerId).click());
+    const opened = pane("wire-dateline");
+    expect(opened).toContain(sym);
+
+    act(() => chipIn(rowById(otherId)).click());
+
+    // The chip filtered the wire…
+    expect(new Set(wireSyms())).toEqual(new Set([sym]));
+    expect(pane("wire-filter")).toContain(sym);
+    // …and the card above it knows, because there is only one piece of state.
+    expect(pressed(sym)).toBe("true");
+    // …but the click stopped at the chip: the row under it never selected.
+    expect(pane("wire-dateline")).toBe(opened);
+    expect(rowById(openerId).getAttribute("aria-selected")).toBe("true");
+    expect(rowById(otherId).getAttribute("aria-selected")).toBe("false");
+
+    act(() => chipIn(rowById(otherId)).click());
+
+    expect(filterChip()).toBeNull();
+    expect(pressed(sym)).toBe("false");
+    expect(pane("wire-dateline")).toBe(opened);
+  });
+
+  test("switching tickers switches the wire, and the header chip is the way out", () => {
+    mount(STUDY);
+    clickCase(dealt[0]!);
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[0]]));
+
+    clickCase(dealt[1]!);
+
+    expect(new Set(wireSyms())).toEqual(new Set([dealt[1]]));
+    expect(pressed(dealt[0]!)).toBe("false");
+    expect(pressed(dealt[1]!)).toBe("true");
+    // The story that was open belonged to the old ticker, so the pane fell
+    // through to the new ticker's top row rather than blanking.
+    expect(pane("wire-dateline")).toContain(dealt[1]!);
+
+    act(() => filterChip()!.click());
+
+    expect(filterChip()).toBeNull();
+    expect(pressed(dealt[1]!)).toBe("false");
+    expect(container.querySelectorAll('[data-brief="desk"]')).toHaveLength(2);
+  });
+
+  test("a ticker the feed filed nothing on says so rather than going blank", async () => {
+    // One live row, on the first dealt name only — the other two cards are
+    // filtering a wire that has nothing to give them.
+    const live = heldWire([
+      {
+        id: "live-1",
+        kind: "news",
+        sym: dealt[0]!,
+        ts: 1_700_000_100_000,
+        time: "09:28:00",
+        headline: "Wire Desk Confirms The Live Feed Is Up",
+        publisher: "REUTERS",
+        body: "The live source answered, so these rows replaced the seeded ones.",
+        bodyKind: "wire",
+        link: null,
+        dateline: `9/1/26 09:28:00: ${dealt[0]}: Wire Desk Confirms The Live Feed Is Up`,
+        signature: "(END) REUTERS / 09-01-26 0928ET / Copyright (c) 2026 Thomson Reuters.",
+      },
+    ]);
+
+    mount(STUDY, live.source);
+    await act(async () => live.release());
+    expect(wireRows("news")).toHaveLength(1);
+
+    clickCase(dealt[1]!);
+
+    expect(wireRows()).toHaveLength(0);
+    expect(pane("wire-empty")).toBe(`NO ${dealt[1]} STORIES ON THE WIRE`);
+    // The detail pane draws its own quiet line rather than throwing on a
+    // story that is not there.
+    expect(pane("wire-detail")).toContain("The wire is quiet");
+    expect(container.querySelector('[data-testid="wire-dateline"]')).toBeNull();
+
+    // …and the wire that does have stories is one press away.
+    clickCase(dealt[0]!);
+    expect(container.querySelector('[data-testid="wire-empty"]')).toBeNull();
+    expect(wireRows()).toHaveLength(1);
+  });
+
+  test("clearing the filter puts the terminal back node for node", () => {
+    mount(STUDY);
+    const before = terminal();
+
+    clickCase(dealt[0]!);
+    expect(terminal()).not.toBe(before);
+
+    clickCase(dealt[0]!);
+    expect(terminal()).toBe(before);
   });
 });
 

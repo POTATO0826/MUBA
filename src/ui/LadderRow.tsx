@@ -2,10 +2,11 @@ import { useState, type KeyboardEvent } from "react";
 import { MODES } from "../data/modes.ts";
 import { SECTORS } from "../data/sectors.ts";
 import { type LadderFilter, type LeaderPlayer, type Ranked } from "../data/leaderboard.ts";
+import { PlayerMark } from "../components/PlayerMark.tsx";
 import { RANK_COLOR } from "../components/RankBadge.tsx";
 import { useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, miniTag } from "../theme.ts";
+import { C, MONO, SANS, miniTag } from "../theme.ts";
 
 /**
  * One rung of the ladder (plan 4 §5.2 table, §5.4 YOU row).
@@ -213,7 +214,7 @@ export function LadderRow({ row, filter, index, onOpen, open = false }: LadderRo
       </span>
 
       <div style={sx("display:flex;align-items:center;gap:9px;min-width:0")}>
-        <div style={sx(avatarStyle(p.bg, 28))}>{p.initials}</div>
+        <PlayerMark name={p.name} initials={p.initials} bg={p.bg} size={28} />
         <div style={sx("min-width:0")}>
           <div
             style={sx(

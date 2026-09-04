@@ -387,6 +387,20 @@ export interface YouInput {
 /** Id for the synthetic row. Seeds your `avgTicket`, so it is pinned. */
 export const YOU_ID = "you";
 
+/**
+ * Your display identity, pinned as constants rather than inlined into
+ * `buildYou` below.
+ *
+ * `components/PlayerMark.tsx` seeds a player's glyph off their NAME, and the
+ * parlay slip renders your mark from a screen that never sees a `LeaderPlayer`
+ * — it only knows that the seat is yours. Exporting the two strings is what
+ * stops that screen from hard-coding a second "You"/"YO" pair that could drift
+ * from this one and hand you a different glyph on the slip than on the ladder.
+ * Values unchanged; this is a name for what was already there.
+ */
+export const YOU_NAME = "You";
+export const YOU_INITIALS = "YO";
+
 /** Counts → shares, with a uniform prior so an empty ledger yields a flat
  *  split rather than NaN. */
 function shareOf<K extends string>(keys: readonly K[], played: readonly K[]): Record<K, number> {
@@ -438,8 +452,8 @@ export function buildYou(input: YouInput): LeaderPlayer {
   const econ = copyEconomicsFor(YOU_ID, xp);
   return {
     id: YOU_ID,
-    name: "You",
-    initials: "YO",
+    name: YOU_NAME,
+    initials: YOU_INITIALS,
     bg: C.indigo,
     skill,
     battles,
@@ -503,9 +517,64 @@ export interface Ranked {
   sub: string;
 }
 
-const pct1 = (n: number): string => `${(n * 100).toFixed(1)}%`;
-const pts = (n: number): string => Math.round(n).toLocaleString("en-US");
-const signed = (n: number): string => `${n < 0 ? "−" : "+"}${pts(Math.abs(n))}`;
+/**
+ * The ladder's number vocabulary.
+ *
+ * Exported — additively, the implementations are untouched — because the room's
+ * seat dossier (`views/Room.tsx`) prints the SAME four figures a ladder row
+ * prints, and a second `toLocaleString` call site with its own rounding would
+ * be the first thing to drift. `signed` in particular uses U+2212, not a
+ * hyphen: the minus has to line up under the plus in a tabular column.
+ */
+export const pct1 = (n: number): string => `${(n * 100).toFixed(1)}%`;
+export const pts = (n: number): string => Math.round(n).toLocaleString("en-US");
+export const signed = (n: number): string => `${n < 0 ? "−" : "+"}${pts(Math.abs(n))}`;
+
+/**
+ * The trailing run in a player's form line.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS A FORM RUN AND NOT A WIN STREAK
+ * ────────────────────────────────────────────────────────────────────────────
+ * A `LeaderPlayer` has no notion of RECENCY. `wins` and `battles` are career
+ * totals; nothing in this file records the ORDER of a persona's results, and
+ * nothing could — the personas have no match history, only a latent skill and
+ * the numbers that fall out of it. The one ordered sequence a persona owns is
+ * `trend`: eight form windows, drawn as a skill-shaped random walk, which is
+ * already what the ladder's TREND column draws.
+ *
+ * So this counts the consecutive rising (or falling) windows at the END of that
+ * walk and says exactly that. It is a true statement about data that already
+ * exists. Calling the same number "W4 STREAK" would be an invention: it would
+ * read as four match results the app has never simulated. `state/ledger.ts`
+ * owns the only real streak in the app — YOUR consecutive wins — and that one
+ * comes from an actual history.
+ *
+ * Purely derived and purely additive: it draws nothing from the seeded stream,
+ * so no existing value moves.
+ */
+export interface FormRun {
+  dir: "up" | "down" | "flat";
+  /** Windows in the run. 0 when the last two prints are level. */
+  length: number;
+}
+
+export function formRun(trend: readonly number[]): FormRun {
+  if (trend.length < 2) return { dir: "flat", length: 0 };
+  const step = (i: number): number => (trend[i] ?? 0) - (trend[i - 1] ?? 0);
+  const last = trend.length - 1;
+  const head = step(last);
+  if (head === 0) return { dir: "flat", length: 0 };
+
+  const dir = head > 0 ? "up" : "down";
+  let length = 0;
+  for (let i = last; i >= 1; i--) {
+    const d = step(i);
+    if (dir === "up" ? d > 0 : d < 0) length++;
+    else break;
+  }
+  return { dir, length };
+}
 
 /**
  * Wins inside a sector × mode selection (plan 4 §6, invariant 3).

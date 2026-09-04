@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { PlayerMark } from "../components/PlayerMark.tsx";
+import { YOU_INITIALS, YOU_NAME } from "../data/leaderboard.ts";
 import { modeTag, type ModeSpec } from "../data/modes.ts";
 import { meta } from "../data/universe.ts";
 import {
@@ -13,9 +15,9 @@ import {
   type Tier,
 } from "../engine/parlay.ts";
 import { fmtPx } from "../engine/tape.ts";
-import { sfx } from "../lib/sound/index.ts";
+import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, sectorColor, tag } from "../theme.ts";
+import { C, MONO, SANS, sectorColor, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
 
 /**
@@ -69,6 +71,18 @@ interface ParlayPickProps {
 /** The last five seconds are the loud ones. */
 const HOT = 5;
 
+/**
+ * The pick phase's bed — the hero-select music.
+ *
+ * Served by `index.ts` from `src/assets/` when the operator has dropped a file
+ * there, and 404'd cleanly when they have not, exactly like the room's
+ * `room-inspect.mp3`. The whole directory is gitignored on purpose (the audio
+ * is game-ripped and licensed to someone else), so a fresh clone plays this
+ * screen in silence and nothing about that is an error path — see
+ * `docs/HANDOFF.md`, "Local-only artifacts".
+ */
+const PICK_TRACK = "/assets/parlay-pick.mp3";
+
 /** `0:18` — a clock reads as a clock, and the monospace stops it juddering. */
 const clockText = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
 
@@ -77,6 +91,34 @@ export function ParlayPick(p: ParlayPickProps) {
   const s = p.summary;
   const counting = p.secondsLeft !== null;
   const hot = p.secondsLeft !== null && p.secondsLeft <= HOT;
+
+  /**
+   * The pick music, on exactly the room's terms.
+   *
+   * The UNMOUNT is the general case and it covers every exit there is: the
+   * clock running out, the lock button, a rematch, the back arrow, a reload.
+   * The pick screen is only ever mounted by `App` for the pick phase, so
+   * leaving the phase unmounts it and the cleanup fades the bed out — there is
+   * no exit path that needs its own call.
+   *
+   * `stopTrack("room")` on the way IN is the belt to that braces. The room's
+   * own cleanup already stops its bed when `App` swaps the view, and React runs
+   * that cleanup before this effect; the explicit stop makes "the pick bed and
+   * the room bed never sound together" a property of this file rather than a
+   * property of two files and an ordering guarantee between them. Stopping a
+   * track that is not playing is a no-op.
+   *
+   * Levels, fades and the reduced-motion opt-out are all the engine's
+   * (`TRACK_GAIN` 0.22 on the ambience bus, 800ms in, 600ms out) — the same
+   * numbers the room gets, because it is the same call.
+   */
+  useEffect(() => {
+    stopTrack("room");
+    startTrack("parlay", PICK_TRACK);
+    return () => {
+      stopTrack("parlay");
+    };
+  }, []);
 
   // One beep per distinct second of the last five. The clock re-renders far
   // more often than once a second, so the ref — not the render — is what makes
@@ -213,7 +255,7 @@ export function ParlayPick(p: ParlayPickProps) {
         <div style={sx("display:flex;flex-direction:column;gap:16px;position:sticky;top:76px")}>
           <div style={sx(`border:1px solid ${s.loud && p.allPicked ? C.violet : C.border};border-radius:12px;background:${C.panel};overflow:hidden`)}>
             <div style={sx(`display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
-              <div style={sx(avatarStyle(C.indigo, 26))}>YO</div>
+              <PlayerMark name={YOU_NAME} initials={YOU_INITIALS} bg={C.indigo} size={26} />
               <span style={sx(`font:700 13px/1 ${SANS}`)}>Your slip</span>
               <div style={sx("flex:1")} />
               <span style={sx(`font:500 10px/1 ${MONO};color:${p.allPicked ? C.text : C.dim}`)}>
@@ -267,6 +309,11 @@ export function ParlayPick(p: ParlayPickProps) {
             <div style={sx("padding:12px")}>
               <button
                 onClick={() => {
+                  // Eagerly, on the room's pattern: the 600ms fade is already
+                  // running under the lock sound rather than starting when the
+                  // duel takes the screen. The unmount cleanup is what actually
+                  // guarantees it; this only decides when the fade begins.
+                  stopTrack("parlay");
                   sfx("parlay.lock");
                   p.onLock();
                 }}
@@ -298,7 +345,12 @@ export function ParlayPick(p: ParlayPickProps) {
             )}
           >
             <div style={sx(`display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid ${C.border}`)}>
-              <div style={sx(avatarStyle(p.opponent.bg, 26))}>{p.opponent.initial}</div>
+              <PlayerMark
+                name={p.opponent.name}
+                initials={p.opponent.initial}
+                bg={p.opponent.bg}
+                size={26}
+              />
               <div>
                 <div style={sx(`font:700 13px/1 ${SANS}`)}>{p.opponent.name}</div>
                 <div style={sx(`margin-top:4px;font:400 10px/1 ${MONO};color:${C.red}`)}>picking…</div>

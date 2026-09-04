@@ -1,10 +1,11 @@
 import { CardArt } from "../components/CardArt.tsx";
+import { PlayerMark } from "../components/PlayerMark.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, bookForSectors, sectorChips, symsOfSector } from "../data/sectors.ts";
 import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, avatarStyle, miniTag, tag, wall } from "../theme.ts";
+import { C, MONO, SANS, miniTag, tag, wall } from "../theme.ts";
 import type { LobbyDef, SectorKey } from "../types.ts";
 
 /** Native `title` for a sector chip: the card face is too dense for the rich
@@ -111,7 +112,12 @@ export function LobbyCard({
         <div>
           <div style={sx("display:flex;justify-content:space-between;align-items:flex-start;gap:8px")}>
             <div style={sx("display:flex;align-items:center;gap:9px;min-width:0")}>
-              <div style={sx(avatarStyle(lobby.host.bg, 30))}>{lobby.host.initial}</div>
+              <PlayerMark
+                name={lobby.host.name}
+                initials={lobby.host.initial}
+                bg={lobby.host.bg}
+                size={30}
+              />
               <div style={sx("min-width:0")}>
                 <div style={sx(`font:700 12.5px/1 ${SANS};white-space:nowrap;overflow:hidden;text-overflow:ellipsis`)}>
                   {lobby.host.name}

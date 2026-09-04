@@ -213,6 +213,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
         <Room
           lobby={lobby}
           you={YOU}
+          youRow={rank.you}
           opponent={opp}
           ready={state.ready}
           entryLabel={derived.entryLabel}
