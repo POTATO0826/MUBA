@@ -38,7 +38,9 @@ const audio = (name: string) => async (): Promise<Response> => {
  */
 const ASSETS = {
   "/assets/room-inspect.mp3": audio("room-inspect.mp3"),
+  "/assets/exo-kill-1.mp3": audio("exo-kill-1.mp3"),
   "/assets/exo-kill-2.mp3": audio("exo-kill-2.mp3"),
+  "/assets/exo-kill-3.mp3": audio("exo-kill-3.mp3"),
   "/assets/exo-kill-4.mp3": audio("exo-kill-4.mp3"),
 };
 

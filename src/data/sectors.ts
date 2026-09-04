@@ -43,14 +43,14 @@ export const SECTORS: Record<SectorKey, SectorDef> = {
     label: "OLD WORLD",
     members: ["AUTO", "ENERGY", "FIN", "METALS"],
     color: C.amber,
-    blurb: "Autos, energy, banks and gold. The slow money.",
+    blurb: "Autos, energy, banks and gold — the pre-crypto economy. Slow money, tight targets.",
   },
   MAJORS: {
     key: "MAJORS",
     label: "MAJORS",
     members: ["L1"],
     color: C.accent,
-    blurb: "The three layer ones everybody already owns.",
+    blurb: "Bitcoin, Ethereum, Solana — the layer ones everybody already owns. Crypto's blue chips.",
   },
   DEFI: {
     key: "DEFI",

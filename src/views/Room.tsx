@@ -1,12 +1,21 @@
 import { useEffect } from "react";
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, bookOf } from "../data/lobbies.ts";
-import { sectorChips } from "../data/sectors.ts";
+import { SECTORS, bookForSectors, sectorChips, symsOfSector } from "../data/sectors.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { playClip, sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag } from "../theme.ts";
-import type { LobbyDef, Player } from "../types.ts";
+import type { LobbyDef, Player, SectorKey } from "../types.ts";
+
+/** Native `title` for a sector chip — same cheap echo the lobby cards give
+ *  theirs: the group's tickers, or the whole book behind a collapsed preset
+ *  chip. The rich tooltip lives on /create, where there is room for it. */
+function chipTitle(key: string, label: string, sectors: readonly SectorKey[]): string | undefined {
+  if (key in SECTORS) return `${label} — ${symsOfSector(key as SectorKey).join(" · ")}`;
+  if (key.startsWith("+")) return undefined;
+  return `${label} — ${bookForSectors(sectors).join(" · ")}`;
+}
 
 interface RoomProps {
   lobby: LobbyDef;
@@ -78,7 +87,11 @@ export function Room(p: RoomProps) {
               <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.14em;color:${color}`)}>LOBBY</span>
               <span style={sx(tag(color))}>{MARKET_LABEL[p.lobby.market]}</span>
               {sectorChips(p.lobby.sectors).map((chip) => (
-                <span key={chip.key} style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}>
+                <span
+                  key={chip.key}
+                  title={chipTitle(chip.key, chip.label, p.lobby.sectors)}
+                  style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}
+                >
                   {chip.label}
                 </span>
               ))}
@@ -172,7 +185,7 @@ export function Room(p: RoomProps) {
         </button>
         <button
           onClick={() => {
-            sfx("spin.open");
+            playClip("exo-3", "/assets/exo-kill-3.mp3");
             p.onBegin();
           }}
           disabled={!both}

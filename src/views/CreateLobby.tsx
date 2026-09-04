@@ -1,9 +1,9 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MARKET_COLOR, MARKET_LABEL, bookFor } from "../data/lobbies.ts";
 import { MODES, MODE_ORDER, modeTag } from "../data/modes.ts";
 import { SECTORS, SECTOR_ORDER, bookForSectors, symsOfSector } from "../data/sectors.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
-import { sx } from "../lib/sx.ts";
+import { sx, sxWith } from "../lib/sx.ts";
 import { C, MONO, SANS, miniTag, pill, tag } from "../theme.ts";
 import type { LobbyForm } from "../state/match.ts";
 import type { MarketFilter, Mode, SectorKey } from "../types.ts";
@@ -14,12 +14,22 @@ const STEP_BTN =
 
 const LABEL = `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`;
 const NOTE = `margin-top:8px;font:400 10.5px/1.4 ${MONO};color:${C.faint}`;
-const CARD = `border:1px solid ${C.border};border-radius:12px;background:${C.panel};padding:18px`;
+/** A column card. `min-width:0` is load-bearing: without it a grid child floors
+ *  at its content width and the row overflows the viewport instead of shrinking
+ *  (and the book line's ellipsis never engages). */
+const CARD =
+  `border:1px solid ${C.border};border-radius:12px;background:${C.panel};padding:18px;min-width:0`;
+
+/** Two columns while both fit, one column below that — `auto-fit` folds the
+ *  empty track away and `min(100%,…)` keeps the floor under the viewport, so
+ *  the page never scrolls sideways. */
+const COLUMNS =
+  "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:18px;align-items:start";
 
 /** The live book strip: one line, ellipsised — a long book must not reflow the card. */
 const BOOK_LINE =
   `margin-top:10px;font:400 10.5px/1.5 ${MONO};color:${C.dim};` +
-  `white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
+  `min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`;
 
 const MARKETS: readonly MarketFilter[] = ["STOCK", "CRYPTO", "MIXED"];
 
@@ -27,7 +37,7 @@ const MARKETS: readonly MarketFilter[] = ["STOCK", "CRYPTO", "MIXED"];
  *  border/tint idiom the sector pills use, one step brighter because the mode
  *  is the only choice on this card that changes the payout. */
 const MODE_BTN = (color: string, on: boolean): string =>
-  `display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;` +
+  `display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;overflow:hidden;` +
   `padding:10px 8px;border-radius:10px;text-align:left;cursor:pointer;` +
   (on
     ? `border:1px solid ${color}80;background:${color}14;box-shadow:0 0 0 1px ${color}26,0 8px 20px -12px ${color}`
@@ -36,7 +46,8 @@ const MODE_BTN = (color: string, on: boolean): string =>
 /** `BLITZ · 15 MIN` on one line inside a ~112px column: the mode tag with its
  *  letter-spacing eased off, so `NORMAL · 24 HOURS` still fits unwrapped. */
 const MODE_HEAD = (m: Mode, on: boolean): string =>
-  (on ? modeTag(m) : miniTag(C.faint)) + ";letter-spacing:.06em;white-space:nowrap";
+  (on ? modeTag(m) : miniTag(C.faint)) +
+  ";letter-spacing:.06em;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis";
 
 const MODE_NUM = (on: boolean): string =>
   `font:500 9.5px/1 ${MONO};color:${on ? C.textSoft : C.dim}`;
@@ -48,6 +59,43 @@ const prizePitch = (prize: number) => 1 + Math.min(1, Math.max(0, (prize - 0.1) 
 
 /** How long the prize field waits before it will click again while typing. */
 const TYPE_SFX_MS = 250;
+
+// ── The sector tooltip ──────────────────────────────────────────────────────
+// SECTORS is a hand-drawn taxonomy — OLD WORLD and MAJORS are our words, not
+// the tape's — so every chip has to be able to say what it gathers. The panel
+// is `position:fixed` and measured off the chip's own rect: it costs the chips
+// no layout, it cannot be clipped by the card, and it flips under a chip that
+// sits too near the top edge to hang a panel above.
+
+const TIP_W = 264;
+/** Long enough that a pointer crossing the row does not strobe six panels. */
+const TIP_DELAY_MS = 120;
+/** Below this much room overhead, the panel flips under the chip. */
+const TIP_FLIP_PX = 170;
+
+const TIP_PANEL = (color: string): string =>
+  `position:fixed;z-index:60;width:${TIP_W}px;max-width:calc(100vw - 20px);` +
+  `padding:10px 12px;border-radius:10px;pointer-events:none;` +
+  `background:rgba(11,11,13,.97);border:1px solid ${C.border};border-left:3px solid ${color};` +
+  `box-shadow:0 18px 44px rgba(0,0,0,.6)`;
+
+/** `:focus-visible` is unimplemented in some test DOMs, where `matches` throws
+ *  on the selector rather than returning false. */
+function focusVisible(el: HTMLElement): boolean {
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return false;
+  }
+}
+
+interface TipAt {
+  key: SectorKey;
+  /** Viewport coords of the chip's top/bottom centre. */
+  x: number;
+  y: number;
+  below: boolean;
+}
 
 interface CreateLobbyProps {
   form: LobbyForm;
@@ -85,6 +133,42 @@ export function CreateLobby(p: CreateLobbyProps) {
 
   // Keystrokes get one click per quarter second at most: a held key must not
   // machine-gun the mixer, and R11 forbids per-character sounds outright.
+  // Which chip is explaining itself, and where its panel lands. Null until a
+  // pointer has rested on a chip for TIP_DELAY_MS.
+  const [tip, setTip] = useState<TipAt | null>(null);
+  const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const closeTip = useCallback(() => {
+    if (tipTimer.current !== null) {
+      clearTimeout(tipTimer.current);
+      tipTimer.current = null;
+    }
+    setTip(null);
+  }, []);
+
+  // The rect is read now, while the chip is under the pointer; only the state
+  // write waits out the delay.
+  const openTip = useCallback((k: SectorKey, el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const half = TIP_W / 2;
+    const right = Math.max(half + 10, window.innerWidth - half - 10);
+    const x = Math.min(Math.max(r.left + r.width / 2, half + 10), right);
+    const below = r.top < TIP_FLIP_PX;
+    const y = below ? r.bottom + 8 : r.top - 8;
+    if (tipTimer.current !== null) clearTimeout(tipTimer.current);
+    tipTimer.current = setTimeout(() => {
+      tipTimer.current = null;
+      setTip({ key: k, x, y, below });
+    }, TIP_DELAY_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (tipTimer.current !== null) clearTimeout(tipTimer.current);
+    },
+    [],
+  );
+
   const lastTypeSfx = useRef(0);
   const onPrizeInput = useCallback(
     (raw: string) => {
@@ -100,7 +184,7 @@ export function CreateLobby(p: CreateLobbyProps) {
 
   return (
     <div style={sx("padding:24px 28px;max-width:940px;margin:0 auto")}>
-      <div style={sx("display:flex;align-items:center;gap:16px;margin-bottom:20px")}>
+      <div style={sx("display:flex;align-items:center;gap:10px 16px;margin-bottom:20px;flex-wrap:wrap")}>
         <button
           onClick={() => {
             sfx("ui.back");
@@ -121,7 +205,7 @@ export function CreateLobby(p: CreateLobbyProps) {
         <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>{p.prizeLabel}</span>
       </div>
 
-      <div style={sx("display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start")}>
+      <div style={sx(COLUMNS)}>
         <div style={sx(CARD)}>
           <div style={sx(LABEL)}>LOBBY NAME</div>
           <input
@@ -165,7 +249,17 @@ export function CreateLobby(p: CreateLobbyProps) {
                   sfx("ui.toggle.on");
                   p.onToggleSector(k);
                 }}
-                {...hover}
+                onPointerEnter={(e) => {
+                  hover.onPointerEnter();
+                  openTip(k, e.currentTarget);
+                }}
+                onPointerLeave={closeTip}
+                onFocus={(e) => {
+                  // Keyboard only — a click already focuses the chip, and the
+                  // pointer path has said its piece.
+                  if (focusVisible(e.currentTarget)) openTip(k, e.currentTarget);
+                }}
+                onBlur={closeTip}
                 style={sx(pill(p.form.sectors.includes(k)))}
               >
                 {SECTORS[k].label}
@@ -178,7 +272,7 @@ export function CreateLobby(p: CreateLobbyProps) {
           </div>
 
           <div style={sx(`${LABEL};margin-top:20px`)}>LEGS</div>
-          <div style={sx("display:flex;align-items:center;gap:10px;margin-top:10px")}>
+          <div style={sx("display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap")}>
             <button
               onClick={() => {
                 sfx("ui.step", { pitch: legsPitch(p.form.legs - 1) });
@@ -198,7 +292,9 @@ export function CreateLobby(p: CreateLobbyProps) {
             >
               +
             </button>
-            <span style={sx(`font:400 10.5px/1 ${MONO};color:${C.faint}`)}>2 to 4 · both slips run on the same {p.form.legs}</span>
+            <span style={sx(`min-width:0;font:400 10.5px/1.4 ${MONO};color:${C.faint}`)}>
+              2 to 4 · both slips run on the same {p.form.legs}
+            </span>
           </div>
         </div>
 
@@ -220,7 +316,7 @@ export function CreateLobby(p: CreateLobbyProps) {
               onChange={(e) => onPrizeInput(e.target.value)}
               onBlur={p.onPrizeBlur}
               style={sx(
-                `flex:1;height:38px;padding:0 12px;border:1px solid ${C.borderMid};border-radius:8px;text-align:center;` +
+                `flex:1;min-width:0;height:38px;padding:0 12px;border:1px solid ${C.borderMid};border-radius:8px;text-align:center;` +
                   `background:${C.raised};color:${C.accent};font:700 18px/1 ${MONO};outline:none`,
               )}
             />
@@ -299,6 +395,29 @@ export function CreateLobby(p: CreateLobbyProps) {
           )}
         </div>
       </div>
+
+      {tip && (
+        <div
+          data-sector-tip={tip.key}
+          className="vc-tip"
+          role="tooltip"
+          style={sxWith(TIP_PANEL(SECTORS[tip.key].color), {
+            left: `${tip.x}px`,
+            top: `${tip.y}px`,
+            transform: tip.below ? "translate(-50%,0)" : "translate(-50%,-100%)",
+          })}
+        >
+          <div style={sx(`font:700 9.5px/1 ${MONO};letter-spacing:.14em;color:${SECTORS[tip.key].color}`)}>
+            {SECTORS[tip.key].label}
+          </div>
+          <div style={sx(`margin-top:7px;font:400 11.5px/1.45 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>
+            {SECTORS[tip.key].blurb}
+          </div>
+          <div style={sx(`margin-top:8px;font:500 10px/1.6 ${MONO};color:${C.dim};word-break:break-word`)}>
+            {symsOfSector(tip.key).join(" · ")}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

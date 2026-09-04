@@ -1,11 +1,21 @@
 import { CardArt } from "../components/CardArt.tsx";
 import { MARKET_COLOR, MARKET_LABEL, MARKET_WALL } from "../data/lobbies.ts";
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
-import { SECTORS, SECTOR_ORDER, sectorChips } from "../data/sectors.ts";
+import { SECTORS, SECTOR_ORDER, bookForSectors, sectorChips, symsOfSector } from "../data/sectors.ts";
 import { playClip, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, avatarStyle, miniTag, tag, wall } from "../theme.ts";
-import type { LobbyDef } from "../types.ts";
+import type { LobbyDef, SectorKey } from "../types.ts";
+
+/** Native `title` for a sector chip: the card face is too dense for the rich
+ *  tooltip /create gives these chips, but the tickers still have to be one
+ *  hover away. A collapsed preset chip ("ALL CRYPTO") names the whole book;
+ *  a `+N` overflow chip names nothing, since it stands for no one group. */
+function chipTitle(key: string, label: string, sectors: readonly SectorKey[]): string | undefined {
+  if (key in SECTORS) return `${label} — ${symsOfSector(key as SectorKey).join(" · ")}`;
+  if (key.startsWith("+")) return undefined;
+  return `${label} — ${bookForSectors(sectors).join(" · ")}`;
+}
 
 /**
  * A lobby as a card. The backdrop is the market gradient with a generative,
@@ -135,7 +145,11 @@ export function LobbyCard({
             >
               <span style={sx(tag(color))}>{MARKET_LABEL[lobby.market]}</span>
               {chips.map((chip) => (
-                <span key={chip.key} style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}>
+                <span
+                  key={chip.key}
+                  title={chipTitle(chip.key, chip.label, lobby.sectors)}
+                  style={sx(`${miniTag(chip.color)};flex:none;white-space:nowrap`)}
+                >
                   {chip.label}
                 </span>
               ))}

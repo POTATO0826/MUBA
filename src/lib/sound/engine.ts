@@ -596,7 +596,7 @@ const CLIP_COOLDOWN_MS = 150;
 const clipLastPlayedAt = new Map<string, number>();
 
 /** Preloaded the moment the graph exists — the clips wired to buttons. */
-const CLIP_PRELOAD: readonly string[] = ["/assets/exo-kill-2.mp3", "/assets/exo-kill-4.mp3"];
+const CLIP_PRELOAD: readonly string[] = ["/assets/exo-kill-1.mp3", "/assets/exo-kill-2.mp3", "/assets/exo-kill-3.mp3", "/assets/exo-kill-4.mp3"];
 
 /**
  * Warm the cache for `url` without playing it, so the first press pays for a

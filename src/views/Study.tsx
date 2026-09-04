@@ -5,7 +5,7 @@ import type { WireItem } from "../data/news.ts";
 import { meta } from "../data/universe.ts";
 import { buildChartCard } from "../engine/chart.ts";
 import { fmtPx, series } from "../engine/tape.ts";
-import { sfx } from "../lib/sound/index.ts";
+import { playClip } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -162,7 +162,7 @@ export function Study({ arena, wire, wireStatus, salt, settleAt, mode, opponent,
             </div>
             <button
               onClick={() => {
-                sfx("ui.click.primary");
+                playClip("exo-1", "/assets/exo-kill-1.mp3");
                 onDone();
               }}
               style={sx(

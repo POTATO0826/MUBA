@@ -245,6 +245,20 @@ button {
   }
 }
 
+/* The sector tooltip on /create. Only opacity animates: the panel's transform
+ * carries its placement (centred, above or below the chip), so a keyframe that
+ * touched transform would fling it off its anchor. */
+@keyframes vcTipIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.vc-tip {
+  animation: vcTipIn 0.12s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vc-tip { animation: none; }
+}
+
 .vc-marquee:hover {
   animation-play-state: paused;
 }

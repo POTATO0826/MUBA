@@ -40,7 +40,9 @@ interface ResultProps {
   posAfter: number;
   onBackToBattles: () => void;
   onRematch: () => void;
-  /** `View the full ladder →`. A no-op until wave 7 routes `/ranks`. */
+  /** `View the full ladder →`. Live: `App` points it at `go("ranks")`, so the
+   *  rank moment's call to action lands on the page that page-ranks the same
+   *  `LeaderPlayer` this screen just counted out — the loop, closed. */
   onOpenLadder: () => void;
 }
 

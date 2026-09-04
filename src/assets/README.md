@@ -19,3 +19,6 @@ missing clip costs a quiet button and nothing else.
 
 `*.mp3` is gitignored, so a licensed track stays on the machine that owns the
 licence and is never committed or pushed.
+
+- `exo-kill-1.mp3` — "Done studying → pick a parlay" (Study)
+- `exo-kill-3.mp3` — "Both ready → lucky spin" (Room)
