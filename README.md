@@ -13,7 +13,7 @@ React on Bun. No Vite, no webpack — Bun bundles `src/index.html` directly.
 ```bash
 bun install
 bun dev          # http://localhost:3000, hot reload
-bun test         # 329 tests across 12 files
+bun test         # full unit and UI suite
 bun run typecheck
 bun run build    # → dist/
 ```
@@ -43,6 +43,25 @@ battles → room → spin → study → parlay → duel → result → rank
 `/` is home, `/desk` is the options desk (the worked payoff diagram), and
 `/ranks` is the ladder. The rank moment has no route of its own — it is the
 result screen's second phase, so a result link still replays both.
+
+## Live arena
+
+The **Live arena** header tab keeps the newer invite-based PvP flow alongside
+the seeded match flow above. It uses the same wallet and live Thetanuts market
+source, but offers two shorter modes:
+
+- **Parlay · RFQ** — choose up to four strikes on one underlying; the captured
+  volatility edge decides the round.
+- **Find a difference** — pick the largest hidden volatility outlier in the
+  live order book.
+
+`/arena` opens the mode hub. Creating a duel stores an in-memory room and
+produces a `/room/:id` invite. The challenger claims the second seat, both
+players ready up, and their picks remain hidden until both have locked. Room
+state is intentionally process-local: restarting the Bun server expires every
+invite. The room transport currently trusts the posted wallet address, so the
+flow is suitable for a prototype but must add signed nonces before its USDC
+labels become real custody.
 
 ## Determinism
 

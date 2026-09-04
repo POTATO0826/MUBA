@@ -1,6 +1,15 @@
 import index from "./src/index.html";
+import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
 import { createAttestService } from "./src/server/attest.ts";
 import { createNewsService } from "./src/server/news.ts";
+import {
+  createRoom,
+  joinRoom,
+  listRoomsFor,
+  pickRoom,
+  readRoom,
+  readyRoom,
+} from "./src/server/rooms.ts";
 import { createMarketService } from "./src/server/thetanuts.ts";
 
 /**
@@ -42,6 +51,26 @@ const market = createMarketService();
  * `{ ok: false, reason: "attestor not configured" }`.
  */
 const attest = createAttestService();
+
+const NO_STORE = { "cache-control": "no-store" };
+
+function roomResponse(result: RoomResult): Response {
+  if (result.ok) return Response.json(result.room, { headers: NO_STORE });
+  return Response.json(
+    { error: result.error, code: result.code },
+    { status: ROOM_ERROR_STATUS[result.code], headers: NO_STORE },
+  );
+}
+
+/** Room bodies are untrusted; the room store validates every field. */
+async function roomBody(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const parsed: unknown = await req.json();
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * The optional media: the room's waiting music and the two button clips. They
@@ -126,6 +155,44 @@ const server = Bun.serve({
      * — so it answers from memory and needs no `await`.
      */
     "/api/duel-status": (req: Request) => attest.handleStatus(new URL(req.url)),
+
+    // Invite-based live-data rooms. These sit beside the original seeded
+    // match/attestation routes so either duel format remains playable.
+    "/api/rooms": {
+      POST: async (req: Request) => {
+        const input = await roomBody(req);
+        return roomResponse(
+          createRoom({
+            address: input.address,
+            stakeUsdc: input.stakeUsdc,
+            durationMinutes: input.durationMinutes,
+            lobbyName: input.lobbyName,
+            mode: input.mode,
+          }),
+        );
+      },
+    },
+    "/api/rooms/mine": (req: Request) =>
+      Response.json(
+        { rooms: listRoomsFor(new URL(req.url).searchParams.get("address")) },
+        { headers: NO_STORE },
+      ),
+    "/api/rooms/:id": (req: Request & { params: { id: string } }) =>
+      roomResponse(readRoom(req.params.id)),
+    "/api/rooms/:id/join": {
+      POST: async (req: Request & { params: { id: string } }) =>
+        roomResponse(joinRoom(req.params.id, (await roomBody(req)).address)),
+    },
+    "/api/rooms/:id/pick": {
+      POST: async (req: Request & { params: { id: string } }) => {
+        const input = await roomBody(req);
+        return roomResponse(pickRoom(req.params.id, input.address, input.pick));
+      },
+    },
+    "/api/rooms/:id/ready": {
+      POST: async (req: Request & { params: { id: string } }) =>
+        roomResponse(readyRoom(req.params.id, (await roomBody(req)).address)),
+    },
 
     /**
      * The WalletConnect project id, read at boot by `src/wallet/project.ts`.

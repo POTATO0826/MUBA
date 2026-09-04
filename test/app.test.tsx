@@ -125,6 +125,11 @@ describe("landing", () => {
     expect(text()).toContain("Combined payoff at expiry");
     expect(text()).toContain("MM pricing");
 
+    click("Live arena");
+    expect(text()).toContain("FIND A DIFFERENCE");
+    expect(text()).toContain("ACTIVE DUELS");
+    expect(window.location.pathname).toBe("/arena");
+
     click("Home");
     expect(text()).toContain("Battle the book, not the market.");
   });

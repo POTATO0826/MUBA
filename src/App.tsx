@@ -1,8 +1,9 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { MatchSpin } from "./components/MatchSpin.tsx";
 import { scoreOf } from "./engine/match.ts";
 import { slipLabel } from "./engine/parlay.ts";
 import { MARKET_COLOR, MARKET_LABEL, YOU, bookOf, stakePointsFor } from "./data/lobbies.ts";
+import type { RoomView } from "./data/room.ts";
 import type { WalletSource } from "./data/wallet.ts";
 import type { MarketSource } from "./data/market.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
@@ -11,21 +12,28 @@ import { parseRoute, routePath, type Route } from "./lib/route.ts";
 import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
+import { useBattle } from "./state/battle.ts";
 import { useMatch } from "./state/match.ts";
 import { useRankProgress } from "./state/rank.ts";
+import { useRoom } from "./state/room.ts";
 import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
 import { MockWalletBanner } from "./ui/MockWalletBanner.tsx";
 import { Battles } from "./views/Battles.tsx";
+import { Create } from "./views/Create.tsx";
 import { CreateLobby } from "./views/CreateLobby.tsx";
+import { Hub } from "./views/Hub.tsx";
 import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
 import { Parlay } from "./views/Parlay.tsx";
+import { ParlayRfq } from "./views/ParlayRfq.tsx";
 import { ParlayPick } from "./views/ParlayPick.tsx";
 import { Ranking } from "./views/Ranking.tsx";
 import { Result } from "./views/Result.tsx";
 import { Room } from "./views/Room.tsx";
+import { RoomLobby } from "./views/RoomLobby.tsx";
+import { SpotDiff } from "./views/SpotDiff.tsx";
 import { Study } from "./views/Study.tsx";
 import { useMockWallet } from "./wallet/mock.ts";
 
@@ -94,10 +102,54 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   // real source was injected — cheap, and it keeps the rules of hooks honest.
   const fallback = useMockWallet();
   const active = wallet ?? fallback;
+  const { identity } = active;
+
+  // The invite-room PvP flow lives beside the original seeded match flow.
+  // Its internal tabs are deliberately separate because both flows have a
+  // create screen and a parlay screen with different state contracts.
+  const { state: arena, derived: arenaDerived, actions: arenaActions } = useBattle();
+  const roomState = useRoom(identity.address ?? null);
+  const [roomLobbyOpen, setRoomLobbyOpen] = useState(false);
+  const [arenaEntered, setArenaEntered] = useState(false);
+  const showArenaRoom =
+    state.tab === "arena" &&
+    roomState.room !== null &&
+    (roomLobbyOpen || roomState.arrivedFromLink) &&
+    !arenaEntered;
+
+  const [myRooms, setMyRooms] = useState<readonly RoomView[]>([]);
+  const refreshRooms = useCallback(() => {
+    if (state.tab !== "arena" || !identity.address) {
+      setMyRooms([]);
+      return;
+    }
+    fetch(`/api/rooms/mine?address=${encodeURIComponent(identity.address)}`)
+      .then((response) => response.json())
+      .then((data: { rooms?: RoomView[] }) => setMyRooms(data.rooms ?? []))
+      .catch(() => {
+        // The arena remains usable even when its history list cannot refresh.
+      });
+  }, [identity.address, state.tab]);
+
+  const arenaRoomId = roomState.room?.id ?? null;
+  useEffect(refreshRooms, [refreshRooms, arenaRoomId]);
 
   // The address follows the match, so a spin can be shared with its seed in it.
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Shared room URLs are owned by `useRoom`; rewriting one to `/arena`
+    // would destroy the invite before a challenger can join. An ordinary
+    // arena navigation still needs its own URL, including the mock `?as=`
+    // identity override used to exercise two seats on one machine.
+    if (state.tab === "arena") {
+      if (!/^\/room\/[0-9a-fA-F-]{36}\/?$/.test(window.location.pathname)) {
+        const arenaPath = `/arena${window.location.search}`;
+        if (window.location.pathname + window.location.search !== arenaPath) {
+          window.history.replaceState(null, "", arenaPath);
+        }
+      }
+      return;
+    }
     const seed = MATCH_STAGES.has(state.tab) ? state.seed : null;
     const path = routePath(state.tab, state.lobbyId, seed);
     if (window.location.pathname + window.location.search !== path) {
@@ -157,16 +209,123 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   const lobby = derived.lobby;
   const opp = derived.opponent;
 
+  const createArena = useCallback(() => {
+    if (!identity.address) return;
+    setArenaEntered(false);
+    setRoomLobbyOpen(false);
+    void roomState.create(
+      arena.stakeUsdc,
+      arena.durationMinutes,
+      arena.lobbyName,
+      arena.mode,
+    );
+  }, [arena.durationMinutes, arena.lobbyName, arena.mode, arena.stakeUsdc, identity.address, roomState]);
+
+  const enterArenaDuel = useCallback(() => {
+    setArenaEntered(true);
+    arenaActions.go(roomState.room?.mode ?? arena.mode)();
+  }, [arena.mode, arenaActions, roomState.room]);
+
+  const backToArenaHub = useCallback(() => {
+    setArenaEntered(false);
+    setRoomLobbyOpen(false);
+    roomState.leave();
+    arenaActions.go("hub")();
+    actions.go("arena")();
+  }, [actions, arenaActions, roomState]);
+
+  const lockArenaPick = useCallback(
+    (pick: string) => void roomState.pick(pick),
+    [roomState],
+  );
+
   return (
     <div style={sx(PAGE)}>
       <Header
         tab={state.tab}
-        wallet={active.identity}
-        onNavigate={(t) => actions.go(t)()}
+        wallet={identity}
+        onNavigate={(tab) => {
+          if (tab === "arena") {
+            setArenaEntered(false);
+            setRoomLobbyOpen(false);
+            if (roomState.room) roomState.leave();
+            arenaActions.go("hub")();
+          }
+          actions.go(tab)();
+        }}
         onConnect={() => void active.connect()}
         onManage={() => void active.openAccount()}
         onSwitchNetwork={() => void active.switchToBase()}
       />
+
+      {showArenaRoom && roomState.room && (
+        <RoomLobby
+          room={roomState.room}
+          state={roomState}
+          walletConnected={identity.connected}
+          onEnterDuel={enterArenaDuel}
+        />
+      )}
+
+      {state.tab === "arena" && !showArenaRoom && arena.tab === "hub" && (
+        <Hub
+          identity={identity}
+          rooms={myRooms}
+          onEnterMode={arenaActions.enterMode}
+          onOpenRoom={(id) => {
+            setArenaEntered(false);
+            setRoomLobbyOpen(true);
+            void roomState.open(id);
+          }}
+          onConnect={() => void active.connect()}
+          onDisconnect={() => void active.disconnect()}
+          onRefresh={refreshRooms}
+        />
+      )}
+
+      {state.tab === "arena" && !showArenaRoom && arena.tab === "create" && (
+        <Create
+          state={arena}
+          entryLabel={arenaDerived.entryLabel}
+          prizeLabel={arenaDerived.prizeLabel}
+          inviteUrl={roomState.inviteUrl}
+          creating={roomState.busy}
+          createError={roomState.error}
+          walletConnected={identity.connected}
+          onBack={backToArenaHub}
+          onStakeInput={arenaActions.onStakeInput}
+          onStakeBlur={arenaActions.onStakeBlur}
+          onStakeUp={arenaActions.stakeUp}
+          onStakeDown={arenaActions.stakeDown}
+          onLobbyName={arenaActions.setLobbyName}
+          onDuration={arenaActions.setDuration}
+          onCreateArena={createArena}
+          onOpenLobby={() => setRoomLobbyOpen(true)}
+        />
+      )}
+
+      {state.tab === "arena" && !showArenaRoom && arena.tab === "parlay" && (
+        <ParlayRfq
+          source={source}
+          room={roomState.room}
+          seat={roomState.seat}
+          busy={roomState.busy}
+          onLock={lockArenaPick}
+          onBack={backToArenaHub}
+        />
+      )}
+
+      {state.tab === "arena" && !showArenaRoom && arena.tab === "spotdiff" && (
+        <SpotDiff
+          source={source}
+          room={roomState.room}
+          seat={roomState.seat}
+          address={identity.address}
+          busy={roomState.busy}
+          onLock={lockArenaPick}
+          onBack={backToArenaHub}
+        />
+      )}
 
       {state.tab === "lobby" && (
         <Lobby

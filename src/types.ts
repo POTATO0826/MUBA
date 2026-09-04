@@ -4,6 +4,9 @@ export type Market = "STOCK" | "CRYPTO";
 export type MarketFilter = Market | "MIXED";
 export type Direction = "over" | "under";
 
+/** Live-data duel modes introduced by the invite-room flow. */
+export type GameMode = "parlay" | "spotdiff";
+
 /** The six sector groups the 12 raw `Asset.sector` values roll up into.
  *  Defined in `src/data/sectors.ts`; the groups partition the board. */
 export type SectorKey = "SEMIS" | "TECH" | "MACRO" | "MAJORS" | "DEFI" | "MEME";
@@ -30,7 +33,8 @@ export type Tab =
   | "duel"
   | "result"
   | "desk"
-  | "ranks";
+  | "ranks"
+  | "arena";
 
 export interface Asset {
   sym: string;

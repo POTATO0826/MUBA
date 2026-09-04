@@ -99,7 +99,14 @@ const NOT_READY = { me: false, opp: false } as const;
 /** The screens that stand outside a match: they carry no lobby and no seed,
  *  so a cold `/ranks` (or `/desk`) must never be mistaken for a match address
  *  with a missing lobby and bounced to the board. */
-const OUTSIDE_MATCH: ReadonlySet<Tab> = new Set<Tab>(["lobby", "battles", "create", "desk", "ranks"]);
+const OUTSIDE_MATCH: ReadonlySet<Tab> = new Set<Tab>([
+  "lobby",
+  "battles",
+  "create",
+  "desk",
+  "ranks",
+  "arena",
+]);
 
 /**
  * When a parlay entered right now would lock itself. `null` for an untimed

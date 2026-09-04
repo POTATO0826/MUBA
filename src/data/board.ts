@@ -76,3 +76,9 @@ export function scorePick(index: Map<string, number>, pick: string | null | unde
   if (!pick) return 0;
   return pick.split(",").reduce((sum, id) => sum + (index.get(id) ?? 0), 0);
 }
+
+/** The asset encoded in a live-board pick. */
+export function assetOfPick(pick: string | null | undefined): string | null {
+  if (!pick) return null;
+  return pick.split(",")[0]?.split("|")[0] ?? null;
+}

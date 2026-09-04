@@ -353,7 +353,7 @@ export interface FillDeps {
  */
 export const ALCHEMY_HINT =
   "Public RPC https://mainnet.base.org is throttling. Do not retry blindly — " +
-  'set RPC_URL="https://base-mainnet.g.alchemy.com/v2/YOUR_KEY" and reload.';
+  "configure a private Base RPC endpoint on the server and reload.";
 
 /**
  * Does this error look like the public RPC throttling rather than a contract

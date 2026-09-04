@@ -17,6 +17,7 @@ const MATCH_FLOW: readonly Tab[] = ["battles", "create", "room", "spin", "study"
 const NAV: readonly { key: Tab; label: string; pitch: number }[] = [
   { key: "lobby", label: "Home", pitch: 523 / 660 },
   { key: "battles", label: "Battles", pitch: 587 / 660 },
+  { key: "arena", label: "Live arena", pitch: 622 / 660 },
   { key: "ranks", label: "Ranking", pitch: 659 / 660 },
   { key: "desk", label: "Options desk", pitch: 698 / 660 },
 ];
