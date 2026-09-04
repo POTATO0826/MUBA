@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { CursorField } from "../components/CursorField.tsx";
 import { DitherReveal } from "../components/DitherReveal.tsx";
 import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
 import { sfx } from "../lib/sound/index.ts";
@@ -52,6 +54,9 @@ export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart }: Lob
 }
 
 function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: () => void }) {
+  // The cursor trail reads this to keep its glyphs off the hand art.
+  const handRef = useRef<HTMLDivElement>(null);
+
   return (
     <section
       style={sx(
@@ -60,6 +65,8 @@ function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: ()
       )}
     >
       <div
+        ref={handRef}
+        data-hero-art=""
         style={sx(
           "position:absolute;top:0;right:0;bottom:0;width:52%;mix-blend-mode:screen;" +
             "filter:brightness(1.75) contrast(1.3);animation:vcDrift 18s ease-in-out infinite",
@@ -68,7 +75,9 @@ function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: ()
         <DitherReveal ditherStyle="bayer8" dotSize={5} revealRadius={190} revealSoftness={40} wave waveSpeed={34} waveDensity={14} focusY={46} />
       </div>
       <div style={sx("position:absolute;inset:0;background:radial-gradient(500px 240px at 88% 20%, rgba(200,255,0,.14), transparent 65%);pointer-events:none")} />
-      <div style={sx("position:relative;display:flex;flex-wrap:wrap;align-items:flex-start;gap:32px")}>
+      {/* Above the backdrop, below the copy — see the z-index on the row that follows. */}
+      <CursorField excludeRef={handRef} />
+      <div style={sx("position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:flex-start;gap:32px")}>
         <div style={sx("position:relative;flex:1;min-width:300px;max-width:560px")}>
           <div
             style={sx(

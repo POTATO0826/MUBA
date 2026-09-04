@@ -1,13 +1,18 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { meta } from "../src/data/universe.ts";
 import { createNewsService, type NewsEnvelope, type NewsOk } from "../src/server/news.ts";
 
 /**
  * The live wire, offline.
  *
  * Every test here runs the *real* composition path — derive the feed URLs from
- * `universe.ts`, fetch, `parseRss`, strip the publisher suffix, compose the
- * body, merge, cache — over fixture XML written in the shapes plan 2 actually
- * probed. The only thing replaced is the socket.
+ * `universe.ts`, fetch, `parseRss`, strip the publisher suffix, filter for
+ * relevance, compose the body, merge, sort, cache — over fixture XML written in
+ * the shapes plan 2 actually probed. The only thing replaced is the socket.
+ *
+ * The contract this file pins, in one sentence: **every row belongs to a dealt
+ * ticker, every row is about that ticker, every dealt ticker has a row, and the
+ * whole list is in time order.**
  *
  * The `beforeAll` guard below is the load-bearing part: `globalThis.fetch` is
  * replaced with a function that throws, so any code path that forgets the
@@ -29,7 +34,7 @@ afterAll(() => {
   globalThis.fetch = REAL_FETCH;
 });
 
-// ─── fixtures, in the four shapes the feeds actually ship ────────────────────
+// ─── fixtures, in the shapes the feeds actually ship ─────────────────────────
 
 const doc = (...items: string[]) =>
   `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Feed</title><link>https://example.com</link>${items.join(
@@ -52,6 +57,15 @@ const gnewsItem = (headline: string, pub: string, guid: string, mm: number) =>
   `<description>&lt;a href="https://news.google.com/rss/articles/${guid}?oc=5" target="_blank"&gt;${headline}&lt;/a&gt;&nbsp;&lt;font color="#6f6f6f"&gt;${pub}&lt;/font&gt;</description>` +
   `<source url="https://www.example.com">${pub}</source></item>`;
 
+/** The same feed's other shape: a real prose description rather than a stub. */
+const gnewsProse = (headline: string, pub: string, guid: string, mm: number, body: string) =>
+  `<item><title>${headline} - ${pub}</title>` +
+  `<link>https://news.google.com/rss/articles/${guid}?oc=5</link>` +
+  `<guid isPermaLink="false">${guid}</guid>` +
+  `<pubDate>${at(mm)}</pubDate>` +
+  `<description>${body}</description>` +
+  `<source url="https://www.example.com">${pub}</source></item>`;
+
 /** A Yahoo item: plain-prose description, no `<source>`, real seconds. */
 const yahooItem = (headline: string, body: string, guid: string, mm: number, ss: number) =>
   `<item><title>${headline}</title>` +
@@ -61,10 +75,10 @@ const yahooItem = (headline: string, body: string, guid: string, mm: number, ss:
   `<guid isPermaLink="false">${guid}</guid></item>`;
 
 /**
- * CoinDesk / Cointelegraph: CDATA titles, CDATA-wrapped HTML bodies, and — as
- * the first live probe of this service turned up — a CDATA-wrapped `<link>`,
- * which the parser leaves alone by design. An `&amp;` rides along in the query
- * string, the one XML escape a URL legitimately carries.
+ * The CDATA shape — a CDATA title, a CDATA-wrapped HTML body, and, as the first
+ * live probe of this service turned up, a CDATA-wrapped `<link>` carrying an
+ * `&amp;`, the one XML escape a URL legitimately holds. It reaches the wire
+ * through a per-symbol feed now that no market-wide feed is read at all.
  */
 const cdataItem = (headline: string, body: string, guid: string, mm: number) =>
   `<item><title><![CDATA[${headline}]]></title>` +
@@ -80,68 +94,67 @@ const PROSE_B =
   "Spot desks reported a third straight session of net creations, with the largest baskets printing before the London close on Monday.";
 
 /**
+ * The drift every loose feed carries: a real story about somebody else. Yahoo's
+ * NVDA feed has shipped exactly this kind of row, and the relevance filter
+ * exists for it. It names no company in the universe, so it is off-topic for
+ * every ticker on the board — and it is the *newest* row in the fixture, so
+ * nothing but the filter can keep it off the wire.
+ */
+const DRIFT_HEAD = "Robinhood Rolls Out New Wallets For Retail Traders";
+const DRIFT_BODY =
+  "The brokerage said the rollout reaches all fifty states this quarter, with staking to follow for eligible customers later in the year.";
+
+/**
  * The syndicated wire story every Google News query returns — the same headline
  * under two tickers, exactly the collision the merge's dedupe exists for. Its
- * guid differs per query, so nothing but the normalised headline can collapse it.
+ * guid differs per query, so nothing but the normalised headline can collapse
+ * it, and its body names both companies, so it is genuinely on-topic for both.
  */
 const SYNDICATED = "Fed Minutes Land With Volatility Sellers Still in Control";
+const SYNDICATED_BODY =
+  "Desks trading Nvidia and Apple risk said the minutes changed little, with volatility sellers still in control of the front expiry.";
 
 function gnewsDocFor(ticker: string): string {
   return doc(
     gnewsItem(`${ticker} Receives US Government OK to Export Its Newest Circuits`, "Reuters", `g-${ticker}-1`, 40),
     gnewsItem(`${ticker} Guidance Lifted as Order Coverage Runs Ahead of Plan`, "Bloomberg", `g-${ticker}-2`, 35),
-    gnewsItem(SYNDICATED, "Reuters", `g-${ticker}-syn`, 33),
+    gnewsProse(SYNDICATED, "Reuters", `g-${ticker}-syn`, 33, SYNDICATED_BODY),
     gnewsItem(`${ticker} Draws Heaviest Options Volume of the Quarter`, "CNBC", `g-${ticker}-3`, 30),
   );
 }
 
+/** Yahoo's per-symbol feed: two rows about the name, one drifting one on top. */
 function yahooDocFor(ticker: string): string {
   return doc(
+    yahooItem(DRIFT_HEAD, DRIFT_BODY, `y-${ticker}-drift`, 55, 3),
     yahooItem(`${ticker} quarterly revenue tops estimates as demand holds`, PROSE_A, `y-${ticker}-1`, 45, 12),
     yahooItem(`${ticker} margin path draws fresh sell-side attention`, PROSE_B, `y-${ticker}-2`, 20, 47),
   );
 }
 
-const MARKET_DOC = doc(
-  gnewsItem("Stock Market Volatility Cools as Options Expiry Passes Quietly", "MarketWatch", "g-mkt-1", 50),
-  gnewsItem("Dealers Trim Gamma Exposure Into the Long Weekend", "Barron's", "g-mkt-2", 15),
-);
-
-const COINDESK_DOC = doc(
-  cdataItem("Bitcoin holds its range as spot ETF inflows resume", PROSE_B, "cd-1", 52),
-  cdataItem("Ether staking queue clears its longest backlog since spring", PROSE_A, "cd-2", 22),
-);
-
-const COINTELEGRAPH_DOC = doc(
-  cdataItem("Exchange balances thin to a multi-quarter low, desks say", PROSE_A, "ct-1", 48),
-  cdataItem("Perp funding turns positive across the majors", PROSE_B, "ct-2", 18),
-);
-
 /** Routes a request URL back to the fixture the real feed would have served. */
 function bodyFor(url: string): string {
-  if (url.includes("coindesk.com")) return COINDESK_DOC;
-  if (url.includes("cointelegraph.com")) return COINTELEGRAPH_DOC;
   if (url.includes("feeds.finance.yahoo.com")) {
     const s = new URL(url).searchParams.get("s") ?? "";
     return yahooDocFor(s.replace(/-USD$/, ""));
   }
   if (url.includes("news.google.com")) {
-    const q = new URL(url).searchParams.get("q") ?? "";
-    if (q.includes("stock market options volatility")) return MARKET_DOC;
-    const m = /\bOR\s+([A-Z0-9]+)\b/.exec(q);
+    const query = new URL(url).searchParams.get("q") ?? "";
+    const m = /\bOR\s+([A-Z0-9]+)\b/.exec(query);
     return gnewsDocFor(m?.[1] ?? "MKT");
   }
   return doc();
 }
 
-type Verdict = number | "throw" | "garbage" | undefined;
+type Verdict = number | "throw" | "garbage" | { doc: string } | undefined;
 
 interface FakeFetch {
   fetch: typeof fetch;
   calls: string[];
 }
 
-/** `plan(url)` decides how each feed behaves; `undefined` means "serve the fixture". */
+/** `plan(url)` decides how each feed behaves; `undefined` means "serve the
+ *  fixture", and `{ doc }` serves a document written for one test. */
 function makeFetch(plan: (url: string) => Verdict = () => undefined): FakeFetch {
   const calls: string[] = [];
   const fn = async (input: unknown): Promise<Response> => {
@@ -151,10 +164,19 @@ function makeFetch(plan: (url: string) => Verdict = () => undefined): FakeFetch 
     if (verdict === "throw") throw new Error("connection reset");
     if (verdict === "garbage") return new Response("<<< not xml &&& <item unclosed", { status: 200 });
     if (typeof verdict === "number") return new Response("upstream error", { status: verdict });
-    return new Response(bodyFor(url), { status: 200, headers: { "content-type": "application/xml" } });
+    const xml = typeof verdict === "object" ? verdict.doc : bodyFor(url);
+    return new Response(xml, { status: 200, headers: { "content-type": "application/xml" } });
   };
   return { fetch: fn as unknown as typeof fetch, calls };
 }
+
+/** True when `url` is the Google News feed opened for `sym`. */
+const gnewsOf = (url: string, sym: string): boolean =>
+  url.includes("news.google.com") && url.includes(`OR%20${sym}%20`);
+
+/** True when `url` is the Yahoo feed opened for `sym`. */
+const yahooOf = (url: string, sym: string): boolean =>
+  url.includes("feeds.finance.yahoo.com") && new RegExp(`[?&]s=${sym}(-USD)?&`).test(url);
 
 // ─── driving the service ─────────────────────────────────────────────────────
 
@@ -171,6 +193,32 @@ async function ask(svc: ReturnType<typeof createNewsService>, url: URL): Promise
 function ok(env: NewsEnvelope): NewsOk {
   if (!env.ok) throw new Error(`expected ok envelope, got: ${env.reason}`);
   return env;
+}
+
+/**
+ * The relevance contract, restated here independently of the implementation:
+ * the company name matched case-insensitively on non-alphanumeric boundaries,
+ * or the exact uppercase ticker token on the same boundaries. If this and
+ * `mentionsTicker` ever disagree, one of the two is the bug.
+ */
+function saysItIsAbout(sym: string, text: string): boolean {
+  const name = meta(sym).name.replace(/\s+/g, "\\s+");
+  return (
+    new RegExp(`(^|[^A-Za-z0-9])${name}([^A-Za-z0-9]|$)`, "i").test(text) ||
+    new RegExp(`(^|[^A-Za-z0-9])${sym}([^A-Za-z0-9]|$)`).test(text)
+  );
+}
+
+/** Newest first, the id breaking a tie — the order the final array must be in. */
+function inOrder(items: NewsOk["items"]): boolean {
+  for (let i = 1; i < items.length; i++) {
+    const prev = items[i - 1]!;
+    const cur = items[i]!;
+    if (prev.ts > cur.ts) continue;
+    if (prev.ts === cur.ts && prev.id < cur.id) continue;
+    return false;
+  }
+  return true;
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
@@ -195,10 +243,33 @@ describe("createNewsService — feed derivation", () => {
     expect(decodeURIComponent(crypto[0]!.url)).toContain('q="Bitcoin" OR BTC crypto when:7d');
     expect(crypto[1]!.url).toContain("s=BTC-USD");
   });
+
+  test("every planned feed belongs to a ticker — no market-wide feed exists", async () => {
+    const derive = createNewsService({ fetch: makeFetch().fetch });
+    for (const sym of ["NVDA", "BTC", "COIN", "PEPE"]) {
+      for (const f of derive.feedsFor(sym)) expect(f.sym).toBe(sym);
+    }
+
+    // And a request opens nothing else: two sockets per ticker, both derived,
+    // none of them a board-level query.
+    const f = makeFetch();
+    const svc = createNewsService({ fetch: f.fetch });
+    await ask(svc, q("d1:1", "NVDA,BTC"));
+
+    expect(f.calls).toHaveLength(4);
+    for (const url of f.calls) {
+      expect(url.includes("news.google.com") || url.includes("feeds.finance.yahoo.com")).toBe(true);
+      expect(url).not.toContain("coindesk.com");
+      expect(url).not.toContain("cointelegraph.com");
+      expect(decodeURIComponent(url)).not.toContain("stock market options volatility");
+    }
+    expect(f.calls.filter((u) => gnewsOf(u, "NVDA"))).toHaveLength(1);
+    expect(f.calls.filter((u) => yahooOf(u, "BTC"))).toHaveLength(1);
+  });
 });
 
 describe("createNewsService — happy path", () => {
-  test("composes a live wire from all feeds", async () => {
+  test("composes a live wire from the per-ticker feeds", async () => {
     const f = makeFetch();
     const svc = createNewsService({ fetch: f.fetch });
     const env = ok(await ask(svc, q("kz-semis:424242", "NVDA,BTC")));
@@ -208,15 +279,20 @@ describe("createNewsService — happy path", () => {
     expect(env.items.length).toBeGreaterThan(0);
     expect(typeof env.fetchedAt).toBe("number");
 
-    // Seven feeds: gnews+yahoo per ticker, coindesk + cointelegraph (crypto on
-    // the board) and the market-wide stock query.
-    expect(env.feeds).toHaveLength(7);
-    expect(f.calls).toHaveLength(7);
+    // Four feeds: gnews + yahoo per ticker, and nothing board-level.
+    expect(env.feeds).toHaveLength(4);
+    expect(f.calls).toHaveLength(4);
     expect(env.feeds.every((r) => r.status === 200)).toBe(true);
     for (const r of env.feeds) {
       expect(typeof r.url).toBe("string");
       expect(typeof r.ms).toBe("number");
       expect(r.items).toBeGreaterThan(0);
+      expect(typeof r.dropped).toBe("number");
+    }
+    // Each Yahoo feed shipped one drifting row and the report says so — a
+    // healthy feed with a rejected row is not an outage.
+    for (const r of env.feeds.filter((x) => x.url.includes("yahoo"))) {
+      expect(r.dropped).toBe(1);
     }
   });
 
@@ -233,13 +309,22 @@ describe("createNewsService — happy path", () => {
     expect(env.items.some((i) => / - (Reuters|Bloomberg|CNBC|MarketWatch|Barron's)$/.test(i.headline))).toBe(false);
   });
 
-  test("every dealt ticker is represented", async () => {
+  test("every dealt ticker is represented, and nothing else is", async () => {
     const svc = createNewsService({ fetch: makeFetch().fetch });
-    const env = ok(await ask(svc, q("m2:1", "NVDA,BTC,AAPL,SOL")));
-    const syms = new Set(env.items.map((i) => i.sym));
-    for (const t of ["NVDA", "BTC", "AAPL", "SOL"]) expect(syms.has(t)).toBe(true);
-    // Market-wide rows carry a null sym; the terminal renders those as "MKT".
-    expect(env.items.some((i) => i.sym === null)).toBe(true);
+    const boards = [
+      ["NVDA", "BTC", "AAPL", "SOL"],
+      ["NVDA", "AAPL", "TSLA"],
+      ["BTC", "ETH", "PEPE"],
+    ];
+    for (const [n, board] of boards.entries()) {
+      const env = ok(await ask(svc, q(`m2-${n}:1`, board.join(","))));
+      const syms = new Set(env.items.map((i) => i.sym));
+      for (const t of board) expect(syms.has(t)).toBe(true);
+      // Bug 1, in three lines: no row is filed market-wide any more.
+      expect(env.items.every((i) => i.sym !== null)).toBe(true);
+      expect(env.items.every((i) => board.includes(i.sym!))).toBe(true);
+      expect(env.items.every((i) => !i.dateline.includes(": MKT: "))).toBe(true);
+    }
   });
 
   test("every ticker still appears when the limit is barely enough", async () => {
@@ -250,16 +335,11 @@ describe("createNewsService — happy path", () => {
     for (const t of ["NVDA", "BTC", "AAPL", "SOL"]) expect(syms.has(t)).toBe(true);
   });
 
-  test("market-wide rows survive the quota, and no ticker exceeds its ceiling", async () => {
+  test("no ticker exceeds its ceiling", async () => {
     const svc = createNewsService({ fetch: makeFetch().fetch });
-    // 2 tickers, limit 8 ⇒ ceiling of 4 rows each. If the per-ticker quota were
-    // allowed to spend the whole budget, CoinDesk / Cointelegraph / the
-    // board-level query would be fetched every request and never displayed.
+    // 2 tickers, limit 8 ⇒ a ceiling of 4 rows each.
     const env = ok(await ask(svc, q("m7:1", "NVDA,BTC", "&limit=8")));
     expect(env.items).toHaveLength(8);
-
-    const wide = env.items.filter((i) => i.sym === null);
-    expect(wide.length).toBeGreaterThanOrEqual(2);
     for (const t of ["NVDA", "BTC"]) {
       const mine = env.items.filter((i) => i.sym === t);
       expect(mine.length).toBeGreaterThanOrEqual(1);
@@ -267,13 +347,24 @@ describe("createNewsService — happy path", () => {
     }
   });
 
-  test("items sort newest first and carry a complete WireItem", async () => {
+  test("the final list is strictly ordered, newest first, id breaking ties", async () => {
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const boards = [["NVDA", "BTC"], ["NVDA", "AAPL", "TSLA", "SOL"], ["PEPE"]];
+    for (const [n, board] of boards.entries()) {
+      const env = ok(await ask(svc, q(`m4-${n}:1`, board.join(","))));
+      expect(env.items.length).toBeGreaterThan(1);
+      // Selection decides who is in; the sort decides the order. A list left
+      // grouped by ticker — every NVDA row, then every BTC row — fails this.
+      expect(inOrder(env.items)).toBe(true);
+      const ts = env.items.map((i) => i.ts);
+      expect(ts).toEqual([...ts].sort((a, b) => b - a));
+    }
+  });
+
+  test("items carry a complete WireItem", async () => {
     const svc = createNewsService({ fetch: makeFetch().fetch });
     const env = ok(await ask(svc, q("m4:1", "NVDA,BTC")));
 
-    for (let i = 1; i < env.items.length; i++) {
-      expect(env.items[i - 1]!.ts).toBeGreaterThanOrEqual(env.items[i]!.ts);
-    }
     for (const it of env.items) {
       expect(it.kind).toBe("news");
       expect(it.id.length).toBeGreaterThan(0);
@@ -282,6 +373,7 @@ describe("createNewsService — happy path", () => {
       expect(it.publisher).toBe(it.publisher.toUpperCase());
       expect(it.time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
       expect(it.dateline).toMatch(/^\d{1,2}\/\d{1,2}\/\d{2} \d{2}:\d{2}:\d{2}: /);
+      expect(it.dateline).toContain(`: ${it.sym}: `);
       expect(it.signature.startsWith("(END) ")).toBe(true);
       expect(it.signature).toContain("ET / Copyright (c) ");
       expect(it.link).toBeTruthy();
@@ -312,7 +404,13 @@ describe("createNewsService — happy path", () => {
   });
 
   test("a CDATA-wrapped link is unwrapped and its &amp; decoded", async () => {
-    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const cdataDoc = doc(
+      cdataItem("Bitcoin holds its range as spot ETF inflows resume", PROSE_B, "cd-1", 52),
+      cdataItem("Ether staking queue clears its longest backlog since spring", PROSE_A, "cd-2", 22),
+    );
+    const svc = createNewsService({
+      fetch: makeFetch((url) => (yahooOf(url, "BTC") ? { doc: cdataDoc } : undefined)).fetch,
+    });
     const env = ok(await ask(svc, q("m8:1", "BTC")));
     const cd = env.items.find((i) => i.link?.includes("example.com/news/cd-"));
     expect(cd).toBeDefined();
@@ -323,23 +421,189 @@ describe("createNewsService — happy path", () => {
 
   test("a link that is not http(s) becomes null rather than an href", async () => {
     const hostile = doc(
-      `<item><title>Desk note on the tape</title><link>javascript:alert(1)</link>` +
+      `<item><title>BTC desk note on the tape</title><link>javascript:alert(1)</link>` +
         `<guid isPermaLink="false">x-1</guid><pubDate>${at(59)}</pubDate>` +
         `<description>${PROSE_A}</description></item>`,
     );
-    const f = makeFetch();
     const svc = createNewsService({
-      fetch: (async (input: unknown) => {
-        const url = String(input);
-        return url.includes("feeds.finance.yahoo.com")
-          ? new Response(hostile, { status: 200 })
-          : f.fetch(url);
-      }) as unknown as typeof fetch,
+      fetch: makeFetch((url) => (url.includes("feeds.finance.yahoo.com") ? { doc: hostile } : undefined)).fetch,
     });
-    const env = ok(await ask(svc, q("m9:1", "NVDA")));
-    const bad = env.items.find((i) => i.headline === "Desk note on the tape");
+    const env = ok(await ask(svc, q("m9:1", "BTC")));
+    const bad = env.items.find((i) => i.headline === "BTC desk note on the tape");
     expect(bad).toBeDefined();
     expect(bad!.link).toBeNull();
+  });
+});
+
+describe("createNewsService — the relevance filter", () => {
+  test("every returned row is about the ticker it is filed under", async () => {
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const env = ok(await ask(svc, q("r1:1", "NVDA,BTC,AAPL,SOL")));
+    expect(env.items.length).toBeGreaterThan(4);
+    for (const it of env.items) {
+      // A tier-1 row proves it on the feed's own words; a tier-2 row's body is
+      // a desk note about the same name.
+      expect(saysItIsAbout(it.sym!, `${it.headline} ${it.body}`)).toBe(true);
+    }
+  });
+
+  test("a drifting story on a per-symbol feed is dropped", async () => {
+    const svc = createNewsService({ fetch: makeFetch().fetch });
+    const env = ok(await ask(svc, q("r2:1", "NVDA,BTC")));
+    // Yahoo's NVDA feed has really shipped rows like this one, and it is the
+    // newest item in the fixture — only the filter can keep it out.
+    expect(env.items.some((i) => i.headline === DRIFT_HEAD)).toBe(false);
+    expect(env.items.length).toBeGreaterThan(3);
+  });
+
+  test("META does not match metaverse, and Meta does match Meta", async () => {
+    const metaDoc = doc(
+      gnewsProse(
+        "Metaverse Land Sales Cool as Buyers Step Back",
+        "Reuters",
+        "g-meta-verse",
+        58,
+        "Virtual real estate volumes fell for a fourth quarter, with the largest platforms reporting fewer than a thousand parcels sold.",
+      ),
+      gnewsProse(
+        "Meta Platforms Lifts Full-Year Capex Guidance",
+        "Bloomberg",
+        "g-meta-capex",
+        44,
+        "The company raised its capital expenditure range, citing data-centre build-out for its ranking and recommendation models.",
+      ),
+      gnewsItem("META Draws Heaviest Options Volume of the Quarter", "CNBC", "g-meta-opt", 21),
+    );
+    const svc = createNewsService({
+      fetch: makeFetch((url) =>
+        gnewsOf(url, "META") ? { doc: metaDoc } : yahooOf(url, "META") ? { doc: doc() } : undefined,
+      ).fetch,
+    });
+    const env = ok(await ask(svc, q("r3:1", "META,NVDA")));
+    const heads = env.items.filter((i) => i.sym === "META").map((i) => i.headline);
+
+    expect(heads).toContain("Meta Platforms Lifts Full-Year Capex Guidance");
+    expect(heads).toContain("META Draws Heaviest Options Volume of the Quarter");
+    expect(heads.some((h) => h.startsWith("Metaverse Land Sales"))).toBe(false);
+  });
+
+  test("COIN, LINK and UNI need the company name or the uppercase ticker", async () => {
+    // The three symbols in this universe that are also ordinary English words.
+    // Lower- and title-case usage ("Coin", "Link", "University" — and "Bitcoin"
+    // for the substring-minded) must never carry a row.
+    const docs: Record<string, string> = {
+      COIN: doc(
+        gnewsProse(
+          "Bitcoin Miners Hold Coin Balances Steady Into the Quarter",
+          "Reuters",
+          "g-coin-bad",
+          58,
+          "Public miners kept their treasuries flat through August, selling roughly as much as they produced, according to filings.",
+        ),
+        gnewsProse(
+          "Coinbase Opens Its Institutional Desk to Wider Custody",
+          "Bloomberg",
+          "g-coin-name",
+          44,
+          "The exchange said custody balances rose again, with the institutional book taking the bulk of the growth.",
+        ),
+        gnewsItem("COIN Draws Heaviest Options Volume of the Quarter", "CNBC", "g-coin-tok", 21),
+      ),
+      LINK: doc(
+        gnewsProse(
+          "Analysts Link Fed Path to Risk Assets Once Again",
+          "Reuters",
+          "g-link-bad",
+          57,
+          "Strategists at two banks argued the rates path explains most of the cross-asset move, with positioning doing the rest.",
+        ),
+        gnewsProse(
+          "Chainlink Oracle Network Adds Two Reserve Feeds",
+          "Bloomberg",
+          "g-link-name",
+          43,
+          "The network said two proof-of-reserve feeds went live this week, both carrying attestations from the same auditor.",
+        ),
+      ),
+      UNI: doc(
+        gnewsProse(
+          "University Endowments Trim Their Crypto Books",
+          "Reuters",
+          "g-uni-bad",
+          56,
+          "Several endowments cut digital-asset exposure over the summer, according to people familiar with the allocations.",
+        ),
+        gnewsProse(
+          "Uniswap Fee Switch Vote Clears Governance",
+          "Bloomberg",
+          "g-uni-name",
+          42,
+          "The proposal passed with a wide margin and turns on a protocol fee for a subset of pools next month.",
+        ),
+      ),
+    };
+    const svc = createNewsService({
+      fetch: makeFetch((url) => {
+        for (const sym of ["COIN", "LINK", "UNI"]) {
+          if (gnewsOf(url, sym)) return { doc: docs[sym]! };
+          if (yahooOf(url, sym)) return { doc: doc() };
+        }
+        return undefined;
+      }).fetch,
+    });
+    const env = ok(await ask(svc, q("r4:1", "COIN,LINK,UNI")));
+    const heads = env.items.map((i) => i.headline);
+
+    expect(heads).toContain("Coinbase Opens Its Institutional Desk to Wider Custody");
+    expect(heads).toContain("COIN Draws Heaviest Options Volume of the Quarter");
+    expect(heads).toContain("Chainlink Oracle Network Adds Two Reserve Feeds");
+    expect(heads).toContain("Uniswap Fee Switch Vote Clears Governance");
+
+    expect(heads.some((h) => h.startsWith("Bitcoin Miners Hold Coin"))).toBe(false);
+    expect(heads.some((h) => h.startsWith("Analysts Link Fed Path"))).toBe(false);
+    expect(heads.some((h) => h.startsWith("University Endowments"))).toBe(false);
+
+    for (const t of ["COIN", "LINK", "UNI"]) expect(env.items.some((i) => i.sym === t)).toBe(true);
+  });
+
+  test("the floor beats the filter: an emptied ticker keeps its two newest rows", async () => {
+    // Both of GLD's feeds answer with nothing about gold. The ticker must still
+    // reach the terminal — a missing dealt name is a worse bug than a loose row.
+    const gnewsDrift = doc(
+      gnewsProse(DRIFT_HEAD, "Reuters", "g-gld-1", 55, DRIFT_BODY),
+      gnewsProse("Dealers Trim Gamma Exposure Into the Long Weekend", "Bloomberg", "g-gld-2", 50, PROSE_A),
+      gnewsProse("Fund Flows Turn Defensive Across Listed Products", "CNBC", "g-gld-3", 45, PROSE_B),
+    );
+    const yahooDrift = doc(yahooItem("Retail Brokers Report a Quiet August", PROSE_A, "y-gld-1", 40, 9));
+
+    const svc = createNewsService({
+      fetch: makeFetch((url) =>
+        gnewsOf(url, "GLD") ? { doc: gnewsDrift } : yahooOf(url, "GLD") ? { doc: yahooDrift } : undefined,
+      ).fetch,
+    });
+    const env = ok(await ask(svc, q("r5:1", "GLD,NVDA")));
+
+    const gld = env.items.filter((i) => i.sym === "GLD");
+    expect(gld.length).toBeGreaterThanOrEqual(1);
+    expect(gld.length).toBeLessThanOrEqual(2);
+    // The two *newest* of the rejected set, not an arbitrary two.
+    expect(gld.map((i) => i.headline)).toEqual([
+      DRIFT_HEAD,
+      "Dealers Trim Gamma Exposure Into the Long Weekend",
+    ]);
+    // Those rows are knowingly off-topic; that is what the floor is for.
+    expect(gld.every((i) => saysItIsAbout("GLD", `${i.headline} ${i.body}`))).toBe(false);
+
+    // A feed whose rows were all rejected is healthy, not degraded.
+    expect(env.source).toBe("live");
+    const report = env.feeds.find((r) => gnewsOf(r.url, "GLD"))!;
+    expect(report.status).toBe(200);
+    expect(report.items).toBe(0);
+    expect(report.dropped).toBe(3);
+
+    // And the ordering guarantee survives the fallback.
+    expect(inOrder(env.items)).toBe(true);
+    expect(env.items.some((i) => i.sym === "NVDA")).toBe(true);
   });
 });
 
@@ -349,7 +613,7 @@ describe("createNewsService — the body composer", () => {
     const env = ok(await ask(svc, q("b1:1", "NVDA")));
     const wire = env.items.find((i) => i.bodyKind === "wire");
     expect(wire).toBeDefined();
-    expect([PROSE_A, PROSE_B]).toContain(wire!.body);
+    expect([PROSE_A, PROSE_B, SYNDICATED_BODY]).toContain(wire!.body);
   });
 
   test("tier 2: a Google News stub gets a seeded desk note with figures", async () => {
@@ -367,14 +631,17 @@ describe("createNewsService — the body composer", () => {
     expect(stub!.body).not.toBe(stub!.headline);
   });
 
-  test("market-wide stubs compose a board-wide note", async () => {
+  test("every seeded note is a per-name note — no board-wide copy survives", async () => {
     const svc = createNewsService({ fetch: makeFetch().fetch });
     const env = ok(await ask(svc, q("b3:1", "NVDA,BTC")));
-    const wide = env.items.find((i) => i.sym === null && i.bodyKind === "seeded");
-    expect(wide).toBeDefined();
-    expect(wide!.body).toContain("%");
-    expect(wide!.body).toContain("NVDA, BTC");
-    expect(wide!.dateline).toContain(": MKT: ");
+    const seeded = env.items.filter((i) => i.bodyKind === "seeded");
+    expect(seeded.length).toBeGreaterThan(0);
+    for (const it of seeded) {
+      expect(it.body).toContain(it.sym!);
+      expect(it.body).toContain("%");
+      expect(it.body).not.toContain("Board-wide line");
+      expect(it.body).not.toContain("market-wide");
+    }
   });
 
   test("no body is ever empty", async () => {
@@ -391,7 +658,7 @@ describe("createNewsService — caches", () => {
 
     const first = ok(await ask(svc, q("kz-semis:424242", "NVDA,BTC")));
     const after = f.calls.length;
-    expect(after).toBe(7);
+    expect(after).toBe(4);
 
     const second = ok(await ask(svc, q("kz-semis:424242", "NVDA,BTC")));
     expect(f.calls).toHaveLength(after);
@@ -406,7 +673,7 @@ describe("createNewsService — caches", () => {
       ask(svc, q("dup:1", "NVDA,BTC")),
       ask(svc, q("dup:1", "NVDA,BTC")),
     ]);
-    expect(f.calls).toHaveLength(7);
+    expect(f.calls).toHaveLength(4);
     expect(b).toEqual(a!);
   });
 
@@ -427,14 +694,14 @@ describe("createNewsService — caches", () => {
     const f = makeFetch();
     const svc = createNewsService({ fetch: f.fetch });
 
-    // NVDA alone: gnews + yahoo + the market-wide stock query = 3.
+    // NVDA alone: gnews + yahoo = 2.
     await ask(svc, q("f1:1", "NVDA"));
-    expect(f.calls).toHaveLength(3);
+    expect(f.calls).toHaveLength(2);
 
-    // A different match on the same board reuses all three of those documents
-    // and opens no new socket.
+    // A different match on the same board reuses both documents and opens no
+    // new socket.
     await ask(svc, q("f2:1", "NVDA"));
-    expect(f.calls).toHaveLength(3);
+    expect(f.calls).toHaveLength(2);
   });
 
   test("an expired snapshot rebuilds", async () => {
@@ -443,41 +710,43 @@ describe("createNewsService — caches", () => {
     const svc = createNewsService({ fetch: f.fetch, now: () => clock });
 
     await ask(svc, q("t1:1", "NVDA"));
-    expect(f.calls).toHaveLength(3);
+    expect(f.calls).toHaveLength(2);
 
     // Past both TTLs.
     clock += 1_900_000;
     await ask(svc, q("t1:1", "NVDA"));
-    expect(f.calls).toHaveLength(6);
+    expect(f.calls).toHaveLength(4);
   });
 });
 
 describe("createNewsService — degradation", () => {
   test("one feed 500s: ok, source 'partial', survivors intact", async () => {
-    const f = makeFetch((url) => (url.includes("coindesk.com") ? 500 : undefined));
+    const f = makeFetch((url) => (gnewsOf(url, "NVDA") ? 500 : undefined));
     const svc = createNewsService({ fetch: f.fetch });
     const env = ok(await ask(svc, q("p1:1", "NVDA,BTC")));
 
     expect(env.source).toBe("partial");
     expect(env.items.length).toBeGreaterThan(0);
-    const dead = env.feeds.find((r) => r.url.includes("coindesk.com"));
+    const dead = env.feeds.find((r) => gnewsOf(r.url, "NVDA"));
     expect(dead?.status).toBe(500);
     expect(dead?.items).toBe(0);
+    expect(dead?.dropped).toBe(0);
     expect(env.feeds.filter((r) => r.items > 0).length).toBeGreaterThan(0);
-    // The tickers still come through.
+    // The tickers still come through — NVDA on its surviving Yahoo feed.
     const syms = new Set(env.items.map((i) => i.sym));
     expect(syms.has("NVDA")).toBe(true);
     expect(syms.has("BTC")).toBe(true);
   });
 
   test("a feed that never answers is status 0, not an exception", async () => {
-    const f = makeFetch((url) => (url.includes("cointelegraph.com") ? "throw" : undefined));
+    const f = makeFetch((url) => (gnewsOf(url, "BTC") ? "throw" : undefined));
     const svc = createNewsService({ fetch: f.fetch });
     const env = ok(await ask(svc, q("p2:1", "NVDA,BTC")));
 
     expect(env.source).toBe("partial");
-    expect(env.feeds.find((r) => r.url.includes("cointelegraph.com"))?.status).toBe(0);
+    expect(env.feeds.find((r) => gnewsOf(r.url, "BTC"))?.status).toBe(0);
     expect(env.items.length).toBeGreaterThan(0);
+    expect(env.items.some((i) => i.sym === "BTC")).toBe(true);
   });
 
   test("a Yahoo miss is a silent skip, not a degraded response", async () => {
@@ -526,6 +795,9 @@ describe("createNewsService — degradation", () => {
     expect(env.source).toBe("partial");
     expect(env.items.length).toBeGreaterThan(0);
     expect(env.items.every((i) => i.publisher !== "REUTERS")).toBe(true);
+    // Yahoo alone still satisfies both halves of the contract.
+    expect(env.items.every((i) => i.sym !== null)).toBe(true);
+    expect(inOrder(env.items)).toBe(true);
   });
 
   test("a failed snapshot is not frozen — the next request retries", async () => {
@@ -582,6 +854,8 @@ describe("createNewsService — request validation", () => {
     const svc = createNewsService({ fetch: makeFetch().fetch });
     const env = ok(await ask(svc, q("v2:1", "NVDA,BTC", "&limit=4")));
     expect(env.items).toHaveLength(4);
+    // The cap runs after the sort, so a short wire is the newest four rows.
+    expect(inOrder(env.items)).toBe(true);
   });
 
   test("lowercase tickers are accepted and normalised", async () => {

@@ -42,6 +42,11 @@ const ASSETS = {
   "/assets/exo-kill-2.mp3": audio("exo-kill-2.mp3"),
   "/assets/exo-kill-3.mp3": audio("exo-kill-3.mp3"),
   "/assets/exo-kill-4.mp3": audio("exo-kill-4.mp3"),
+  // Sliced from the owner's case-open recording by `src/assets/slice-case-open.sh`
+  // and played by the `spin.tick` / `spin.land` recipes, which keep their synth
+  // as the fallback — so a 404 here is a voicing change, not a silence.
+  "/assets/case-tick.mp3": audio("case-tick.mp3"),
+  "/assets/case-land.mp3": audio("case-land.mp3"),
 };
 
 const server = Bun.serve({
@@ -52,9 +57,33 @@ const server = Bun.serve({
     // below. `handle` never throws and always answers 200 with a typed
     // envelope — a dead feed degrades the wire, it does not fail the request.
     "/api/news": (req: Request) => news.handle(new URL(req.url)),
+
+    /**
+     * The WalletConnect project id, read at boot by `src/wallet/config.ts`.
+     *
+     * It goes over the wire rather than into the bundle because Bun's HTML
+     * bundler does not inline `process.env` for `Bun.serve` routes — a
+     * build-time read would work under `bun run build` and silently be
+     * `undefined` under `bun dev`. The id is public either way (it ships in
+     * every dApp bundle and is domain-restricted in the dashboard); serving it
+     * just keeps it out of git.
+     *
+     * Unset means the app falls back to the mock wallet.
+     */
+    "/api/wallet-config": () =>
+      Response.json(
+        { projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "" },
+        { headers: { "cache-control": "no-store" } },
+      ),
     ...ASSETS,
     "/*": index,
   },
 });
 
 console.log(`THETADUEL running at ${server.url}`);
+if (!Bun.env.WALLETCONNECT_PROJECT_ID) {
+  console.log(
+    "no WALLETCONNECT_PROJECT_ID — running on the mock wallet.\n" +
+      "  get an id at https://dashboard.walletconnect.com and put it in .env",
+  );
+}

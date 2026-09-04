@@ -5,8 +5,8 @@ import { hash } from "../lib/hash.ts";
 import { parseRss, unwrapCdata, type RssItem } from "../lib/rss.ts";
 
 /**
- * The live news wire — four public RSS feeds, no key, no dependency, one JSON
- * envelope.
+ * The live news wire — two public RSS feeds per dealt ticker, no key, no
+ * dependency, one JSON envelope.
  *
  * This module is the whole server half of plan 2. It fetches, parses, cleans,
  * composes and freezes a study-phase feed for one match, and it is built to be
@@ -42,6 +42,28 @@ import { parseRss, unwrapCdata, type RssItem } from "../lib/rss.ts";
  * market. There is deliberately no per-ticker feed table: adding a name to
  * `universe.ts`, or a whole new sector, gives it live news for free and cannot
  * leave a stale row behind.
+ *
+ * ## Only the names on the board
+ *
+ * A battle's study phase is about the tickers that were dealt, so the wire
+ * carries nothing else. Two rules enforce that, and they are separate on
+ * purpose:
+ *
+ *  - **No market-wide feeds.** There is no CoinDesk / Cointelegraph / "stock
+ *    market options volatility" query any more, and therefore no `sym: null`
+ *    row on the live wire at all. Every feed this service opens is fetched *for*
+ *    a ticker and every item it returns is filed under one.
+ *  - **A relevance filter.** Being fetched for a ticker is not the same as
+ *    being about it: Yahoo's per-symbol feed has carried Bitcoin and Robinhood
+ *    stories under `NVDA`, and a Google News `OR` query drifts by construction.
+ *    So an item survives only if it *mentions* its ticker — see
+ *    `mentionsTicker` for the rule and for why "META" does not match
+ *    "metaverse".
+ *
+ * The one thing that outranks both is representation: `FLOOR_FALLBACK` puts a
+ * ticker's newest unfiltered rows back if the filter emptied it, because a
+ * dealt name missing from the terminal is a worse bug than an off-topic
+ * headline under it.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +110,18 @@ const MAX_LIMIT = 120;
 /** Sanity bound on the request. Twelve is well past the largest legal book. */
 const MAX_TICKERS = 12;
 
+/**
+ * How many *unfiltered* rows a ticker gets back when the relevance filter left
+ * it with nothing at all.
+ *
+ * The every-dealt-ticker-appears guarantee (`test/app.test.tsx` reads it off
+ * `[data-wire-sym]`) outranks purity: a quiet name whose two feeds happened to
+ * answer with drift only must still show up on the board, so it keeps its two
+ * newest rejected rows rather than vanishing. Two, not more, because these are
+ * the rows the filter already judged off-topic.
+ */
+const FLOOR_FALLBACK = 2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public shapes
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,8 +131,9 @@ export interface FeedSpec {
   url: string;
   /** Most rows any one feed may contribute, applied before the merge. */
   cap: number;
-  /** The ticker this feed was fetched for; `null` for the market-wide feeds. */
-  sym: string | null;
+  /** The ticker this feed was fetched for. Never null: every live feed is
+   *  per-ticker, which is what makes "no market-wide row" a type, not a habit. */
+  sym: string;
   /** Publisher for items whose `<source>` is empty (Yahoo, CoinDesk, CT). */
   publisher: string;
   /** Yahoo has no listing for several suffixed crypto ids (`PEPE24478-USD`);
@@ -111,8 +146,13 @@ export interface FeedReport {
   url: string;
   /** HTTP status, or `0` for a network error, an abort, or the budget expiring. */
   status: number;
-  /** Rows this feed contributed *before* the cross-feed merge. */
+  /** Rows this feed contributed *before* the cross-feed merge — survivors of the
+   *  relevance filter, not everything the feed shipped. */
   items: number;
+  /** Rows this feed shipped that the relevance filter rejected. A feed that is
+   *  healthy but drifting reads as `status 200, items 0, dropped 9` rather than
+   *  as an outage. */
+  dropped: number;
   ms: number;
 }
 
@@ -172,14 +212,6 @@ const gnews = (q: string): string =>
 
 const yahoo = (s: string): string =>
   `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(s)}&region=US&lang=en-US`;
-
-/** No trailing slash: `/rss/` answers 308 and a redirect costs a round trip. */
-const COINDESK_URL = "https://www.coindesk.com/arc/outboundfeeds/rss";
-const COINTELEGRAPH_URL = "https://cointelegraph.com/rss";
-
-/** The market-wide stock query. Two days, because the board-level line should
- *  read as today's tape, not last week's. */
-const MARKET_STOCK_Q = "stock market options volatility when:2d";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Time, formatted once, in New York
@@ -346,36 +378,103 @@ function isStub(description: string, headline: string): boolean {
  * what the window did, names the publisher that filed the line, and states
  * plainly that the desk has no tape behind the story. It always carries a
  * percentage, which is what makes it worth reading at all.
+ *
+ * There is no board-wide variant any more: every live row belongs to exactly
+ * one dealt ticker, so every note is a per-name note.
  */
-function deskNote(sym: string | null, tickers: readonly string[], salt: number, publisher: string): string {
-  if (sym) {
-    const u = meta(sym);
-    const s = series(sym, salt);
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (const v of s) {
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    const pct = pctAt(sym, salt, TAPE_LEN);
-    const signed = `${pct >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(1)}%`;
-    return (
-      `${sym} prints ${signed} across the study window, ${fmtPx(lo)}–${fmtPx(hi)}, ` +
-      `on realised σ of ${(u.vol * 100).toFixed(1)}% daily; the leg on ${u.name} clears at ${u.t.toFixed(1)}%. ` +
-      `The wire carries this line from ${publisher}; the desk has no tape on it beyond the window above.`
-    );
+function deskNote(sym: string, salt: number, publisher: string): string {
+  const u = meta(sym);
+  const s = series(sym, salt);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of s) {
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
   }
-  if (tickers.length === 0) {
-    return `${publisher} filed this line market-wide. No names are on the board yet, so the desk has no window to read it against.`;
-  }
-  const pcts = tickers.map((t) => pctAt(t, salt, TAPE_LEN));
-  const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
-  const up = pcts.filter((p) => p >= 0).length;
+  const pct = pctAt(sym, salt, TAPE_LEN);
+  const signed = `${pct >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(1)}%`;
   return (
-    `Board-wide line. Across ${tickers.join(", ")} the study window closed ` +
-    `${avg >= 0 ? "+" : "−"}${Math.abs(avg).toFixed(1)}% on average, ${up} of ${tickers.length} higher into the settle. ` +
-    `${publisher} filed this one market-wide; the desk has no per-name tape behind it.`
+    `${sym} prints ${signed} across the study window, ${fmtPx(lo)}–${fmtPx(hi)}, ` +
+    `on realised σ of ${(u.vol * 100).toFixed(1)}% daily; the leg on ${u.name} clears at ${u.t.toFixed(1)}%. ` +
+    `The wire carries this line from ${publisher}; the desk has no tape on it beyond the window above.`
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Relevance — an item is about its ticker, or it is not this battle's news
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Regex-escape: a name is data (`Barron's`, a future `S&P 500`), never syntax. */
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The shortest symbol allowed to match as a bare token.
+ *
+ * Nothing in today's universe is under three characters, but a one- or
+ * two-letter ticker (`F`, `V`, `AI`) would match half the English language on
+ * the token rule alone, so a short symbol is name-only — it can still be
+ * carried by the floor fallback, never by a coincidence.
+ */
+const MIN_TOKEN_LEN = 3;
+
+const NAME_RE = new Map<string, RegExp>();
+const TOKEN_RE = new Map<string, RegExp>();
+
+/** `\bChainlink\b`, case-insensitive, whitespace-tolerant for "Gold ETF". */
+function nameRe(sym: string): RegExp {
+  let re = NAME_RE.get(sym);
+  if (!re) {
+    const body = escapeRe(meta(sym).name).replace(/\s+/g, "\\s+");
+    re = new RegExp(`(^|[^A-Za-z0-9])${body}([^A-Za-z0-9]|$)`, "i");
+    NAME_RE.set(sym, re);
+  }
+  return re;
+}
+
+/** The symbol as a bounded, **case-sensitive** token: `NVDA`, `$NVDA`, `(BTC)`. */
+function tokenRe(sym: string): RegExp {
+  let re = TOKEN_RE.get(sym);
+  if (!re) {
+    re = new RegExp(`(^|[^A-Za-z0-9])${escapeRe(sym)}([^A-Za-z0-9]|$)`);
+    TOKEN_RE.set(sym, re);
+  }
+  return re;
+}
+
+/**
+ * Does this text actually talk about `sym`?
+ *
+ * Two ways in, and no third:
+ *
+ *  1. **The company name**, matched case-insensitively but *bounded* by
+ *     non-alphanumerics. The boundary is the whole point: `META`'s name is
+ *     "Meta", and a bare substring test would hand it every "metaverse" story
+ *     Google News has ever indexed. "Chainlink", "Uniswap", "Coinbase",
+ *     "Dogecoin" all match plainly; multi-word names ("Gold ETF") match as a
+ *     phrase with flexible whitespace.
+ *  2. **The exact uppercase ticker token**, bounded the same way and matched
+ *     *case-sensitively*.
+ *
+ * That second rule is precisely the answer to the dangerous symbols in this
+ * universe — `COIN`, `LINK`, `UNI`. They are ordinary English only in lower or
+ * title case ("coin", "Coin", "Link", "linked", "Uni", "university", and
+ * "Bitcoin" for the substring-minded), and a case-sensitive token test matches
+ * none of those. So those three are kept on their company name (Coinbase,
+ * Chainlink, Uniswap) or on a literal ticker-style `COIN` / `LINK` / `UNI`
+ * token, and on nothing else. The residual hole is an ALL-CAPS headline
+ * ("... LINK TO THE FED PATH ..."), which is rare, is bounded by the dedupe and
+ * by each ticker's ceiling, and is not worth a part-of-speech tagger.
+ *
+ * Deliberately *not* here: a per-ticker alias table ("Ether" for `ETH`, "XBT"
+ * for `BTC`). This file derives everything from `universe.ts`, and a name that
+ * only ever appears in an alias is exactly what `FLOOR_FALLBACK` is for.
+ */
+export function mentionsTicker(sym: string, text: string): boolean {
+  if (!sym || !text) return false;
+  if (nameRe(sym).test(text)) return true;
+  return sym.length >= MIN_TOKEN_LEN && tokenRe(sym).test(text);
 }
 
 /**
@@ -484,24 +583,14 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     ];
   }
 
-  /** The board-level feeds, added once per request rather than once per ticker. */
-  function marketFeeds(tickers: readonly string[]): readonly FeedSpec[] {
-    const out: FeedSpec[] = [];
-    if (tickers.some((t) => meta(t).mkt === "CRYPTO")) {
-      out.push({ url: COINDESK_URL, cap: 6, sym: null, publisher: "COINDESK", optional: false });
-      out.push({ url: COINTELEGRAPH_URL, cap: 6, sym: null, publisher: "COINTELEGRAPH", optional: false });
-    }
-    if (tickers.some((t) => meta(t).mkt === "STOCK")) {
-      out.push({ url: gnews(MARKET_STOCK_Q), cap: 6, sym: null, publisher: "GOOGLE NEWS", optional: false });
-    }
-    return out;
-  }
-
   /**
-   * Every feed for a request, de-duplicated by URL. Two tickers can name the
-   * same feed (they cannot today, but a future alias could), and the market
-   * stock query is the same URL shape as a per-ticker Google News query — one
-   * fetch per URL, always.
+   * Every feed for a request, de-duplicated by URL.
+   *
+   * Two feeds per dealt ticker and nothing else — there is no board-level pass
+   * here any more, which is what makes a `sym: null` row impossible rather than
+   * merely unlikely. The URL dedupe stays because two tickers could name the
+   * same feed (they cannot today, but a future alias could) and one fetch per
+   * URL is always the right answer.
    */
   function planFeeds(tickers: readonly string[]): readonly FeedSpec[] {
     const seen = new Set<string>();
@@ -512,11 +601,6 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
         seen.add(f.url);
         out.push(f);
       }
-    }
-    for (const f of marketFeeds(tickers)) {
-      if (seen.has(f.url)) continue;
-      seen.add(f.url);
-      out.push(f);
     }
     return out;
   }
@@ -612,7 +696,7 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     const et = etParts(ts);
 
     const stub = isStub(raw.description, headline);
-    const body = stub ? deskNote(spec.sym, q.tickers, q.salt, publisher) : raw.description;
+    const body = stub ? deskNote(spec.sym, q.salt, publisher) : raw.description;
 
     return {
       id,
@@ -628,13 +712,13 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       // browser and nowhere else, so the path is passed through untouched —
       // `safeLink` only unwraps the transport and checks the scheme.
       link: safeLink(raw.link),
-      dateline: `${et.shortDate} ${et.time}: ${spec.sym ?? "MKT"}: ${headline}`,
+      dateline: `${et.shortDate} ${et.time}: ${spec.sym}: ${headline}`,
       signature: signatureOf(publisher, et),
     };
   }
 
   /**
-   * The merge — a floor, a ceiling, and recency in between.
+   * The merge — a floor, a ceiling, recency in between, and one sort at the end.
    *
    * *Floor:* every dealt ticker's freshest headline is claimed before anything
    * competes, so a quiet name cannot be crowded off the board by a chatty one.
@@ -644,16 +728,21 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
    * *Ceiling:* no ticker contributes more than `ceil(limit / tickers.length)`
    * rows. Without it, Nvidia's Google News query alone would fill a 3-leg wire.
    *
-   * *Between:* one pool, sorted newest-first, in which the market-wide rows
-   * (CoinDesk, Cointelegraph, the board-level options query) compete with the
-   * per-ticker rows on time alone. Handing the quota the whole budget instead
-   * would silently starve those three feeds to zero rows on any normal board —
-   * they would be fetched every request and never once displayed.
+   * *Between:* one pool of everything the floor did not already claim, ranked by
+   * recency, so the remaining budget goes to the freshest copy on the board
+   * rather than to whichever ticker was dealt first.
+   *
+   * *Then the sort.* **Selection decides who is in; the sort decides the order.**
+   * The three passes above are a quota walk — they visit tickers in deal order,
+   * so the array they build is grouped, not chronological. Sorting the finished
+   * selection by `byRecency` (and only then capping) is what makes the wire read
+   * as one tape whose clock never jumps backwards and then forwards again. Any
+   * future pass that adds rows must run *before* this sort, never after it.
    *
    * Dedupe runs across the whole union on the normalised headline key, because
    * a syndicated story arrives under two tickers with two different guids.
    */
-  function merge(byTicker: Map<string, WireItem[]>, wide: WireItem[], q: NewsQuery): WireItem[] {
+  function merge(byTicker: Map<string, WireItem[]>, q: NewsQuery): WireItem[] {
     const tickers = q.tickers;
     const perTicker = tickers.length > 0 ? Math.ceil(q.limit / tickers.length) : q.limit;
 
@@ -679,9 +768,9 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       cursors.set(t, i + 1);
     }
 
-    // Pass 2 — the pool: every remaining row inside its ticker's ceiling, plus
-    // every market-wide row, ranked by recency.
-    const pool: WireItem[] = [...wide];
+    // Pass 2 — the pool: every remaining row inside its ticker's ceiling,
+    // ranked by recency.
+    const pool: WireItem[] = [];
     for (const t of tickers) {
       const list = byTicker.get(t) ?? [];
       pool.push(...list.slice(cursors.get(t) ?? 0, (cursors.get(t) ?? 0) + Math.max(0, perTicker - 1)));
@@ -692,6 +781,8 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       take(it);
     }
 
+    // Selection is finished; nothing below may add a row. One total order over
+    // the whole selection, then the cap — never the other way round.
     picked.sort(byRecency);
     return picked.slice(0, q.limit);
   }
@@ -710,38 +801,68 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     const fetchedAt = now();
 
     const feeds: FeedReport[] = [];
+    /** Per ticker, the rows that are about it. */
     const byTicker = new Map<string, WireItem[]>();
-    const wide: WireItem[] = [];
+    /** Per ticker, the rows the relevance filter rejected — the floor's reserve. */
+    const spares = new Map<string, WireItem[]>();
     let degraded = false;
+
+    const fileUnder = (map: Map<string, WireItem[]>, sym: string, rows: WireItem[]): void => {
+      const list = map.get(sym);
+      if (list) list.push(...rows);
+      else map.set(sym, rows);
+    };
 
     specs.forEach((spec, i) => {
       const entry = entries[i] ?? null;
       // A null outcome is the budget expiring on a feed still in flight.
       const status = entry?.status ?? 0;
       const rows = (entry?.items ?? []).slice(0, spec.cap);
-      const composed: WireItem[] = [];
+      const kept: WireItem[] = [];
+      const dropped: WireItem[] = [];
+      let composed = 0;
       for (const raw of rows) {
         const item = compose(raw, spec, q, fetchedAt);
-        if (item) composed.push(item);
+        if (!item) continue;
+        composed++;
+        // The filter reads the headline and the feed's OWN description, never
+        // the composed body: a tier-2 body is a desk note that names the ticker
+        // itself, so testing it would pass every row vacuously.
+        if (mentionsTicker(spec.sym, `${item.headline} ${raw.description}`)) kept.push(item);
+        else dropped.push(item);
       }
-      composed.sort(byRecency);
-      feeds.push({ url: spec.url, status, items: composed.length, ms: entry?.ms ?? BUDGET_MS });
-      if (composed.length === 0 && !spec.optional) degraded = true;
-      if (spec.sym === null) {
-        wide.push(...composed);
-      } else {
-        const list = byTicker.get(spec.sym);
-        if (list) list.push(...composed);
-        else byTicker.set(spec.sym, composed);
-      }
+      kept.sort(byRecency);
+      dropped.sort(byRecency);
+      feeds.push({
+        url: spec.url,
+        status,
+        items: kept.length,
+        dropped: dropped.length,
+        ms: entry?.ms ?? BUDGET_MS,
+      });
+      // Degradation is about the feed, not about the filter: a feed that
+      // answered with nine drifting stories is healthy, just useless here.
+      if (composed === 0 && !spec.optional) degraded = true;
+      fileUnder(byTicker, spec.sym, kept);
+      fileUnder(spares, spec.sym, dropped);
     });
 
     // A ticker read by two feeds needs its combined list back in time order
     // before the quota walks it.
     for (const list of byTicker.values()) list.sort(byRecency);
-    wide.sort(byRecency);
+    for (const list of spares.values()) list.sort(byRecency);
 
-    const items = merge(byTicker, wide, q);
+    // The safety floor. Representation outranks purity: a dealt ticker that the
+    // filter emptied gets its newest rejected rows back rather than going
+    // missing from the terminal entirely. It is the only path by which an
+    // off-topic headline can reach the wire, and it is deliberate.
+    for (const t of q.tickers) {
+      if ((byTicker.get(t) ?? []).length > 0) continue;
+      const fallback = (spares.get(t) ?? []).slice(0, FLOOR_FALLBACK);
+      if (fallback.length > 0) byTicker.set(t, fallback);
+    }
+
+    const items = merge(byTicker, q);
     if (items.length === 0) {
       return { ok: false, reason: "no items: every feed failed or returned nothing usable", items: [] };
     }

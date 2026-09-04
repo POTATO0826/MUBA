@@ -6,6 +6,8 @@ import {
   createBudget,
 } from "./budget.ts";
 import {
+  CASE_LAND_URL,
+  CASE_TICK_URL,
   PALETTE_DECAY,
   PALETTE_DETUNE,
   SFX_MAP,
@@ -15,6 +17,7 @@ import {
   type SfxOpts,
   type SfxRecipe,
 } from "./map.ts";
+import { loadBuffer } from "./samples.ts";
 import { SILENT, type SoundHandle } from "./voices.ts";
 
 /**
@@ -434,31 +437,12 @@ interface TrackState {
 
 /**
  * Decoded audio, per url, for the life of the tab — re-entering the room must
- * not refetch, and a button pressed twenty times must fetch once. Shared by
- * the tracks here and the one-shot clips below, because the rule is the same
- * for both. A failed load caches its `null` too: the promise IS the
- * one-attempt guarantee, so a missing file costs one 404 and never a retry
- * storm on every mount.
+ * not refetch, and a button pressed twenty times must fetch once — lives in
+ * `samples.ts`. It is not here because `map.ts` reads it too: two of the spin
+ * recipes are now slices of a real recording, and `map.ts` cannot import this
+ * file without closing a cycle. See that module's header.
  */
-const audioBuffers = new Map<string, Promise<AudioBuffer | null>>();
 const tracks = new Map<TrackId, TrackState>();
-
-function loadBuffer(c: AudioContext, url: string): Promise<AudioBuffer | null> {
-  const hit = audioBuffers.get(url);
-  if (hit) return hit;
-  const pending = (async (): Promise<AudioBuffer | null> => {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) return null; // 404 is a legitimate answer: the asset is optional
-      const bytes = await res.arrayBuffer();
-      return (await c.decodeAudioData(bytes)) ?? null;
-    } catch {
-      return null; // offline, aborted, or bytes that are not audio
-    }
-  })();
-  audioBuffers.set(url, pending);
-  return pending;
-}
 
 /** Never rejects: the caller fires it with `void` and forgets it. */
 async function beginTrack(id: TrackId, st: TrackState): Promise<void> {
@@ -595,8 +579,23 @@ const CLIP_COOLDOWN_MS = 150;
  */
 const clipLastPlayedAt = new Map<string, number>();
 
-/** Preloaded the moment the graph exists — the clips wired to buttons. */
-const CLIP_PRELOAD: readonly string[] = ["/assets/exo-kill-1.mp3", "/assets/exo-kill-2.mp3", "/assets/exo-kill-3.mp3", "/assets/exo-kill-4.mp3"];
+/**
+ * Warmed the moment the graph exists: the clips wired to buttons, and the two
+ * spin slices, which are not clips at all — they are read by `map.ts` recipes
+ * through `getSample`, whose whole contract is that it answers synchronously
+ * or not at all. Warming them here is what makes it answer: the unlock gesture
+ * is minutes of reading and a lobby away from the first spin, so the fetch and
+ * decode are long finished by the time the reel starts and the ticks are
+ * sampled from the first one rather than fading up from the synth.
+ */
+const CLIP_PRELOAD: readonly string[] = [
+  "/assets/exo-kill-1.mp3",
+  "/assets/exo-kill-2.mp3",
+  "/assets/exo-kill-3.mp3",
+  "/assets/exo-kill-4.mp3",
+  CASE_TICK_URL,
+  CASE_LAND_URL,
+];
 
 /**
  * Warm the cache for `url` without playing it, so the first press pays for a

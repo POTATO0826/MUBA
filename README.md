@@ -169,8 +169,8 @@ players. The headlines under the desk come from the wire.
 
 ## The wire
 
-`src/server/news.ts` is the live half: four public RSS feeds — Google News,
-Yahoo Finance, CoinDesk, Cointelegraph — fetched **server-side** behind
+`src/server/news.ts` is the live half: two public RSS feeds — Google News and
+Yahoo Finance, queried per dealt ticker only — fetched **server-side** behind
 `/api/news` and composed into one typed envelope. The route always answers 200.
 A dead feed, a timeout, or an HTML error page served as `text/xml` is data, not
 an exception; the client reads `ok` and keeps what it has. Queries are built out

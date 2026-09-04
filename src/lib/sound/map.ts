@@ -1,4 +1,5 @@
 import type { Tier } from "./budget.ts";
+import { getSample } from "./samples.ts";
 import { bed, blip, chord, noiseBurst, riser, sweep, thunk, type SoundHandle } from "./voices.ts";
 
 /**
@@ -115,6 +116,92 @@ const rDisabled =
     }
   };
 
+// ── Sampled voices ────────────────────────────────────────────────────────
+//
+// Two of the spin sounds are slices of a real CS:GO case-open recording rather
+// than oscillators (see `src/assets/slice-case-open.sh` for the cuts). They are
+// wired here, underneath `sfx()`, and not as `playClip` calls from the view,
+// because everything the reel already gets from the recipe layer has to keep
+// applying to them: R3's tick rate limit, R4's voice ceiling, the tick bus and
+// its 0.85, the palette's detune, and the per-voice gain. A clip played around
+// the engine would have none of it, and `MatchSpin.tsx` would have to learn
+// which of its sounds are recordings — which is exactly the knowledge the map
+// exists to hold.
+//
+// The synth stays as the fallback, not as dead code. `getSample` answers null
+// for the first moments of a session, for an offline tab, and forever in a
+// checkout without the operator's mp3s — the reel has to tick through all
+// three.
+
+/** Served from `src/assets` by the allowlist in the root `index.ts`. */
+export const CASE_TICK_URL = "/assets/case-tick.mp3";
+export const CASE_LAND_URL = "/assets/case-land.mp3";
+
+/**
+ * Both slices are mastered to -3dBFS, so ~0.71 arrives where a synth recipe's
+ * peak is ~1.0 — but the recipe is a thin single voice at that number and the
+ * slice is dense and broadband, so the two cannot be compared digit for digit.
+ * The same reasoning already sets `CLIP_GAIN` (0.45) and `TRACK_GAIN` (0.22)
+ * in `engine.ts`: a recording sits lower than the synth it replaces.
+ *
+ * Tick — 0.71 x 0.7 x `TIER_GAIN.ui` (0.12) x `clampGain(opts.gain)` x the
+ * tick bus (0.85). Across the 0.55-1.20 gain `tickParams` actually produces
+ * that is a 0.028-0.062 peak, against the synth's 0.056-0.122 through the same
+ * chain: about half, which is where it has to be for the two to read as the
+ * same loudness. It also leaves headroom that matters at the top of the reel,
+ * where R3 lets ~18 ticks a second through and the R12 compressor would
+ * otherwise be the thing deciding the level.
+ */
+const TICK_SAMPLE_GAIN = 0.7;
+
+/**
+ * Land — 0.71 x 0.5 x `TIER_GAIN.event` (0.38) is a ~0.135 peak, deliberately
+ * under `spin.reveal`'s ~0.30 through the same tier. The two fire together on
+ * every landing and they are not equals: the sting is the bed, and the reveal's
+ * per-leg arpeggio — the one thing a fixed recording cannot supply, since it
+ * climbs with the leg — has to sit clearly on top of it.
+ */
+const LAND_SAMPLE_GAIN = 0.5;
+
+/**
+ * Play `url` as a one-shot into `dest`, or report that it is not available yet
+ * so the caller can voice its synth instead. Returns whether it played.
+ *
+ * `playbackRate` is `p(o)` and nothing else. The palette's detune is ALREADY
+ * folded into `o.pitch` by the engine before a render is called (`run()` in
+ * `engine.ts`: `pitch: (opts?.pitch ?? 1) * PALETTE_DETUNE[palette]`), so
+ * reaching for `PALETTE_DETUNE` here would apply it twice — and on a sample
+ * that is not just a retune, it is a retime.
+ */
+function sampled(c: BaseAudioContext, dest: AudioNode, when: number, url: string, gain: number, o: RenderOpts): boolean {
+  const buf = getSample(c, url);
+  if (!buf) return false;
+  try {
+    const g = c.createGain();
+    g.gain.value = gain;
+    g.connect(dest);
+
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = p(o);
+    src.connect(g);
+    src.onended = () => {
+      try {
+        src.disconnect();
+        g.disconnect();
+      } catch {
+        // Already torn down with the context.
+      }
+    };
+    src.start(when);
+    return true;
+  } catch {
+    // A node the browser refused. Falling back to the synth is a better answer
+    // than a silent tick, and `false` is exactly how that is asked for.
+    return false;
+  }
+}
+
 const rTick =
   (mult = 1): R =>
   (c, d, w, o) => {
@@ -129,6 +216,30 @@ const rTick =
     });
     blip(c, d, w, { freq: 1200 * pitch, dur: 0.012 * o.decay, wave: "triangle", peak: 0.35 * mult });
   };
+
+/**
+ * The reel's click, and the settle under it. Sampled when the slice is in
+ * hand, synthesised when it is not — see the sampled-voices note above.
+ * `rTick` itself is untouched and stays synth wherever else it is used: the
+ * decorative tick inside `spin.open` is a different sound that happens to
+ * share a recipe, not this one.
+ */
+const rTickSynth = rTick();
+
+const rTickSampled: R = (c, d, w, o) => {
+  if (sampled(c, d, w, CASE_TICK_URL, TICK_SAMPLE_GAIN, o)) return;
+  rTickSynth(c, d, w, o);
+};
+
+const rLandSynth: R = (c, d, w, o) => {
+  thunk(c, d, w, { f0: 140 * p(o), f1: 62, dur: 0.13 * o.decay, bodyPeak: 0.9, clickPeak: 0.6 });
+  noiseBurst(c, d, w + 0.01, { dur: 0.02, freq: 2600, q: 6, peak: 0.3 });
+};
+
+const rLandSampled: R = (c, d, w, o) => {
+  if (sampled(c, d, w, CASE_LAND_URL, LAND_SAMPLE_GAIN, o)) return;
+  rLandSynth(c, d, w, o);
+};
 
 /** The reveal stings arpeggiate upward across the legs of a spin. */
 const REVEAL = [523.25, 659.25, 783.99, 1046.5] as const;
@@ -287,16 +398,13 @@ export const SFX_MAP = {
   }),
 
   // spin (6)
-  "spin.tick": fx({ tier: "ui", cooldownMs: 0, durationMs: 40, bus: "tick", render: rTick() }),
-  "spin.land": fx({
-    tier: "event",
-    cooldownMs: 400,
-    durationMs: 200,
-    render: (c, d, w, o) => {
-      thunk(c, d, w, { f0: 140 * p(o), f1: 62, dur: 0.13 * o.decay, bodyPeak: 0.9, clickPeak: 0.6 });
-      noiseBurst(c, d, w + 0.01, { dur: 0.02, freq: 2600, q: 6, peak: 0.3 });
-    },
-  }),
+  "spin.tick": fx({ tier: "ui", cooldownMs: 0, durationMs: 40, bus: "tick", render: rTickSampled }),
+  // `durationMs` is R4/R6 accounting — how long the voice is reckoned to
+  // occupy the graph — not a length the engine enforces, so the 1.3s slice
+  // sits behind the same 200 the synth thunk always declared. Nothing about
+  // the budget's view of this event changed, and nothing should: legs are
+  // ~3.85s apart (SPIN_MS + SETTLE_MS), so the sting never overlaps itself.
+  "spin.land": fx({ tier: "event", cooldownMs: 400, durationMs: 200, render: rLandSampled }),
   "spin.reveal": fx({ tier: "event", cooldownMs: 40, durationMs: 380, render: rReveal() }),
   "spin.lock": fx({ tier: "moment", cooldownMs: 400, durationMs: 520, render: rLock() }),
   "spin.skip": fx({ tier: "action", cooldownMs: 120, durationMs: 300, render: rSkip() }),
