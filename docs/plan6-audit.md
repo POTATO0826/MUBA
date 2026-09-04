@@ -320,3 +320,109 @@ Reported, not edited. Re-checked this pass; status noted per item.
    principle as everything else in this file.
 
 @see `plan6-real-parlay.md` §9, §10 · `docs/asset-gate.md` · `docs/HANDOFF.md`
+
+---
+
+# Third pass — the two open PARTIALs, re-verified 2026-09-05, HEAD `8b457f2`
+
+Scope of this pass is narrow on purpose: **only the rows this file left open**,
+plus the rows the four commits since `56435c0` could have moved. It was written
+alongside `docs/plan7-audit.md`, by the same rule — a grep, a `file:line` or a
+test that was actually run, never a commit message.
+
+Tree state: branch `new`, HEAD `8b457f2`, `git status --porcelain` clean apart
+from an untracked `.scratch/`. Commits since the second pass:
+`9d8f704`, `5644a1f`, `42374b0`, `06118b9`, `8b457f2`.
+
+## First, a bookkeeping correction to this file
+
+**The scoreboard and the table disagree, and the table is right.**
+
+The Scoreboard section reads *"The remaining two PARTIALs are 17 (blocked on the
+protocol team's book endpoint…) and 19"*. But item 17's own row two-dozen lines
+above was already re-verified to **PASS — corrected** in that same pass ("Re-run
+live: 6 underlyings QUALIFIED… Output committed in `docs/asset-gate.md`"), and
+the outage section it points at is itself marked **RETRACTED**. The prose is a
+leftover from the first-pass verdict; the row is the measurement.
+
+Re-checked directly this pass: `scripts/probe-assets.ts` exists;
+`docs/asset-gate.md` carries a dated live run — `run 2026-09-04T20:00:56.214Z`,
+`source live Base 8453` — with `ETH $1,191,241 DEEP`, `BTC $1,355,890 DEEP` and
+SOL/XRP/BNB/AVAX QUALIFIED THIN, plus a second live run at 17:10Z and a
+`--fixture` run for offline replay. **Item 17 is PASS.** It did not move this
+pass because it had already closed last pass.
+
+So the real count at `56435c0` was **PASS 18 · PARTIAL 1 · FAIL 0 ·
+OWNER-ONLY 2**, not 17/2/0/2, and item 19 was the only PARTIAL left. That is
+what this pass re-verifies.
+
+## Item 19 — the `grades` prop — **PARTIAL, unchanged, not one character moved**
+
+The second pass's finding was that `0b54d7b`'s commit message claimed to close
+item 19 while closing two of its three parts. That remains exactly true at
+`8b457f2`, and the three greps that establish it were re-run verbatim:
+
+| Grep | Result at `8b457f2` |
+|---|---|
+| `grep -n "grades" src/ui/LobbyCards.tsx` | `:81` (destructured), `:95` (`grades?: Readonly<Record<string, Grade>>` — declared on **`LobbyCard`**, whose signature opens at `:76`), `:125` (`Object.entries(grades ?? {})`), `:235` (the render comment). Unchanged. |
+| `grep -rn "grades=" src/` | **Exactly one hit in the whole tree**: `src/views/CreateLobby.tsx:525` — and it passes `grades` to `<LiveSector>`, not to `<LobbyCard>`. Unchanged. |
+| `grep -rn "<LobbyCard" src/` | `src/views/Battles.tsx:105` and `src/views/Lobby.tsx:49`, both `<LobbyCard key={l.id} lobby={l} onAccept={…} onStart={…} />` — **no `grades` prop at either site**. Unchanged. |
+
+`GradeTag` (`src/ui/LobbyCards.tsx:54-74`) is still a real, exported component
+with a real `Grade`-keyed colour map, and `graded` (`:125`) still sorts an empty
+object into an empty array on every lobby card the board ever renders. The
+component cannot say DEEP or THIN on the lobby board, ever, because nothing hands
+it a measurement.
+
+**Verdict: PARTIAL, unchanged.** (a) the slice reveal still closes
+(`src/components/MatchSpin.tsx:255` via `gradeIndex`, `src/data/market.ts:227`);
+(b) the create screen's THIN-default is still fixed; (c) the lobby board's own
+grade tag is still unreachable. **What closes it is still one prop-drill at two
+call sites** — `Battles.tsx:105` and `Lobby.tsx:49` — and everything it needs is
+already written and already tested.
+
+## Rows the four new commits could have moved
+
+Each of these was re-checked because a new commit touched a file the row's
+evidence rests on. **None changed verdict.**
+
+| # | Why re-checked | Result |
+|---|---|---|
+| 9 | `5644a1f` rewrote 187 lines of `src/desk/fill.ts` | **PASS — unchanged, line numbers moved.** All four `MAX_FILL_USDC` checks still present and still ahead of any signature: `:876` (requested, single), `:1613` (per leg), `:1624` (requested sum), `:1794` and `:1803` (on the **previewed** figures). The audit's old citations (`:1481`, `:1492`, `:1633`, `:1642`) are stale line numbers only. The constant is still `2_000000n` at `:94`. |
+| 10 | `5644a1f`, `42374b0`, `06118b9` all touched approval paths | **PASS — unchanged.** `grep -rn "MaxUint256" src/` returns eleven hits and **every one is a comment or a doc line forbidding it** (`escrow.ts:38,725`; `fill.ts:25,855,1069,1541,1865`; `rfq.ts:1457`; `types.ts:652`; `Parlay.tsx:1078,1572`). No live occurrence. Assertions still at `test/fill.test.ts:548,1160,1188`, `test/duel-stake.test.ts:297,306`, `test/rfq.test.ts:369`. |
+| 12 | `5644a1f` is titled "…and duels scored on it" | **PASS — unchanged.** `duelScore` is still `src/engine/score.ts:343` and `duelOutcome` still `:395`; `5644a1f` did not touch `src/engine/score.ts` at all (`git show --stat 5644a1f`: `desk/fill.ts`, `server/thetanuts.ts`, `types.ts`, and two test files). The "scored on it" in the message refers to `FillPreview.contracts` feeding the score, which is `fill.ts`'s side. The `tsc` caveat from the first pass is **still not re-verified**; `tsc` was not run this pass either, for the same reason (a live/browser agent is mid-edit). |
+| 14 | `06118b9` and `42374b0` rewrote 354 lines of `src/desk/rfq.ts` | **PASS — unchanged, one line number moved.** `RfqUnderlying` is still the widened eight, now at `src/desk/rfq.ts:410` (was cited `:296`), consumed at `:418` with a docblock saying "why it is eight and not the two this field used to allow". `src/server/thetanuts.ts:543` still declares `getPricingArray(underlying: "ETH" | "BTC")` — still deliberately narrow, still matching the vendor's own `.d.ts`, still documented as such at `:512`. `test/rfq.test.ts:1062` still asserts the union member-for-member against the SDK, and `:1112` still asserts widening the type did not widen the panel. |
+| 20 | Two new plan-7 checklist rows ask for the same evidence | **OWNER-ONLY — still not done.** `grep -rn "basescan.org/tx" README.md docs/` returns exactly one hit: this file, describing the absence. `README.md:502-506` still says so out loud, and adds that the escrow is "compiled, reviewed, and never deployed". |
+| 21 | Same | **OWNER-ONLY — still not done.** Same evidence. |
+
+## One defect this file did not have, found while re-checking row 12
+
+`5644a1f` fixed `CONTRACT_DECIMALS` from 18 to 6 in `src/desk/fill.ts:148` and
+`src/server/thetanuts.ts:144`. A **third** constant of the same name survives at
+`src/engine/parlay.ts:341` and is still `18`.
+
+`src/server/thetanuts.ts:139-143` argues it is correct there because the engine
+both writes and reads it and it cancels — and that is true of every caller today
+(`parlay.ts:740` and `:890` both pass `sizeDecimals: CONTRACT_DECIMALS`
+explicitly). What makes it a trap is the fallback at `parlay.ts:439`:
+
+```ts
+const contracts = fromUnits(q.numContracts, q.sizeDecimals ?? CONTRACT_DECIMALS);
+```
+
+`vanillaPayout` is exported (`:433`) and re-exported (`src/views/ParlayPick.tsx:79`),
+and its `PayoutQuery` is public. A caller who hands it a real `previewFillOrder`
+result — which carries `numContracts` and no `sizeDecimals` — gets a silent
+factor of 10^12, which is precisely the failure `5644a1f` describes fixing
+elsewhere (a real fill of $1.00 rendering `"0.0000"` and scoring as
+2.5 × 10^-13 contracts). Not a live bug today. One line of defence from being
+one: make `sizeDecimals` required on `PayoutQuery`, or drop the `??`.
+
+## Third-pass scoreboard
+
+**PASS 18 · PARTIAL 1 · FAIL 0 · OWNER-ONLY 2** — unchanged in substance from
+`56435c0`; the difference from the second pass's printed `17 · 2` is the
+bookkeeping correction above, not a row that moved.
+
+The single open PARTIAL is still item 19(c), and it is still one prop at two
+call sites. Plan 7's own audit is in `docs/plan7-audit.md`.
