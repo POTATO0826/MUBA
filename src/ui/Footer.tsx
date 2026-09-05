@@ -47,7 +47,7 @@ export function Footer({
       <span>·</span>
       <span>@thetanuts-finance/thetanuts-client 0.3.0</span>
       <span>·</span>
-      <span>Base mainnet 8453</span>
+      <span>Base Sepolia testnet 84532</span>
       <div style={sx("flex:1")} />
       {/* Prose, not a chip: the reason the state is what it is. It keeps the
           plain warning amber rather than borrowing STALE's, because a

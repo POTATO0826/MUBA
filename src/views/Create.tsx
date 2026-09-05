@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   MAX_DURATION_MINUTES,
-  MAX_STAKE_USDC,
   MIN_DURATION_MINUTES,
   MIN_STAKE_USDC,
 } from "../data/stake.ts";
@@ -160,7 +159,7 @@ export function Create(p: CreateProps) {
 
       <div style={sx(`${CARD};display:grid;grid-template-columns:1fr 1fr`)}>
         <div style={sx(`padding:20px;border-right:1px solid ${C.border}`)}>
-          <div style={sx(LABEL)}>STAKE PER PLAYER (USDC)</div>
+          <div style={sx(LABEL)}>STAKE PER PLAYER (BASE SEPOLIA ETH)</div>
           <div style={sx("display:flex;align-items:center;gap:10px;margin-top:14px")}>
             <button onClick={p.onStakeDown} style={sx(STEP_BTN)}>
               −
@@ -182,15 +181,14 @@ export function Create(p: CreateProps) {
                     `font:700 28px/1.1 ${MONO};letter-spacing:-.02em;padding:0`,
                 )}
               />
-              <span style={sx(`font:700 15px/1 ${MONO};color:${C.dim}`)}>USDC</span>
+              <span style={sx(`font:700 15px/1 ${MONO};color:${C.dim}`)}>ETH</span>
             </div>
             <button onClick={p.onStakeUp} style={sx(STEP_BTN)}>
               +
             </button>
           </div>
           <div style={sx(`margin-top:12px;font:400 11.5px/1.55 ${SANS};color:${C.muted}`)}>
-            {MIN_STAKE_USDC.toFixed(2)} to {MAX_STAKE_USDC.toLocaleString()} USDC. The stake locks
-            when the arena exists.
+            Minimum {MIN_STAKE_USDC} ETH. Native test ETH on Base Sepolia only.
           </div>
         </div>
 
@@ -209,7 +207,7 @@ export function Create(p: CreateProps) {
           </div>
           <div style={sx(`margin-top:12px;font:400 11.5px/1.55 ${SANS};color:${C.muted}`)}>
             {custody
-              ? `Both stakes — ${p.entryLabel} from each player. Settled in USDC.`
+              ? `Both stakes — ${p.entryLabel} from each player. Settled in native test ETH.`
               : stakeBasisLine(state.stakeUsdc, null)}
           </div>
           {custody === null && (

@@ -1,14 +1,10 @@
 import { useEffect } from "react";
 import {
-  BASESCAN_ADDRESS,
-  BASESCAN_TX,
   REFUND_TIMEOUT_HOURS,
   payoutOf,
-  // Aliased: `data/leaderboard.ts` exports a `usd` of its own for the copy
-  // desk's dollars, and the two must never be confused — that one formats a
-  // `number` of career P/L, this one formats USDC base units.
-  usd as usdcText,
+  eth as ethText,
 } from "../desk/escrow.ts";
+import { baseExplorerAddress, baseExplorerTx } from "../data/base-network.ts";
 import type { DuelStake } from "../state/stake.ts";
 import { CardArt } from "../components/CardArt.tsx";
 import { PlayerMark } from "../components/PlayerMark.tsx";
@@ -564,8 +560,8 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
     );
   }
 
-  const each = usdcText(stake.amount);
-  const takes = usdcText(payoutOf(stake.amount));
+  const each = ethText(stake.amount);
+  const takes = ethText(payoutOf(stake.amount));
   const tone =
     stake.phase === "failed"
       ? C.amber
@@ -578,7 +574,7 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
   return (
     <div data-side-bet={stake.phase} style={sx(PANEL(tone))}>
       <div style={sx("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
-        <span style={sx(HEAD(tone))}>SIDE BET · ON-CHAIN</span>
+        <span style={sx(HEAD(tone))}>STAKE · BASE SEPOLIA</span>
         <span style={sx(`font:700 9px/1 ${MONO};letter-spacing:.14em;color:${tone}`)}>
           {PHASE_LABEL[stake.phase]}
         </span>
@@ -587,7 +583,7 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
       {/* The plan's sentence, verbatim. It is the only place the two currencies
           appear near each other, and it is there to say they are separate. */}
       <div style={sx(`margin-top:8px;font:700 12px/1.4 ${MONO};color:${C.text}`)}>
-        Side bet: {each} USDC each, on-chain. Separate from the PTS pool.
+        Stake: {each} each in native test ETH. Winner takes the complete pool.
       </div>
 
       <div style={sx(BODY)}>{lineFor(stake, ready, takes)}</div>
@@ -610,7 +606,7 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
 
       <div style={sx("display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap")}>
         <a
-          href={`${BASESCAN_ADDRESS}${stake.escrow}`}
+          href={baseExplorerAddress(stake.chainId, stake.escrow)}
           target="_blank"
           rel="noreferrer noopener"
           style={sx(`font:500 9.5px/1 ${MONO};letter-spacing:.08em;color:${C.dim}`)}
@@ -619,12 +615,12 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
         </a>
         {stake.hash && (
           <a
-            href={`${BASESCAN_TX}${stake.hash}`}
+            href={baseExplorerTx(stake.chainId, stake.hash)}
             target="_blank"
             rel="noreferrer noopener"
             style={sx(`font:500 9.5px/1 ${MONO};letter-spacing:.08em;color:${C.blue}`)}
           >
-            {stake.approvalSkipped ? "1 TX" : "2 TX"} ↗
+            1 TX ↗
           </a>
         )}
       </div>
@@ -634,7 +630,7 @@ function SideBet({ stake, ready }: { stake: DuelStake | undefined; ready: boolea
 
 const PHASE_LABEL: Record<DuelStake["phase"], string> = {
   idle: "NOT PLACED",
-  approving: "APPROVING",
+  approving: "PREPARING",
   staking: "STAKING",
   confirming: "WAITING FOR SEAT",
   staked: "STAKED",
@@ -650,9 +646,9 @@ function lineFor(stake: DuelStake, ready: boolean, takes: string): string {
         ? "No side bet on this duel."
         : "Ready up to place it. Declining costs nothing — the duel plays either way.";
     case "approving":
-      return "Approving exactly this amount to the escrow. Never an unlimited approval.";
+      return "Preparing the native test ETH stake.";
     case "staking":
-      return "Sending the stake to the escrow on Base.";
+      return "Sending the stake to the escrow on Base Sepolia.";
     case "confirming":
       return (
         "Your stake is held. Waiting for the other seat to fill on chain — the duel itself " +
@@ -660,7 +656,7 @@ function lineFor(stake: DuelStake, ready: boolean, takes: string): string {
       );
     case "staked":
       return (
-        `Both stakes held. Winner takes ${takes} after the 4% rake, and should claim within ` +
+        `Both stakes held. Winner takes the full ${takes}; the loser receives nothing. Claim within ` +
         `${REFUND_TIMEOUT_HOURS} hours: after that either player can pull their stake back, which voids the bet.`
       );
     case "failed":

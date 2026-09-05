@@ -27,6 +27,8 @@ interface HeaderProps {
   /** Whoever the wallet layer says you are. `DISCONNECTED` until you connect. */
   wallet: WalletIdentity;
   onNavigate: (tab: Tab) => void;
+  /** Prevents an in-flight money action from being unmounted via top navigation. */
+  navigationDisabled?: boolean;
   onConnect: () => void;
   /** The connected-wallet panel — on the mock and on injected, a disconnect. */
   onManage: () => void;
@@ -42,7 +44,9 @@ interface HeaderProps {
  */
 function walletButton(wallet: WalletIdentity) {
   if (wallet.connecting) return { label: "Connecting…", mono: false, tone: C.accent };
-  if (wallet.wrongNetwork) return { label: "Switch to Base", mono: false, tone: C.amber };
+  if (wallet.wrongNetwork) {
+    return { label: `Switch to ${wallet.targetNetworkName ?? "Base Sepolia"}`, mono: false, tone: C.amber };
+  }
   if (wallet.address) return { label: shortAddress(wallet.address), mono: true, tone: C.accent };
   return { label: "Connect wallet", mono: false, tone: C.accent };
 }
@@ -51,6 +55,7 @@ export function Header({
   tab,
   wallet,
   onNavigate,
+  navigationDisabled = false,
   onConnect,
   onManage,
   onSwitchNetwork,
@@ -83,10 +88,15 @@ export function Header({
     >
       <div
         onClick={() => {
+          if (navigationDisabled) return;
           sfx("nav.click");
           onNavigate("lobby");
         }}
-        style={sx("display:flex;align-items:center;gap:10px;cursor:pointer")}
+        aria-disabled={navigationDisabled}
+        style={sx(
+          `display:flex;align-items:center;gap:10px;cursor:${navigationDisabled ? "not-allowed" : "pointer"};` +
+            (navigationDisabled ? "opacity:.55" : ""),
+        )}
       >
         <div
           style={sx(
@@ -103,12 +113,16 @@ export function Header({
         {NAV.map((n) => (
           <button
             key={n.key}
+            disabled={navigationDisabled}
             onClick={() => {
               sfx("nav.click", { pitch: n.pitch });
               onNavigate(n.key);
             }}
             {...hover}
-            style={sx(tabBtn(n.key === "battles" ? MATCH_FLOW.includes(tab) : tab === n.key))}
+            style={sx(
+              tabBtn(n.key === "battles" ? MATCH_FLOW.includes(tab) : tab === n.key) +
+                (navigationDisabled ? ";opacity:.45;cursor:not-allowed" : ""),
+            )}
           >
             {n.label}
           </button>

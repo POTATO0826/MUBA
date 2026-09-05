@@ -235,6 +235,8 @@ export interface LadderOrder {
     /** `numContracts > 0n` — the book-depth guard. `false` is an ordinary
      *  reading of a thin book, not an error. */
     fillable?: boolean | null;
+    /** Public order identity for a fresh, exact re-fetch before execution. */
+    orderNonce?: string | null;
   } | null;
 }
 

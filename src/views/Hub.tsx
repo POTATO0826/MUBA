@@ -190,9 +190,9 @@ export function Hub({
           </span>
           <span style={sx(`font:400 10.5px/1 ${MONO};color:${C.dim}`)}>
             {identity.wrongNetwork
-              ? "wrong network · switch to Base"
+              ? "wrong network · switch to Base Sepolia"
               : connected
-                ? `base 8453 · ${identity.walletName ?? "wallet"}`
+                ? `base sepolia 84532 · ${identity.walletName ?? "wallet"}`
                 : "connect a wallet to play"}
           </span>
         </div>

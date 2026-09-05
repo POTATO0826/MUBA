@@ -272,21 +272,41 @@ describe("BoxBuilder", () => {
     expect(multiple).toBe("14.00× the premium");
   });
 
-  test("buying is inert without the trade flag", () => {
+  test("the safe pricing step opens even while transactions are off", () => {
+    let opened = 0;
     mount(
-      <BoxBuilder {...BASE} premium={5} onConfirm={() => {
-        throw new Error("a build without features.trade must not reach a signature");
-      }} />,
+      <BoxBuilder {...BASE} premium={5} onConfirm={() => { opened += 1; }} />,
     );
     const rungs = all("[data-rung]");
     click(rungs[0] as Element);
     click(rungs[3] as Element);
     click(all("button").find((b) => b.textContent === "Review this box") as Element);
 
-    const buy = all("button").find((b) => b.textContent === "Buy this box") as HTMLButtonElement;
-    expect(buy.disabled).toBe(true);
-    click(buy); // a disabled button fires nothing; the throw above is the assertion
-    expect(text()).toContain("Buying is switched off in this build");
+    const price = all("button").find((b) => b.textContent === "Price this box") as HTMLButtonElement;
+    expect(price.disabled).toBe(false);
+    click(price);
+    expect(opened).toBe(1);
+    expect(text()).toContain("Transactions remain disabled");
+  });
+
+  test("an active execution step cannot be unmounted by the back control", () => {
+    let closed = 0;
+    mount(
+      <BoxBuilder
+        {...BASE}
+        execution={<div>active request</div>}
+        executionBusy
+        onCloseExecution={() => { closed += 1; }}
+      />,
+    );
+
+    const back = all("button").find((b) =>
+      b.textContent?.includes("Finish or cancel this step"),
+    ) as HTMLButtonElement;
+    expect(back.disabled).toBe(true);
+    click(back);
+    expect(closed).toBe(0);
+    expect(text()).toContain("private quote key");
   });
 
   test("settlement copy is terminal, and the banned words are absent", () => {
@@ -399,13 +419,21 @@ describe("BoxBuilder", () => {
  * map. Without it the screen resolves no product and offers no listed fill —
  * which is itself one of the assertions below.
  */
-const REGISTRY = {
-  "0x9980ec85bc6fe07340adb36c76fa093bb6d4fcbc": { name: "RANGER" },
-} as const;
+const RANGER_ADDRESS = "0x9980ec85bc6fe07340adb36c76fa093bb6d4fcbc";
+const REGISTRY = { [RANGER_ADDRESS]: { name: "RANGER" } } as const;
 
 const BOOKED: LadderSnapshot = {
   ...FIXTURE,
   chainConfig: { ...FIXTURE.chainConfig, optionImplementations: REGISTRY },
+};
+
+const QUOTED_BOOKED: LadderSnapshot = {
+  ...BOOKED,
+  orders: BOOKED.orders?.map((order) =>
+    order.rawApiData?.implementation?.toLowerCase() === RANGER_ADDRESS
+      ? { ...order, quote: { premium: "20.00", fillable: true, orderNonce: "7" } }
+      : order,
+  ),
 };
 
 /** The screen, on the one column of the fixture that has a zone: BTC, 5 Sep. */
@@ -538,6 +566,16 @@ describe("the listed zone, on screen", () => {
     expect(container.querySelector('[data-role="payout-multiple"]')?.textContent).toBe(
       "25.00× the premium",
     );
+  });
+
+  test("a market refresh removes an expired premium from the risk display", () => {
+    mount(<BoxBuilder {...BASE} snapshot={QUOTED_BOOKED} />);
+    click(container.querySelector('[data-asset="BTC"]') as Element);
+    click(all("[data-zone]")[0] as Element);
+    expect(container.querySelector('[data-role="max-loss"]')?.textContent).toBe("$20.00");
+
+    act(() => root.render(<BoxBuilder {...BASE} snapshot={BOOKED} />));
+    expect(container.querySelector('[data-role="max-loss"]')?.textContent).toBe("Price required");
   });
 
   test("an unmatched box still confirms as the condor it would have to be", () => {

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  LARGE_STAKE_USDC,
-  MIN_STAKE_USDC,
-  parseStakeUsdc,
-  usd as usdcText,
+  MAX_STAKE_WEI,
+  MIN_STAKE_WEI,
+  eth,
+  parseStakeEth,
 } from "../desk/escrow.ts";
 import type { DuelStake } from "../state/stake.ts";
 import { MARKET_COLOR, MARKET_LABEL } from "../data/lobbies.ts";
@@ -112,42 +112,36 @@ interface TipAt {
 
 /**
  * ────────────────────────────────────────────────────────────────────────────
- * THE SIDE BET'S AMOUNT — A WARNING, NOT A CAP
+ * THE SIDE BET'S AMOUNT — CONTRACT-ENFORCED BOUNDS
  * ────────────────────────────────────────────────────────────────────────────
  *
- * `contracts/DuelEscrow.sol` has a `MIN_STAKE` of $0.10 and, by the owner's
- * explicit and documented decision, **no maximum**. The contract's own natspec
- * states the risk that comes with that (uncapped plus unaudited means a bug
- * risks whatever players choose to stake) and names the compensating controls.
+ * `contracts/DuelEscrow.sol` has a `MIN_STAKE` of 0.001 native ETH. The
+ * contract is deployable only on Base Sepolia, so every amount here is test ETH.
  *
- * This field honours both halves. The floor is enforced, because it is a
- * constant in the contract and a transaction under it simply reverts
- * `stake too small`. The ceiling is **not** enforced, because the owner said
- * there is not one — above $20 the field says so, loudly, and still lets the
- * number through. A warning that quietly behaved like a cap would be a cap
- * someone had to discover.
+ * A value outside the range remains visible while it is being edited, but it
+ * never replaces the last legal stake in state.
  *
  * The text is local state so a half-typed `0.` survives until it parses, the
  * same shape the prize field uses for the same reason. Nothing is rounded: a
- * seventh decimal is refused rather than truncated, because USDC has six and
- * silently dropping a digit changes what someone typed.
+ * nineteenth decimal is refused rather than truncated, because native ETH has
+ * eighteen decimals and silently dropping a digit changes what someone typed.
  */
 function StakeField({ stake }: { stake: DuelStake | undefined }) {
   const [text, setText] = useState(() =>
-    stake ? usdcText(stake.amount).replace("$", "") : "1.00",
+    stake ? eth(stake.amount).replace(" ETH", "") : "0.001",
   );
 
   if (!stake?.available) return null;
 
-  const parsed = parseStakeUsdc(text);
-  const tooSmall = parsed !== null && parsed < MIN_STAKE_USDC;
-  const large = parsed !== null && parsed > LARGE_STAKE_USDC;
+  const parsed = parseStakeEth(text);
+  const tooSmall = parsed !== null && parsed < MIN_STAKE_WEI;
+  const tooLarge = parsed !== null && parsed > MAX_STAKE_WEI;
 
   return (
     <div data-stake-field="">
-      <div style={sx(`${LABEL};margin-top:20px`)}>SIDE BET PER PLAYER (USDC)</div>
+      <div style={sx(`${LABEL};margin-top:20px`)}>STAKE PER PLAYER (BASE SEPOLIA ETH)</div>
       <div style={sx("display:flex;align-items:center;gap:10px;margin-top:10px")}>
-        <span style={sx(`font:700 18px/1 ${MONO};color:${C.dim}`)}>$</span>
+        <span style={sx(`font:700 12px/1 ${MONO};color:${C.dim}`)}>ETH</span>
         <input
           data-stake-input=""
           value={text}
@@ -155,34 +149,34 @@ function StakeField({ stake }: { stake: DuelStake | undefined }) {
           onChange={(e) => {
             const raw = e.target.value;
             setText(raw);
-            const next = parseStakeUsdc(raw);
+            const next = parseStakeEth(raw);
             // Only a legal stake is committed. An illegal one leaves the last
             // legal amount in place, so the room can never be handed a number
             // the escrow would refuse.
-            if (next !== null && next >= MIN_STAKE_USDC) stake.setAmount(next);
+            if (next !== null && next >= MIN_STAKE_WEI && next <= MAX_STAKE_WEI) {
+              stake.setAmount(next);
+            }
           }}
           style={sx(
             `flex:1;min-width:0;height:38px;padding:0 12px;border:1px solid ${
-              tooSmall ? C.red : C.borderMid
+              tooSmall || tooLarge ? C.red : C.borderMid
             };border-radius:8px;text-align:center;` +
               `background:${C.raised};color:${C.text};font:700 18px/1 ${MONO};outline:none`,
           )}
         />
       </div>
       <div style={sx(NOTE)}>
-        On-chain, in USDC, and entirely separate from the PTS pool above. Both players stake the
-        same amount; the winner takes the pot less the escrow's 4% rake.
+        Native test ETH on Base Sepolia. Both players stake the same amount; the winner takes the
+        complete pool and the loser receives nothing.
       </div>
       {tooSmall && (
         <div data-stake-gate style={sx(`${NOTE};color:${C.red}`)}>
-          the escrow's MIN_STAKE is {usdcText(MIN_STAKE_USDC)} — anything less reverts on chain
+          the minimum stake is {eth(MIN_STAKE_WEI)} — anything less reverts on chain
         </div>
       )}
-      {large && (
-        <div data-stake-warning style={sx(`${NOTE};color:${C.amber}`)}>
-          large stake — above {usdcText(LARGE_STAKE_USDC)}. There is no cap by the owner's
-          decision, and this contract is unaudited: a bug would risk the whole amount, and there
-          is no admin who could rescue it. Stake accordingly.
+      {tooLarge && (
+        <div data-stake-gate style={sx(`${NOTE};color:${C.red}`)}>
+          that amount is too large for the contract
         </div>
       )}
     </div>
@@ -379,7 +373,7 @@ interface CreateLobbyProps {
   onPublish: () => void;
   onBack: () => void;
   /**
-   * The optional USDC side bet, for its amount only.
+   * The optional Base Sepolia ETH stake, for its amount only.
    *
    * The stake is **not** a `LobbyForm` field. It is deliberately kept out of
    * `src/state/match.ts` and out of `LobbyDef`: the form and the lobby are the

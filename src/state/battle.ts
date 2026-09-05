@@ -5,6 +5,7 @@ import {
   MIN_DURATION_MINUTES,
   MIN_STAKE_USDC,
   poolOf,
+  stakeAmountText,
   stepStake,
   usdc,
 } from "../data/stake.ts";
@@ -38,7 +39,7 @@ export interface BattleState {
    */
   mode: GameMode;
   /**
-   * What each player agrees to play for, in USDC. The pot would be twice this.
+   * What each player agrees to play for, in Base Sepolia test ETH.
    *
    * Conditional on purpose: this is a **setting**, not a transfer. It travels to
    * `createRoom` and lives in the room store's `Map`, and no code path turns it
@@ -59,8 +60,8 @@ export interface BattleState {
 export const INITIAL_STATE: BattleState = {
   tab: "hub",
   mode: "box",
-  stakeUsdc: 10,
-  stakeText: "10.00",
+  stakeUsdc: MIN_STAKE_USDC,
+  stakeText: "0.001",
   durationMinutes: 1,
   lobbyName: "Room #4471",
 };
@@ -100,17 +101,17 @@ export function useBattle() {
       onStakeBlur: () =>
         patch((s) => {
           const v = clampStake(Number.isFinite(s.stakeUsdc) ? s.stakeUsdc : MIN_STAKE_USDC);
-          return { stakeUsdc: v, stakeText: v.toFixed(2) };
+          return { stakeUsdc: v, stakeText: stakeAmountText(v) };
         }),
       stakeUp: () =>
         patch((s) => {
           const v = stepStake(s.stakeUsdc, 1);
-          return { stakeUsdc: v, stakeText: v.toFixed(2) };
+          return { stakeUsdc: v, stakeText: stakeAmountText(v) };
         }),
       stakeDown: () =>
         patch((s) => {
           const v = stepStake(s.stakeUsdc, -1);
-          return { stakeUsdc: v, stakeText: v.toFixed(2) };
+          return { stakeUsdc: v, stakeText: stakeAmountText(v) };
         }),
     }),
     [patch],

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  DEFAULT_STAKE_USDC,
+  DEFAULT_STAKE_WEI,
   JOIN_POLL_MS,
-  MIN_STAKE_USDC,
+  MIN_STAKE_WEI,
   REFUND_TIMEOUT_HOURS,
   STAKE_OFF,
   ZERO_ADDRESS,
@@ -145,6 +145,8 @@ export interface DuelStake {
   unavailable: string | null;
   /** The escrow address `/api/config` named, for the BaseScan link. */
   escrow: string;
+  /** The Base network on which this escrow is deployed. */
+  chainId: number;
 
   // ── the amount ──
   /** Per-player side bet, USDC 6dp. Owner-settable in the create form. */
@@ -224,6 +226,7 @@ const NO_STAKE_BASE = {
   available: false,
   unavailable: null,
   escrow: "",
+  chainId: STAKE_OFF.chainId,
   phase: "idle",
   error: null,
   live: false,
@@ -264,7 +267,7 @@ export function useDuelStake(
     ? null
     : stakeUnavailableReason(config, walletId);
 
-  const [amount, setAmount] = useState<bigint>(DEFAULT_STAKE_USDC);
+  const [amount, setAmount] = useState<bigint>(DEFAULT_STAKE_WEI);
   const [phase, setPhase] = useState<StakePhase>("idle");
   const [error, setError] = useState<EscrowError | null>(null);
   const [duelId, setDuelId] = useState<string | null>(null);
@@ -309,9 +312,11 @@ export function useDuelStake(
    */
   const deps = useMemo<EscrowDeps | null>(() => {
     if (!available || !wallet) return null;
-    return options.deps ? options.deps(config.escrow) : createLiveEscrowDeps(wallet, config.escrow);
+    return options.deps
+      ? options.deps(config.escrow)
+      : createLiveEscrowDeps(wallet, config.escrow, config.chainId);
     // `options.deps` is a test seam and is stable per test by construction.
-  }, [available, wallet, config.escrow, options.deps]);
+  }, [available, wallet, config.escrow, config.chainId, options.deps]);
 
   const referee = useMemo<RefereeDeps | null>(() => {
     if (!available || !wallet) return null;
@@ -348,8 +353,7 @@ export function useDuelStake(
 
   /** `EscrowStep` → `StakePhase`. The one place the two vocabularies meet. */
   const stepPhase = useCallback((step: EscrowStep) => {
-    if (step === "approve") setPhase("approving");
-    else if (step === "send") setPhase("staking");
+    if (step === "approve" || step === "send") setPhase("staking");
   }, []);
 
   const begin = useCallback(
@@ -607,6 +611,7 @@ export function useDuelStake(
     available,
     unavailable,
     escrow: config.escrow,
+    chainId: config.chainId,
     amount,
     setAmount,
     phase,
@@ -644,7 +649,7 @@ export function useDuelStake(
  */
 export const NO_STAKE: DuelStake = {
   ...NO_STAKE_BASE,
-  amount: DEFAULT_STAKE_USDC,
+  amount: DEFAULT_STAKE_WEI,
   setAmount: () => {},
   begin: () => {},
   commit: () => {},
@@ -655,4 +660,4 @@ export const NO_STAKE: DuelStake = {
 
 /** The floor, re-exported so the create form does not import the escrow module
  *  just to name one constant. */
-export { MIN_STAKE_USDC };
+export { MIN_STAKE_WEI };

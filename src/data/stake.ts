@@ -1,23 +1,24 @@
 /**
  * Stakes and duel length.
  *
- * The unit is USDC, not ETH. A duel is settled in a stablecoin so that the
- * stake still means what it meant when the room opened — with ETH as the unit,
- * a move in ETH during the duel changes what everyone put in, which is a second
- * bet nobody agreed to. It is also the collateral Thetanuts quotes against on
- * Base (`0x8335…2913` in `tnuts-test/FINDINGS.md`).
+ * Room-level stake display, denominated in native Base Sepolia test ETH.
+ * The legacy `*USDC` export names remain as wire-compatible aliases while room
+ * storage is migrated; no token transfer or mainnet path uses them.
  */
 
-/** USDC has 6 decimals on Base. */
-export const USDC_DECIMALS = 6;
+export const ETH_DECIMALS = 18;
+export const USDC_DECIMALS = ETH_DECIMALS;
 
 /**
  * Players stake this each, and the winner takes both. The number the host sets
  * is the *stake*, not the pool — asking for a pool means the host has to halve
  * it in their head to know what they are risking.
  */
-export const MIN_STAKE_USDC = 0.5;
-export const MAX_STAKE_USDC = 10_000;
+export const MIN_STAKE_ETH = 0.001;
+export const MIN_STAKE_USDC = MIN_STAKE_ETH;
+/** A room-store sanity bound; the on-chain contract's uint128 bound is much larger. */
+export const MAX_STAKE_ETH = 1_000_000;
+export const MAX_STAKE_USDC = MAX_STAKE_ETH;
 
 /**
  * The stepper moves by a fraction of where it already is.
@@ -30,24 +31,34 @@ export const MAX_STAKE_USDC = 10_000;
 export function stakeStep(value: number): number {
   // Strict `<` so the step changes *at* each boundary rather than one step
   // past it — otherwise stepping up from 10 lands on an awkward 10.50.
-  if (value < 10) return 0.5;
-  if (value < 100) return 5;
-  if (value < 1_000) return 50;
-  return 500;
+  if (value < 0.01) return 0.001;
+  if (value < 0.1) return 0.01;
+  if (value < 1) return 0.1;
+  if (value < 10) return 1;
+  if (value < 100) return 10;
+  if (value < 1_000) return 100;
+  return 1_000;
 }
 
 /** How long the tape runs. */
 export const MIN_DURATION_MINUTES = 1;
 export const MAX_DURATION_MINUTES = 60;
 
-/** `10` → `"10.00 USDC"`. Two decimals, because a stake is money. */
-export function usdc(amount: number): string {
-  return `${amount.toFixed(2)} USDC`;
+/** Input-friendly native ETH text with up to six visible decimals. */
+export function stakeAmountText(amount: number): string {
+  return amount.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+export function eth(amount: number): string {
+  return `${stakeAmountText(amount)} ETH`;
+}
+
+/** Legacy helper name retained for room data compatibility. */
+export const usdc = eth;
+
 /** What the winner walks away with: both stakes. */
-export function poolOf(stakeUsdc: number): number {
-  return stakeUsdc * 2;
+export function poolOf(stakeEth: number): number {
+  return stakeEth * 2;
 }
 
 /**
@@ -59,7 +70,8 @@ export function poolOf(stakeUsdc: number): number {
  */
 export function clampStake(value: number): number {
   if (!Number.isFinite(value)) return MIN_STAKE_USDC;
-  return +Math.min(MAX_STAKE_USDC, Math.max(MIN_STAKE_USDC, value)).toFixed(2);
+  const clamped = Math.min(MAX_STAKE_ETH, Math.max(MIN_STAKE_ETH, value));
+  return Math.round((clamped + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
 /**
@@ -69,9 +81,9 @@ export function clampStake(value: number): number {
 export function stepStake(value: number, direction: 1 | -1): number {
   // Stepping down out of a band should use the smaller step below it, so the
   // move down mirrors the move that got you up here.
-  const step = stakeStep(direction === -1 ? value - 0.01 : value);
+  const step = stakeStep(direction === -1 ? value - 0.000001 : value);
   const raw = direction === 1 ? Math.floor(value / step) * step + step : Math.ceil(value / step) * step - step;
-  return clampStake(+raw.toFixed(2));
+  return clampStake(+raw.toFixed(6));
 }
 
 /**

@@ -53,18 +53,18 @@ describe("createRoom", () => {
 
   test("clamps the stake into the allowed band instead of storing junk", () => {
     // Below the minimum, above the maximum, and every flavour of not-a-number
-    // all land somewhere legal — a stale tab must not create a 0 USDC duel.
-    expect(open(HOST, 0.25).stakeUsdc).toBe(MIN_STAKE_USDC);
+    // all land somewhere legal — a stale tab must not create a zero-ETH duel.
+    expect(open(HOST, 0.0009).stakeUsdc).toBe(MIN_STAKE_USDC);
     expect(open(HOST, 0).stakeUsdc).toBe(MIN_STAKE_USDC);
     expect(open(HOST, -50).stakeUsdc).toBe(MIN_STAKE_USDC);
-    // Inside the band it is taken as given — 1 USDC is a legal stake now.
+    // Inside the band it is taken as given — 1 test ETH is a legal stake.
     expect(open(HOST, 1).stakeUsdc).toBe(1);
     expect(open(HOST, 0.5).stakeUsdc).toBe(0.5);
-    expect(open(HOST, 999_999).stakeUsdc).toBe(MAX_STAKE_USDC);
+    expect(open(HOST, 999_999).stakeUsdc).toBe(999_999);
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "5", null]) {
       expect(open(HOST, bad as number).stakeUsdc).toBe(MIN_STAKE_USDC);
     }
-    expect(open(HOST, 25).stakeUsdc).toBe(25);
+    expect(open(HOST, MAX_STAKE_USDC + 1).stakeUsdc).toBe(MAX_STAKE_USDC);
   });
 
   test("duration is whole minutes inside the band", () => {

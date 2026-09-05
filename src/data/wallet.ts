@@ -1,12 +1,10 @@
 import type { Signer } from "ethers";
+import { BASE_SEPOLIA_CHAIN_ID } from "./base-network.ts";
 
 /**
- * Base mainnet. THETADUEL settles on Base and nowhere else — chain 8453,
- * `https://mainnet.base.org`. A wallet parked on any other chain cannot sign
- * anything this app submits, so the chain check is part of the identity rather
- * than an afterthought.
+ * The connected-wallet boundary is testnet-only.
  */
-export const BASE_CHAIN_ID = 8453;
+export const BASE_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID;
 
 /** A read-only snapshot of who the connected wallet says you are. */
 export interface WalletIdentity {
@@ -21,6 +19,8 @@ export interface WalletIdentity {
   connecting: boolean;
   /** Connected, but not on Base — nothing this app submits can be signed. */
   wrongNetwork: boolean;
+  /** The configured Base network, used in the switch-wallet label. */
+  targetNetworkName?: string;
 }
 
 /**
@@ -54,7 +54,7 @@ export interface WalletSource {
   disconnect(): Promise<void>;
   /** The connected-wallet panel: balance, copy address, disconnect. */
   openAccount(): Promise<void>;
-  /** Ask the wallet to move to Base. Rejects if the wallet refuses. */
+  /** Ask the wallet to move to this server's configured Base network. */
   switchToBase(): Promise<void>;
   /**
    * An ethers signer for writes — the seam the real on-chain options trade

@@ -15,7 +15,7 @@ import {
 } from "./data/market.ts";
 import { spinSlice } from "./engine/spin.ts";
 import { createHistorySource, type PriceHistory } from "./data/history.ts";
-import { zoneQuote } from "./data/ranger.ts";
+import type { CondorSpec } from "./data/condor.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
@@ -32,10 +32,13 @@ import { useWire } from "./state/wire.ts";
 import { Footer } from "./ui/Footer.tsx";
 import { Header } from "./ui/Header.tsx";
 import { MockWalletBanner } from "./ui/MockWalletBanner.tsx";
+import { BOX_STARTING_MAX_LOSS_USD, BoxTradePanel } from "./ui/BoxTradePanel.tsx";
 import { Battles } from "./views/Battles.tsx";
 import { BoxBuilder, type ListedFill } from "./views/BoxBuilder.tsx";
 import { Create } from "./views/Create.tsx";
 import { CreateLobby } from "./views/CreateLobby.tsx";
+import { ContractTest } from "./views/ContractTest.tsx";
+import { GameStakeTest } from "./views/GameStakeTest.tsx";
 import { Hub } from "./views/Hub.tsx";
 import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
@@ -422,7 +425,9 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    * inheriting another session's window. It opens nothing until `history()` is
    * called, which happens only on the arena route.
    */
-  const historySource = useMemo(() => createHistorySource(), []);
+  // The legacy Chainlink table points at Base mainnet. This build is testnet
+  // only, so an empty feed map guarantees the browser never opens that RPC.
+  const historySource = useMemo(() => createHistorySource({ feeds: {} }), []);
   /**
    * Which asset's line is loaded. `BoxBuilder` owns the selection and tells us
    * through `onUnderlying`; this mirrors it so the fetch can follow. It opens on
@@ -448,17 +453,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
     };
   }, [boxTab, boxAsset, historySource]);
 
-  /**
-   * The **real** premium for the box on screen, per contract, or `null`.
-   *
-   * `null` is the ordinary state and is not a placeholder: plan 7 §4.4 says the
-   * payout multiple is absent until a premium exists, and the only premium this
-   * app will show for a box is `previewFillOrder`'s. A drawn box that matches no
-   * listed zone has no price until a market maker answers an RFQ, which is plan
-   * 7 §5 and is not built — so `onQuote` sets `null` for it rather than reaching
-   * for a mid.
-   */
-  const [boxPremium, setBoxPremium] = useState<number | null>(null);
+  /** The box currently in its pricing/fill step and its navigation safety gate. */
+  const [boxTrade, setBoxTrade] = useState<{
+    spec: CondorSpec;
+    match: ListedFill | null;
+  } | null>(null);
+  const [boxTradeActive, setBoxTradeActive] = useState(false);
 
   /**
    * The asset chips' list, memoised on the source rather than recomputed.
@@ -471,20 +471,34 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    * when the book does.
    */
   const boxAssets = useMemo(() => qualifiedNames(source), [source]);
-  const quoteBox = useCallback((_spec: unknown, _strikes: unknown, match: ListedFill | null) => {
-    // One quote per released box (§4.1), and it is a synchronous read of a
-    // number the wire already carries: `previewFillOrder` ran on the server, at
-    // snapshot build time, against the maker's full order — the browser holds
-    // neither the order's price nor its signature and cannot preview one itself.
-    // Nothing here signs, spends or asks the network anything.
-    setBoxPremium(match ? zoneQuote(match.zone) : null);
-  }, []);
+  const openBoxTrade = useCallback(
+    (spec: CondorSpec, _strikes: [number, number, number, number], match: ListedFill | null) => {
+      setBoxTradeActive(false);
+      setBoxTrade({ spec, match });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!boxTab) setBoxTrade(null);
+  }, [boxTab]);
+
+  useEffect(() => {
+    if (!boxTradeActive) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [boxTradeActive]);
 
   return (
     <div style={sx(PAGE)}>
       <Header
         tab={state.tab}
         wallet={identity}
+        navigationDisabled={boxTradeActive}
         onNavigate={(tab) => {
           if (tab === "arena") {
             setArenaEntered(false);
@@ -563,8 +577,22 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           qualified={boxAssets}
           history={boxHistory}
           onUnderlying={setBoxAsset}
-          premium={boxPremium}
-          onQuote={quoteBox}
+          onConfirm={openBoxTrade}
+          unquotedMaxLoss={BOX_STARTING_MAX_LOSS_USD}
+          execution={
+            boxTrade ? (
+              <BoxTradePanel
+                spec={boxTrade.spec}
+                match={boxTrade.match}
+                source={source}
+                wallet={active}
+                onBack={() => setBoxTrade(null)}
+                onActiveChange={setBoxTradeActive}
+              />
+            ) : null
+          }
+          executionBusy={boxTradeActive}
+          onCloseExecution={() => setBoxTrade(null)}
           onBack={backToArenaHub}
           // ── step 4 — the duel. Four props, all of them the room's, and the
           // screen is the solo builder again without them.
@@ -788,6 +816,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           along from the same hook because it is the one movement reading the
           ledger actually samples — the hero chip's `↑ W3 STREAK`. */}
       {state.tab === "ranks" && <Ranking you={rank.you} streak={rank.streak} />}
+
+      {/* Hidden operational route: every DuelEscrow function is visible here,
+          but writes stay disabled until the address proves it is our capped
+          Base Sepolia deployment. */}
+      {state.tab === "test" && <ContractTest wallet={active} />}
+      {state.tab === "testing" && <GameStakeTest wallet={active} />}
 
       {/* The address in the header is a plausible-looking fake whenever the
           mock tier won. Say so, rather than letting it pass for a wallet. */}

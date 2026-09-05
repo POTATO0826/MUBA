@@ -112,6 +112,8 @@ const OUTSIDE_MATCH: ReadonlySet<Tab> = new Set<Tab>([
   "desk",
   "ranks",
   "arena",
+  "test",
+  "testing",
 ]);
 
 /**

@@ -70,6 +70,7 @@
  */
 
 import { Interface, JsonRpcProvider, ZeroAddress, getAddress } from "ethers";
+import { BASE_SEPOLIA_CHAIN_ID } from "../data/base-network.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The ABI — one function, transcribed
@@ -99,20 +100,16 @@ export const SEAT_STATUSES = ["NONE", "OPEN", "FULL", "SETTLED", "REFUNDED"] as 
 export type SeatStatus = (typeof SEAT_STATUSES)[number];
 
 /**
- * Base mainnet, the only chain the escrow is ever deployed to (plan 5: "no
- * testnet exists"). It is passed to `JsonRpcProvider` as the EXPECTED network
- * rather than as a static one: ethers then verifies it against the endpoint and
- * throws on a mismatch, which this module turns into a refusal. An `RPC_URL`
- * pointed at the wrong chain would otherwise read a different chain's storage
- * for the same duel id — most likely finding nothing, but conceivably finding
- * someone else's duel — and that must fail closed, not resolve.
+ * The selected Base network is passed to `JsonRpcProvider` as the EXPECTED
+ * network rather than as a static one: ethers then verifies it against the
+ * endpoint and throws on a mismatch, which this module turns into a refusal.
+ * An escrow RPC pointed at the wrong chain would otherwise read a different
+ * chain's storage for the same duel id — most likely finding nothing, but
+ * conceivably finding someone else's duel — and that must fail closed.
  *
- * Deliberately a local constant and not an import of `attest.ts`'s
- * `BASE_CHAIN_ID`: `attest.ts` imports this module, and a cycle between the two
- * would buy nothing. The value is not money-critical here (a wrong one refuses
- * reads; it cannot mis-sign anything).
+ * The expected chain comes from `THETADUEL_NETWORK` (or an injected test
+ * dependency) and is passed to ethers, which verifies the RPC response.
  */
-const BASE_CHAIN_ID = 8453;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tuning
@@ -224,9 +221,10 @@ export interface SeatReaderDeps {
   provider?: SeatProvider;
   /** The deployed escrow. Defaults to `THETADUEL_ESCROW`. */
   escrow?: string;
-  /** Defaults to `RPC_URL`. There is deliberately no fallback to a public
-   *  endpoint — see `createSeatReader`. */
+  /** Defaults only to `ESCROW_RPC_URL`; mainnet RPC fallbacks are forbidden. */
   rpcUrl?: string;
+  /** Expected chain. Defaults to, and may only be, Base Sepolia (84532). */
+  chainId?: number;
   /** Defaults to `SEAT_READ_TIMEOUT_MS`. Injected only so a test can prove the
    *  hung-RPC branch in milliseconds instead of four seconds. */
   timeoutMs?: number;
@@ -315,15 +313,19 @@ function envVar(name: string): string {
  * omission. `server/thetanuts.ts` falls back to `https://mainnet.base.org` for
  * the market book because a throttled book is better than no book. Here the
  * opposite is true: a throttled read fails closed and refuses an honest
- * player's lock, so a reader with no `RPC_URL` reports itself unconfigured and
- * lets the caller keep its signature-only behaviour, which is a coherent mode.
+ * player's lock, so a reader without `ESCROW_RPC_URL` reports itself
+ * unconfigured and lets the caller keep its signature-only behaviour, which is
+ * a coherent mode. `ESCROW_RPC_URL` is the ONLY name read here — there is no
+ * `RPC_URL` fallback to inherit the market book's mainnet endpoint.
  * Half-configured — an escrow address and a rate-limited public endpoint — is
  * not.
  */
 export function createSeatReader(deps: SeatReaderDeps = {}): SeatReader {
   const now = deps.now ?? (() => Date.now());
   const timeoutMs = deps.timeoutMs ?? SEAT_READ_TIMEOUT_MS;
-  const rpcUrl = (deps.rpcUrl ?? envVar("RPC_URL")).trim();
+  const escrowRpcUrl = envVar("ESCROW_RPC_URL").trim();
+  const rpcUrl = (deps.rpcUrl ?? escrowRpcUrl).trim();
+  const configuredChainId = deps.chainId ?? BASE_SEPOLIA_CHAIN_ID;
 
   // A malformed `THETADUEL_ESCROW` is a configuration problem, and the honest
   // reading of it is "there is no escrow" — not "read from a mangled address".
@@ -339,7 +341,10 @@ export function createSeatReader(deps: SeatReaderDeps = {}): SeatReader {
 
   // An injected provider is a transport in its own right; otherwise there has
   // to be a URL to build one from.
-  const configured = escrow !== null && (deps.provider !== undefined || rpcUrl !== "");
+  const configured =
+    configuredChainId === BASE_SEPOLIA_CHAIN_ID &&
+    escrow !== null &&
+    (deps.provider !== undefined || rpcUrl !== "");
 
   const cache = new Map<string, CacheEntry>();
 
@@ -355,7 +360,10 @@ export function createSeatReader(deps: SeatReaderDeps = {}): SeatReader {
     if (deps.provider) return deps.provider;
     if (cachedProvider !== undefined) return cachedProvider;
     try {
-      cachedProvider = rpcUrl ? new JsonRpcProvider(rpcUrl, BASE_CHAIN_ID) : null;
+      cachedProvider =
+        rpcUrl && configuredChainId === BASE_SEPOLIA_CHAIN_ID
+          ? new JsonRpcProvider(rpcUrl, configuredChainId)
+          : null;
     } catch {
       cachedProvider = null;
     }

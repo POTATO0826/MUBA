@@ -12,9 +12,11 @@ import { METADATA, NETWORKS, THEME_VARIABLES } from "./config.ts";
  */
 export default function LiveWallet({
   projectId,
+  chainId,
   children,
 }: {
   projectId: string;
+  chainId: number;
   children: (wallet: WalletSource) => ReactNode;
 }) {
   const adapters = useMemo(() => [new EthersAdapter()], []);
@@ -35,12 +37,18 @@ export default function LiveWallet({
         onramp: false,
       }}
     >
-      <ConnectedWallet>{children}</ConnectedWallet>
+      <ConnectedWallet chainId={chainId}>{children}</ConnectedWallet>
     </AppKitProvider>
   );
 }
 
-function ConnectedWallet({ children }: { children: (wallet: WalletSource) => ReactNode }) {
-  const wallet = useAppKitWallet();
+function ConnectedWallet({
+  chainId,
+  children,
+}: {
+  chainId: number;
+  children: (wallet: WalletSource) => ReactNode;
+}) {
+  const wallet = useAppKitWallet(chainId);
   return <>{children(wallet)}</>;
 }

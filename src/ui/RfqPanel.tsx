@@ -184,6 +184,11 @@ export interface RfqPanelProps {
     premiumUsd: number | null;
     hash: string | null;
   }) => void;
+  /**
+   * True while leaving this panel would abandon an open request, its in-memory
+   * decryption key, or a settlement already in progress.
+   */
+  onActiveChange?: (active: boolean) => void;
 }
 
 /** Thetanuts publishes an options market for these two and no others (FINDINGS §3). */
@@ -277,7 +282,7 @@ type PanelState =
   | { kind: "settling"; open: RfqOpen; offer: RfqOffer }
   | { kind: "settled"; open: RfqOpen; offer: RfqOffer; hash: string; explorer: string }
   | { kind: "closed"; open: RfqOpen; note: string }
-  | { kind: "failed"; error: RfqError };
+  | { kind: "failed"; error: RfqError; open?: RfqOpen };
 
 export function RfqPanel({
   source,
@@ -291,6 +296,7 @@ export function RfqPanel({
   mmPrice,
   numContracts = BOX_CONTRACTS,
   onOutcome,
+  onActiveChange,
 }: RfqPanelProps = {}) {
   const flag = useTradeFlag(wallet, enabled);
   /** Both halves required: an operator's flag AND a wallet that can actually sign. */
@@ -303,6 +309,7 @@ export function RfqPanel({
   const [state, setState] = useState<PanelState>({ kind: "idle" });
   const [step, setStep] = useState<RfqStep | null>(null);
   const [polls, setPolls] = useState(0);
+  const [active, setActive] = useState(false);
 
   /**
    * The ECDH keyring, in a ref, for the life of this mount.
@@ -316,6 +323,8 @@ export function RfqPanel({
   const deps = useRef<RfqDeps | null>(null);
   /** Set while a phase-2 wait is in flight, so unmount can end it. */
   const alive = useRef(true);
+  const activeListener = useRef(onActiveChange);
+  activeListener.current = onActiveChange;
 
   // The elapsed clock. One second, and only while there is something to time —
   // this is the panel's entire substitute for a progress indicator.
@@ -330,15 +339,22 @@ export function RfqPanel({
     return () => clearInterval(t);
   }, [waitingSince]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // React StrictMode deliberately runs setup → cleanup → setup in
+    // development. Resetting this guard in setup keeps the second mount live.
+    alive.current = true;
+    return () => {
       alive.current = false;
+      activeListener.current?.(false);
       // The key dies with the mount, explicitly rather than by garbage
       // collection, so the moment of loss is a line of code someone can find.
       keyring.current?.forget();
-    },
-    [],
-  );
+    };
+  }, []);
+
+  useEffect(() => {
+    onActiveChange?.(active);
+  }, [active, onActiveChange]);
 
   /**
    * The player's max bid, once they have moved it. `null` means "still on the
@@ -438,6 +454,9 @@ export function RfqPanel({
           hash: null,
         });
       } else if (result.status === "closed") {
+        setActive(false);
+        keyring.current?.forget();
+        keyring.current = null;
         setState({ kind: "closed", open: opened, note: `quotation ${result.state.status}` });
         onOutcome?.({
           status: "cancelled",
@@ -446,7 +465,9 @@ export function RfqPanel({
           hash: null,
         });
       } else {
-        setState({ kind: "failed", error: result.error });
+        // The request can still be open after an indexer/network failure. Keep
+        // the key and the exit guard until the player cancels it explicitly.
+        setState({ kind: "failed", error: result.error, open: opened });
         onOutcome?.({
           status: "failed",
           quotationId: opened.quotationId,
@@ -460,6 +481,7 @@ export function RfqPanel({
 
   async function start() {
     if (!armed || !wallet) return;
+    setActive(true);
     setState({ kind: "opening" });
     setStep(null);
     setPolls(0);
@@ -478,6 +500,7 @@ export function RfqPanel({
         await d.getSigner();
         ring = createKeyring(d.generateKeyPair());
       } catch (error) {
+        setActive(false);
         setState({
           kind: "failed",
           error: {
@@ -502,6 +525,9 @@ export function RfqPanel({
     });
     if (!alive.current) return;
     if (opened.status === "failed") {
+      setActive(false);
+      ring.forget();
+      keyring.current = null;
       setState({ kind: "failed", error: opened.error });
       return;
     }
@@ -532,6 +558,9 @@ export function RfqPanel({
     });
     if (!alive.current) return;
     if (result.status === "settled") {
+      setActive(false);
+      keyring.current?.forget();
+      keyring.current = null;
       setState({ kind: "settled", open, offer, hash: result.hash, explorer: result.explorer });
       onOutcome?.({
         status: "settled",
@@ -541,7 +570,7 @@ export function RfqPanel({
         hash: result.hash,
       });
     } else if (result.status === "failed") {
-      setState({ kind: "failed", error: result.error });
+      setState({ kind: "failed", error: result.error, open });
       onOutcome?.({
         status: "failed",
         quotationId: open.quotationId,
@@ -556,8 +585,11 @@ export function RfqPanel({
     if (!d) return;
     const result = await cancelRequest(open.quotationId, d);
     if (!alive.current) return;
-    if (result.status === "failed") setState({ kind: "failed", error: result.error });
+    if (result.status === "failed") setState({ kind: "failed", error: result.error, open });
     else {
+      setActive(false);
+      keyring.current?.forget();
+      keyring.current = null;
       setState({ kind: "closed", open, note: "request cancelled" });
       onOutcome?.({
         status: "cancelled",
@@ -635,8 +667,8 @@ export function RfqPanel({
             bids, then {MAX_LOSS_MEANS}
           </div>
           <div style={sx(`color:${C.faint}`)}>
-            Potential payout is not a number yet. It is max payout ÷ the premium a desk actually
-            bids, and no desk has bid.
+            Max payout ${usd(boxEconomics(box, null, numContracts).maxPayout)}. The payout multiple
+            waits for the premium a desk actually bids.
           </div>
         </div>
       )}
@@ -863,8 +895,8 @@ export function RfqPanel({
               · {polls} {polls === 1 ? "poll" : "polls"} · no bids yet
             </div>
             <div style={sx(`margin-top:5px;color:${C.faint}`)}>
-              request #{state.open.quotationId} is open. You can close this and come back — nothing
-              is locked, and nothing about this is imminent.
+              request #{state.open.quotationId} is open. Cancel it before leaving so this tab keeps
+              the private key needed to read any sealed bid.
             </div>
             <button
               onClick={() => void cancel(state.open)}
@@ -1022,6 +1054,10 @@ export function RfqPanel({
             )}
             <button
               onClick={() => {
+                if (state.open) {
+                  void cancel(state.open);
+                  return;
+                }
                 const action = state.error.action;
                 if (action === "connect") void wallet?.connect?.();
                 else if (action === "switch") void wallet?.switchToBase?.();
@@ -1034,7 +1070,9 @@ export function RfqPanel({
                   `font:500 11px/1 ${SANS};cursor:pointer`,
               )}
             >
-              {state.error.action === "connect"
+              {state.open
+                ? "Cancel request"
+                : state.error.action === "connect"
                 ? "Connect wallet"
                 : state.error.action === "switch"
                   ? "Switch to Base"

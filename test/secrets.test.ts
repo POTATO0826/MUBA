@@ -97,11 +97,16 @@ export const SERVER_MARKERS: ReadonlyArray<readonly [file: string, marker: strin
   // fragment. It also reads Bun.env.RPC_URL at module scope, so bundling it
   // trips the env-read rule as well — this marker is the belt to that braces.
   ["src/server/thetanuts.ts", "stale — refresh failed:"],
-  ["contracts/deploy.ts", "The committed artifact does not match a fresh compile of DuelEscrow.sol."],
+  ["contracts/deploy.ts", "compiled artifact is stale; run bun contracts/build.ts and review it"],
 ];
 
 /** The names that must never be read, and whose values must never be bound. */
-const SERVER_ONLY_VARS = ["RPC_URL", "ATTESTOR_PRIVATE_KEY", "DEPLOYER_PRIVATE_KEY"] as const;
+const SERVER_ONLY_VARS = [
+  "RPC_URL",
+  "ESCROW_RPC_URL",
+  "ATTESTOR_PRIVATE_KEY",
+  "DEPLOYER_PRIVATE_KEY",
+] as const;
 const VARS = SERVER_ONLY_VARS.join("|");
 
 /** Hosts that sell keyed RPC access. A hostname alone is a vendor's routing
@@ -282,7 +287,13 @@ describe("secrets never reach the client bundle", () => {
     // The operator's own env is the strongest check available and the cheapest:
     // if RPC_URL / ATTESTOR_PRIVATE_KEY / DEPLOYER_PRIVATE_KEY are set in this
     // shell, their actual values must not appear anywhere in client output.
-    const secretValues = SERVER_ONLY_VARS.map((name) => Bun.env[name] ?? "");
+    const secretValues = SERVER_ONLY_VARS.map((name) => {
+      const value = Bun.env[name] ?? "";
+      // This exact, keyless public endpoint also belongs in the browser's
+      // Base Sepolia network registry. Custom/keyed RPCs remain secret.
+      if (name === "ESCROW_RPC_URL" && value === "https://sepolia.base.org") return "";
+      return value;
+    });
     const findings = TEXTS.flatMap(({ path, text }) => scanBundle(rel(path), text, secretValues));
     expect(findings.map((f) => `${f.file} → ${f.rule}: ${f.match}`)).toEqual([]);
   });

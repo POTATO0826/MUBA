@@ -557,7 +557,7 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     });
   });
 
-  test("a listed zone carries pricePerContract, verbatim, as its premium", async () => {
+  test("a listed zone carries its exact premium and order nonce", async () => {
     // 33392222284 at 8dp is $333.92 — the price a live BTC RANGER charged for
     // one contract on 2026-09-05, and the number `zoneQuote` hands the arena as
     // its `premium` prop. `numContracts: 2994n` is 6dp: $1.00 buys 0.002994 of
@@ -575,7 +575,14 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     if (!env.ok) return;
     const quoted = env.ladder.orders.filter((o) => o.quote !== undefined);
     expect(quoted).toHaveLength(2);
-    for (const order of quoted) expect(order.quote).toEqual({ premium: "333.92", fillable: true });
+    for (const order of quoted) {
+      expect(order.quote).toEqual({
+        premium: "333.92",
+        fillable: true,
+        orderNonce: expect.any(String),
+      });
+      expect(BigInt(order.quote?.orderNonce ?? "0")).toBeGreaterThan(0n);
+    }
   });
 
   test("no referrer configured passes undefined rather than an empty address", async () => {
@@ -981,33 +988,15 @@ describe("/api/config carries every feature flag a client reads", () => {
     expect(EMITTED.size).toBeGreaterThanOrEqual(4);
   });
 
-  test("`options` is emitted, and it is opt-out on `!== \"off\"` exactly", () => {
+  test("all mainnet-backed features are emitted but forced off", () => {
     expect(EMITTED.has("options")).toBe(true);
-    // The same shape `market` uses, and for the same reason: the options path
-    // moves no money. It reshapes a snapshot `/api/market` already served and
-    // hands the match a frozen plain value — no wallet, no ethers, no approval.
-    //
-    // It read `=== "on"` until the default was judged by what it produced. The
-    // argument for opt-in was that a dealt card is a claim about a venue rather
-    // than a display preference; the argument against is that with the flag
-    // absent — every clone of this repo — all 24 cards printed `MAX LOSS —` and
-    // "no live premium" while the home page promised live Thetanuts pricing,
-    // which is the louder false claim. `bookOf` still answers `undefined`, i.e.
-    // the seeded screen, for any ticker with no live spot or no chain, so "on"
-    // cannot invent a card the venue does not list.
-    //
-    // The assertion stays a pinned literal rather than a loose "is `options`
-    // mentioned" — that weaker form would have passed throughout the outage
-    // above. Pin the shape: changing the default must mean changing this line.
-    expect(FEATURES).toContain('options: Bun.env.THETADUEL_OPTIONS !== "off"');
-    // …and the two flags that CAN spend USDC stay opt-IN on `=== "on"` exactly.
-    // Nothing about the options default reaches them, and this pair is what
-    // fails if a later edit generalises "read-only defaults on" one flag too far.
+    expect(FEATURES).toContain("market: false");
+    expect(FEATURES).toContain("options: false");
+    expect(FEATURES).toContain("trade: false");
     expect(FEATURES).toContain('stake: Bun.env.THETADUEL_STAKE === "on"');
-    expect(FEATURES).toContain('trade: Bun.env.THETADUEL_TRADE === "on"');
-    // …and `market`, the flag `options` now matches: read-only display data, so
-    // the safe default is on and a dead API degrades to the mock.
-    expect(FEATURES).toContain('market: Bun.env.THETADUEL_MARKET !== "off"');
+    expect(INDEX_SRC).toContain('reason: "testnet-only"');
+    expect(INDEX_SRC).toContain("chainId: BASE_SEPOLIA_CHAIN_ID");
+    expect(INDEX_SRC).toContain('network: "base-sepolia"');
   });
 
   test("no client reads a flag the server does not emit", () => {

@@ -11,6 +11,8 @@ import type { Tab } from "../types.ts";
  *   /desk             the options desk
  *   /ranks            the ladder
  *   /arena            live-data PvP modes
+ *   /test             Base Sepolia DuelEscrow test console
+ *   /testing          Base Sepolia GameStake console — stake / winnerTakesAll
  *   /room/:id         shared live-data PvP room
  *   /match/:id/room?seed=N       the lobby room — both players ready up
  *   /match/:id?seed=N            the spin
@@ -59,6 +61,8 @@ export function parseRoute(pathname: string, search: string): Route {
   if (parts[0] === "create") return { tab: "create", ...NONE };
   if (parts[0] === "desk") return { tab: "desk", ...NONE };
   if (parts[0] === "ranks") return { tab: "ranks", ...NONE };
+  if (parts[0] === "test") return { tab: "test", ...NONE };
+  if (parts[0] === "testing") return { tab: "testing", ...NONE };
   if (parts[0] === "arena" || (parts[0] === "room" && parts[1])) {
     return { tab: "arena", ...NONE };
   }
@@ -75,6 +79,8 @@ export function routePath(tab: Tab, lobbyId: string | null, seed: number | null)
   if (tab === "create") return "/create";
   if (tab === "desk") return "/desk";
   if (tab === "ranks") return "/ranks";
+  if (tab === "test") return "/test";
+  if (tab === "testing") return "/testing";
   if (tab === "arena") return "/arena";
   return "/";
 }

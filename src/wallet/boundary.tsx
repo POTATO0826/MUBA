@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import type { WalletSource } from "../data/wallet.ts";
 import { WalletPicker } from "../ui/WalletPicker.tsx";
-import { fetchWalletConfig } from "./project.ts";
+import { fetchWalletConfig, type WalletConfig } from "./project.ts";
 import { useInjectedWallet, useInjectedWallets } from "./injected.ts";
 import { mockRequested, useMockWallet } from "./mock.ts";
 
@@ -44,7 +44,7 @@ export function WalletBoundary({
 }: {
   children: (wallet: WalletSource) => ReactNode;
 }) {
-  const [projectId, setProjectId] = useState<string | null>(null);
+  const [config, setConfig] = useState<WalletConfig | null>(null);
   const { wallets: injected, settled: injectedSettled } = useInjectedWallets();
 
   /**
@@ -61,7 +61,7 @@ export function WalletBoundary({
   useEffect(() => {
     let live = true;
     fetchWalletConfig().then((c) => {
-      if (live) setProjectId(c.projectId);
+      if (live) setConfig(c);
     });
     return () => {
       live = false;
@@ -72,24 +72,30 @@ export function WalletBoundary({
   // how two tabs on one machine get two identities for a local duel.
   if (asMock) return <MockWallet>{children}</MockWallet>;
 
-  if (projectId === null) return null;
-  if (projectId !== "") {
+  if (config === null) return null;
+  if (config.projectId !== "") {
     return (
       <Suspense fallback={null}>
-        <LiveWallet projectId={projectId}>{children}</LiveWallet>
+        <LiveWallet projectId={config.projectId} chainId={config.chainId}>{children}</LiveWallet>
       </Suspense>
     );
   }
   // Waiting on discovery avoids a flash of the mock tier — and a pointless
   // remount — while the extensions announce themselves.
   if (!injectedSettled) return null;
-  if (injected.length > 0) return <InjectedWallet>{children}</InjectedWallet>;
+  if (injected.length > 0) return <InjectedWallet chainId={config.chainId}>{children}</InjectedWallet>;
   return <MockWallet>{children}</MockWallet>;
 }
 
 /** Tier 2: extensions only, zero configuration. */
-function InjectedWallet({ children }: { children: (w: WalletSource) => ReactNode }) {
-  const wallet = useInjectedWallet();
+function InjectedWallet({
+  chainId,
+  children,
+}: {
+  chainId: number;
+  children: (w: WalletSource) => ReactNode;
+}) {
+  const wallet = useInjectedWallet(chainId);
   return (
     <>
       {children(wallet)}

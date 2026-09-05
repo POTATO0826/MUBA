@@ -1,10 +1,10 @@
 import { useCallback, useState } from "react";
 import {
-  BASESCAN_TX,
   REFUND_TIMEOUT_HOURS,
   payoutOf,
-  usd as usdcText,
+  eth as ethText,
 } from "../desk/escrow.ts";
+import { baseExplorerTx } from "../data/base-network.ts";
 import type { DuelStake } from "../state/stake.ts";
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { ExitRow, RankUpSequence } from "../components/RankUpSequence.tsx";
@@ -373,8 +373,8 @@ function SideBetClaim({
   // those the screen is exactly the screen it was before staking existed.
   if (!stake || !matchKey || stake.phase !== "staked") return null;
 
-  const takes = usdcText(payoutOf(stake.amount));
-  const each = usdcText(stake.amount);
+  const takes = ethText(payoutOf(stake.amount));
+  const each = ethText(stake.amount);
   const done = stake.claimPhase === "claimed";
   const busy = stake.claimPhase === "signing" || stake.claimPhase === "relaying";
   const tone = done ? C.green : meWins ? C.accent : C.dim;
@@ -389,7 +389,7 @@ function SideBetClaim({
     >
       <div style={sx("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
         <span style={sx(`font:700 9px/1 ${MONO};letter-spacing:.16em;color:${tone}`)}>
-          SIDE BET · ON-CHAIN
+          STAKE · BASE SEPOLIA
         </span>
         <span style={sx(`font:500 9px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>
           SEPARATE FROM THE PTS POOL
@@ -417,9 +417,8 @@ function SideBetClaim({
       ) : meWins ? (
         <>
           <div style={sx(`margin-top:11px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>
-            You won the duel, so the escrow owes you {takes} — the {each} you each staked, less the
-            4% rake. Relaying the verdict is permissionless, so this browser sends it; the server
-            only signs it.
+            You won the duel, so the escrow owes you the full {takes} pool — both {each} stakes,
+            with no rake. Relaying the verdict is permissionless; the server only signs the result.
           </div>
           {!done && (
             <button
@@ -452,9 +451,9 @@ function SideBetClaim({
         </>
       ) : (
         <div style={sx(`margin-top:11px;font:400 12px/1.6 ${SANS};color:${C.textSoft};text-wrap:pretty`)}>
-          The duel went the other way, so your {each} side bet is the winner's to claim. If nobody
-          relays a verdict, the stake refunds automatically after {REFUND_TIMEOUT_HOURS} hours —
-          the escrow's timeout needs no server and no cooperation from anyone.
+          You lost, so your full {each} stake goes to the winner and you receive nothing. The only
+          exception is the safety timeout before any verdict is finalized: after {REFUND_TIMEOUT_HOURS}
+          hours without settlement, each player may recover their own stake.
         </div>
       )}
 
@@ -462,7 +461,7 @@ function SideBetClaim({
         <div style={sx("margin-top:12px")}>
           <a
             data-claim-tx
-            href={`${BASESCAN_TX}${stake.claimHash}`}
+            href={baseExplorerTx(stake.chainId, stake.claimHash)}
             target="_blank"
             rel="noreferrer noopener"
             style={sx(`font:700 11px/1 ${MONO};letter-spacing:.1em;color:${C.green}`)}

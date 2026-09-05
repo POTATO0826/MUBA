@@ -2062,6 +2062,12 @@ function zoneQuoter(client: MarketClient): RawMarket["zoneQuote"] {
         premium: fromUnits(preview.pricePerContract, PRICE_DECIMALS).toFixed(2),
         // The same book-depth guard the desk's rows carry, at the same notional.
         fillable: preview.numContracts > 0n,
+        // Public identity only. The browser never receives the maker's
+        // signature or the rest of the fillable order; `runFill` uses this to
+        // re-fetch one exact, fresh order before it can ask for approval.
+        ...(entry.order?.nonce === undefined || entry.order?.nonce === null
+          ? {}
+          : { orderNonce: String(entry.order.nonce) }),
       };
     } catch {
       return null;

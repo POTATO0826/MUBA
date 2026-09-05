@@ -94,7 +94,7 @@
  *     getter, and `lock()` **compares instead of believing**. The full
  *     disposition, which is the security-relevant part of this module:
  *
- *     | escrow (`THETADUEL_ESCROW` + `RPC_URL`) | on-chain state | lock |
+ *     | escrow (`THETADUEL_ESCROW` + `ESCROW_RPC_URL`) | on-chain state | lock |
  *     |---|---|---|
  *     | not configured | — | accepted on the signature alone, exactly as before |
  *     | configured | duel is `FULL`, seats match `a`/`b` in order | accepted |
@@ -230,8 +230,8 @@ import {
 import { seededRandom, spinCase } from "../engine/spin.ts";
 import { Wallet, ZeroAddress, getAddress, id, keccak256, toUtf8Bytes, verifyMessage } from "ethers";
 import { createSeatReader, type SeatReader } from "./seats.ts";
-import { createMarketService } from "./thetanuts.ts";
 import type { LobbyDef } from "../types.ts";
+import { BASE_SEPOLIA_CHAIN_ID } from "../data/base-network.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The EIP-712 domain — must equal the contract's, byte for byte
@@ -242,15 +242,15 @@ import type { LobbyDef } from "../types.ts";
  * (contracts/DuelEscrow.sol:231-239): the literal `"THETADUEL"`, the literal
  * `"1"`, `block.chainid` and `address(this)`.
  *
- * `chainId` is hard-coded to Base mainnet because the escrow is only ever
- * deployed there (plan 5: "no testnet exists"), and a wrong chain id produces a
- * signature that recovers to a stranger — money lost, silently. It is a
- * constant here so that it can only be wrong in one place, and
- * `test/attest.test.ts` recomputes the digest against these exact values.
+ * `chainId` comes from the selected Base deployment. A wrong chain id produces
+ * a signature the escrow will reject, so network configuration is resolved
+ * once per service and unknown values fail closed. `test/attest.test.ts`
+ * recomputes the digest on both Base mainnet and Base Sepolia.
  */
 export const VERDICT_DOMAIN_NAME = "THETADUEL";
 export const VERDICT_DOMAIN_VERSION = "1";
-export const BASE_CHAIN_ID = 8453;
+/** The only EIP-712 chain accepted by this build and by DuelEscrow. */
+export const BASE_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID;
 
 /**
  * The struct `settle` checks: contracts/DuelEscrow.sol:161-162,
@@ -480,6 +480,8 @@ export interface AttestDeps {
   /** Injected in tests. Omitted in production, where the real signer is built
    *  lazily from `ATTESTOR_PRIVATE_KEY` on first use. */
   signer?: TypedDataSigner;
+  /** EIP-712 chain id. Defaults to Base Sepolia (84532). */
+  chainId?: number;
   /**
    * The duel clock's marks — module docstring, point 6.
    *
@@ -507,13 +509,13 @@ export interface AttestDeps {
    * Three values, three meanings, and the distinction matters:
    *
    *  - **omitted** — build one from the environment (`THETADUEL_ESCROW` +
-   *    `RPC_URL`). If either is missing the reader reports itself unconfigured
+   *    `ESCROW_RPC_URL`). If either is missing the reader reports itself unconfigured
    *    and the seat check is skipped. This is production.
    *  - **a reader** — use it. A test injects one over a fake provider.
    *  - **`null`** — seat binding is explicitly off.
    *
    * `null` exists for the test suite and is not a hole: `bun test` runs in a
-   * shell that may well have a real `RPC_URL` and a real `THETADUEL_ESCROW`
+   * shell that may well have a real `ESCROW_RPC_URL` and a real `THETADUEL_ESCROW`
    * exported — `.env` is loaded automatically — and a suite that silently
    * started calling Base because of an operator's shell would be both flaky and
    * a genuine privacy surprise. Tests that mean "no chain" say so out loud.
@@ -1344,34 +1346,6 @@ export function usdMarksFromSnapshot(snapshot: unknown): Map<string, UsdPerContr
  * service can hand it over instead, and that is the intended wiring the day
  * anyone cares about the second cache.
  */
-function envMarkSource(): MarkSource {
-  const market = createMarketService();
-  return {
-    async read(): Promise<MarkSnapshot | { reason: string }> {
-      let envelope: unknown;
-      try {
-        envelope = await market.snapshot();
-      } catch {
-        // The service contracts never to throw; if it ever does, that is a
-        // refusal, not a crash, and certainly not a fallback to trusting a
-        // client's numbers.
-        return { reason: "market unreachable" };
-      }
-      if (!isRecord(envelope) || envelope["ok"] !== true) {
-        const reason = isRecord(envelope) && typeof envelope["reason"] === "string"
-          ? envelope["reason"]
-          : "no market snapshot";
-        return { reason };
-      }
-      const at = typeof envelope["at"] === "number" ? envelope["at"] : NaN;
-      if (!Number.isFinite(at)) return { reason: "market snapshot has no timestamp" };
-      // `usdMarksFromSnapshot`, never `marksFromSnapshot`: the score divides by
-      // a USDC premium, so the only marks that may reach it are dollars.
-      return { at, marks: usdMarksFromSnapshot(envelope) };
-    },
-  };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Seat binding — the residual of X-1
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1465,6 +1439,10 @@ function envEscrow(): string {
 export function createAttestService(deps: AttestDeps = {}): AttestService {
   const now = deps.now ?? (() => Date.now());
   const locks = new Map<string, LockEntry>();
+  const requestedChainId = deps.chainId ?? BASE_SEPOLIA_CHAIN_ID;
+  const verdictChainId = requestedChainId === BASE_SEPOLIA_CHAIN_ID
+    ? BASE_SEPOLIA_CHAIN_ID
+    : null;
 
   /**
    * The real signer, built once, lazily, on first use — never at import.
@@ -1504,14 +1482,14 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
 
   const NOT_CONFIGURED: AttestFail = { ok: false, reason: "attestor not configured" };
 
-  const configured = (): boolean => signer() !== null;
+  const configured = (): boolean => signer() !== null && verdictChainId !== null;
 
   /**
    * The seat reader, built once, lazily, on the same terms as the signer.
    *
    * `null` means seat binding is off and `lock()` keeps its pre-X-1 behaviour.
    * The environment is read here rather than in `AttestDeps` so that a process
-   * given `THETADUEL_ESCROW` and `RPC_URL` after a restart picks them up, and
+   * given `THETADUEL_ESCROW` and `ESCROW_RPC_URL` after a restart picks them up, and
    * so that the escrow the seats are read from is the same environment variable
    * the verdict domain is built from — one address, one place it can be wrong.
    */
@@ -1527,7 +1505,7 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
     if (deps.seats !== undefined) return deps.seats && deps.seats.configured ? deps.seats : null;
     if (cachedSeats !== undefined) return cachedSeats;
     try {
-      const reader = createSeatReader();
+      const reader = createSeatReader({ chainId: verdictChainId ?? undefined });
       cachedSeats = reader.configured ? reader : null;
     } catch {
       cachedSeats = null;
@@ -1544,17 +1522,10 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
    * this function is called from one place, inside the duel-clock branch of
    * `attest`, which no lock reaches unless it committed two slates.
    */
-  let cachedMarks: MarkSource | null | undefined;
-
   function markSource(): MarkSource | null {
-    if (deps.marks !== undefined) return deps.marks;
-    if (cachedMarks !== undefined) return cachedMarks;
-    try {
-      cachedMarks = envMarkSource();
-    } catch {
-      cachedMarks = null;
-    }
-    return cachedMarks;
+    // The legacy mark service reads Base mainnet, which a testnet-only build
+    // must never do. Tests and future Sepolia feeds can inject a source.
+    return deps.marks ?? null;
   }
 
   // ── lock ──────────────────────────────────────────────────────────────────
@@ -1843,7 +1814,7 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
         {
           name: VERDICT_DOMAIN_NAME,
           version: VERDICT_DOMAIN_VERSION,
-          chainId: BASE_CHAIN_ID,
+          chainId: verdictChainId!,
           verifyingContract,
         },
         VERDICT_TYPES as unknown as Record<string, readonly { name: string; type: string }[]>,

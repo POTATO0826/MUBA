@@ -1,0 +1,129 @@
+{
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "player",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "pool",
+          "type": "uint256"
+        }
+      ],
+      "name": "Staked",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "winner",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        }
+      ],
+      "name": "WinnerPaid",
+      "type": "event"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "name": "matches",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "player1",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "player2",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "pool",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "paid",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "stake",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "winner",
+          "type": "address"
+        }
+      ],
+      "name": "winnerTakesAll",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x6080604052348015600e575f80fd5b506105458061001c5f395ff3fe608060405260043610610033575f3560e01c80635f086696146100375780639fe9ada314610058578063c0d64a87146100d9575b5f80fd5b348015610042575f80fd5b5061005661005136600461049a565b6100ec565b005b348015610063575f80fd5b506100a86100723660046104d3565b5f6020819052908152604090208054600182015460028301546003909301546001600160a01b0392831693919092169160ff1684565b604080516001600160a01b039586168152949093166020850152918301521515606082015260800160405180910390f35b6100566100e73660046104d3565b6102ea565b5f82815260208190526040902060018101546001600160a01b03166101495760405162461bcd60e51b815260206004820152600e60248201526d6e656564203220706c617965727360901b60448201526064015b60405180910390fd5b600381015460ff161561018d5760405162461bcd60e51b815260206004820152600c60248201526b185b1c9958591e481c185a5960a21b6044820152606401610140565b80546001600160a01b03838116911614806101b7575060018101546001600160a01b038381169116145b6101f25760405162461bcd60e51b815260206004820152600c60248201526b3737ba103090383630bcb2b960a11b6044820152606401610140565b60038101805460ff191660011790556002810180545f9091556040516001600160a01b0384169085907fadf5557d73276c2e92ffbef8f837ff484b31dd14a5f9ae61f5d956009ae617dc9061024a9085815260200190565b60405180910390a35f836001600160a01b0316826040515f6040518083038185875af1925050503d805f811461029b576040519150601f19603f3d011682016040523d82523d5f602084013e6102a0565b606091505b50509050806102e35760405162461bcd60e51b815260206004820152600f60248201526e1d1c985b9cd9995c8819985a5b1959608a1b6044820152606401610140565b5050505050565b5f34116103245760405162461bcd60e51b81526020600482015260086024820152676e6f207374616b6560c01b6044820152606401610140565b5f818152602081905260409020600381015460ff16156103775760405162461bcd60e51b815260206004820152600e60248201526d1b585d18da08199a5b9a5cda195960921b6044820152606401610140565b80546001600160a01b031661039b5780546001600160a01b0319163317815561043b565b60018101546001600160a01b03161580156103c0575080546001600160a01b03163314155b156103de576001810180546001600160a01b0319163317905561043b565b80546001600160a01b0316331480610402575060018101546001600160a01b031633145b61043b5760405162461bcd60e51b815260206004820152600a6024820152691b585d18da08199d5b1b60b21b6044820152606401610140565b34816002015f82825461044e91906104ea565b90915550506002810154604080513481526020810192909252339184917fa1fdccfe567643a44425efdd141171e8d992854a81e5c819c1432b0de47c9a11910160405180910390a35050565b5f80604083850312156104ab575f80fd5b8235915060208301356001600160a01b03811681146104c8575f80fd5b809150509250929050565b5f602082840312156104e3575f80fd5b5035919050565b8082018082111561050957634e487b7160e01b5f52601160045260245ffd5b9291505056fea26469706673582212209bff2a4c320fa0ea73f81db4d09cc21df266422c69ba376856f32f6975bc3dc964736f6c634300081a0033",
+  "deployedBytecode": "0x608060405260043610610033575f3560e01c80635f086696146100375780639fe9ada314610058578063c0d64a87146100d9575b5f80fd5b348015610042575f80fd5b5061005661005136600461049a565b6100ec565b005b348015610063575f80fd5b506100a86100723660046104d3565b5f6020819052908152604090208054600182015460028301546003909301546001600160a01b0392831693919092169160ff1684565b604080516001600160a01b039586168152949093166020850152918301521515606082015260800160405180910390f35b6100566100e73660046104d3565b6102ea565b5f82815260208190526040902060018101546001600160a01b03166101495760405162461bcd60e51b815260206004820152600e60248201526d6e656564203220706c617965727360901b60448201526064015b60405180910390fd5b600381015460ff161561018d5760405162461bcd60e51b815260206004820152600c60248201526b185b1c9958591e481c185a5960a21b6044820152606401610140565b80546001600160a01b03838116911614806101b7575060018101546001600160a01b038381169116145b6101f25760405162461bcd60e51b815260206004820152600c60248201526b3737ba103090383630bcb2b960a11b6044820152606401610140565b60038101805460ff191660011790556002810180545f9091556040516001600160a01b0384169085907fadf5557d73276c2e92ffbef8f837ff484b31dd14a5f9ae61f5d956009ae617dc9061024a9085815260200190565b60405180910390a35f836001600160a01b0316826040515f6040518083038185875af1925050503d805f811461029b576040519150601f19603f3d011682016040523d82523d5f602084013e6102a0565b606091505b50509050806102e35760405162461bcd60e51b815260206004820152600f60248201526e1d1c985b9cd9995c8819985a5b1959608a1b6044820152606401610140565b5050505050565b5f34116103245760405162461bcd60e51b81526020600482015260086024820152676e6f207374616b6560c01b6044820152606401610140565b5f818152602081905260409020600381015460ff16156103775760405162461bcd60e51b815260206004820152600e60248201526d1b585d18da08199a5b9a5cda195960921b6044820152606401610140565b80546001600160a01b031661039b5780546001600160a01b0319163317815561043b565b60018101546001600160a01b03161580156103c0575080546001600160a01b03163314155b156103de576001810180546001600160a01b0319163317905561043b565b80546001600160a01b0316331480610402575060018101546001600160a01b031633145b61043b5760405162461bcd60e51b815260206004820152600a6024820152691b585d18da08199d5b1b60b21b6044820152606401610140565b34816002015f82825461044e91906104ea565b90915550506002810154604080513481526020810192909252339184917fa1fdccfe567643a44425efdd141171e8d992854a81e5c819c1432b0de47c9a11910160405180910390a35050565b5f80604083850312156104ab575f80fd5b8235915060208301356001600160a01b03811681146104c8575f80fd5b809150509250929050565b5f602082840312156104e3575f80fd5b5035919050565b8082018082111561050957634e487b7160e01b5f52601160045260245ffd5b9291505056fea26469706673582212209bff2a4c320fa0ea73f81db4d09cc21df266422c69ba376856f32f6975bc3dc964736f6c634300081a0033",
+  "metadata": "{\"compiler\":{\"version\":\"0.8.26+commit.8a97fa7a\"},\"language\":\"Solidity\",\"output\":{\"abi\":[{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"player\",\"type\":\"address\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"pool\",\"type\":\"uint256\"}],\"name\":\"Staked\",\"type\":\"event\"},{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"winner\",\"type\":\"address\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"}],\"name\":\"WinnerPaid\",\"type\":\"event\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"\",\"type\":\"bytes32\"}],\"name\":\"matches\",\"outputs\":[{\"internalType\":\"address\",\"name\":\"player1\",\"type\":\"address\"},{\"internalType\":\"address\",\"name\":\"player2\",\"type\":\"address\"},{\"internalType\":\"uint256\",\"name\":\"pool\",\"type\":\"uint256\"},{\"internalType\":\"bool\",\"name\":\"paid\",\"type\":\"bool\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"}],\"name\":\"stake\",\"outputs\":[],\"stateMutability\":\"payable\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"internalType\":\"address\",\"name\":\"winner\",\"type\":\"address\"}],\"name\":\"winnerTakesAll\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"}],\"devdoc\":{\"kind\":\"dev\",\"methods\":{\"stake(bytes32)\":{\"params\":{\"matchId\":\"Any 32 bytes naming this match. Both players use the same value to end up in the same match. The first two distinct wallets take the seats. Either may call again to add more; a third wallet is rejected.\"}},\"winnerTakesAll(bytes32,address)\":{\"params\":{\"winner\":\"Must be one of the two players in this match. `paid` is set and `pool` zeroed before the transfer, so a winner that is a contract cannot re-enter and be paid twice.\"}}},\"title\":\"GameStake\",\"version\":1},\"userdoc\":{\"kind\":\"user\",\"methods\":{\"matches(bytes32)\":{\"notice\":\"Every match, by whatever id your app chooses.\"},\"stake(bytes32)\":{\"notice\":\"Stake into a match. Any amount, no minimum.\"},\"winnerTakesAll(bytes32,address)\":{\"notice\":\"Send the entire pool to the winner. No deadline.\"}},\"notice\":\"Two players stake any amount into a match. The winner takes the whole pool. No time limit, ever. Two functions:   stake(matchId)                  \\u2014 put ETH in. Anyone, any amount.   winnerTakesAll(matchId, winner) \\u2014 pay the whole pool out. Anyone, anytime. `winnerTakesAll` has no caller restriction, by request. The contract does not know who won, so it cannot check. The only thing it enforces is that the pool goes to one of the two players who actually staked \\u2014 a stranger can pick the winner, but cannot pay themselves.\",\"version\":1}},\"settings\":{\"compilationTarget\":{\"GameStake.sol\":\"GameStake\"},\"evmVersion\":\"cancun\",\"libraries\":{},\"metadata\":{\"bytecodeHash\":\"ipfs\"},\"optimizer\":{\"enabled\":true,\"runs\":200},\"remappings\":[]},\"sources\":{\"GameStake.sol\":{\"keccak256\":\"0x7687f0b42f2cf22be191c828816a3afa61b765d09c74397e33a81b970158100b\",\"license\":\"MIT\",\"urls\":[\"bzz-raw://856cd0e77ff43d363f9bdc1f426a8f666fe44593dc047e4c05d277cdd7dbb5a1\",\"dweb:/ipfs/QmPo96csKm5Gvc2wRBCFrN1BU8zvfREoBmobiJnQ6oZd5V\"]}},\"version\":1}",
+  "solcVersion": "0.8.26+commit.8a97fa7a.Emscripten.clang"
+}

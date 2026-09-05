@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  BASE_CHAIN_ID,
   DISCONNECTED,
   type WalletIdentity,
   type WalletSource,
 } from "../data/wallet.ts";
+import { BASE_SEPOLIA_CHAIN_ID } from "../data/base-network.ts";
 
 /**
  * The address the design's header showed. Kept verbatim so the port's mock
@@ -46,11 +46,12 @@ function mockAddress(): string {
 function connectedIdentity(address: string): WalletIdentity {
   return {
     address,
-    chainId: BASE_CHAIN_ID,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
     walletName: "Mock wallet",
     connected: true,
     connecting: false,
     wrongNetwork: false,
+    targetNetworkName: "Base Sepolia",
   };
 }
 

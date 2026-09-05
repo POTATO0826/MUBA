@@ -1,5 +1,9 @@
 # Thetanuts SDK integration — THETADUEL goes on-protocol
 
+> Historical plan note (2026-09-05): the implementation now supports a Base
+> Sepolia escrow rehearsal and enforces `MAX_STAKE = $20` on chain. Older "no
+> cap" and "no testnet" decisions below remain only as the original record.
+
 > Supersedes the previous plan in this file (the three polish items — all shipped in commits `c9254f1`/`051889b`).
 
 ## Context

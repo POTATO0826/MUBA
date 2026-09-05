@@ -1012,7 +1012,7 @@ export function WalletPicker({
         )}
 
         <p style={sx(`margin:16px 0 0;font:500 10px/1.5 ${MONO};color:${C.faint}`)}>
-          BASE MAINNET · 8453
+          BASE SEPOLIA TESTNET · 84532
         </p>
       </div>
     </div>

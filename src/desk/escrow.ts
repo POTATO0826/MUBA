@@ -1,13 +1,18 @@
+import { DUEL_ESCROW_ABI } from "../utils/duelescrow.ts";
 import {
   ALCHEMY_HINT,
   BASESCAN_TX,
-  BASE_CHAIN_ID,
   MAX_UINT256,
   PUBLIC_BASE_RPC,
   looksThrottled,
   usdText,
   type FillAction,
 } from "./fill.ts";
+import {
+  BASE_SEPOLIA_CHAIN_ID,
+  baseExplorerTx,
+  baseNetworkByChainId,
+} from "../data/base-network.ts";
 
 /**
  * The USDC side bet: two players lock equal stakes in `DuelEscrow` on Base, the
@@ -93,13 +98,12 @@ import {
  * ## Where the facts come from
  *
  * Every constant and every revert string below is transcribed from
- * `contracts/DuelEscrow.sol` and cross-checked against the executed adversarial
- * review. The five that shape this sequence:
+ * `contracts/DuelEscrow.sol` and pinned by executable tests. The prior
+ * adversarial review remains useful background but predates the $20 cap.
+ * The five values and behaviours that shape this sequence:
  *
- *  - `MIN_STAKE = 100_000` ($0.10) and **no maximum** — the owner's explicit,
- *    documented decision (contract natspec, "UNCAPPED STAKE"). The UI warns
- *    above $20; it does not refuse, because refusing would be a cap the owner
- *    said not to have.
+ *  - `MIN_STAKE = 100_000` ($0.10) and `MAX_STAKE = 20_000_000` ($20.00).
+ *    Both bounds are checked before a wallet prompt and again on chain.
  *  - `RAKE_BPS = 400`, and `payout + rake == 2 × stake` **exactly** for every
  *    stake — verified on chain for 14 values and swept over 250 000 (review §3).
  *    So `payoutOf` here can be integer arithmetic with no dust term.
@@ -121,24 +125,23 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** `contracts/DuelEscrow.sol:154` — `MIN_STAKE`, $0.10 of USDC at 6dp. */
-export const MIN_STAKE_USDC = 100_000n;
+export const MIN_STAKE_WEI = 1_000_000_000_000_000n;
 
-/**
- * There is no maximum. This is the line above which the create form says so out
- * loud: $20.00.
- *
- * The contract is unaudited and uncapped by the owner's decision, and the
- * compensating control the plan names is honesty rather than a ceiling. A
- * warning that a number is large is not a cap and must never behave like one.
- */
-export const LARGE_STAKE_USDC = 20_000000n;
+/** Contract-enforced maximum: $20.00 per player. */
+export const MAX_STAKE_WEI = (1n << 128n) - 1n;
 
 /** What the create form opens on: $1.00. Small enough to rehearse the whole
  *  path for the price of a coffee, large enough to be visibly real. */
-export const DEFAULT_STAKE_USDC = 1_000000n;
+export const DEFAULT_STAKE_WEI = MIN_STAKE_WEI;
+
+/** Temporary aliases for callers being migrated from the old USDC escrow. */
+export const MIN_STAKE_USDC = MIN_STAKE_WEI;
+export const MAX_STAKE_USDC = MAX_STAKE_WEI;
+export const LARGE_STAKE_USDC = MAX_STAKE_WEI;
+export const DEFAULT_STAKE_USDC = DEFAULT_STAKE_WEI;
 
 /** `RAKE_BPS` / `BPS` — 4% of the pot, to the treasury, on settlement only. */
-export const RAKE_BPS = 400n;
+export const RAKE_BPS = 0n;
 export const BPS = 10_000n;
 
 /** `TIMEOUT`, in hours. Every piece of refund copy in the app reads this. */
@@ -147,7 +150,8 @@ export const REFUND_TIMEOUT_HOURS = 6;
 /** How often the room asks the chain whether the second seat has filled. */
 export const JOIN_POLL_MS = 4_000;
 
-export { BASESCAN_TX, BASE_CHAIN_ID, MAX_UINT256, PUBLIC_BASE_RPC, usdText };
+export { BASESCAN_TX, MAX_UINT256, PUBLIC_BASE_RPC, usdText };
+export const BASE_CHAIN_ID = BASE_SEPOLIA_CHAIN_ID;
 
 /** BaseScan for an address — the escrow's own page, linked so a player can read
  *  the contract holding their money before they send it. */
@@ -162,8 +166,7 @@ export const BASESCAN_ADDRESS = "https://basescan.org/address/";
  * confirms the floor always favours the winner.
  */
 export function payoutOf(stake: bigint): bigint {
-  const pot = stake * 2n;
-  return pot - (pot * RAKE_BPS) / BPS;
+  return stake * 2n;
 }
 
 /** The open seat: `invited = 0` means "first comer", and an unknown `b` on a
@@ -189,16 +192,29 @@ export const isAddress = (v: unknown): v is string =>
  * Extra decimals are refused rather than rounded — USDC has six, and silently
  * dropping a seventh is silently changing what someone typed.
  */
-export function parseStakeUsdc(raw: string): bigint | null {
-  const text = raw.trim().replace(/^\$/, "");
+export function parseStakeEth(raw: string): bigint | null {
+  const text = raw.trim().replace(/\s*ETH$/i, "");
   if (!/^\d*(\.\d*)?$/.test(text) || text === "" || text === ".") return null;
   const [whole = "", frac = ""] = text.split(".");
-  if (frac.length > 6) return null;
-  return BigInt(whole || "0") * 1_000000n + BigInt((frac || "0").padEnd(6, "0"));
+  if (frac.length > 18) return null;
+  return BigInt(whole || "0") * 1_000_000_000_000_000_000n +
+    BigInt((frac || "0").padEnd(18, "0"));
 }
 
+export const parseStakeUsdc = parseStakeEth;
+
 /** The label the panels print: `$1.00`, `$0.10`, `$12.5`. */
-export const usd = (amount: bigint): string => `$${usdText(amount)}`;
+export function eth(amount: bigint): string {
+  const whole = amount / 1_000_000_000_000_000_000n;
+  const fraction = (amount % 1_000_000_000_000_000_000n)
+    .toString()
+    .padStart(18, "0")
+    .replace(/0+$/, "");
+  return `${whole}${fraction ? `.${fraction}` : ""} ETH`;
+}
+
+/** Backward-compatible formatter name; values are native ETH wei. */
+export const usd = eth;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The gate
@@ -214,7 +230,7 @@ export interface StakeConfig {
 }
 
 /** Opt-IN means the absence of an answer is the absence of the feature. */
-export const STAKE_OFF: StakeConfig = { enabled: false, escrow: "", chainId: BASE_CHAIN_ID };
+export const STAKE_OFF: StakeConfig = { enabled: false, escrow: "", chainId: BASE_SEPOLIA_CHAIN_ID };
 
 /**
  * The one question the UI asks before it will offer a side bet.
@@ -234,6 +250,7 @@ export const STAKE_OFF: StakeConfig = { enabled: false, escrow: "", chainId: BAS
  */
 export function stakingAvailable(config: StakeConfig, walletId: string | undefined): boolean {
   if (!config.enabled) return false;
+  if (config.chainId !== BASE_SEPOLIA_CHAIN_ID) return false;
   if (!isAddress(config.escrow)) return false;
   if (!walletId || walletId === "mock") return false;
   return true;
@@ -254,16 +271,18 @@ export function stakeUnavailableReason(
   walletId: string | undefined,
 ): string | null {
   if (!config.enabled) return null;
+  if (config.chainId !== BASE_SEPOLIA_CHAIN_ID)
+    return "Stake unavailable: this build only permits Base Sepolia (84532).";
   if (!isAddress(config.escrow))
     return (
-      "Side bet unavailable: this server has THETADUEL_STAKE=on but no escrow contract " +
+      "Stake unavailable: this server has THETADUEL_STAKE=on but no escrow contract " +
       "configured. Staking stays off until THETADUEL_ESCROW names a deployed DuelEscrow — " +
       "a flag on its own is not allowed to move money."
     );
   if (walletId === "mock")
     return (
-      "Side bet unavailable: the mock wallet cannot sign, and must not. Connect a real " +
-      "wallet on Base to stake. The duel plays either way."
+      "Stake unavailable: the mock wallet cannot sign, and must not. Connect a real " +
+      "wallet on Base Sepolia to stake test ETH. The duel plays either way."
     );
   if (!walletId) return null;
   return null;
@@ -319,15 +338,16 @@ export type EscrowStep =
   | "done";
 
 /**
- * The seventeen ways a side bet ends badly.
+ * The eighteen ways a side bet ends badly.
  *
- * Seventeen and no eighteenth, for `fill.ts`'s reason: a code with no copy is a
+ * Eighteen and no nineteenth, for `fill.ts`'s reason: a code with no copy is a
  * spinner nobody can clear. Every one of them lands the room in PTS-only.
  */
 export type EscrowCode =
   | "SIGNER_REQUIRED"
   | "ESCROW_UNCONFIGURED"
   | "STAKE_TOO_SMALL"
+  | "STAKE_TOO_LARGE"
   | "INSUFFICIENT_BALANCE"
   | "INSUFFICIENT_ALLOWANCE"
   | "DUEL_TAKEN"
@@ -379,21 +399,18 @@ export interface EscrowDeps {
   walletId?: string;
   /** The deployed `DuelEscrow`. Checked for shape before anything is sent. */
   escrow: string;
+  /** Must be Base Sepolia (84532). */
+  chainId?: number;
   /**
    * `WalletSource.getSigner()`'s contract, unchanged from `runFill`: `null`
    * means not connected, a **throw** means connected on the wrong chain. The
    * two have different recoveries, so they must stay distinguishable.
    */
   getSigner(): Promise<unknown | null>;
-  /** The connected address — the `owner` half of the allowance read, and the
-   *  `a` seat of a lock. */
+  /** The connected address and the `a` seat of a lock. */
   address(): Promise<string | null>;
-  /** The token the escrow will actually pull, read off `escrow.usdc()`. */
-  stakeToken(): Promise<string>;
-  allowanceOf(token: string, owner: string, spender: string): Promise<bigint>;
-  balanceOf(token: string, owner: string): Promise<bigint>;
-  /** EXACT amount. `runFill`'s rule, and for the same reason. */
-  approve(token: string, spender: string, amount: bigint): Promise<{ hash?: string } | null>;
+  /** Native Base Sepolia ETH balance, in wei. */
+  balanceOf(owner: string): Promise<bigint>;
   open(duelId: string, stake: bigint, invited: string): Promise<{ hash?: string } | null>;
   join(duelId: string, stake: bigint): Promise<{ hash?: string } | null>;
   settle(verdict: Readonly<Verdict>): Promise<{ hash?: string } | null>;
@@ -433,9 +450,9 @@ export interface RefereeDeps {
 
 /**
  * The sentence that always follows a staking failure, in every one of the
- * seventeen cases.
+ * eighteen cases.
  *
- * It is a constant rather than seventeen hand-written variations because it is
+ * It is a constant rather than eighteen hand-written variations because it is
  * the single most important thing on the screen and it must not drift: the game
  * is not on chain, the chain is a side bet, and losing the side bet loses the
  * player nothing they were playing for.
@@ -450,7 +467,7 @@ export const ESCROW_COPY: Record<
 > = {
   SIGNER_REQUIRED: {
     message: "No wallet can sign the stake.",
-    recovery: `Connect a wallet on Base to back the duel with USDC. ${PTS_FALLBACK}`,
+    recovery: `Connect a wallet on Base Sepolia to stake testnet ETH. ${PTS_FALLBACK}`,
     action: "connect",
   },
   ESCROW_UNCONFIGURED: {
@@ -465,9 +482,14 @@ export const ESCROW_COPY: Record<
     recovery: `MIN_STAKE is a constant in the contract, not a form rule. ${PTS_FALLBACK}`,
     action: "none",
   },
+  STAKE_TOO_LARGE: {
+    message: `The escrow will not take more than ${usd(MAX_STAKE_USDC)}.`,
+    recovery: `MAX_STAKE is enforced by the contract, not only by the form. ${PTS_FALLBACK}`,
+    action: "none",
+  },
   INSUFFICIENT_BALANCE: {
-    message: "The wallet does not hold enough USDC on Base.",
-    recovery: `Fund it and open the next duel with a side bet. Nothing was spent. ${PTS_FALLBACK}`,
+    message: "The wallet does not hold enough testnet ETH on Base Sepolia.",
+    recovery: `Fund it from a Base Sepolia faucet and try again. Nothing was spent. ${PTS_FALLBACK}`,
     action: "fund",
   },
   INSUFFICIENT_ALLOWANCE: {
@@ -596,6 +618,7 @@ export function classifyEscrowError(error: unknown, step: EscrowStep): EscrowErr
     return at("NOT_FULL");
   if (/verdict expired/i.test(text)) return at("VERDICT_EXPIRED");
   if (/stake too small/i.test(text)) return at("STAKE_TOO_SMALL");
+  if (/stake too large/i.test(text)) return at("STAKE_TOO_LARGE");
   if (/bad attestor signature|malleable signature|invalid signature|bad signature/i.test(text))
     return at("CONTRACT_REVERT");
 
@@ -628,10 +651,10 @@ function raise(code: EscrowCode, step: EscrowStep, over?: Partial<EscrowError>):
 
 const receiptOf = (r: { hash?: string } | null | undefined): string => r?.hash ?? "";
 
-const outcome = (hash: string, approvalSkipped: boolean): EscrowOutcome => ({
+const outcome = (hash: string, approvalSkipped: boolean, chainId: number = BASE_SEPOLIA_CHAIN_ID): EscrowOutcome => ({
   status: "ok",
   hash,
-  explorer: hash ? `${BASESCAN_TX}${hash}` : "",
+  explorer: baseExplorerTx(chainId, hash),
   approvalSkipped,
 });
 
@@ -659,8 +682,19 @@ async function stakePreamble(
   // "the mock never approves" a property of the code rather than of the UI.
   onStep("guard");
   if (!isAddress(deps.escrow)) return { failed: raise("ESCROW_UNCONFIGURED", "guard") };
+  if ((deps.chainId ?? BASE_SEPOLIA_CHAIN_ID) !== BASE_SEPOLIA_CHAIN_ID) {
+    return {
+      failed: raise("SIGNER_REQUIRED", "guard", {
+        message: "The stake is restricted to Base Sepolia.",
+        recovery: `Switch to Base Sepolia (84532). ${PTS_FALLBACK}`,
+        action: "switch",
+      }),
+    };
+  }
   if (typeof stake !== "bigint" || stake < MIN_STAKE_USDC)
     return { failed: raise("STAKE_TOO_SMALL", "guard") };
+  if (stake > MAX_STAKE_WEI)
+    return { failed: raise("STAKE_TOO_LARGE", "guard") };
 
   // ── signer ─────────────────────────────────────────────────────────────────
   onStep("signer");
@@ -689,7 +723,9 @@ async function stakePreamble(
           ...classifyEscrowError(error, "signer"),
           code: "SIGNER_REQUIRED",
           message: "The wallet is not on Base.",
-          recovery: `Switch the wallet to Base mainnet (${BASE_CHAIN_ID}) and try again. ${PTS_FALLBACK}`,
+          recovery: `Switch the wallet to ${
+            baseNetworkByChainId(deps.chainId ?? BASE_SEPOLIA_CHAIN_ID)?.name ?? "Base Sepolia"
+          } (${deps.chainId ?? BASE_SEPOLIA_CHAIN_ID}) and try again. ${PTS_FALLBACK}`,
           action: "switch",
         },
       },
@@ -705,34 +741,17 @@ async function stakePreamble(
   }
   if (!isAddress(address)) return { failed: raise("SIGNER_REQUIRED", "signer") };
 
-  // ── allowance, exact ───────────────────────────────────────────────────────
+  // ── native balance ─────────────────────────────────────────────────────────
   onStep("allowance", { amount: stake });
-  let approvalSkipped = true;
   try {
-    // The token the escrow will actually pull, read off `escrow.usdc()`. Review
-    // finding 5-1: the constructor takes any non-zero address and there is no
-    // rescue path, so the deployment's own answer is the only one worth
-    // approving against.
-    const token = await deps.stakeToken();
-    if (!isAddress(token)) return { failed: raise("ESCROW_UNCONFIGURED", "allowance") };
-
-    const balance = await deps.balanceOf(token, address);
+    const balance = await deps.balanceOf(address);
     if (balance < stake) return { failed: raise("INSUFFICIENT_BALANCE", "allowance") };
-
-    const current = await deps.allowanceOf(token, address, deps.escrow);
-    if (current < stake) {
-      onStep("approve", { amount: stake });
-      // EXACTLY the stake. Never `MaxUint256`, never a rounded-up convenience
-      // amount, never "approve once for the session". An infinite approval to an
-      // unaudited contract is a permanent liability bought to save one prompt.
-      await deps.approve(token, deps.escrow, stake);
-      approvalSkipped = false;
-    }
   } catch (error) {
-    return { failed: { status: "failed", error: classifyEscrowError(error, "approve") } };
+    return { failed: { status: "failed", error: classifyEscrowError(error, "allowance") } };
   }
 
-  return { address, approvalSkipped };
+  // Native ETH needs no ERC-20 approval, so staking is always one transaction.
+  return { address, approvalSkipped: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -776,7 +795,7 @@ export async function openDuel(
     const receipt = await deps.open(duelId, stake, isAddress(invited) ? invited : ZERO_ADDRESS);
     const hash = receiptOf(receipt);
     onStep("done", { hash });
-    return outcome(hash, pre.approvalSkipped);
+    return outcome(hash, pre.approvalSkipped, deps.chainId);
   } catch (error) {
     return { status: "failed", error: classifyEscrowError(error, "send") };
   }
@@ -799,7 +818,7 @@ export async function joinDuel(
     const receipt = await deps.join(duelId, stake);
     const hash = receiptOf(receipt);
     onStep("done", { hash });
-    return outcome(hash, pre.approvalSkipped);
+    return outcome(hash, pre.approvalSkipped, deps.chainId);
   } catch (error) {
     return { status: "failed", error: classifyEscrowError(error, "send") };
   }
@@ -852,7 +871,7 @@ export async function settleDuel(
     const receipt = await deps.settle(frozen);
     const hash = receiptOf(receipt);
     onStep("done", { hash });
-    return outcome(hash, true);
+    return outcome(hash, true, deps.chainId);
   } catch (error) {
     return { status: "failed", error: classifyEscrowError(error, "send") };
   }
@@ -909,7 +928,7 @@ async function sendSimple(
     const receipt = await call(duelId);
     const hash = receiptOf(receipt);
     onStep("done", { hash });
-    return outcome(hash, true);
+    return outcome(hash, true, deps.chainId);
   } catch (error) {
     return { status: "failed", error: classifyEscrowError(error, "send") };
   }
@@ -1114,22 +1133,7 @@ export async function requestVerdict(
 /** Human-readable ABI, transcribed from `contracts/DuelEscrow.sol`'s externals.
  *  `duels` is the public mapping's generated getter; its tuple order is the
  *  `Duel` struct's field order and must not be rearranged. */
-export const ESCROW_ABI = [
-  "function open(bytes32 duelId, uint128 stake, address invited)",
-  "function join(bytes32 duelId)",
-  "function settle(bytes32 duelId, address winner, uint64 deadline, bytes sig)",
-  "function refund(bytes32 duelId)",
-  "function cancel(bytes32 duelId)",
-  "function claimRake()",
-  "function usdc() view returns (address)",
-  "function duels(bytes32) view returns (address a, address b, address invited, uint128 stake, uint64 fullAt, uint8 status, bool aWithdrawn, bool bWithdrawn)",
-] as const;
-
-export const ERC20_ABI = [
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function balanceOf(address owner) view returns (uint256)",
-] as const;
+export const ESCROW_ABI = DUEL_ESCROW_ABI;
 
 /** Just the wallet seam staking needs, so this module does not import the whole
  *  `WalletSource` surface (and so a test can pass two functions). */
@@ -1158,11 +1162,17 @@ export async function duelIdFor(matchKey: string): Promise<string> {
  * `createLiveFillDeps` builds its client: a signer is step 2 of every sequence,
  * and there is nothing to construct before it.
  */
-export function createLiveEscrowDeps(wallet: StakeWallet, escrow: string): EscrowDeps {
+export function createLiveEscrowDeps(
+  wallet: StakeWallet,
+  escrow: string,
+  chainId: number = BASE_SEPOLIA_CHAIN_ID,
+): EscrowDeps {
+  if (chainId !== BASE_SEPOLIA_CHAIN_ID) {
+    throw new Error(`DuelEscrow only supports Base Sepolia (${BASE_SEPOLIA_CHAIN_ID})`);
+  }
   /** Set by `getSigner`; every later dep reads it. */
   let contract: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null;
   let account: string | null = null;
-  let token: string | null = null;
 
   const need = () => {
     if (!contract) throw new Error("SIGNER_REQUIRED");
@@ -1179,68 +1189,50 @@ export function createLiveEscrowDeps(wallet: StakeWallet, escrow: string): Escro
 
   let signerRef: unknown = null;
 
-  async function erc20(address: string) {
+  const bindSigner = async (): Promise<unknown | null> => {
+    const signer = await wallet.getSigner();
+    if (!signer) return null;
     const { Contract } = await import("ethers");
-    return new Contract(
-      address,
-      ERC20_ABI as unknown as string[],
-      signerRef as never,
+    signerRef = signer;
+    contract = new Contract(
+      escrow,
+      ESCROW_ABI as unknown as string[],
+      signer as never,
     ) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-  }
+    account = await (signer as { getAddress(): Promise<string> }).getAddress();
+    return signer;
+  };
 
   return {
     walletId: wallet.id,
     escrow,
+    chainId,
 
     async getSigner() {
-      const signer = await wallet.getSigner();
-      if (!signer) return null;
-      const { Contract } = await import("ethers");
-      signerRef = signer;
-      contract = new Contract(
-        escrow,
-        ESCROW_ABI as unknown as string[],
-        signer as never,
-      ) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-      account = await (signer as { getAddress(): Promise<string> }).getAddress();
-      return signer;
+      return bindSigner();
     },
 
     async address() {
       return account;
     },
 
-    async stakeToken() {
-      if (token) return token;
-      token = String(await need().usdc!());
-      return token;
+    async balanceOf(owner) {
+      const signer = signerRef as {
+        provider?: { getBalance(address: string): Promise<bigint> };
+      };
+      if (!signer.provider) throw new Error("NETWORK_ERROR: signer has no provider");
+      return signer.provider.getBalance(owner);
     },
 
-    async allowanceOf(t, owner, spender) {
-      const c = await erc20(t);
-      return BigInt(String(await c.allowance!(owner, spender)));
+    async open(duelId, stake) {
+      return mined(await need().stake!(duelId, { value: stake }));
     },
-
-    async balanceOf(t, owner) {
-      const c = await erc20(t);
-      return BigInt(String(await c.balanceOf!(owner)));
-    },
-
-    async approve(t, spender, amount) {
-      const c = await erc20(t);
-      // EXACT. The amount is the stake and nothing else.
-      return mined(await c.approve!(spender, amount));
-    },
-
-    async open(duelId, stake, invited) {
-      return mined(await need().open!(duelId, stake, invited));
-    },
-    async join(duelId) {
-      return mined(await need().join!(duelId));
+    async join(duelId, stake) {
+      return mined(await need().stake!(duelId, { value: stake }));
     },
     async settle(verdict) {
       return mined(
-        await need().settle!(verdict.duelId, verdict.winner, verdict.deadline, verdict.signature),
+        await need().winStake!(verdict.duelId, verdict.winner, verdict.deadline, verdict.signature),
       );
     },
     async refund(duelId) {
@@ -1251,6 +1243,7 @@ export function createLiveEscrowDeps(wallet: StakeWallet, escrow: string): Escro
     },
 
     async duelOf(duelId) {
+      if (!contract && !(await bindSigner())) return null;
       const raw = (await need().duels!(duelId)) as unknown as readonly unknown[];
       const status = DUEL_STATUS[Number(raw[5])] ?? "NONE";
       if (status === "NONE") return null;

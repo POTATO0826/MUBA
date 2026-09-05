@@ -209,6 +209,7 @@ function harness(
   at = T0,
   seats: SeatReader | null = null,
   marks: MarkSource | null = null,
+  chainId: number = BASE_CHAIN_ID,
 ): Harness {
   let clock = at;
   const signed: SignedCall[] = [];
@@ -237,7 +238,7 @@ function harness(
     // source over the live Thetanuts pricing host on the first duel-clock
     // attest. Every test in this file that means "no book" therefore says so,
     // and every test that means "this book" hands over a frozen one.
-    svc: createAttestService({ signer, escrow: ESCROW, seats, marks, now: () => clock }),
+    svc: createAttestService({ signer, escrow: ESCROW, seats, marks, chainId, now: () => clock }),
     signed,
     advance: (ms: number) => {
       clock += ms;
@@ -799,9 +800,9 @@ describe("the digest the server signs is the digest the escrow checks", () => {
       CONTRACT_TYPES,
     );
     expect(TypedDataEncoder.from(CONTRACT_TYPES).encodeType("Verdict")).toBe(VERDICT_TYPE_STRING);
-    // Base mainnet. The contract reads `block.chainid`, so this is the one
+    // Base Sepolia. The contract reads `block.chainid`, so this is the one
     // domain field no source read can confirm — it is pinned here instead.
-    expect(BASE_CHAIN_ID).toBe(8453);
+    expect(BASE_CHAIN_ID).toBe(84532);
   });
 
   /**
@@ -867,6 +868,21 @@ describe("the digest the server signs is the digest the escrow checks", () => {
     expect(res.signature).toMatch(/^0x[0-9a-f]{130}$/);
   });
 
+  test("Base Sepolia verdicts are signed for chain 84532", async () => {
+    const h = harness(T0, null, null, 84532);
+    await locked(h, WINNING_SLIP);
+    const res = okAttest(await h.svc.attest({ matchKey: MATCH_KEY }));
+
+    expect(h.signed.at(-1)?.domain.chainId).toBe(84532);
+    const recovered = verifyTypedData(
+      { ...contractDomain(ESCROW), chainId: 84532 },
+      CONTRACT_TYPES,
+      { duelId: res.duelId, winner: res.winner, deadline: BigInt(res.deadline) },
+      res.signature,
+    );
+    expect(recovered).toBe(ATTESTOR.address);
+  });
+
   test("the signature is bound to this duel, this winner and this deadline", async () => {
     const h = harness();
     await locked(h, WINNING_SLIP);
@@ -926,8 +942,8 @@ describe("the digest the server signs is the digest the escrow checks", () => {
       version: CONTRACT_DOMAIN_VERSION!,
       // The literal, not `BASE_CHAIN_ID` — the constant is the thing being
       // pinned. The contract binds its domain to `block.chainid`, so a verdict
-      // signed for any chain but Base mainnet recovers to a stranger on chain.
-      chainId: 8453,
+      // signed for any chain but Base Sepolia recovers to a stranger on chain.
+      chainId: 84532,
       verifyingContract: ESCROW,
     });
     expect(h.signed[0]!.types).toEqual(CONTRACT_TYPES);

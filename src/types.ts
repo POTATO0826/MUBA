@@ -44,7 +44,9 @@ export type Tab =
   | "result"
   | "desk"
   | "ranks"
-  | "arena";
+  | "arena"
+  | "test"
+  | "testing";
 
 export interface Asset {
   sym: string;
@@ -311,6 +313,13 @@ export interface ZoneQuote {
    * arena shows no premium for it rather than a price nobody can trade.
    */
   fillable: boolean;
+  /**
+   * Public order identity used to re-fetch the maker's full signed order at
+   * execution time. The ladder deliberately does not ship signatures or maker
+   * fields; the nonce is enough for `runFill` to find exactly one fresh order
+   * before any approval or transaction is attempted.
+   */
+  orderNonce?: string;
 }
 
 /**

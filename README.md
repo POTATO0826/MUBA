@@ -18,17 +18,26 @@ bun run typecheck
 bun run build    # → dist/
 ```
 
-**Out of the box nothing is written to a chain.** The seeded game — the board,
-the tape, the duel, the PTS ledger — needs no wallet, no key and no `.env`, and a
-mock wallet stands in for a real one. Three live edges are on by default and want
-nothing from you: the news wire (four public RSS feeds, fetched server-side;
-`THETADUEL_NEWS=off` for the seeded wire alone), the Thetanuts market read
-(`THETADUEL_MARKET=off` to opt out) and the market-priced parlay cards
-(`THETADUEL_OPTIONS=off` to opt out). All three only *read* — none of them can
-sign, approve or spend. **Everything that can spend money is opt-IN and off** —
-`THETADUEL_TRADE=on` for the real fill, `THETADUEL_STAKE=on` plus a
-deployed escrow for the side bet. See *Thetanuts — what is actually live* for
-what each flag reaches and, just as importantly, what has never run.
+**This build is Base Sepolia testnet-only.** Wallet connections, the public
+configuration, the verdict domain, the seat reader, the deployment script, and
+the contract are all pinned to chain ID `84532`. Explicit mainnet configuration
+fails closed. Mainnet-backed market, options, trade, and Chainlink-history paths
+are disabled rather than silently reading another network.
+
+The duel escrow uses native Base Sepolia test ETH. Anyone may call `stake`; the
+minimum is `0.001 ETH`, the second player must match the first, and a valid
+attestor verdict lets anyone relay `winStake`. A seated player can also call
+`loseStake` to forfeit voluntarily. The winner receives the complete two-player
+pool and the loser receives nothing. There is no USDC approval,
+treasury, fee, or rake. Timeout refund and unmatched-duel cancellation remain as
+safety exits before settlement.
+
+The Remix deployment on Base Sepolia is
+`0xc683A484FC42eD99c48ad8E19F841388536deB3E`. The app ABI and environment template
+use this address. Its `MIN_STAKE()` getter was confirmed to return
+`1000000000000000` wei. Staking remains opt-in with `THETADUEL_STAKE=on`.
+The configured verdict signer must match the deployed attestor address:
+`0x00FC9E21cd5bB63D2E83C211c41E95b0f057f289`.
 
 ## The flow
 
@@ -99,8 +108,9 @@ fills, no verdict is signed and there is no tiebreak.
 **Two things this screen has to say plainly, because it is specific about
 money and must be exactly as specific about what it does not hold:**
 
-- **Stakes in the arena are notional.** `DuelEscrow` is compiled and
-  adversarially reviewed but **never deployed** — no USDC is approved,
+- **Stakes in the arena are notional.** `DuelEscrow` is compiled but
+  **never deployed**. The prior artifact was adversarially reviewed; the
+  current capped artifact needs a fresh review before mainnet — no USDC is approved,
   transferred or escrowed on this path, on any duel. The arena's own copy says
   so on every duel strip and at every reveal; a duel here is for pride, not
   for a pot.
@@ -540,7 +550,7 @@ Four sentences, and each one is checkable in the tree:
 | Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed live run passes (`docs/asset-gate.md`). Wired into the lobby: `qualifiedAssets()` reaches `CreateLobby` (the greyed-sector reason and the DEEP/THIN grade) and the lobby board's own grade tag (`grades={...}` on `<LobbyCard>` at both its call sites) | — |
 | Market-priced parlay cards on the pick screen — real strikes, the option's own delta as the probability, a premium-derived payout | LIVE, read-only. Reshapes the snapshot `/api/market` already served (`src/state/options.ts` → `src/desk/optionize.ts`) into a frozen value the match holds; a ticker with no live spot or no chain deals its seeded card instead | `THETADUEL_OPTIONS` opt-out |
 | Parlay fill — N sequential vanilla fills, one tx per leg, $2 cap on the leg **and** the slip sum | CODE COMPLETE, **never executed on Base**. Preview-all-first, exact approvals, stale legs dropped before the first signature, keep-what-landed on a failure, and the policy on screen before you sign | `THETADUEL_TRADE=on` opt-IN, default off |
-| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** | owner |
+| Duel escrow (`contracts/DuelEscrow.sol`) | compiled, **NOT deployed**; the prior artifact's review is historical and the current capped artifact needs re-review before mainnet | owner |
 | Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`); the verdict is re-derived from committed picks and one snapshot the server reads itself, frozen onto the lock so a re-attest cannot re-roll it | `ATTESTOR_PRIVATE_KEY` |
 | USDC staking UI — the side bet, its six states, the claim | BUILT (`src/state/stake.ts`, `src/desk/escrow.ts`); inert until an escrow is deployed, and never on the mock wallet | `THETADUEL_STAKE=on` opt-IN + `THETADUEL_ESCROW` |
 | Card detail levels (SIMPLE / STANDARD / FULL) | LIVE on the pick screen. Rank picks the opening default and **never gates** — the toggle is a visible three-way switch, reversible in both directions, and the choice persists | — |

@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { calculateReservePrice, validateCondor } from "@thetanuts-finance/thetanuts-client";
 import {
@@ -1087,6 +1087,48 @@ describe("the panel is inert without a wallet", () => {
     await panelHtml({ enabled: true, wallet: { id: "injected", getSigner: async () => SIGNER } });
     expect(globalThis.localStorage?.length ?? 0).toBe(before);
   });
+
+  test("StrictMode's effect replay keeps a real request responsive", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const s = spy();
+    const activity: boolean[] = [];
+
+    await act(async () => {
+      root.render(
+        createElement(
+          StrictMode,
+          null,
+          createElement<RfqPanelProps>(RfqPanel, {
+            enabled: true,
+            wallet: { id: "injected", identity: { address: INPUT.requester }, getSigner: async () => SIGNER },
+            makeDeps: () => s.deps,
+            pollMs: 1,
+            patienceMs: 5,
+            onActiveChange: (value) => activity.push(value),
+          }),
+        ),
+      );
+    });
+
+    const open = [...container.querySelectorAll("button")].find((node) =>
+      node.textContent?.includes("Open request"),
+    );
+    expect(open).not.toBeUndefined();
+    await act(async () => {
+      (open as HTMLButtonElement).click();
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    });
+
+    expect(s.calls).toContain("requestForQuotation");
+    expect(container.textContent).toContain("1 bid");
+    expect(activity).toContain(true);
+
+    await act(async () => root.unmount());
+    container.remove();
+    expect(activity.at(-1)).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1428,19 +1470,19 @@ describe("the box auction — four strikes, a player-set max bid", () => {
 
   // ── the panel, in box mode ─────────────────────────────────────────────────
 
-  test("max loss sits above the upside figure, and the upside is not a number yet", async () => {
+  test("max loss sits above the known max payout, while only the multiple waits", async () => {
     const html = await panelHtml({ box: SPEC() });
     // The band and the expiry, each once.
     expect(html).toContain("$2,450 – $2,550");
     expect(html.match(/Sep 11/g)?.length).toBe(1);
     // Max loss is printed, and it is printed before any payout figure.
     const loss = html.indexOf("Max loss");
-    const payout = html.indexOf("Potential payout");
+    const payout = html.indexOf("Max payout");
     expect(loss).toBeGreaterThan(-1);
     expect(payout).toBeGreaterThan(loss);
     // And with no bid on the box, there is no multiple to show.
     expect(html).not.toMatch(/\d+(\.\d+)?×/);
-    expect(html).toMatch(/no desk has bid/i);
+    expect(html).toMatch(/payout multiple/i);
     // The wing is readable even though it is not draggable here (plan7 §4.2).
     expect(html).toMatch(/wing \$50/);
   });

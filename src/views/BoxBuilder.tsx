@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   boxProblem,
   deriveLadder,
@@ -26,6 +26,7 @@ import {
   matchListedZone,
   zoneBox,
   zoneCoversSpot,
+  zoneQuote,
   zoneToRanger,
   zonesFor,
   type ListedZone,
@@ -302,7 +303,7 @@ export function stakeBasisLine(stakeUsdc: number, custody: DuelCustody | null): 
  * and the deployment status of the contract that would do all three.
  */
 const STAKES_OFF_CLAUSE =
-  "no USDC is approved, transferred or escrowed on this path, and DuelEscrow is written and reviewed but not deployed";
+  "no test ETH is transferred or escrowed on this path until a Base Sepolia DuelEscrow is configured";
 
 /**
  * Said in the duel strip, in the same register as the Review panel's "Buying is
@@ -692,9 +693,9 @@ export interface BoxBuilderProps {
     match: ListedFill | null,
   ) => void;
   /**
-   * The confirm step's action. Reached only with `features.trade` on; absent
-   * leaves the confirm screen readable and inert, which is the state a build
-   * without the flag ships in.
+   * The confirm step's action. This opens a read-only pricing/preview step even
+   * when trading is off; the execution component owns the real wallet and
+   * operator gates. Absent leaves the confirm screen readable and inert.
    *
    * Same third argument, and for the same reason: the thing that gets signed is
    * a fill against `match.zone.order` when there is a match, and a request for
@@ -705,6 +706,20 @@ export interface BoxBuilderProps {
     strikes: [number, number, number, number],
     match: ListedFill | null,
   ) => void;
+  /**
+   * Maximum premium shown before an unlisted box opens its pricing step. This
+   * is a user-editable bid ceiling, not a quote; the actual max loss replaces
+   * it only after a maker answers.
+   */
+  unquotedMaxLoss?: number | null;
+  /**
+   * The execution step opened by `onConfirm`. Kept inside this component so
+   * the drawn box remains mounted and is still there when the player returns.
+   */
+  execution?: ReactNode;
+  /** Prevents navigation from destroying an active request or transaction. */
+  executionBusy?: boolean;
+  onCloseExecution?: () => void;
   /**
    * Override the `/api/config` read. `undefined` asks the server once at mount;
    * `false` keeps the screen inert with no network call at all.
@@ -862,6 +877,10 @@ export function BoxBuilder({
   contracts = 1,
   onQuote,
   onConfirm,
+  unquotedMaxLoss = null,
+  execution,
+  executionBusy = false,
+  onCloseExecution,
   tradeEnabled,
   onBack,
   room = null,
@@ -1196,11 +1215,6 @@ export function BoxBuilder({
     }
   }, [box, ladder]);
 
-  const econ = spec ? condorEconomics(spec, premium ?? 0, contracts) : null;
-  const quoted = typeof premium === "number" && premium > 0;
-  /** `max payout ÷ premium paid`, or nothing at all. Never a placeholder. */
-  const multiple = quoted && econ ? econ.payoutMultiple : null;
-
   /**
    * 7. The listed path (§3.1) — the zones this column actually carries, and
    * whether the drawn box lands on one.
@@ -1219,6 +1233,14 @@ export function BoxBuilder({
   );
   const match = useMemo(() => listedFill(box, snapshot, nowMs), [box, snapshot, nowMs]);
   const spotListed = zones.some((z) => zoneCoversSpot(z, spotPrice));
+  // A listed quote belongs to the current snapshot, never to the draw event
+  // that happened before a refresh. The prop remains the explicit premium seam
+  // for tests and future settled RFQs; a live match always outranks it.
+  const currentPremium = match ? (zoneQuote(match.zone) ?? premium) : premium;
+  const econ = spec ? condorEconomics(spec, currentPremium ?? 0, contracts) : null;
+  const quoted = typeof currentPremium === "number" && currentPremium > 0;
+  /** `max payout ÷ premium paid`, or nothing at all. Never a placeholder. */
+  const multiple = quoted && econ ? econ.payoutMultiple : null;
 
   const minHere = ladder
     ? strikeUsd(minBoxHeight(ladder, box?.floor ?? pendingFloor ?? ladder.strikes[0] ?? null))
@@ -1229,6 +1251,35 @@ export function BoxBuilder({
     drag && band
       ? { lo: Math.min(drag.from, drag.to), hi: Math.max(drag.from, drag.to) }
       : null;
+
+  if (execution) {
+    return (
+      <div style={sx("padding:22px 28px;max-width:1240px;margin:0 auto;display:grid;gap:14px")}>
+        <div style={sx("display:flex;align-items:center;gap:14px;flex-wrap:wrap")}>
+          {onCloseExecution && (
+            <button
+              className="box-action"
+              onClick={onCloseExecution}
+              disabled={executionBusy}
+              style={sx(BTN(C.borderMid, false, executionBusy))}
+            >
+              {executionBusy ? "Finish or cancel this step" : "← Back to box"}
+            </button>
+          )}
+          <h2 style={sx(`margin:0;font:700 18px/1 ${SANS};letter-spacing:-.02em`)}>
+            Complete your box
+          </h2>
+        </div>
+        {execution}
+        {executionBusy && (
+          <span aria-live="polite" style={sx(NOTE)}>
+            Navigation is paused so the active request, its private quote key, and any transaction
+            progress stay attached to this screen.
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={sx("padding:22px 28px;max-width:1240px;margin:0 auto;display:grid;gap:14px")}>
@@ -1835,6 +1886,7 @@ export function BoxBuilder({
                 match={match}
                 econ={econ}
                 quoted={quoted}
+                unquotedMaxLoss={unquotedMaxLoss}
                 contracts={contracts}
                 trade={trade}
                 canSign={Boolean(onConfirm)}
@@ -1885,11 +1937,18 @@ export function BoxBuilder({
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(`${LABEL};color:${C.red}`)}>MAX LOSS</span>
                   <span data-role="max-loss" style={sx(`${VALUE};color:${C.red}`)}>
-                    {quoted && econ ? usd(econ.maxLoss, true) : "—"}
+                    {quoted && econ
+                      ? usd(econ.maxLoss, true)
+                      : unquotedMaxLoss !== null
+                        ? `Up to ${usd(unquotedMaxLoss, true)}`
+                        : "Price required"}
                   </span>
                   <span style={sx(NOTE)}>
-                    {MAX_LOSS_COPY}
-                    {quoted ? "" : " Nothing has priced this box yet, so there is no figure to print."}
+                    {quoted
+                      ? MAX_LOSS_COPY
+                      : unquotedMaxLoss !== null
+                        ? "Starting maximum bid. You can change it before the pricing request is sent; an accepted maker price becomes the exact max loss."
+                        : "No maker has priced this box yet. Open pricing to set the most you are willing to pay."}
                   </span>
                 </div>
 
@@ -1974,6 +2033,7 @@ function Review({
   match,
   econ,
   quoted,
+  unquotedMaxLoss,
   contracts,
   trade,
   canSign,
@@ -1985,6 +2045,7 @@ function Review({
   match: ListedFill | null;
   econ: ReturnType<typeof condorEconomics> | null;
   quoted: boolean;
+  unquotedMaxLoss: number | null;
   contracts: number;
   trade: boolean;
   canSign: boolean;
@@ -2025,9 +2086,19 @@ function Review({
       <div style={sx("display:grid;gap:5px")}>
         <span style={sx(`${LABEL};color:${C.red}`)}>MAX LOSS</span>
         <span data-role="max-loss" style={sx(`${VALUE};color:${C.red}`)}>
-          {quoted && econ ? usd(econ.maxLoss, true) : "—"}
+          {quoted && econ
+            ? usd(econ.maxLoss, true)
+            : unquotedMaxLoss !== null
+              ? `Up to ${usd(unquotedMaxLoss, true)}`
+              : "Price required"}
         </span>
-        <span style={sx(NOTE)}>{MAX_LOSS_COPY}</span>
+        <span style={sx(NOTE)}>
+          {quoted
+            ? MAX_LOSS_COPY
+            : unquotedMaxLoss !== null
+              ? "This is the starting maximum bid. You can change it before a request is sent; the accepted maker price becomes your exact max loss."
+              : "No maker has priced this box yet. Open pricing to set the most you are willing to pay."}
+        </span>
       </div>
 
       <div style={sx("display:grid;gap:5px")}>
@@ -2051,21 +2122,30 @@ function Review({
           Back
         </button>
         <button
+          className="box-action"
           onClick={onConfirm}
-          disabled={!trade || !canSign || !quoted}
-          style={sx(BTN(C.accent, true, !trade || !canSign || !quoted))}
+          disabled={!canSign}
+          style={sx(BTN(C.accent, true, !canSign))}
         >
-          Buy this box
+          {match && quoted ? "Buy this box" : "Price this box"}
         </button>
       </div>
-      {(!trade || !canSign) && (
+      {!canSign && (
         <span style={sx(NOTE)}>
-          Buying is switched off in this build. The position above is real and priced; nothing here
-          can sign until an operator turns trading on.
+          This build has no execution route for the box yet.
         </span>
       )}
-      {trade && canSign && !quoted && (
-        <span style={sx(NOTE)}>Waiting on a price for this box.</span>
+      {canSign && !quoted && (
+        <span style={sx(NOTE)}>
+          This box has no live ask. The next step sets a maximum loss and asks market makers for a
+          price.
+        </span>
+      )}
+      {canSign && !trade && (
+        <span style={sx(NOTE)}>
+          You can review the complete pricing flow. Transactions remain disabled until a real
+          wallet is connected and the operator turns trading on.
+        </span>
       )}
     </>
   );

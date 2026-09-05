@@ -224,13 +224,11 @@ export interface RawFillPreview {
  * Which book row the user pressed.
  *
  * The plan says "re-fetch the order **by nonce**", and that is exactly what the
- * live adapter does *when it has one* — but the browser never receives a nonce.
- * `/api/market` ships `OrderRow`, which is display strings, because the SDK is
- * not in the client bundle and the envelope is drawn for a screen rather than
- * for a signer. So the reference the UI can actually hand over is the row's own
- * printed identity, and the fresh order's nonce is read back off the book and
- * reported on the receipt. The distinction matters in one direction only: an
- * ambiguous or missing match refuses to fill, which is the safe half.
+ * live adapter does whenever the market envelope supplies the public nonce.
+ * Older/single-leg rows can still hand over the row's printed identity, so the
+ * adapter retains that fail-closed fallback. The market envelope never ships
+ * the maker's signature or full fillable order; those are fetched again only
+ * after the signer gate. An ambiguous or missing match refuses to fill.
  */
 export interface OrderRef {
   /** Present when a caller genuinely holds one (the live adapter re-fetches by
@@ -2122,8 +2120,8 @@ export function createLiveFillDeps(
       const orders = (await reader.api.fetchOrders()) as unknown as readonly RawFillOrder[];
 
       // By nonce when we have one — that is the plan's rule and the book's own
-      // identity field. Otherwise by the row's printed identity, which is all
-      // the display envelope carries (see `OrderRef`).
+      // identity field. Older row call sites fall back to their printed
+      // identity (see `OrderRef`).
       if (ref.nonce) {
         const byNonce = orders.filter((o) => String(o.order.nonce ?? "") === ref.nonce);
         return byNonce.length === 1 ? (byNonce[0] as RawFillOrder) : null;

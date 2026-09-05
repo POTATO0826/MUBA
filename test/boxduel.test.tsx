@@ -705,7 +705,7 @@ describe("custody is claimed only when something holds the stake", () => {
     // Twice the stake is arithmetic and stays on screen; the claim about where
     // it goes is what left.
     expect(text()).toContain(usdc(20));
-    expect(text()).toContain(stakeBasisLine(10, null));
+    expect(text()).toContain(stakeBasisLine(0.001, null));
     // The button is not a price tag. "Create arena & link · $10.00" reads as a
     // charge, and pressing it writes a row in a `Map`.
     expect(button("Create arena & link")).toBeDefined();

@@ -10,7 +10,7 @@ import {
   readRoom,
   readyRoom,
 } from "./src/server/rooms.ts";
-import { createMarketService } from "./src/server/thetanuts.ts";
+import { BASE_SEPOLIA_CHAIN_ID } from "./src/data/base-network.ts";
 
 /**
  * Bun serves the app directly from `index.html`: it walks the tags, bundles
@@ -25,17 +25,6 @@ import { createMarketService } from "./src/server/thetanuts.ts";
  * would defeat both and hammer the feeds.
  */
 const news = createNewsService();
-
-/**
- * One market service for the process, for the same reason: its 15s TTL and its
- * in-flight dedupe are what keep a lobby full of pollers down to one read of
- * the Base RPC, which throttles. A per-request instance would cache nothing.
- *
- * Constructing it does not open a socket — the SDK client is built lazily on
- * the first read — so a process with `THETADUEL_MARKET=off` never touches the
- * chain at all.
- */
-const market = createMarketService();
 
 /**
  * One attest service for the process, and here the single instance is not an
@@ -126,7 +115,10 @@ const server = Bun.serve({
      * produces — the kill switch is read per request inside the service, so an
      * operator flipping it does not have to restart the process.
      */
-    "/api/market": () => market.handle(),
+    // The upstream options venue has no supported testnet. Returning a closed
+    // envelope guarantees that this testnet-only build never reads Base mainnet.
+    "/api/market": () =>
+      Response.json({ ok: false, reason: "testnet-only" }, { headers: NO_STORE }),
 
     /**
      * The settlement referee, in two halves — same always-200 envelope again.
@@ -208,16 +200,17 @@ const server = Bun.serve({
      */
     "/api/wallet-config": () =>
       Response.json(
-        { projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "" },
+        {
+          projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "",
+          chainId: BASE_SEPOLIA_CHAIN_ID,
+        },
         { headers: { "cache-control": "no-store" } },
       ),
 
     /**
-     * The whole client-visible boot configuration, of which the wallet id is
-     * now one field. `/api/wallet-config` above stays byte-identical as the
-     * alias `src/wallet/config.ts` already fetches — this route supersets it
-     * rather than replacing it, so the wallet layer needs no edit and the
-     * rollback story ("flags off → today's app") stays exact.
+     * The whole client-visible boot configuration. `/api/wallet-config` above
+     * carries the same project id and selected Base chain so the wallet switch
+     * target cannot drift from the escrow's EIP-712 domain.
      *
      * Everything here is public by construction: a WalletConnect id, a chain
      * id, two on-chain addresses and three booleans. The secrets that make
@@ -271,22 +264,27 @@ const server = Bun.serve({
      * `no-store`, like the alias: flipping a kill switch must take effect on
      * the next reload, not after a cache expires.
      */
-    "/api/config": () =>
-      Response.json(
+    "/api/config": () => {
+      return Response.json(
         {
           projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "",
-          chainId: 8453,
+          chainId: BASE_SEPOLIA_CHAIN_ID,
+          network: "base-sepolia",
           referrer: Bun.env.THETADUEL_REFERRER ?? "",
           escrow: Bun.env.THETADUEL_ESCROW ?? "",
+          // The GameStake pot behind /testing. Public by construction, like
+          // every other value in this envelope: an address on a testnet.
+          gameStake: Bun.env.THETADUEL_GAMESTAKE ?? "",
           features: {
-            market: Bun.env.THETADUEL_MARKET !== "off",
-            options: Bun.env.THETADUEL_OPTIONS !== "off",
+            market: false,
+            options: false,
             stake: Bun.env.THETADUEL_STAKE === "on",
-            trade: Bun.env.THETADUEL_TRADE === "on",
+            trade: false,
           },
         },
         { headers: { "cache-control": "no-store" } },
-      ),
+      );
+    },
     ...ASSETS,
     "/*": index,
   },

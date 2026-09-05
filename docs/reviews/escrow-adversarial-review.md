@@ -1,5 +1,9 @@
 # Adversarial review — `contracts/DuelEscrow.sol`
 
+> Historical review: the reviewed bytecode predates the later on-chain $20
+> maximum and Base Sepolia configuration support. It is useful background, not
+> an audit of the current artifact. Re-review before any mainnet deployment.
+
 **Reviewer:** fresh adversarial pass, pre-deploy gate (plan 5 §P5, line 85)
 **Target:** `contracts/DuelEscrow.sol` @ solc 0.8.26, optimizer 200 runs, runtime 5,948 bytes
 **Method:** real EVM execution (`@ethereumjs/evm`) against the **committed runtime bytecode**, 371 assertions across 8 suites, all passing.

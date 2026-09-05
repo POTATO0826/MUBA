@@ -1,11 +1,11 @@
 import { BrowserProvider, type Eip1193Provider } from "ethers";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  BASE_CHAIN_ID,
   DISCONNECTED,
   type WalletIdentity,
   type WalletSource,
 } from "../data/wallet.ts";
+import { BASE_SEPOLIA, BASE_SEPOLIA_CHAIN_ID } from "../data/base-network.ts";
 
 /**
  * Browser-extension wallets, with no configuration at all.
@@ -40,17 +40,6 @@ interface AnnounceEvent extends CustomEvent {
     provider: Eip1193Provider;
   };
 }
-
-const BASE_HEX = `0x${BASE_CHAIN_ID.toString(16)}`;
-
-/** What `wallet_addEthereumChain` needs if the wallet has never seen Base. */
-const BASE_CHAIN_PARAMS = {
-  chainId: BASE_HEX,
-  chainName: "Base",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: ["https://mainnet.base.org"],
-  blockExplorerUrls: ["https://basescan.org"],
-};
 
 /** The user closed the wallet prompt. Not an error worth shouting about. */
 const USER_REJECTED = 4001;
@@ -129,8 +118,20 @@ export interface InjectedWalletSource extends WalletSource {
   readonly error: string | null;
 }
 
-export function useInjectedWallet(): InjectedWalletSource {
+export function useInjectedWallet(_requestedChainId: number = BASE_SEPOLIA_CHAIN_ID): InjectedWalletSource {
   const { wallets: available } = useInjectedWallets();
+  const targetNetwork = BASE_SEPOLIA;
+  const targetHex = `0x${targetNetwork.chainId.toString(16)}`;
+  const targetChainParams = useMemo(
+    () => ({
+      chainId: targetHex,
+      chainName: targetNetwork.name,
+      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: [targetNetwork.rpcUrl],
+      blockExplorerUrls: [targetNetwork.explorerUrl],
+    }),
+    [targetHex, targetNetwork.name, targetNetwork.rpcUrl, targetNetwork.explorerUrl],
+  );
 
   const [active, setActive] = useState<InjectedWallet | null>(null);
   const [address, setAddress] = useState<string | null>(null);
@@ -207,10 +208,11 @@ export function useInjectedWallet(): InjectedWalletSource {
             walletName: active?.name ?? null,
             connected: true,
             connecting,
-            wrongNetwork: chainId !== null && chainId !== BASE_CHAIN_ID,
+            wrongNetwork: chainId !== null && chainId !== targetNetwork.chainId,
+            targetNetworkName: targetNetwork.name,
           }
         : { ...DISCONNECTED, connecting },
-    [address, chainId, active?.name, connecting],
+    [address, chainId, active?.name, connecting, targetNetwork.chainId, targetNetwork.name],
   );
 
   const connect = useCallback(async () => {
@@ -240,14 +242,14 @@ export function useInjectedWallet(): InjectedWalletSource {
     try {
       await active.provider.request({
         method: "wallet_switchEthereumChain",
-        params: [{ chainId: BASE_HEX }],
+        params: [{ chainId: targetHex }],
       });
     } catch (e) {
       if (errorCode(e) === CHAIN_NOT_ADDED) {
         try {
           await active.provider.request({
             method: "wallet_addEthereumChain",
-            params: [BASE_CHAIN_PARAMS],
+            params: [targetChainParams],
           });
         } catch (addError) {
           if (errorCode(addError) !== USER_REJECTED) setError(message(addError));
@@ -256,7 +258,7 @@ export function useInjectedWallet(): InjectedWalletSource {
       }
       if (errorCode(e) !== USER_REJECTED) setError(message(e));
     }
-  }, [active]);
+  }, [active, targetHex, targetChainParams]);
 
   return useMemo(
     () => ({
@@ -296,10 +298,10 @@ export function useInjectedWallet(): InjectedWalletSource {
         if (!active || !address) return null;
         if (identity.wrongNetwork) {
           throw new Error(
-            `wallet is on chain ${chainId}, but THETADUEL settles on Base (${BASE_CHAIN_ID}) — switch network first`,
+            `wallet is on chain ${chainId}, but this server targets ${targetNetwork.name} (${targetNetwork.chainId}) — switch network first`,
           );
         }
-        const provider = new BrowserProvider(active.provider, BASE_CHAIN_ID);
+        const provider = new BrowserProvider(active.provider, targetNetwork.chainId);
         return provider.getSigner(address);
       },
     }),
@@ -314,6 +316,7 @@ export function useInjectedWallet(): InjectedWalletSource {
       active,
       address,
       chainId,
+      targetNetwork,
     ],
   );
 }
