@@ -26,10 +26,48 @@
 > sets; every wave `bunx tsc --noEmit` clean + full `bun test` green + one
 > commit + push.
 
+### Read this first — the live SAFE tier is empty, and why
+
+Measured against a real `/api/market` snapshot on 2026-09-05 (341 rows, ETH
+118 orders / BTC 145, both `DEEP`):
+
+| ticker | live slots filled (of 8) |
+|---|---|
+| ETH | 2 · BTC 3 · BNB 5 · SOL 3 · AVAX 1 · XRP 1 |
+
+**`SAFE` fills 0 of 8 on every single ticker**, and every unfilled slot falls
+back to the seeded card, which renders `MAX LOSS —` / "no live premium". That
+is the defect the owner reported.
+
+Two independent causes, and the second is the interesting one:
+
+1. **`THETADUEL_OPTIONS` was opt-in.** Unset — the default for any clone —
+   `/api/config` reports `options:false` and *every* card is seeded. Setting
+   `THETADUEL_OPTIONS=on` in a (gitignored) `.env` moves ETH to 2/8. An agent
+   is making this opt-out, matching `THETADUEL_MARKET`.
+
+2. **The venue publishes greeks only for OTM options.** Highest `|delta|`
+   anywhere in the book is **0.5000**. `TIER_BANDS.SAFE` is `[0.65, 0.85)`, so
+   on the venue's own data that band can never match — *but the ITM options
+   themselves are listed and buyable*. 61 vanilla rows carry neither delta nor
+   IV, and **22 of those are in-the-money with a real fillable ask** (e.g.
+   `ETH CALL K=2,400`, spot 2,454.25, ask 45.59). They are dropped by
+   `cardsForSlice` step 3b (`if (delta === null) continue`), because
+   `greeksOf` returns null and `thetanuts.ts:1812` renders `"—"`.
+   **IV is supplied for 0 rows** — the 238 rows that do have a delta have no
+   IV — so a delta must be *implied from the observable price*, not read.
+
+The fix in flight derives delta by Black–Scholes inversion at the server seam
+and carries a `venue | derived` provenance flag to the screen. **Do not let a
+derived delta be presented as the venue's**, and do not move the solver into
+`src/engine/**` — `test/determinism.test.ts` forbids it reaching live data.
+
 ### Where the branch is
 
 - Work moved to branch **`new`** (not `zq` — `zq` is merged in, `new` carries
-  everything). HEAD is now **`7229f2e`**, pushed — `git log origin/new..HEAD`
+  everything). HEAD is now **`26dd46c`** (README + both audit scoreboards:
+  plan 6 **19 PASS / 0 PARTIAL**, plan 7 **27 PASS / 0 PARTIAL**, 2 owner-only
+  each). Earlier, HEAD was `7229f2e`, pushed — `git log origin/new..HEAD`
   is empty, everything below is on `origin/new`. Plan 6's five phases each
   landed as their own commit: `89bbd7f` A, `c4d52df` B, `a5fed99` C, `185d646`
   D, `316d969` E, `067d4ee` the §7 asset gate. Then, after the audit doc landed
