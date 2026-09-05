@@ -1,4 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  setDefaultTimeout,
+  test,
+} from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
@@ -28,6 +36,127 @@ import { spinCase } from "../src/engine/spin.ts";
 import { LOCK_MS } from "../src/components/MatchSpin.tsx";
 import { OPP_READY_MS, TAPE_STEP, useMatch, type LobbyForm } from "../src/state/match.ts";
 import type { Mode, PricingRow, SectorKey } from "../src/types.ts";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The network boundary, closed for the whole file
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// **This file used to open thirteen real TCP sockets on every run.** They are
+// half of why it was flaky — the other half is the clock, in the next section,
+// and neither fix works without the other. Recorded here in full because the
+// visible symptom and the cause are four steps apart and every earlier
+// diagnosis, including the one that got this far, stopped short of the end.
+//
+// The reach: `useOptionBook` (`src/state/options.ts`) asks `/api/config`
+// whether `features.options` is on, and skips the call only when the source is
+// `mock`. Every `mount(path, undefined, live())`, every `mountWith(…)` and the
+// `gatedSource()` mount in "the spin" below hands `App` a source whose
+// `meta.source` is `"live"` or `"stale"` — not mock — so each of those thirteen
+// mounts fired a fetch. `test/setup.ts` registers happy-dom at
+// `http://localhost/`, so `/api/config` resolves to **port 80**, where nothing
+// has ever listened. (Emphatically NOT port 3000: a running dev server does not
+// answer these. That is its own trap — serve this app on :80 and the suite
+// would quietly start reading a real config and asserting against a developer's
+// environment.)
+//
+// The cascade, measured on this machine with four suites running at once:
+//
+//   1. The refusals came back late and at random — 11ms to 10s for the same
+//      call, because a refused connect to `localhost:80` on Windows goes
+//      through dual-stack retries before it gives up.
+//   2. A late one settles during a *later* test and pushes a state update into
+//      a tree that test did not create — the run prints "An update to App
+//      inside a test was not wrapped in act(...)" and the socket work stalls
+//      the loop.
+//   3. `the spin > once the last leg lands the case study opens on its own`
+//      sleeps 2,800ms of real time (`OPP_READY_MS` + `LOCK_MS` + slack) inside
+//      bun's 5,000ms per-test budget. Stalled, it overran and timed out.
+//   4. A test that times out *inside* `await act(...)` leaves React's act queue
+//      wedged and this file's module-level `root` half-torn-down. Every mount
+//      after it renders nothing, so `text()` is `""` and the remaining 65 tests
+//      fail on assertions about an empty DOM.
+//
+// That is the 39 pass / 65 fail / 366 expect() run, reproduced verbatim, on the
+// same bytes that pass on a quiet machine with 791 expect() calls. One slow
+// socket, sixty-five red tests, and a re-run turns it green — which is the
+// worst property a "full suite green" gate can have.
+//
+// So the boundary is stubbed. That removes steps 1 and 2 outright; the next
+// section deals with step 3, which turned out to be standing on its own two
+// feet behind them. The stub gives the *same* answer the socket gave — there is
+// no server — it just gives it in a microtask, so `useOptionBook` takes the
+// identical `catch` branch, `enabled` stays false, and every assertion below is
+// about exactly the DOM it was always about.
+// `test/fill.test.ts` and `test/duel-stake.test.ts` swap `globalThis.fetch` the
+// same way for the same route; this is the file-wide version of that.
+const realFetch = globalThis.fetch;
+
+/** Every URL this suite reached for, in order. Asserted at the bottom of the
+ *  file — a new component that fetches on mount should fail loudly here rather
+ *  than come back as an intermittent 65-test cascade six weeks later. */
+const reached: string[] = [];
+
+beforeAll(() => {
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    reached.push(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    // The literal truth of a headless unit run, delivered now instead of after
+    // a connect timeout. Every caller in the mount path catches this and fails
+    // closed; that is the behaviour under test.
+    return Promise.reject(new Error("no server: test/app.test.tsx serves no network"));
+  }) as typeof globalThis.fetch;
+});
+
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The clock this file actually runs on
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// **Closing the socket above was necessary and was not sufficient.** With the
+// network gone entirely — no ECONNREFUSED, no out-of-act update, nothing — the
+// same test still timed out at 5,030ms and took the same 65 tests down with it.
+// So the number below is not a longer rope for the flake to hide behind; the
+// flake is gone and this is a separate, measured mis-sizing that was standing
+// behind it.
+//
+// This file drives production animations to completion on a real clock. It has
+// no fake timers, deliberately: `OPP_READY_MS` (`src/state/match.ts`) is when
+// the other seat readies, `LOCK_MS` (`src/components/MatchSpin.tsx`) is when
+// the locked board hands over to the study, and a test that mocked those away
+// would stop asserting the thing it is named after — that the screen advances
+// **on its own**. What it costs is real seconds, per test, on a quiet machine:
+//
+//     4.77s  once the last leg lands the case study opens on its own
+//     3.62s  the pending line is the XP the settled match actually paid
+//     3.56s  once both are ready the reel spins once per leg…
+//     3.37s  closing the spin lands back on the board
+//     3.17s  the reel only deals from the lobby's own book
+//     3.05s  the locked board reveals the arena the seed dealt, graded
+//     3.04s  the spin waits for both seats to ready up
+//     3.02s  no qualified book, no reveal — and the reel still locks
+//
+// Against bun's 5,000ms default, the top line had **230ms of headroom** — and
+// roughly 2.0s of every one of those numbers is React re-rendering the whole
+// App on the 120ms tape interval, which is exactly the work that slows down
+// when the machine is busy. Four suites in parallel stretched the file by ~35%
+// and pushed it over; so would a laptop on battery, or CI.
+//
+// The amplifier is what made a near-miss catastrophic rather than annoying: a
+// test that times out *inside* `await act(...)` leaves React's act queue wedged
+// and this file's module-level `root` half-torn-down, so every later `mount()`
+// renders nothing. One test 30ms late, sixty-five red. Nothing here can catch
+// that after the fact — the only fix is to not be late.
+//
+// 30s is ~6× the slowest measurement, which survives a machine four times
+// slower than this one. The cost of choosing it: a future test that hangs waits
+// 30s before bun says so, and a regression that makes a currently-instant test
+// take six seconds will not be noticed here. Both are acceptable against a gate
+// that reads "full suite green" and has to mean it.
+setDefaultTimeout(30_000);
 
 let container: HTMLDivElement;
 let root: Root;
@@ -2557,4 +2686,32 @@ describe("a surface that cannot verify its claim says so", () => {
     expect(head?.getAttribute("data-book-head")).toBe("live");
     expect(head?.textContent).toBe("BOOK · LIVE ON BASE");
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The boundary, asserted
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Last in the file on purpose: by the time this runs, every mount above has
+ * happened, so `reached` is the complete list of URLs this suite asked for.
+ *
+ * The point is not that fetching is forbidden — `useOptionBook` asking
+ * `/api/config` over a non-mock source is correct, and the stub answers it. The
+ * point is that the list stays *knowable*. The flake this file used to carry
+ * was not a wrong assertion; it was thirteen sockets nobody had counted. A new
+ * hook that fetches on mount will land here as one obvious red test naming the
+ * URL, rather than as an intermittent 65-test cascade on someone else's branch.
+ *
+ * If you are reading this because it failed: the new URL is either something the
+ * mount path should not be asking for at all, or something this stub should be
+ * answering deliberately. Add it to the list once you have decided which.
+ */
+test("the only network this suite reaches for is the options flag, and it is stubbed", () => {
+  // Not a count — the number of live-source mounts is nobody's invariant. The
+  // set of routes is.
+  expect([...new Set(reached)].sort()).toEqual(["/api/config"]);
+  // …and the assertion is not vacuous: the live-source mounts above really do
+  // ask, which is what makes the stub load-bearing rather than decorative.
+  expect(reached.length).toBeGreaterThan(0);
 });
