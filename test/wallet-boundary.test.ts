@@ -11,6 +11,10 @@ const projectSource = readFileSync(
   join(import.meta.dir, "..", "src", "wallet", "project.ts"),
   "utf8",
 );
+const appKitConfigSource = readFileSync(
+  join(import.meta.dir, "..", "src", "wallet", "config.ts"),
+  "utf8",
+);
 
 describe("WalletBoundary startup graph", () => {
   test("can be imported without evaluating the Reown live-wallet tier", () => {
@@ -22,5 +26,10 @@ describe("WalletBoundary startup graph", () => {
     expect(boundarySource).not.toMatch(/from\s+["']@reown\//);
     expect(boundarySource).not.toMatch(/from\s+["']\.\/(?:appkit|config|live)\.tsx?["']/);
     expect(projectSource).not.toContain("@reown/");
+  });
+
+  test("offers Base Sepolia as the only AppKit network", () => {
+    expect(appKitConfigSource).toContain("export const NETWORKS = [baseSepolia] as const");
+    expect(appKitConfigSource).not.toMatch(/import\s*\{[^}]*\bbase\b[^}]*\}/);
   });
 });

@@ -37,6 +37,8 @@ import { Battles } from "./views/Battles.tsx";
 import { BoxBuilder, type ListedFill } from "./views/BoxBuilder.tsx";
 import { Create } from "./views/Create.tsx";
 import { CreateLobby } from "./views/CreateLobby.tsx";
+import { ContractTest } from "./views/ContractTest.tsx";
+import { GameStakeTest } from "./views/GameStakeTest.tsx";
 import { Hub } from "./views/Hub.tsx";
 import { Live } from "./views/Live.tsx";
 import { Lobby } from "./views/Lobby.tsx";
@@ -842,6 +844,21 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           along from the same hook because it is the one movement reading the
           ledger actually samples — the hero chip's `↑ W3 STREAK`. */}
       {state.tab === "ranks" && <Ranking you={rank.you} streak={rank.streak} />}
+
+      {/* ── The two operator consoles. Unlinked from the nav on purpose: they
+          are reached by typing the path, they are the only screens in the app
+          that talk to a contract by pasted address, and neither is part of a
+          player's route through the game.
+
+          Both are pinned to Base Sepolia and read a REAL deployment — `/test`
+          the Remix DuelEscrow at 0xc683…eB3E, `/testing` GameStake at
+          0xcd3d…3eAC. Note that neither address is the artifact this repo
+          builds: `contracts/DuelEscrow.sol` here is the USDC escrow, and
+          `src/utils/duelescrow.ts` describes a native-ETH deployment made from
+          a different source. See that file's header before trusting the two as
+          the same contract. */}
+      {state.tab === "test" && <ContractTest wallet={active} />}
+      {state.tab === "testing" && <GameStakeTest wallet={active} />}
 
       {/* The address in the header is a plausible-looking fake whenever the
           mock tier won. Say so, rather than letting it pass for a wallet. */}

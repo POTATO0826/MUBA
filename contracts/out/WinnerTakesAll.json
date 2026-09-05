@@ -1,0 +1,161 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "winner",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "payout",
+          "type": "uint256"
+        }
+      ],
+      "name": "Settled",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "player",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "pool",
+          "type": "uint256"
+        }
+      ],
+      "name": "Staked",
+      "type": "event"
+    },
+    {
+      "stateMutability": "payable",
+      "type": "fallback"
+    },
+    {
+      "inputs": [],
+      "name": "BASE_SEPOLIA_CHAIN_ID",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "winner",
+          "type": "address"
+        }
+      ],
+      "name": "declareWinner",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "name": "duels",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "a",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "b",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "pool",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "settled",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "matchId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "stake",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "stateMutability": "payable",
+      "type": "receive"
+    }
+  ],
+  "bytecode": "0x6080604052348015600e575f80fd5b5062014a34461460585760405162461bcd60e51b815260206004820152601160248201527042617365205365706f6c6961206f6e6c7960781b604482015260640160405180910390fd5b610646806100655f395ff3fe608060405260043610610042575f3560e01c80636e9359e4146100bb578063c0d64a87146100dc578063d18aae70146100ef578063f1b09fc11461017157610080565b366100805760405162461bcd60e51b8152602060048201526009602482015268757365207374616b6560b81b60448201526064015b60405180910390fd5b60405162461bcd60e51b815260206004820152601060248201526f3ab735b737bbb710333ab731ba34b7b760811b6044820152606401610077565b3480156100c6575f80fd5b506100da6100d536600461059b565b610195565b005b6100da6100ea3660046105d4565b6103a1565b3480156100fa575f80fd5b5061013f6101093660046105d4565b5f6020819052908152604090208054600182015460028301546003909301546001600160a01b0392831693919092169160ff1684565b604080516001600160a01b03958616815294909316602085015291830152151560608201526080015b60405180910390f35b34801561017c575f80fd5b5061018762014a3481565b604051908152602001610168565b5f82815260208190526040902060018101546001600160a01b03166101ed5760405162461bcd60e51b815260206004820152600e60248201526d1b585d18da081b9bdd08199d5b1b60921b6044820152606401610077565b600381015460ff161561023a5760405162461bcd60e51b81526020600482015260156024820152741b585d18da08185b1c9958591e481cd95d1d1b1959605a1b6044820152606401610077565b80546001600160a01b0383811691161480610264575060018101546001600160a01b038381169116145b6102a95760405162461bcd60e51b81526020600482015260166024820152753bb4b73732b91034b9903737ba103090383630bcb2b960511b6044820152606401610077565b60038101805460ff191660011790556002810180545f90915560405133906001600160a01b0385169086907f4190759d37d5cfe7a1a70e06ec7508a05d12fd9cb76f353da1c9e028e5a48dcf906103039086815260200190565b60405180910390a45f836001600160a01b0316826040515f6040518083038185875af1925050503d805f8114610354576040519150601f19603f3d011682016040523d82523d5f602084013e610359565b606091505b505090508061039a5760405162461bcd60e51b815260206004820152600d60248201526c1c185e5bdd5d0819985a5b1959609a1b6044820152606401610077565b5050505050565b806103da5760405162461bcd60e51b815260206004820152600960248201526806d6174636849643d360bc1b6044820152606401610077565b5f341161041b5760405162461bcd60e51b815260206004820152600f60248201526e7374616b6520736f6d657468696e6760881b6044820152606401610077565b5f818152602081905260409020600381015460ff16156104755760405162461bcd60e51b81526020600482015260156024820152741b585d18da08185b1c9958591e481cd95d1d1b1959605a1b6044820152606401610077565b80546001600160a01b03166104995780546001600160a01b0319163317815561053c565b80546001600160a01b031633148015906104be575060018101546001600160a01b0316155b156104dc576001810180546001600160a01b0319163317905561053c565b80546001600160a01b0316331480610500575060018101546001600160a01b031633145b61053c5760405162461bcd60e51b815260206004820152600d60248201526c1b585d18da081a5cc8199d5b1b609a1b6044820152606401610077565b34816002015f82825461054f91906105eb565b90915550506002810154604080513481526020810192909252339184917fa1fdccfe567643a44425efdd141171e8d992854a81e5c819c1432b0de47c9a11910160405180910390a35050565b5f80604083850312156105ac575f80fd5b8235915060208301356001600160a01b03811681146105c9575f80fd5b809150509250929050565b5f602082840312156105e4575f80fd5b5035919050565b8082018082111561060a57634e487b7160e01b5f52601160045260245ffd5b9291505056fea2646970667358221220f7c73aec4e27d4922ee3be2b8d312d055dbf97568e34bbd561a36bcf0b3f376d64736f6c634300081a0033",
+  "deployedBytecode": "0x608060405260043610610042575f3560e01c80636e9359e4146100bb578063c0d64a87146100dc578063d18aae70146100ef578063f1b09fc11461017157610080565b366100805760405162461bcd60e51b8152602060048201526009602482015268757365207374616b6560b81b60448201526064015b60405180910390fd5b60405162461bcd60e51b815260206004820152601060248201526f3ab735b737bbb710333ab731ba34b7b760811b6044820152606401610077565b3480156100c6575f80fd5b506100da6100d536600461059b565b610195565b005b6100da6100ea3660046105d4565b6103a1565b3480156100fa575f80fd5b5061013f6101093660046105d4565b5f6020819052908152604090208054600182015460028301546003909301546001600160a01b0392831693919092169160ff1684565b604080516001600160a01b03958616815294909316602085015291830152151560608201526080015b60405180910390f35b34801561017c575f80fd5b5061018762014a3481565b604051908152602001610168565b5f82815260208190526040902060018101546001600160a01b03166101ed5760405162461bcd60e51b815260206004820152600e60248201526d1b585d18da081b9bdd08199d5b1b60921b6044820152606401610077565b600381015460ff161561023a5760405162461bcd60e51b81526020600482015260156024820152741b585d18da08185b1c9958591e481cd95d1d1b1959605a1b6044820152606401610077565b80546001600160a01b0383811691161480610264575060018101546001600160a01b038381169116145b6102a95760405162461bcd60e51b81526020600482015260166024820152753bb4b73732b91034b9903737ba103090383630bcb2b960511b6044820152606401610077565b60038101805460ff191660011790556002810180545f90915560405133906001600160a01b0385169086907f4190759d37d5cfe7a1a70e06ec7508a05d12fd9cb76f353da1c9e028e5a48dcf906103039086815260200190565b60405180910390a45f836001600160a01b0316826040515f6040518083038185875af1925050503d805f8114610354576040519150601f19603f3d011682016040523d82523d5f602084013e610359565b606091505b505090508061039a5760405162461bcd60e51b815260206004820152600d60248201526c1c185e5bdd5d0819985a5b1959609a1b6044820152606401610077565b5050505050565b806103da5760405162461bcd60e51b815260206004820152600960248201526806d6174636849643d360bc1b6044820152606401610077565b5f341161041b5760405162461bcd60e51b815260206004820152600f60248201526e7374616b6520736f6d657468696e6760881b6044820152606401610077565b5f818152602081905260409020600381015460ff16156104755760405162461bcd60e51b81526020600482015260156024820152741b585d18da08185b1c9958591e481cd95d1d1b1959605a1b6044820152606401610077565b80546001600160a01b03166104995780546001600160a01b0319163317815561053c565b80546001600160a01b031633148015906104be575060018101546001600160a01b0316155b156104dc576001810180546001600160a01b0319163317905561053c565b80546001600160a01b0316331480610500575060018101546001600160a01b031633145b61053c5760405162461bcd60e51b815260206004820152600d60248201526c1b585d18da081a5cc8199d5b1b609a1b6044820152606401610077565b34816002015f82825461054f91906105eb565b90915550506002810154604080513481526020810192909252339184917fa1fdccfe567643a44425efdd141171e8d992854a81e5c819c1432b0de47c9a11910160405180910390a35050565b5f80604083850312156105ac575f80fd5b8235915060208301356001600160a01b03811681146105c9575f80fd5b809150509250929050565b5f602082840312156105e4575f80fd5b5035919050565b8082018082111561060a57634e487b7160e01b5f52601160045260245ffd5b9291505056fea2646970667358221220f7c73aec4e27d4922ee3be2b8d312d055dbf97568e34bbd561a36bcf0b3f376d64736f6c634300081a0033",
+  "metadata": "{\"compiler\":{\"version\":\"0.8.26+commit.8a97fa7a\"},\"language\":\"Solidity\",\"output\":{\"abi\":[{\"inputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"constructor\"},{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"winner\",\"type\":\"address\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"caller\",\"type\":\"address\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"payout\",\"type\":\"uint256\"}],\"name\":\"Settled\",\"type\":\"event\"},{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"player\",\"type\":\"address\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"pool\",\"type\":\"uint256\"}],\"name\":\"Staked\",\"type\":\"event\"},{\"stateMutability\":\"payable\",\"type\":\"fallback\"},{\"inputs\":[],\"name\":\"BASE_SEPOLIA_CHAIN_ID\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"},{\"internalType\":\"address\",\"name\":\"winner\",\"type\":\"address\"}],\"name\":\"declareWinner\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"\",\"type\":\"bytes32\"}],\"name\":\"duels\",\"outputs\":[{\"internalType\":\"address\",\"name\":\"a\",\"type\":\"address\"},{\"internalType\":\"address\",\"name\":\"b\",\"type\":\"address\"},{\"internalType\":\"uint256\",\"name\":\"pool\",\"type\":\"uint256\"},{\"internalType\":\"bool\",\"name\":\"settled\",\"type\":\"bool\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"bytes32\",\"name\":\"matchId\",\"type\":\"bytes32\"}],\"name\":\"stake\",\"outputs\":[],\"stateMutability\":\"payable\",\"type\":\"function\"},{\"stateMutability\":\"payable\",\"type\":\"receive\"}],\"devdoc\":{\"events\":{\"Settled(bytes32,address,address,uint256)\":{\"details\":\"`caller` is indexed and recorded on purpose. Since anyone may settle a match, the identity of whoever actually did is the only forensic trail there is, and a UI that shows a payout should be able to show that too.\"}},\"kind\":\"dev\",\"methods\":{\"declareWinner(bytes32,address)\":{\"details\":\"State is finalised before the transfer \\u2014 `settled` is set and `pool` zeroed first \\u2014 so a winner that is a contract cannot re-enter and be paid twice; the second entry meets `match already settled`. `.call` rather than `.transfer` so the payout is not capped at 2300 gas and a smart-contract wallet can receive it. A winner whose receive hook reverts makes the whole settlement revert, which leaves the match open to be settled again \\u2014 the pot is never destroyed by a failed payout.\",\"params\":{\"matchId\":\"The match to settle.\",\"winner\":\"Must be seat `a` or seat `b`.\"}},\"stake(bytes32)\":{\"details\":\"Seats fill in arrival order and there are exactly two. A third address is rejected. Either seated player may call again to add more \\u2014 \\\"no specific amount\\\" taken at face value, so a top-up is just another stake and it lands in the same pot.\",\"params\":{\"matchId\":\"Any 32 bytes your app picks to name this match. Two players agreeing on the same value are in the same match; that is the whole coordination mechanism.\"}}},\"title\":\"WinnerTakesAll\",\"version\":1},\"userdoc\":{\"kind\":\"user\",\"methods\":{\"BASE_SEPOLIA_CHAIN_ID()\":{\"notice\":\"Base Sepolia. The only chain this contract will deploy to. \"},\"declareWinner(bytes32,address)\":{\"notice\":\"Send the entire pot to one of the two players. **Anyone may call this.** There is no deadline.\"},\"duels(bytes32)\":{\"notice\":\"Every match this contract has ever seen, by id. \"},\"stake(bytes32)\":{\"notice\":\"Put ETH into a match. Anyone may call this, with any amount.\"}},\"notice\":\"Two players, one pot, no clock. `stake` puts native ETH in; `declareWinner` moves the whole pot to one of the two players. \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500  READ THIS BEFORE DEPLOYING ANYWHERE THAT HOLDS REAL MONEY \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 `declareWinner` HAS NO CALLER RESTRICTION. That is deliberate and requested, and it is the single most important property of this contract: any address in the world may settle any full match at any moment. The contract does not know who won and never asks. The blast radius is bounded, but only partly:   - The pot can only ever reach `a` or `b`. A stranger cannot pay themselves,     because `winner` must be one of the two seated players. That is what \\\"the     person who won the match\\\" means, so it is a requirement, not a guard rail     added on top of one.   - Within that bound there is no protection at all. Either player \\u2014 or a     friend of theirs, or a bot watching the mempool \\u2014 can call this the     instant the second stake lands and take the entire pot before a single     move of the actual game has been played. Losing is not enforceable here. That is the honest description of a refereeless winner-takes-all pot. It is a perfectly good shape for a testnet harness, a demo, or a game between people who trust each other. It is not a shape that survives contact with strangers and real money. To make it survive that, the fix is one line \\u2014 a settler address chosen at deployment and `require(msg.sender == settler)` at the top of `declareWinner`. The rest of the contract is unchanged. ## No clock, anywhere There is no deadline, no timeout, no refund and no expiry, by request. A settled match pays instantly whenever `declareWinner` is called, a year later if that is when it is called. The corollary is the part to weigh: **a match that is never settled is never recoverable.** Two players stake, nobody calls, and that ETH stays in this contract permanently. There is no withdrawal path, for them or for anyone else. ## Chain lock The constructor refuses any chain but Base Sepolia, matching `DuelEscrow.sol` in this same directory. Given that `declareWinner` is open to the world, this keeps an accidental mainnet deployment from becoming a real-money free-for- all. Delete the `require` in the constructor if you decide otherwise \\u2014 it is the only line standing in the way.\",\"version\":1}},\"settings\":{\"compilationTarget\":{\"WinnerTakesAll.sol\":\"WinnerTakesAll\"},\"evmVersion\":\"cancun\",\"libraries\":{},\"metadata\":{\"bytecodeHash\":\"ipfs\"},\"optimizer\":{\"enabled\":true,\"runs\":200},\"remappings\":[]},\"sources\":{\"WinnerTakesAll.sol\":{\"keccak256\":\"0x59478134e4901f3eb09dc5864cfb2b3c1ec28252ee3c6d3124468af7d75dc418\",\"license\":\"MIT\",\"urls\":[\"bzz-raw://7ffce3fc7d6ec602f12b60a7790652f998d8105d14532ee542fbb2be512c710f\",\"dweb:/ipfs/QmTWHyjSRMYUEuidKDv3dGCrrafbQHnyA55MyYqhCfL3BU\"]}},\"version\":1}",
+  "solcVersion": "0.8.26+commit.8a97fa7a.Emscripten.clang"
+}

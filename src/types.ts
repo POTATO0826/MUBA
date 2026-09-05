@@ -44,7 +44,9 @@ export type Tab =
   | "result"
   | "desk"
   | "ranks"
-  | "arena";
+  | "arena"
+  | "test"
+  | "testing";
 
 export interface Asset {
   sym: string;

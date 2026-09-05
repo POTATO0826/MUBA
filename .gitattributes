@@ -1,0 +1,45 @@
+# ─── Line endings are LF, in the repository AND in every working tree ────────
+#
+# WHY THIS FILE EXISTS, AND WHY IT IS NOT COSMETIC.
+#
+# `core.autocrlf=true` is the Windows default. Without a `.gitattributes` it
+# stores LF in the object database and hands the working tree CRLF, so the file
+# on disk is not the file that was committed. For most of this repo that is
+# merely untidy. For `contracts/` it breaks reproducibility outright:
+#
+#   solc hashes the EXACT SOURCE BYTES into the `metadata` field of its output,
+#   and that metadata is appended to the deployed bytecode.
+#
+# So the same commit of `DuelEscrow.sol` compiles to different bytecode on a
+# Windows checkout than on a Linux one. Measured, not assumed: the file was
+# 25,459 bytes with 514 CRLF on disk against 24,945 bytes with 514 LF in git —
+# a 514-byte difference, exactly the carriage returns. That is enough to make
+# `contracts/out/DuelEscrow.json` fail to match a fresh compile on a clean
+# Windows clone, and enough to make BaseScan's source verification fail against
+# a contract that is byte-for-byte the reviewed one.
+#
+# `contracts/build.ts` also normalises to LF before it hands source to solc,
+# and both belong here: that normalisation makes the compiler's answer
+# host-independent even in a checkout predating this file, and this file fixes
+# the cause, so the bytes on disk are the bytes that were committed and
+# reviewed. Neither makes the other redundant.
+*                   text=auto eol=lf
+
+# Named explicitly rather than left to `text=auto`'s content sniffing, because
+# these are the ones where a stray CR changes a hash rather than a diff.
+*.sol               text eol=lf
+*.ts                text eol=lf
+*.tsx               text eol=lf
+*.json              text eol=lf
+*.md                text eol=lf
+*.css               text eol=lf
+*.html              text eol=lf
+*.toml              text eol=lf
+
+# Shell scripts must be LF whatever the host: a CR at the end of a shebang line
+# is a "bad interpreter" error, not a whitespace difference.
+*.sh                text eol=lf
+
+# Never touched.
+*.gif               binary
+*.zip               binary

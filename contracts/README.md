@@ -1,8 +1,14 @@
 # `contracts/` — DuelEscrow
 
-The on-chain half of THETADUEL's optional USDC side bet. One Solidity file, no
-imports, no libraries, no framework. `solc` is the only build dependency; there
-is no foundry and no hardhat.
+The on-chain half of THETADUEL's optional USDC side bet. No imports, no
+libraries, no framework. `solc` is the only build dependency; there is no
+foundry and no hardhat.
+
+`DuelEscrow.sol` is the contract this README is about. `GameStake.sol` and
+`WinnerTakesAll.sol` came in with the `gamestake` merge and are a separate,
+much smaller idea — native test ETH, winner takes the pot, no referee — kept
+here because they compile with the same toolchain. Read the table before
+assuming a sentence below applies to them.
 
 | File | What it is |
 |---|---|
@@ -11,10 +17,37 @@ is no foundry and no hardhat.
 | `deploy.ts` | `bun contracts/deploy.ts` — preflight by default; `--broadcast` deploys **to Base Sepolia**. Prints the BaseScan verification inputs. |
 | `out/DuelEscrow.json` | **Committed** artifact: `{abi, bytecode, deployedBytecode, metadata, solcVersion}`. This is the reviewed bytecode. |
 | `solc.d.ts` | Ambient types for solc-js, which ships none. |
+| `GameStake.sol` | Arrived with the `gamestake` merge, and is **not** this escrow. Two functions and a pot: `stake(bytes32)` payable, `winnerTakesAll(bytes32,address)`. Native test ETH, no attestor, no signature, no timeout, no refund, no rake. Deployed to Base Sepolia at `0xcd3dAC24e99E1Cb710B8243468e6D118215f3eAC`; driven by the `/testing` console. |
+| `WinnerTakesAll.sol` | The same shape with the seat bookkeeping written out; `test/winner-takes-all.test.ts` covers it. Not deployed. |
+| `verify-deployment.ts` | Reads a deployed address back and prints what it actually is. |
 
 `test/escrow.test.ts` compiles the contract in-process and asserts on what came
 out: the ABI surface, the money constants, the EIP-712 typehashes, and that the
 committed artifact still matches the source.
+
+### Line endings, and why the artifact broke without a rule for them
+
+**`solc` hashes the exact source bytes into `metadata`, and that metadata is
+appended to the deployed bytecode.** With `core.autocrlf=true` and no
+`.gitattributes` — the state this repo was in until the `gamestake` merge — a
+Windows checkout holds CRLF while the object database holds LF, so the same
+commit compiled to different bytecode on different hosts. Measured on
+`DuelEscrow.sol`: 25,459 bytes with 514 CRLF on disk against 24,945 bytes with
+514 LF in git, a difference of exactly the 514 carriage returns. That is enough
+to fail the artifact check above, and enough to fail BaseScan verification
+against source that is character-for-character the reviewed source.
+
+Two things now hold it, and neither makes the other redundant:
+
+- `/.gitattributes` pins the repository to LF in the object database **and** in
+  every working tree, which fixes the cause.
+- `build.ts` normalises CRLF to LF before handing source to solc, which makes
+  the compiler's answer host-independent even in a checkout that predates the
+  attributes file.
+
+If `bun contracts/build.ts` ever produces a `metadata` hash that differs from
+the committed artifact while the ABI and constants are unchanged, this is the
+first thing to check.
 
 ## Which chain — Base Sepolia, and only Base Sepolia
 

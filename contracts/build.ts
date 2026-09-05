@@ -113,10 +113,10 @@ export interface CompileResult {
 }
 
 /** The exact standard-JSON input, so build and test cannot disagree. */
-function standardInput(source: string): string {
+function standardInput(source: string, sourceName: string = SOURCE_NAME): string {
   return JSON.stringify({
     language: "Solidity",
-    sources: { [SOURCE_NAME]: { content: source } },
+    sources: { [sourceName]: { content: source } },
     settings: {
       // evmVersion deliberately omitted — see the header.
       optimizer: { enabled: true, runs: OPTIMIZER_RUNS },
@@ -179,30 +179,42 @@ const hex = (object: string): string => (object.startsWith("0x") ? object : `0x$
  * Pure with respect to the filesystem: it reads the source and returns; nothing
  * is written. {@link writeArtifact} does the writing.
  */
-export async function compileEscrow(): Promise<CompileResult> {
-  const source = await Bun.file(SOURCE_PATH).text();
-  const output = JSON.parse(solc.compile(standardInput(source))) as SolcOutput;
+export async function compileEscrow(
+  sourceName: string = SOURCE_NAME,
+  contractName: string = CONTRACT_NAME,
+): Promise<CompileResult> {
+  // Normalise to LF before compiling, and it is load-bearing rather than
+  // tidiness. `core.autocrlf=true` with no `.gitattributes` checks these
+  // sources out as CRLF on Windows while the committed artifact was compiled
+  // from LF, and solc hashes the exact source bytes into `metadata` — so the
+  // same commit produced different bytecode on Windows and Linux, and
+  // `test/escrow.test.ts`'s artifact check failed on a clean Windows clone.
+  // Compiling a canonical form makes the artifact reproducible on any host,
+  // which is the whole point of pinning the compiler and its settings.
+  const source = (await Bun.file(join(HERE, sourceName)).text()).replace(/\r\n/g, "\n");
+
+  const output = JSON.parse(solc.compile(standardInput(source, sourceName))) as SolcOutput;
 
   const all = output.errors ?? [];
   const fatal = all.filter((e) => e.severity === "error");
   if (fatal.length > 0) {
     const detail = fatal.map((e) => e.formattedMessage ?? e.message ?? "(no message)").join("\n");
-    throw new Error(`solc reported ${fatal.length} error(s) compiling ${SOURCE_NAME}:\n${detail}`);
+    throw new Error(`solc reported ${fatal.length} error(s) compiling ${sourceName}:\n${detail}`);
   }
   const warnings = all
     .filter((e) => e.severity !== "error")
     .map((e) => e.formattedMessage ?? e.message ?? "(no message)");
 
-  const compiled = output.contracts?.[SOURCE_NAME]?.[CONTRACT_NAME];
-  if (!compiled) throw new Error(`solc produced no output for ${SOURCE_NAME}:${CONTRACT_NAME}`);
+  const compiled = output.contracts?.[sourceName]?.[contractName];
+  if (!compiled) throw new Error(`solc produced no output for ${sourceName}:${contractName}`);
 
   const { abi, metadata, evm } = compiled;
   const creation = evm?.bytecode?.object;
   const runtime = evm?.deployedBytecode?.object;
   if (!abi || !metadata || !creation || !runtime) {
-    throw new Error(`solc output for ${CONTRACT_NAME} is missing abi/metadata/bytecode`);
+    throw new Error(`solc output for ${contractName} is missing abi/metadata/bytecode`);
   }
-  if (creation.length === 0) throw new Error(`${CONTRACT_NAME} compiled to empty creation bytecode`);
+  if (creation.length === 0) throw new Error(`${contractName} compiled to empty creation bytecode`);
 
   const solcVersion = solc.version();
   return {
@@ -213,7 +225,7 @@ export async function compileEscrow(): Promise<CompileResult> {
     solcVersion,
     // `0.8.26+commit.8a97fa7a.Emscripten.clang` -> `v0.8.26+commit.8a97fa7a`
     solcLongVersion: `v${solcVersion.split(".Emscripten")[0] ?? solcVersion}`,
-    constants: constantLiterals(output.sources?.[SOURCE_NAME]?.ast),
+    constants: constantLiterals(output.sources?.[sourceName]?.ast),
     warnings,
   };
 }

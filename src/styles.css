@@ -31,6 +31,25 @@ button {
   font-family: inherit;
 }
 
+/* The box purchase path is fully keyboard reachable. `currentColor` keeps the
+   ring inside the established theme rather than introducing a new color. */
+.box-action:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+/* The /test console uses native controls and keeps keyboard focus explicit. */
+.contract-control:focus-visible {
+  outline: 2px solid #c8ff00;
+  outline-offset: 3px;
+}
+
+@media (max-width: 560px) {
+  .contract-address-form {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 /* Slow blink on live badges and the final-seconds countdown. */
 @keyframes vcPulse {
   0%,
