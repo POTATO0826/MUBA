@@ -89,13 +89,48 @@ What is actually true:
    expiry roughly quadruples the pool, but `fullLadderSlice`'s docblock
    (`parlay.ts:616`) forbids mixing expiries on purpose, and is right to.
 
-**Open decision for the owner (do not let an agent quietly pick one):** either
-re-cut `TIER_BANDS` onto the book that exists (ceiling 0.50), which changes
-what SAFE/EVEN/SHARP/DEGEN *mean* game-wide, or leave the bands and have the
-empty slot say "the venue lists no option this safe" instead of rendering as
-a data failure. Also still open: spread/fly/ranger rows stay unscoreable,
-correctly — their delta is derivable from their legs, but a capped-payoff
-structure dealt as a parlay card would misstate max win.
+### DECIDED by the owner 2026-09-05 — next session, build this
+
+The owner was asked and chose. His constraint, verbatim: *"as long as it is
+real you help me choose, i dont want to demo fake stuff."* Two changes,
+neither started — an agent was launched and stopped before it wrote anything,
+so `parlay.ts` is untouched at `6ef118a`.
+
+1. **Re-cut `TIER_BANDS` onto the book that exists** (owner's explicit pick,
+   over the alternative of keeping the bands and rewording the empty slot).
+   Derive the cut points **from fresh measurement**, not from the numbers in
+   this file. Keep the derivation rule intact — a tier's probability is its
+   band, its fair price is `1/probability`, and exactly one place in the tree
+   says what `SHARP` means. A live card's displayed chance stays the option's
+   own `|delta|`; the band midpoint is seeded-path only.
+   - Knock-ons to handle, not just the constant: `src/desk/optionize.ts:367`
+     uses `tierProb` as a strike target; `degeneracyScore` is `Π(1/prob)` so
+     lower probabilities **inflate scores** — check leaderboard and threshold
+     assumptions and report the effect rather than absorbing it; and no copy,
+     tooltip, doc or test comment may still assert the old percentages.
+   - Note the naming consequence: a `SAFE` card will read ~45%, not 75%,
+     because 50% is genuinely the safest thing this venue lists. If that reads
+     wrong, the fix is **renaming the tiers, not restoring the old numbers.**
+
+2. **Pick the grid's expiry by coverage, not by earliest.** `fullLadderSlice`
+   (~line 629) takes the minimum expiry, which is why ETH deals 2 candidates
+   when its 09-07 expiry has 11 askable. Choose the expiry that fills the most
+   (tier, stance) slots. **One expiry per grid still — never mix**; the
+   docblock at ~616 forbids it and is right to. Rewrite that docblock to
+   explain the new selection rule without deleting the reasoning already
+   there. Tie-break deterministically (prefer the earlier expiry) — both
+   players must deal the same grid from the same data.
+
+Report **live slots filled of 8 per ticker, before vs after**, run through the
+real engine over live data. Baseline: ETH 2/8, BTC 3/8, SOL 3/8, XRP 1/8,
+BNB 5/8, AVAX 1/8 — 15/48, SAFE 0/8 on all six. Also report **how many of the
+48 remain seeded**, because that gap is what the owner actually cares about.
+
+### Still open, not decided
+
+Spread/fly/ranger rows stay unscoreable, correctly — their delta is derivable
+from their legs, but a capped-payoff structure dealt as a parlay card would
+misstate max win. Separate, larger design question.
 
 ### Where the branch is
 
