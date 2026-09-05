@@ -42,3 +42,8 @@ src/assets/*.mp3
 
 # Reviewer scratch (attack harnesses, node_modules junction) — never committed
 .rev/
+
+# Session scratch — probe scripts written while investigating. They import
+# nothing and nothing imports them; they were swept in by a `git add -A`
+# during the gamestake merge and do not belong in the history.
+.scratch/
