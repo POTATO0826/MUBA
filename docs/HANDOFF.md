@@ -39,28 +39,63 @@ Measured against a real `/api/market` snapshot on 2026-09-05 (341 rows, ETH
 back to the seeded card, which renders `MAX LOSS —` / "no live premium". That
 is the defect the owner reported.
 
-Two independent causes, and the second is the interesting one:
+**A first diagnosis of this was wrong, and the wrong version is worth keeping
+so nobody re-derives it.** It claimed 61 vanillas were missing greeks, 22 of
+them ITM-and-fillable, and that IV was supplied for zero rows — so a
+Black–Scholes solver should imply delta from price. All three are false:
 
-1. **`THETADUEL_OPTIONS` was opt-in.** Unset — the default for any clone —
-   `/api/config` reports `options:false` and *every* card is seeded. Setting
-   `THETADUEL_OPTIONS=on` in a (gitignored) `.env` moves ETH to 2/8. An agent
-   is making this opt-out, matching `THETADUEL_MARKET`.
+- **Every vanilla carries both delta and IV.** 125 CALL + 113 PUT = 238 rows,
+  `no-delta 0`, `no-iv 0`. The census that said otherwise read `iv` with a
+  `parseNum`-shaped reader, but **`iv` is a percent *string*** — `"23.7%"` —
+  and `Number("23.7%")` is `NaN`. `src/desk/optionize.ts:222` `parseIv` already
+  documents at length why it demands the `%`. See also `parseNum`
+  (`parlay.ts:572`): the trap is live for the next reader.
+- **The 61 "vanillas with no greeks" are multi-leg**: 49 `SPREAD` + 12 `FLY`
+  (plus 42 `RANGER`, excluded by type). They pass a `type === "CALL"|"PUT"`
+  filter because a call spread's `type` *is* `CALL`; `structure` is what
+  separates them.
+- **All 22 "ITM vanillas" are `structure: "SPREAD"`, 22/22**, `payout:
+  "call_spread"`/`"put_spread"`. `ETH CALL K=2,400 ask 45.59` is a 2400/2450
+  call spread worth at most $50 — its ask is *below* a vanilla 2400 call's
+  $54.25 intrinsic, which is why it looked like a mispriced ITM vanilla.
+  They never reach the delta filter anyway: `cardsForSlice` step 1
+  (`parlay.ts:716`) rejects `structure !== want` and `strikeUnitsOf` demands a
+  single strike, both **before** step 3b's null-delta check.
 
-2. **The venue publishes greeks only for OTM options.** Highest `|delta|`
-   anywhere in the book is **0.5000**. `TIER_BANDS.SAFE` is `[0.65, 0.85)`, so
-   on the venue's own data that band can never match — *but the ITM options
-   themselves are listed and buyable*. 61 vanilla rows carry neither delta nor
-   IV, and **22 of those are in-the-money with a real fillable ask** (e.g.
-   `ETH CALL K=2,400`, spot 2,454.25, ask 45.59). They are dropped by
-   `cardsForSlice` step 3b (`if (delta === null) continue`), because
-   `greeksOf` returns null and `thetanuts.ts:1812` renders `"—"`.
-   **IV is supplied for 0 rows** — the 238 rows that do have a delta have no
-   IV — so a delta must be *implied from the observable price*, not read.
+A solver was built in scratch and validated rather than argued about. It
+reproduces the venue's own deltas to meanAbs **0.0030** from venue IV, so the
+machinery was right — but run on those 22 rows the no-arb guard rejects 19,
+and the 3 survivors come out at Δ 0.99, −0.88 and −0.98 against **true spread
+deltas of 0.64, −0.14 and −0.10**. A card would have promised "88% chance" on
+a 10%-delta instrument with a $500-capped payoff drawn as uncapped. That is
+the seventh money bug, and it was not shipped. **Nothing was changed in
+`parlay.ts` or `thetanuts.ts`.**
 
-The fix in flight derives delta by Black–Scholes inversion at the server seam
-and carries a `venue | derived` provenance flag to the screen. **Do not let a
-derived delta be presented as the venue's**, and do not move the solver into
-`src/engine/**` — `test/determinism.test.ts` forbids it reaching live data.
+What is actually true:
+
+1. **`THETADUEL_OPTIONS` was opt-in** — unset, `/api/config` reported
+   `options:false` and *every* card was seeded. Fixed in `f1510ed`: now
+   `!== "off"`, matching `THETADUEL_MARKET`. This was the real cause of the
+   dashes the owner saw.
+2. **The venue lists only OTM vanillas.** All 125 calls have K > S, all 113
+   puts K < S, max `|delta|` **0.50**, and **0 rows** sit at `|delta| ≥ 0.65`.
+   Confirmed against a second snapshot 18 minutes later — structural, not
+   momentary. `TIER_BANDS.SAFE` `[0.65, 0.85)` therefore **cannot ever fill**.
+   No solver fixes this: you cannot imply a delta for an option nobody lists.
+3. **What limits the other slots is the front-expiry rule, not delta.** ETH:
+   95 vanillas → 20 single-strike-and-askable → **2 at the front expiry**.
+   Every front-expiry row already has a delta *and* a positive ask, so 100%
+   pass steps 3b and 5 — delta is never why a row drops. Admitting the second
+   expiry roughly quadruples the pool, but `fullLadderSlice`'s docblock
+   (`parlay.ts:616`) forbids mixing expiries on purpose, and is right to.
+
+**Open decision for the owner (do not let an agent quietly pick one):** either
+re-cut `TIER_BANDS` onto the book that exists (ceiling 0.50), which changes
+what SAFE/EVEN/SHARP/DEGEN *mean* game-wide, or leave the bands and have the
+empty slot say "the venue lists no option this safe" instead of rendering as
+a data failure. Also still open: spread/fly/ranger rows stay unscoreable,
+correctly — their delta is derivable from their legs, but a capped-payoff
+structure dealt as a parlay card would misstate max win.
 
 ### Where the branch is
 
