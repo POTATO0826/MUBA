@@ -6,8 +6,135 @@
  */
 
 import type { GameMode } from "../types.ts";
+import { meta } from "./universe.ts";
 
 export type RoomSeat = "host" | "guest";
+
+/**
+ * Where a captured opening price came from.
+ *
+ * Both values are a real print off a real venue. They are kept apart because
+ * they are not the same claim and a screen must be able to say which it is
+ * showing:
+ *
+ *  - `"book"` — the Thetanuts market snapshot's `spot`, i.e.
+ *    `getMarketData().prices`. This is the number the option book itself is
+ *    quoted around, so a strike, a premium and this open all agree.
+ *  - `"chainlink"` — `latestRoundData()` on the Base aggregator behind the
+ *    asset, read straight off `mainnet.base.org`. This is the feed that
+ *    *settles* the option (through a TWAP consumer — see the honesty note in
+ *    `src/data/history.ts`), which is why it is the fallback rather than a
+ *    second-best: when the book is unreachable it is still the truest price
+ *    available, and it is reachable independently of the book.
+ *
+ * There is no third member on purpose. "The seeded reference" is not a source,
+ * it is the absence of one, and it is spelled `open === null`.
+ */
+export type OpenSource = "book" | "chainlink";
+
+/**
+ * The prices a room's tapes open on, captured once when the room was created.
+ *
+ * ## Why this is stored rather than read
+ *
+ * Same reason as {@link RoomView.seed}, and it is worth stating in full because
+ * getting it wrong is silent. Both seats must watch the *same* tape. The walk
+ * itself is a pure function of `(sym, salt, open)` — `src/engine/tape.ts` — so
+ * a shared `seed` already gives both sides the same *shape*. If each client
+ * then read its own live spot to open on, the two tapes would be the same shape
+ * at two different price levels, thirty seconds apart, and the duel would be
+ * decided by whose poll landed first. Capturing once, server-side, at creation,
+ * is what makes the open as shared as the seed is.
+ *
+ * ## Why it is not the seeded reference
+ *
+ * It used to be. `engine/tape.ts` opened every walk on `meta(sym).px`, an
+ * eighteen-row fixture in `src/data/universe.ts` whose ETH row says $4,182.60.
+ * Measured against Base on 2026-09-05 the live prints were ETH $2,450.76, BTC
+ * $79,561.30, SOL ~$101.87 — the fixture was 70%, 21% and 110% out. The tape
+ * therefore drew a walk from a price no venue had quoted in about two years,
+ * and the duel's legs read `ETH closes above 4,392` next to a live spot of
+ * $2,453 on the same screen.
+ *
+ * ## What `null` means, and why it is not a fallback
+ *
+ * `null` means **nothing real could be read when this room opened** — no book,
+ * no oracle. It is not an error and it is not a loading state; the room still
+ * opens and still plays. What it must never do is quietly become
+ * `meta(sym).px`, because a stale number rendered as a live one is exactly the
+ * bug this field was added to remove, and swapping one silent fixture for
+ * another silent fixture would be no improvement at all.
+ *
+ * So the reference price is still what the tape walks in that case — there is
+ * nothing else to walk — but it arrives through {@link openFor}, which cannot
+ * hand a caller a bare number. It returns the price and the fact of where it
+ * came from together, so a screen that renders the price without the label has
+ * to go out of its way to do it.
+ */
+export interface RoomOpen {
+  /**
+   * USD per symbol, exactly as read. Only symbols that actually answered are
+   * present — a feed that was rate-limited or has no market price is **absent**
+   * rather than zero, the same convention `MarketSnapshot.spot` keeps for PAXG.
+   */
+  px: Readonly<Record<string, number>>;
+  source: OpenSource;
+  /**
+   * When the capture was read, ms. Deliberately **not** the room's `createdAt`:
+   * a snapshot served from a 15s cache is up to 15s old and the screen is
+   * entitled to say so, the same way the market footer's age chip does.
+   */
+  at: number;
+  /** Provenance, ready to render: `"Chainlink · Base 8453"`, `"thetanuts · base 8453"`. */
+  label: string;
+}
+
+/**
+ * The opening print for one symbol in one room, and whether it is a live one.
+ *
+ * **This is the honesty seam, and the return type is the whole point.** There
+ * is no path here that yields a bare `number`, so no caller can render a
+ * reference price where a live one is implied without first destructuring the
+ * flag that says which it is. `docs/reality-check.md` catalogues six money bugs
+ * in this repo and every one of them is a number that meant something other
+ * than what the screen claimed; this shape is a refusal to add a seventh.
+ *
+ * `live: false` is an ordinary answer, not a failure. It is what a room opened
+ * with no reachable venue gets, and it is also what an asset with no feed gets
+ * inside an otherwise-live capture — NVDA has no Chainlink aggregator on Base
+ * and never will.
+ */
+export function openFor(
+  open: RoomOpen | null,
+  sym: string,
+): { px: number; live: boolean; source: OpenSource | null; at: number | null } {
+  const px = open?.px[sym];
+  if (open && typeof px === "number" && Number.isFinite(px) && px > 0) {
+    return { px, live: true, source: open.source, at: open.at };
+  }
+  return { px: meta(sym).px, live: false, source: null, at: null };
+}
+
+/**
+ * The chip a screen must show when it is drawing a tape that opened on the
+ * seeded reference rather than on a real print.
+ *
+ * A constant rather than a string per screen, for the same reason `SPOT_CHIP`
+ * in `src/data/spot.ts` is one: three screens wording the same disclosure three
+ * ways is how one of them ends up wording it weakly.
+ */
+export const PRACTICE_TAPE_CHIP = "PRACTICE TAPE · NO LIVE OPEN";
+
+/** The one-line explanation that sits under {@link PRACTICE_TAPE_CHIP}. */
+export const PRACTICE_TAPE_NOTE =
+  "No venue answered when this room opened, so the tape walks from a stored " +
+  "reference price, not from today's market. The duel is still fair — both " +
+  "seats watch the identical tape — but the prices on it are not live.";
+
+/** The chip for the other case: a real captured open. `at` renders as an age. */
+export function liveOpenChip(open: RoomOpen): string {
+  return `LIVE OPEN · ${open.label}`;
+}
 
 export interface RoomView {
   id: string;
@@ -40,6 +167,16 @@ export interface RoomView {
    * would be watching its own tape and the result would be meaningless.
    */
   seed: number;
+  /**
+   * The prices this room's tapes open on, captured once at creation — or `null`
+   * when no venue answered. See {@link RoomOpen}; read it through
+   * {@link openFor}, never directly.
+   *
+   * It sits beside `seed` because it is the same kind of thing: half of the
+   * pair `(seed, open)` that both seats derive their walk from. `seed` alone
+   * fixed the shape; this fixes where the shape starts.
+   */
+  open: RoomOpen | null;
   /** Which mode this room plays. */
   mode: GameMode;
   /**

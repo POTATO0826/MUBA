@@ -2,6 +2,7 @@ import index from "./src/index.html";
 import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
 import { createAttestService } from "./src/server/attest.ts";
 import { createNewsService } from "./src/server/news.ts";
+import { captureOpen } from "./src/server/openspot.ts";
 import {
   createRoom,
   joinRoom,
@@ -161,14 +162,24 @@ const server = Bun.serve({
     "/api/rooms": {
       POST: async (req: Request) => {
         const input = await roomBody(req);
+        // The opening print for this room's tapes, read ONCE, here, and frozen
+        // into the room beside its seed — `src/server/openspot.ts` explains at
+        // length why it is captured on the server at creation rather than by
+        // each client at render. It never throws and never blocks the room: a
+        // dead book and a dead oracle both return `null`, which the room
+        // carries honestly as "no live open" rather than silently as the 2024
+        // reference price the tape used to walk from.
         return roomResponse(
-          createRoom({
-            address: input.address,
-            stakeUsdc: input.stakeUsdc,
-            durationMinutes: input.durationMinutes,
-            lobbyName: input.lobbyName,
-            mode: input.mode,
-          }),
+          createRoom(
+            {
+              address: input.address,
+              stakeUsdc: input.stakeUsdc,
+              durationMinutes: input.durationMinutes,
+              lobbyName: input.lobbyName,
+              mode: input.mode,
+            },
+            await captureOpen({ snapshot: () => market.snapshot() }),
+          ),
         );
       },
     },

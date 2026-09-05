@@ -6,6 +6,8 @@ import {
   MIN_DURATION_MINUTES,
   MIN_STAKE_USDC,
   poolOf,
+  potOf,
+  winnerTakesUsdc,
 } from "../src/data/stake.ts";
 import {
   _resetRooms,
@@ -75,8 +77,13 @@ describe("createRoom", () => {
     expect(open(HOST, 10, "Test", Number.NaN).durationMinutes).toBe(MIN_DURATION_MINUTES);
   });
 
-  test("the winner takes both stakes", () => {
+  test("the room's stake is both seats', and the winner takes it less the rake", () => {
+    // The pot is both stakes; `DuelEscrow.settle` pays `pot − 4%`. `poolOf` is
+    // the pot, and the surfaces that print it as WINNER TAKES want the other
+    // one — see `src/data/stake.ts`.
+    expect(potOf(open(HOST, 25).stakeUsdc)).toBe(50);
     expect(poolOf(open(HOST, 25).stakeUsdc)).toBe(50);
+    expect(winnerTakesUsdc(open(HOST, 25).stakeUsdc)).toBe(48);
   });
 
   test("clamps the lobby name and defaults an empty one", () => {

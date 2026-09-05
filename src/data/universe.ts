@@ -35,10 +35,64 @@ import type { Asset } from "../types.ts";
  * The tape draws from whichever board holds the symbol — which is why the
  * live-only names carry seeded `px`/`t`/`vol` too, so an AVAX arena still
  * renders with the network unplugged.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * `px` IS A REFERENCE, NOT A PRICE — AND IT IS NO LONGER THE TAPE'S OPEN
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * These numbers were written down once and have not moved since. Measured
+ * against Base on **2026-09-05** they are badly out, and it is worth writing
+ * the gap down rather than leaving the next reader to discover it:
+ *
+ *     sym    this file    live print (Chainlink, Base 8453)    out by
+ *     ETH    4182.6       2450.76                              +70%
+ *     BTC    96410        79561.30                             +21%
+ *     SOL    214.4        ~101.87                              +110%
+ *     XRP    1.45         1.3990                               +4%
+ *     BNB    718.18       724.21                               −1%
+ *
+ * The owner's question — *"why still have so many baked in hard coded data when
+ * u can fetch every 30s?"* — was about these rows, and specifically about what
+ * they were being used for: `engine/tape.ts` opened every duel's price walk on
+ * `meta(sym).px`, so a duel's legs read `ETH closes above 4,392` beside a live
+ * spot of $2,453 on the same screen.
+ *
+ * **That is fixed, and not by changing these numbers.** `series(sym, salt,
+ * openPx)` now takes the opening print as an argument; the server captures a
+ * real one once at room creation (`src/server/openspot.ts`) and freezes it into
+ * the room beside its seed (`RoomView.open`). A caller that omits the argument
+ * still lands here — that is what keeps every value lock in
+ * `test/determinism.test.ts` byte-identical — but it lands here through
+ * `openFor()` in `src/data/room.ts`, which returns `live: false` alongside the
+ * price so a screen cannot render it as a live one by accident.
+ *
+ * So `px` is now exactly one thing: **the offline reference the tape falls back
+ * to when no venue answered.** It is not a market price, it is not what the
+ * duel opens on when there is a book, and a surface printing it owes the reader
+ * `PRACTICE_TAPE_CHIP`. Updating these values is not a maintenance task — every
+ * one of them is frozen by `test/spot.test.ts` because a shared `?seed=N` link,
+ * a stored ledger row and both seats in one room all replay through them.
  */
 
 /** The replay fixture. `t` is the percentage move a leg must clear; `vol`
- *  drives the generated tape, so a high-`t` name is also the noisy one.
+ *  drives the generated tape, so a high-`t` name is also the noisy one. `px` is
+ *  the offline reference open — see the module header for what that does and
+ *  does not mean now.
+ *
+ *  **The nine `mkt: "STOCK"` rows are audited and staying.** They are not
+ *  reachable on any screen: `data/sectors.ts` filters `LIVE_BOARD` in every one
+ *  of `bookFor`, `bookForSectors` and `symsForMarket`, so no reel, lobby or
+ *  builder can deal one, and `test/app.test.tsx:379` asserts none of the names
+ *  appears in the create screen's DOM. The one thing that still reads them is
+ *  `server/news.ts:595`, which builds its ticker allowlist from `UNIVERSE`.
+ *  Deleting them buys no pixel and breaks eight test files — the 18-row `px`
+ *  and `[t, vol]` pins in `test/spot.test.ts`, the `FICTION` list in
+ *  `test/sectors.test.ts`, the NVDA tape locks in `test/determinism.test.ts`,
+ *  and most of `test/news-service.test.ts` (`feedsFor("NVDA")`, the META /
+ *  "metaverse" boundary, the COIN / LINK / UNI ordinary-word test). The `STOCKS`
+ *  chip in `views/Battles.tsx` is a separate matter: it is a dead control —
+ *  `marketOf` cannot return `"STOCK"` off an all-crypto `LIVE_BOARD` — and
+ *  `test/app.test.tsx:301-309` already pins it as such.
  *
  *  **Frozen, and offered nowhere.** These rows back the offline tape and the
  *  news ticker's symbol allowlist. No sector gathers them, no lobby deals them

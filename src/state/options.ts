@@ -110,6 +110,15 @@ export function bookOf(source: MarketSource): OptionBook | undefined {
     at: source.meta.fetchedAt,
     // A stale book is still a real book — the numbers are true, just old, and
     // the surface says so. `mock` never reaches here: it publishes no spot.
+    //
+    // "The surface says so" was aspirational when it was written and is a fact
+    // now. For a long while nothing in `src/` read this field at all and `at`
+    // was never rendered anywhere, so a book whose refresh had failed dealt its
+    // cards under a green LIVE chip — real strikes wearing a timestamp nobody
+    // could see, which `src/theme.ts` calls "the one genuinely dangerous state".
+    // `src/views/ParlayPick.tsx` reads both now: `source` picks the chip's word
+    // and its colour, and `at` becomes the age printed beside STALE, because the
+    // age is the disclosure and the word alone is not.
     source: source.meta.source === "stale" ? "stale" : "live",
     spot,
     chain,

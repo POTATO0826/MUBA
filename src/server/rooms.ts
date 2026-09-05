@@ -8,6 +8,7 @@ import type { GameMode } from "../types.ts";
 import {
   ROOM_ERROR_MESSAGE,
   type RoomErrorCode,
+  type RoomOpen,
   type RoomResult,
   type RoomView,
 } from "../data/room.ts";
@@ -50,6 +51,16 @@ interface Room {
   durationMinutes: number;
   lobbyName: string;
   seed: number;
+  /**
+   * The captured opening print, or `null` — write-once at creation, exactly
+   * like `seed`, and for the identical reason. See {@link RoomOpen}.
+   *
+   * Nothing below `createRoom` may assign to it. `joinRoom`, `readyRoom` and
+   * `pickRoom` all move `updatedAt` and none of them touches this: a guest
+   * arriving four minutes after the host must join the host's tape, not
+   * re-anchor it to the price at the moment they clicked.
+   */
+  open: RoomOpen | null;
   mode: GameMode;
   picks: [string | null, string | null];
   ready: [boolean, boolean];
@@ -85,6 +96,7 @@ function view(room: Room): RoomView {
     durationMinutes: room.durationMinutes,
     lobbyName: room.lobbyName,
     seed: room.seed,
+    open: room.open,
     mode: room.mode,
     // Picks stay hidden until both are in. Returning the opponent's answer
     // early would let a player copy it.
@@ -110,13 +122,35 @@ function normalizeAddress(raw: unknown): string | null {
   return ADDRESS_RE.test(a) ? a.toLowerCase() : null;
 }
 
-export function createRoom(input: {
-  address: unknown;
-  stakeUsdc: unknown;
-  durationMinutes: unknown;
-  lobbyName: unknown;
-  mode: unknown;
-}): RoomResult {
+/**
+ * Open a room.
+ *
+ * `open` is the opening print for this room's tapes, **already read by the
+ * caller** — `captureOpen()` in `src/server/openspot.ts`, wired in `index.ts`.
+ * It arrives as a value rather than being fetched here for the same reason the
+ * option book arrives at `useMatch` as a value: this module is a store, and a
+ * store that could fetch is a store whose contents depend on how long a remote
+ * host took to answer. Passing it in also means every test below drives the
+ * real freezing behaviour over a literal, with no socket.
+ *
+ * `null` — the default, and every existing caller — means no venue answered.
+ * The room still opens; its tapes walk from the stored reference price and the
+ * screen must say so (`PRACTICE_TAPE_CHIP`). Refusing to open the room was the
+ * other candidate and was rejected: a duel is between two people and the tape
+ * is a simulation either way, so an unreachable price feed should cost the
+ * screen a label, not cost the players their game. What it must never do is
+ * take the reference silently, which is the bug this parameter exists to close.
+ */
+export function createRoom(
+  input: {
+    address: unknown;
+    stakeUsdc: unknown;
+    durationMinutes: unknown;
+    lobbyName: unknown;
+    mode: unknown;
+  },
+  open: RoomOpen | null = null,
+): RoomResult {
   const now = Date.now();
   sweep(now);
 
@@ -156,6 +190,9 @@ export function createRoom(input: {
     lobbyName,
     // Any integer works; the salts multiply it. Kept small enough to stay exact.
     seed: Math.floor(Math.random() * 1_000_000),
+    // Frozen here and nowhere else. `(seed, open)` is the pair both seats
+    // derive their walk from, and both halves are fixed in this one statement.
+    open,
     // Coerced rather than validated, and it collapses to the one mode there is.
     // A stale tab still holding `"parlay"` or `"spotdiff"` — the two screens
     // plan 7 §8 step 6 retired — opens a box room rather than a 400, which is
