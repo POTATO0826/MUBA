@@ -498,10 +498,30 @@ export function zoneToRanger(zone: ListedZone): RangerSpec {
  * checker on this array before a quote and before a fill (plan7 §1); it will
  * agree with {@link zoneStrikes}, and the point of running it anyway is that we
  * are not the ones who get to decide that.
+ *
+ * ## It refuses rather than substituting a zero
+ *
+ * This was `strikeUsd(a) ?? 0` on all four, which is the `reservePrice → 0n`
+ * shape exactly: a strike we could not read became a strike of **zero**, and a
+ * zero strike is not a missing instrument, it is a *different* instrument. Fed
+ * to `validateRanger` it gets a verdict about a contract nobody is trading;
+ * fed to {@link zonePayoff} it moves a wing and prices a band that does not
+ * exist. Neither reads as wrong on screen, which is what makes it the
+ * dangerous kind.
+ *
+ * It throws rather than returning `null` because there is no honest partial
+ * answer here — three strikes out of four is not a ranger — and because every
+ * caller of this is on a path that must stop, not degrade. The zone data that
+ * reaches it comes from {@link zoneStrikes}-checked ladders, so the throw is
+ * unreachable on well-formed input and is a bound rather than a branch.
  */
 export function rangerStrikeNumbers(spec: RangerSpec): [number, number, number, number] {
   const [a, b, c, d] = spec.strikes;
-  return [strikeUsd(a) ?? 0, strikeUsd(b) ?? 0, strikeUsd(c) ?? 0, strikeUsd(d) ?? 0];
+  const usd = [strikeUsd(a), strikeUsd(b), strikeUsd(c), strikeUsd(d)];
+  if (usd.some((n) => n === null)) {
+    throw new Error(`Ranger strikes are unreadable: ${spec.strikes.join(", ")}`);
+  }
+  return usd as [number, number, number, number];
 }
 
 /** The same invariants as {@link zoneStrikes}, against a built spec. */
@@ -605,11 +625,25 @@ export interface RangerPayoutUtils {
  * reason a caller cannot reach the helpers with an unflagged four-strike order
  * by accident: to get the argument they have to come through here, and coming
  * through here sets the flag.
+ *
+ * ## And it refuses an unreadable strike
+ *
+ * This was `parseStrike(s) ?? 0n`, which is the same substitution
+ * {@link rangerStrikeNumbers} used to make and the same one the `reservePrice
+ * → 0n` bug made: a strike we could not read became a zero strike, and the
+ * SDK's own payout math then priced a contract that does not exist — for a
+ * band whose lower edge is nought, which pays out over a range no market
+ * quotes. The gate that sets the flag is the right place to also insist the
+ * strikes are real, because it is the one door.
  */
 export function rangerPayoutOrder(spec: RangerSpec): RangerPayoutOrder {
+  const strikes = spec.strikes.map(parseStrike);
+  if (strikes.some((s) => s === null)) {
+    throw new Error(`Ranger strikes are unreadable: ${spec.strikes.join(", ")}`);
+  }
   return {
     optionType: RANGER_OPTION_TYPE,
-    strikes: spec.strikes.map((s) => parseStrike(s) ?? 0n),
+    strikes: strikes as bigint[],
     isRanger: true,
   };
 }
@@ -663,17 +697,22 @@ export function zoneUsd(zone: ListedZone): { floor: number; ceiling: number } {
  *
  * Identical arithmetic to the condor's, through the identical
  * {@link economics} — max loss is the premium, the ceiling is the wing, the
- * multiple is one divided by the other. `premiumPaid` must be
+ * multiple is one divided by the other. `premiumPerContractUsd` must be
  * `previewFillOrder`'s number against {@link ListedZone.order} and nothing
  * else: not a mid, not the resting `order.price`, not an estimate (plan7 §9).
  * Before that quote exists the multiple is `null` and the screen shows none.
+ *
+ * **Per contract**, and the name says so because {@link economics} scales it:
+ * every dollar figure that comes back is a total over `numContracts`. The one
+ * caller that has it right by construction is {@link zoneQuote}, which is
+ * `pricePerContract` read off the wire.
  */
 export function zoneEconomics(
   zone: ListedZone,
-  premiumPaid: number,
+  premiumPerContractUsd: number,
   numContracts: number,
 ): CondorEconomics {
-  return economics(zoneWingUsd(zone), zoneUsd(zone), premiumPaid, numContracts);
+  return economics(zoneWingUsd(zone), zoneUsd(zone), premiumPerContractUsd, numContracts);
 }
 
 /**

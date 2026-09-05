@@ -272,10 +272,13 @@ export function maxPayout(spec: CondorSpec, numContracts: number): number {
  */
 export function payoutMultiple(
   spec: CondorSpec,
-  premiumPaid: number,
+  premiumPerContractUsd: number,
   numContracts: number,
 ): number | null {
-  return multipleOf(maxPayout(spec, numContracts), premiumPaid);
+  return multipleOf(
+    maxPayout(spec, numContracts),
+    premiumPerContractUsd * (Number.isFinite(numContracts) ? numContracts : 0),
+  );
 }
 
 /**
@@ -297,35 +300,63 @@ export function multipleOf(ceiling: number, premiumPaid: number): number | null 
   return ceiling / premiumPaid;
 }
 
-/** Everything the parameters panel prints about money, in one call. */
+/**
+ * Everything the parameters panel prints about money, in one call.
+ *
+ * **Every dollar figure here is a POSITION total** — the whole of `contracts`
+ * contracts, not one of them. That sentence is the fix for a defect this shape
+ * carried silently: `maxPayout` was the wing scaled by the contract count while
+ * `maxLoss` was the premium unscaled, so `payoutMultiple` — one divided by the
+ * other — came out inflated by exactly `numContracts`. It stayed invisible
+ * because `contracts` defaults to one everywhere and no caller has ever passed
+ * another value; the first line that sizes a box would have found it, on a
+ * figure the screen prints in bold. `basketPayoff` in `src/engine/parlay.ts`
+ * scales its premium correctly and is the shape this now matches.
+ *
+ * `contracts` is on the result for the same reason: a panel is entitled to say
+ * what position its totals are over, and a caller reading these fields should
+ * not have to remember which argument it passed.
+ */
 export interface CondorEconomics {
   /**
    * **The premium, always. 100%.** Long only means there is no other answer,
    * and plan7 §4.3 and plan6 §A7 both require it printed above the upside
    * figure, at every detail level, ungated.
+   *
+   * The premium per contract, scaled by {@link CondorEconomics.contracts} — a
+   * total, like every other dollar figure on this shape.
    */
   maxLoss: number;
   /** Wing width × contracts. See {@link maxPayout}. */
   maxPayout: number;
-  /** {@link payoutMultiple}. `null` until a real premium exists. */
+  /** {@link payoutMultiple}. `null` until a real premium exists. Scale-free:
+   *  the same answer at one contract and at a hundred, which is the property
+   *  that says the numerator and the denominator are in the same unit. */
   payoutMultiple: number | null;
-  /** The wing, in dollars — surfaced so the panel can print it (§4.2). */
+  /** The wing, in dollars — surfaced so the panel can print it (§4.2). Per
+   *  contract, and the only field here that is: it is a property of the
+   *  instrument rather than of the position. */
   wing: number;
   /** The inner zone, for the `$2,600 – $2,750` line. */
   zone: { floor: number; ceiling: number };
+  /** The position every total above was computed over. Zero when the caller
+   *  passed a count that is not one. */
+  contracts: number;
 }
 
 /**
- * @param premiumPaid The **actual** premium — `previewFillOrder`'s number on
- * the OptionBook path, or a decrypted offer's on the RFQ path. Never a mid,
- * never an estimate (plan7 §9).
+ * @param premiumPerContractUsd The **actual** premium for ONE contract —
+ * `previewFillOrder`'s `pricePerContract` on the OptionBook path, or a
+ * decrypted offer's on the RFQ path. Never a mid, never an estimate (plan7 §9),
+ * and never a position total: {@link economics} says why the unit is in the
+ * parameter's name now.
  */
 export function condorEconomics(
   spec: CondorSpec,
-  premiumPaid: number,
+  premiumPerContractUsd: number,
   numContracts: number,
 ): CondorEconomics {
-  return economics(wingUsd(spec), zoneUsd(spec), premiumPaid, numContracts);
+  return economics(wingUsd(spec), zoneUsd(spec), premiumPerContractUsd, numContracts);
 }
 
 /**
@@ -338,24 +369,48 @@ export function condorEconomics(
  * wing is the maker's rather than the player's, and it publishes no greeks —
  * and that difference belongs in the copy, not in the arithmetic.
  *
+ * ## Both inputs are per contract; every output is a total
+ *
+ * `wing` is the maximum for ONE contract, `premiumPerContractUsd` is the cost
+ * of ONE contract, and `numContracts` scales both into the position figures the
+ * panel prints. That symmetry is the whole correction: the ceiling used to be
+ * scaled and the premium not, which inflated the multiple by the contract count
+ * — silently, because nothing has ever passed a count other than one. The unit
+ * is in the parameter's name so a caller holding a position total cannot hand
+ * it over without noticing.
+ *
+ * The two callers to check when reading this. `zoneEconomics`
+ * (`src/data/ranger.ts`) passes `zoneQuote`, which is `previewFillOrder`'s
+ * `pricePerContract` — per contract, correct. `boxEconomics`
+ * (`src/desk/boxauction.ts`) passes `offerPremiumUsd`, which is a decrypted
+ * offer's whole `offerAmount` in dollars — a **position total**, and the same
+ * number as the per-contract one only while the position is one contract.
+ *
  * @param wing        Wing width in dollars. The maximum per contract.
  * @param zone        The inner band, in dollars, for the `$2,600 – $2,750` line.
- * @param premiumPaid The **actual** premium — never a mid, never an estimate.
+ * @param premiumPerContractUsd The **actual** premium for ONE contract — never
+ *                    a mid, never an estimate, and never a position total.
+ * @param numContracts The position both figures are scaled to.
  */
 export function economics(
   wing: number,
   zone: { floor: number; ceiling: number },
-  premiumPaid: number,
+  premiumPerContractUsd: number,
   numContracts: number,
 ): CondorEconomics {
-  const paid = Number.isFinite(premiumPaid) && premiumPaid > 0 ? premiumPaid : 0;
+  const perContract =
+    Number.isFinite(premiumPerContractUsd) && premiumPerContractUsd > 0 ? premiumPerContractUsd : 0;
   const contracts = Number.isFinite(numContracts) && numContracts > 0 ? numContracts : 0;
   const ceiling = Number.isFinite(wing) && wing > 0 ? wing * contracts : 0;
+  // Two totals over one position, so the division below is scale-free — which
+  // is the property that says the units agree.
+  const paid = perContract * contracts;
   return {
     maxLoss: paid,
     maxPayout: ceiling,
     payoutMultiple: multipleOf(ceiling, paid),
     wing: Number.isFinite(wing) ? wing : 0,
     zone,
+    contracts,
   };
 }

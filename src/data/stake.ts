@@ -45,9 +45,104 @@ export function usdc(amount: number): string {
   return `${amount.toFixed(2)} USDC`;
 }
 
-/** What the winner walks away with: both stakes. */
-export function poolOf(stakeUsdc: number): number {
+/**
+ * `RAKE_BPS` / `BPS` — the escrow's house rake, 4% of the pot, taken on
+ * settlement only.
+ *
+ * Transcribed from `contracts/DuelEscrow.sol:146` (`uint16 public constant
+ * RAKE_BPS = 400`), and the same pair `src/desk/escrow.ts` holds in `bigint`
+ * for the on-chain path. Two files, one contract, and the reason both exist is
+ * that they answer in two different units: the escrow module works in USDC 6dp
+ * integers because it is composing a transaction, and this module works in
+ * dollars because it is composing a sentence.
+ */
+export const RAKE_BPS = 400;
+export const BPS = 10_000;
+
+/**
+ * The pot: both stakes, gross. This is **not** what the winner is paid.
+ *
+ * Kept as its own function because it is a real figure — it is what the escrow
+ * holds between `open` and `settle`, and it is what a refund splits back — but
+ * it is never the number beside the words "winner takes". See
+ * {@link winnerTakesUsdc} for that, and read the two names as the distinction
+ * they are.
+ */
+export function potOf(stakeUsdc: number): number {
   return stakeUsdc * 2;
+}
+
+/**
+ * What the winner is actually paid: the pot, less the escrow's 4%.
+ *
+ * ## The bug this closes
+ *
+ * This function used to be `poolOf`, it returned `stakeUsdc * 2`, and every
+ * surface that says **WINNER TAKES** printed it. `DuelEscrow.settle` pays
+ * `pot - rake` — `1.92 ×` the stake, not `2 ×` — and `payoutOf` in
+ * `src/desk/escrow.ts` mirrors that correctly in the contract's own integer
+ * arithmetic. Two implementations of one figure, and the rake-blind one was
+ * the one on screen: two players staking $10 each read **WINNER TAKES $20.00**
+ * against a contract that transfers **$19.20**.
+ *
+ * The reason it mattered more than it looked: those surfaces render **only
+ * when a deployed escrow is named** (`stakeBasisLine` takes a `DuelCustody`,
+ * and the lobby's WINNER TAKES is gated on `custody !== null`). Without an
+ * escrow the copy correctly says *notional · nothing is held*. So the 2× claim
+ * appeared in exactly the configuration where the rake is real.
+ *
+ * ## Why this and `payoutOf` cannot drift
+ *
+ * Same order of operations, same floor: `pot - (pot * RAKE_BPS) / BPS`, with
+ * the rake floored so the remainder favours the winner exactly as the contract
+ * does.
+ *
+ * The arithmetic runs on integer **micro-USDC**, the token's own six decimals,
+ * and not on the dollar float: `10 * 2 * 0.04` in binary floating point is not
+ * `0.8`, and a stake is not a place to discover that. Cents would have been
+ * the tempting scale — the UI prints two decimals — and it is the wrong one: a
+ * $0.07 stake rakes $0.0056, which rounds away entirely at cents and would put
+ * this function 4% above the chain on small stakes, i.e. exactly the error it
+ * exists to remove. The whole band is safely inside `Number`'s integers
+ * (`10,000 × 2 × 10⁶ × 400` is under 10¹³ against a limit of 9 × 10¹⁵).
+ *
+ * `test/stake.test.ts` pins the result against `payoutOf`'s bigint answer
+ * across the band, so the two implementations of the one figure are held equal
+ * by a test rather than by a comment.
+ */
+export function winnerTakesUsdc(stakeUsdc: number): number {
+  if (!Number.isFinite(stakeUsdc) || stakeUsdc <= 0) return 0;
+  const potMicro = Math.round(stakeUsdc * 1_000_000) * 2;
+  const rakeMicro = Math.floor((potMicro * RAKE_BPS) / BPS);
+  return (potMicro - rakeMicro) / 1_000_000;
+}
+
+/**
+ * The old name. **It is the pot, and three screens print it as the payout.**
+ *
+ * This is deliberately still `stake × 2` rather than quietly redirected to
+ * {@link winnerTakesUsdc}, and the reason is that its call sites do not all
+ * mean the same thing:
+ *
+ *  - `src/views/RoomLobby.tsx` prints it under **WINNER TAKES**, gated on a
+ *    deployed escrow → wants {@link winnerTakesUsdc}.
+ *  - `src/views/BoxBuilder.tsx`'s `stakeBasisLine` says *"winner takes …"*, on
+ *    the same gate → wants {@link winnerTakesUsdc}.
+ *  - `src/state/battle.ts`'s `prizeLabel` feeds `src/views/Create.tsx`, which
+ *    heads the very same figure **WINNER TAKES** with custody and **TWICE THE
+ *    STAKE** without it. Two labels, two figures, one number today — so this
+ *    one needs *both* names, not a redirect.
+ *
+ * A single alias cannot be right for all four, and a redirect would have turned
+ * "TWICE THE STAKE" into a 4% lie while fixing the other three. So the split
+ * lives here, the names say which is which, and the four call sites are a
+ * routing job rather than a guess this module gets to make on their behalf.
+ *
+ * @deprecated Say which figure you mean: {@link potOf} for the gross pot,
+ * {@link winnerTakesUsdc} for what the escrow actually pays out.
+ */
+export function poolOf(stakeUsdc: number): number {
+  return potOf(stakeUsdc);
 }
 
 /**

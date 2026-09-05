@@ -214,10 +214,83 @@ export interface RawFillOrder {
 /** `previewFillOrder`'s return, narrowed to the four fields this flow reads.
  *  It has ten; the other six are not decisions this file makes. */
 export interface RawFillPreview {
+  /**
+   * How many contracts the fill will buy, 6dp — and **already capped** at the
+   * maker's remaining collateral. See {@link premiumOf}: this is the field the
+   * SDK clamps and `totalCollateral` is the field it does not.
+   */
   numContracts: bigint;
+  /**
+   * `usdcAmount` back again, whenever a caller passed one — **the request, not
+   * the spend.** See {@link premiumOf} for the full reading and for the number
+   * that is the spend.
+   */
   totalCollateral: bigint;
   collateralToken: string;
+  /**
+   * `order.price`, 8dp — the maker's price for one contract, verbatim.
+   *
+   * Load-bearing, not optional garnish: with `numContracts` it is the only way
+   * to know what a capped fill actually costs. `undefined` is declared because
+   * a narrowed fake can omit it, and a preview that omits it is a preview this
+   * file will not sign against — {@link premiumOf} answers `null` and the leg
+   * is dropped before any signature.
+   */
   pricePerContract?: bigint;
+}
+
+/** `1e8` — the scale of `order.price`, and the SDK's own
+ *  (`calculateNumContracts`: `usdcAmount * 100000000n / pricePerContract`). */
+const PRICE_SCALE = 100_000_000n;
+
+/**
+ * What the fill will actually pull — `null` when the preview will not say.
+ *
+ * ## The gap this closes
+ *
+ * `previewFillOrder` (SDK 0.3.0, `dist/index.js`) caps the size and does not
+ * cap the price:
+ *
+ * ```js
+ * if (numContracts > maxContracts) numContracts = maxContracts;
+ * const totalPremium = usdcAmount ?? numContracts * orderWithSig.order.price / 100000000n;
+ * ```
+ *
+ * With a `usdcAmount` — which is every call in this file — `totalCollateral`
+ * comes back as **the amount we asked for**, while `fillOrder` builds the
+ * on-chain order from the *capped* `numContracts`. So when the maker's
+ * remaining collateral binds, the wallet pays less than the figure the app
+ * copied into the receipt, into the slip total, into `ParlayFillResult.spent`
+ * and into the allowance. The SDK's own uncapped branch, right there on the
+ * same line, states the premium formula for a given contract count; this is
+ * that formula, applied to the count the fill will really use.
+ *
+ * It is not only the cap. Both steps floor: `numContracts` is
+ * `floor(usdc × 1e8 / price)` and the premium is `floor(contracts × price /
+ * 1e8)`, so even an uncapped fill spends a hair under what it asked for.
+ *
+ * ## Why it matters beyond the receipt
+ *
+ * `filledLegsFor` hands `duelScore` a leg whose `contracts` is the true capped
+ * count and whose `premium` was the request, and `scoreDetail` is
+ * `pnl / premium` — a numerator off the real fill over a denominator off the
+ * request. In a duel where one player's leg capped and the other's did not,
+ * that can flip the winner. Low frequency at `MAX_FILL_USDC = $2`; it is still
+ * two different fills' numbers in one ratio, which is the shape of every money
+ * bug this repo has caught.
+ *
+ * ## `null` refuses; it never guesses
+ *
+ * No `pricePerContract`, no premium — and the request is *not* substituted for
+ * it, because substituting the request is the bug. The same rule `zoneQuoter`
+ * in `src/server/thetanuts.ts` already holds for the same field: absence is
+ * "not quoted", never a figure derived some other way.
+ */
+export function premiumOf(preview: RawFillPreview): bigint | null {
+  const price = preview.pricePerContract;
+  if (price === undefined || price <= 0n) return null;
+  if (preview.numContracts <= 0n) return null;
+  return (preview.numContracts * price) / PRICE_SCALE;
 }
 
 /**
@@ -248,8 +321,29 @@ export interface FillQuote {
   usdcAmount: bigint;
   /** 6dp — the collateral's scale, not a token's. See `CONTRACT_DECIMALS`. */
   numContracts: bigint;
-  /** 6dp for USDC — the **exact** amount approved, and the number clicked. */
+  /**
+   * 6dp for USDC — the **approval ceiling**: the exact amount this leg
+   * approves, and never a rounded-up or infinite one.
+   *
+   * This is `previewFillOrder`'s `totalCollateral`, which is the amount we
+   * *asked* for. It used to be treated as the amount spent as well, and it is
+   * not — see {@link premiumOf}. It stays the approval because an allowance
+   * must cover what the chain will pull and an allowance short by one unit is a
+   * revert; {@link FillQuote.premium} is what the chain will actually pull, and
+   * it is what every figure about money reads.
+   */
   totalCollateral: bigint;
+  /**
+   * 6dp for USDC — what the fill will **actually pull**, and the number on
+   * screen, on the receipt, in `spent` and in the duel clock's `premium`.
+   *
+   * `numContracts × pricePerContract`, at the SDK's own scale, over the count
+   * the SDK already capped at the maker's remaining collateral. Required, not
+   * optional: a preview that cannot answer it is dropped at the preview step
+   * with nothing signed, rather than carried forward with the request standing
+   * in. {@link premiumOf} has the whole reading.
+   */
+  premium: bigint;
   /** The token the OptionBook will actually pull. Not always USDC: the live
    *  Base book is collateralised in four tokens at three decimal scales. */
   collateralToken: string;
@@ -654,6 +748,45 @@ export function refFor(row: OrderRow): OrderRef | null {
   return identity === null ? null : { identity, label: row.instrument };
 }
 
+/**
+ * The one order a reference names on a freshly-read book — **or none**.
+ *
+ * ## Why an ambiguous match is not a match
+ *
+ * {@link orderIdentity} is deliberately coarse: side, signature date, *first*
+ * strike, call/put and the price to four decimals. It does not carry the
+ * underlying, it does not carry the year, and it does not carry the other
+ * strikes — because the browser holds `OrderRow`, which is display strings, and
+ * cannot derive more without pulling the SDK and a price-feed map into the
+ * bundle. Those five facts name one order on a book of a few hundred: the 30
+ * orders in `test/fixtures/orders.json` produce 30 distinct identities, and the
+ * price at 4dp is what separates a spread from a fly at the same first strike.
+ *
+ * "Usually enough" is not a basis for signing, so the rule is **exactly one, or
+ * nothing**. Two orders that print identically are two orders and choosing
+ * between them for the player is a decision this code has no grounds to make;
+ * the caller turns `null` into `ORDER_EXPIRED` before a preview, before an
+ * approval and before a signature, so an ambiguity costs a refresh and never a
+ * dollar. The same rule catches the other direction: if this derivation and the
+ * server's formatter ever drift, *no* order matches and every fill fails closed.
+ *
+ * Nonce wins when a caller has one — it is the book's own identity field — and
+ * carries the same rule, because a duplicated nonce is a book we do not
+ * understand rather than a tie to break.
+ *
+ * Split out of the live adapter so the refusal is a property a test can hold
+ * rather than a comment beside a network call nothing offline can reach.
+ */
+export function matchOrder(
+  orders: readonly RawFillOrder[],
+  ref: OrderRef,
+): RawFillOrder | null {
+  const matches = ref.nonce
+    ? orders.filter((o) => String(o.order.nonce ?? "") === ref.nonce)
+    : orders.filter((o) => orderIdentity(o) === ref.identity);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Rehydration — the wire's decimal strings, back to the SDK's bigints
 // ─────────────────────────────────────────────────────────────────────────────
@@ -959,11 +1092,15 @@ export async function runFill(
       // we already hold (FINDINGS "0.3.0 delta" — the docs' two-field, async
       // description is wrong twice over).
       const preview = deps.previewFillOrder(order, rung, deps.referrer);
-      if (preview.numContracts > 0n) {
+      // The premium the capped count implies, or nothing. A rung whose preview
+      // will not price itself is not a rung we climb onto: see `premiumOf`.
+      const premium = premiumOf(preview);
+      if (preview.numContracts > 0n && premium !== null) {
         quote = {
           usdcAmount: rung,
           numContracts: preview.numContracts,
           totalCollateral: preview.totalCollateral,
+          premium,
           collateralToken: preview.collateralToken,
         };
         break;
@@ -1310,8 +1447,15 @@ export interface ParlaySlipQuote {
    *  silently removed — a slip that quietly shrinks between the press and the
    *  confirm is a slip the player did not build. */
   dropped: readonly ParlayLegState[];
-  /** Σ `totalCollateral` over `legs`. What leaves the wallet if every leg
-   *  lands. */
+  /**
+   * Σ {@link FillQuote.premium} over `legs` — what leaves the wallet if every
+   * leg lands.
+   *
+   * The **premium**, not the approval ceiling. This read `totalCollateral`,
+   * which is the amount requested; a leg the maker's collateral caps approves
+   * that and pays less, and the confirm screen was quoting the larger number.
+   * See {@link premiumOf}.
+   */
   totalDebit: bigint;
   /**
    * The slip's total max loss — and it is **the same number** as `totalDebit`.
@@ -1347,12 +1491,14 @@ export interface ParlayFillResult {
   failed: readonly ParlayLegState[];
   /** Removed before the first signature. Nothing at all was spent on these. */
   dropped: readonly ParlayLegState[];
-  /** Σ `totalCollateral` over the legs the player confirmed. */
+  /** Σ {@link FillQuote.premium} over the legs the player confirmed. */
   totalDebit: bigint;
   /** The same number. See `ParlaySlipQuote.maxLoss`. */
   maxLoss: bigint;
-  /** Σ `totalCollateral` over the legs that actually landed — what was really
-   *  spent, which after a partial fill is not the number that was confirmed. */
+  /** Σ {@link FillQuote.premium} over the legs that actually landed — what was
+   *  really spent, which after a partial fill is not the number that was
+   *  confirmed. The premium and not the approval, for the reason
+   *  {@link premiumOf} gives at length. */
   spent: bigint;
   /**
    * Landed legs the **duel clock cannot score**, by label.
@@ -1499,8 +1645,15 @@ export function filledLegsFor(result: ParlayFillResult): readonly FilledLeg[] {
       // 2.5 × 10⁻¹³ of the PnL it earned. It stayed `> 0`, so `usable()` passed
       // it and the slate scored — wrongly, and silently.
       contracts: Number(leg.quote.numContracts) / 10 ** CONTRACT_DECIMALS,
-      // USDC 6dp → dollars. The one number in the ratio that was always money.
-      premium: (Number(leg.quote.totalCollateral) / 10 ** 6) as Usd,
+      // USDC 6dp → dollars. The one number in the ratio that was always money —
+      // and it is now the number the *fill* pays rather than the number the app
+      // asked for. This read `totalCollateral`, which the SDK sets from the
+      // request while capping `numContracts` at the maker's collateral: the
+      // numerator of `scoreDetail`'s `pnl / premium` came off the real fill and
+      // the denominator off the request, and in a duel where one player's leg
+      // capped and the other's did not that can flip the winner. See
+      // `premiumOf`.
+      premium: (Number(leg.quote.premium) / 10 ** 6) as Usd,
     });
   }
   return legs;
@@ -1747,10 +1900,31 @@ export async function runParlayFill(
       });
       continue;
     }
+    // What this leg will actually pull, from the count the SDK already capped.
+    // A preview that will not price itself is dropped here, before anything is
+    // signed, rather than carried to the confirm screen with the *requested*
+    // amount standing in for the spend — see `premiumOf`.
+    const premium = premiumOf(preview);
+    if (premium === null) {
+      drop(state, "NO_FILL", {
+        code: "CONTRACT_REVERT",
+        ...FILL_COPY.CONTRACT_REVERT,
+        message: "That order previewed without a price per contract.",
+        recovery:
+          "Without it there is no way to say what a capped fill would cost, and the amount " +
+          "requested is not that number. Nothing was approved and nothing was signed for this " +
+          "leg; the rest of the slip carried on.",
+        action: "refresh",
+        step: "preview",
+        detail: "previewFillOrder returned no pricePerContract",
+      });
+      continue;
+    }
     state.quote = {
       usdcAmount: leg.usdcAmount,
       numContracts: preview.numContracts,
       totalCollateral: preview.totalCollateral,
+      premium,
       collateralToken: preview.collateralToken,
     };
     state.status = "previewed";
@@ -1787,6 +1961,13 @@ export async function runParlayFill(
   // passed in (mcp-crosscheck OPPORTUNITY 11), so on today's SDK these agree —
   // which is exactly why the check is cheap enough to keep for the day they do
   // not.
+  //
+  // The cap binds the **ceiling**, not the premium: `totalCollateral` is what
+  // each leg approves, an approval is what a compromised book could pull, and a
+  // bound that only watched the smaller of the two numbers would be a bound
+  // with a gap the size of the difference. `totalDebit` beside it is the money
+  // — Σ `premium`, what the chain will actually take if every leg lands.
+  let totalApproved = 0n;
   let totalDebit = 0n;
   let totalContracts = 0n;
   for (const state of live) {
@@ -1797,12 +1978,13 @@ export async function runParlayFill(
         action: "none",
       });
     }
-    totalDebit += quote.totalCollateral;
+    totalApproved += quote.totalCollateral;
+    totalDebit += quote.premium;
     totalContracts += quote.numContracts;
   }
-  if (totalDebit > MAX_FILL_USDC) {
+  if (totalApproved > MAX_FILL_USDC) {
     return refuse("SIZE", "cap", {
-      message: `The previewed slip totals $${usdText(totalDebit)}; the cap is $${usdText(MAX_FILL_USDC)}.`,
+      message: `The previewed slip totals $${usdText(totalApproved)}; the cap is $${usdText(MAX_FILL_USDC)}.`,
       recovery:
         "Nothing was approved and nothing was spent. The cap is checked on the sum as well as " +
         "on each leg, so a slip cannot climb over it one legal step at a time.",
@@ -1833,7 +2015,12 @@ export async function runParlayFill(
         await deps.confirm({
           usdcAmount: requested,
           numContracts: totalContracts,
-          totalCollateral: totalDebit,
+          // The aggregate wears both figures for the same reason one leg does:
+          // the ceiling is what the slip would approve, the premium is what it
+          // would pay, and they are not the same number when a maker's
+          // collateral caps a leg.
+          totalCollateral: totalApproved,
+          premium: totalDebit,
           collateralToken: slip.collateralToken,
         });
   } catch (error) {
@@ -1926,7 +2113,7 @@ export async function runParlayFill(
     dropped,
     totalDebit,
     maxLoss: totalDebit,
-    spent: filled.reduce((acc, s) => acc + (s.quote?.totalCollateral ?? 0n), 0n),
+    spent: filled.reduce((acc, s) => acc + (s.quote?.premium ?? 0n), 0n),
     // A landed leg with no venue instrument name, or no DOLLAR entry mark, is
     // one the duel clock cannot score. Named here so the gap is visible on the
     // receipt rather than discovered as a refund six hours later.
@@ -2123,16 +2310,10 @@ export function createLiveFillDeps(
 
       // By nonce when we have one — that is the plan's rule and the book's own
       // identity field. Otherwise by the row's printed identity, which is all
-      // the display envelope carries (see `OrderRef`).
-      if (ref.nonce) {
-        const byNonce = orders.filter((o) => String(o.order.nonce ?? "") === ref.nonce);
-        return byNonce.length === 1 ? (byNonce[0] as RawFillOrder) : null;
-      }
-      const matches = orders.filter((o) => orderIdentity(o) === ref.identity);
-      // Exactly one, or none. Two orders that print identically are two orders,
-      // and picking one of them for the user is a decision this code has no
-      // basis to make.
-      return matches.length === 1 ? (matches[0] as RawFillOrder) : null;
+      // the display envelope carries (see `OrderRef`). Exactly one, or none,
+      // either way: `matchOrder` holds that rule and says at length why an
+      // ambiguous match must refuse rather than pick.
+      return matchOrder(orders, ref);
     },
 
     previewFillOrder(order, usdcAmount, referrer) {

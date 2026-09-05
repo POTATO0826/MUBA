@@ -132,12 +132,104 @@ function useTradeConfig(wallet: DeskWallet | undefined): TradeConfig {
 /**
  * One chain level's identity on this screen.
  *
- * Type, strike **and expiry** — the third is not decoration: one underlying
- * lists the same strike across four expiries, and a two-part key would make a
- * slip pick the wrong week's option while the row on screen looked right.
+ * ## The merge this replaces
+ *
+ * This used to be `` `${row.type}-${row.strike}-${row.expiry}` ``, and every
+ * one of those three fields is coarser than it looks:
+ *
+ *  - `type` is the three-member colour bucket. A CALL_SPREAD and a CALL_FLY are
+ *    both `CALL`; `structure` is the truthful field and it was not in the key.
+ *  - `strike` prints only the **first** strike for anything under four of them
+ *    (`src/server/thetanuts.ts`), so an 85,000/86,000 spread and an
+ *    85,000/86,000/87,000 fly both print `85,000`.
+ *  - `expiry` is `"5 SEP"` — **no year**. Two Septembers key the same.
+ *
+ * The repo's own frozen capture carries the collision: BTC, `5 SEP`, both rows
+ * fillable, both keying to `CALL-85,000-5 SEP` (`test/fixtures/orders.json`
+ * through the real `buildSnapshot`; pinned in `test/fill.test.ts`). What that
+ * cost, with `THETADUEL_TRADE=on` and a real wallet: pressing `+ SLIP` on the
+ * fly lit both rows `IN SLIP`, `slipRows` resolved the key with `.find` and
+ * returned the **first** match — the spread — and `runParlayFill` approved USDC
+ * and filled a contract the player never picked, at a different premium and a
+ * different payoff shape. `probOf` is keyed the same way, so the re-score
+ * divided one row's delta into the other's fill. React saw two children with
+ * one `key` and was free to swap them under the 30s book refresh.
+ *
+ * `cardsForSlice` in `src/engine/parlay.ts` has always guarded this on the
+ * card-dealing path — its step 1 refuses any row whose `structure` is not the
+ * plain vanilla, and its docblock says why. The desk's chain-table slip is the
+ * same hazard on the other path and never got the guard.
+ *
+ * ## What names one contract now
+ *
+ * The **server's own `Level` key**, rebuilt from what the row carries:
+ * call/put, the structure, **every** strike, the **option** expiry in unix
+ * seconds — never the printed label, so a year cannot go missing — and the
+ * implementation address, lowercased, because a RANGER and a CALL_CONDOR are
+ * different products at identical strikes and only the address separates them.
+ * The underlying is the one part of that key left out, and it is the one part
+ * that cannot vary here: this screen renders `source.pricing(asset)`, one
+ * asset at a time.
+ *
+ * The exact half comes off `row.order` — the resting ask the level would fill
+ * against — so a row that can be **bought** is keyed by what a fill would
+ * actually sign. A row with no `order` is display-only: it cannot enter the
+ * slip at all (`slipRows` drops it, and the `+ SLIP` toggle is not rendered for
+ * it), and it keys on the printed half alone, which is already strictly finer
+ * than the old key. Closing that last gap — a year for a display-only row —
+ * needs an option expiry on `PricingRow` itself, which is `src/types.ts` and
+ * the server.
+ *
+ * ## Why the printed half is kept as well
+ *
+ * Both halves, joined, never one or the other. They are two readings of one
+ * level and on live data they cannot disagree — the server derives the printed
+ * strike and expiry *from* the very order it attaches. Keeping both means a
+ * key can only merge two rows when **everything** about them agrees, printed
+ * and exact; drop either half and a divergence the builder is not supposed to
+ * produce becomes a silent merge again, which is the whole class of failure
+ * this function is now the wrong place for.
  */
-function rowKey(row: PricingRow): string {
-  return `${row.type}-${row.strike}-${row.expiry}`;
+export function rowKey(row: PricingRow): string {
+  const api = row.order?.rawApiData;
+  // `order.expiry` is the OPTION's expiry in unix seconds — the settlement
+  // date, and the year with it. `rawApiData.orderExpiryTimestamp` is the
+  // signature deadline and is deliberately not here: two orders on one contract
+  // with different deadlines are one instrument, which is the correction
+  // `Level` records.
+  const expiry = row.order?.order.expiry;
+  return [
+    // What the player reads off the row.
+    row.type,
+    row.structure ?? "",
+    row.strike,
+    row.expiry,
+    // What a fill would sign against: every strike, the settlement date in
+    // seconds, and the product's own contract.
+    api?.strikes?.join("/") ?? "",
+    expiry === undefined ? "" : String(expiry),
+    String(api?.implementation ?? "").toLowerCase(),
+  ].join("|");
+}
+
+/**
+ * What a slip leg is called on the ladder, the confirm screen and the receipt.
+ *
+ * `${underlying}-${expiry}-${strike}-${C|P}` for a plain vanilla — the string
+ * this screen has always printed — with the structure appended for anything
+ * that is not one. `PricingRow.type` is the three-member colour bucket, so a
+ * CALL_SPREAD and a CALL_FLY both answer `CALL` and both print only their first
+ * strike; a player confirming `BTC-5 SEP-85,000-C` while buying a fly is the
+ * same merge {@link rowKey} exists to stop, one layer up in the copy.
+ *
+ * The label is display only — `ParlayFillLeg.instrument` is what the duel clock
+ * keys on, and it is copied off `markTicker` or absent, never composed here.
+ */
+function legLabel(underlying: string, row: PricingRow): string {
+  const base = `${underlying}-${row.expiry}-${row.strike}-${row.type === "CALL" ? "C" : "P"}`;
+  return row.structure === undefined || row.structure === row.type
+    ? base
+    : `${base} ${row.structure}`;
 }
 
 /** `−0.34` / `0.34` → `0.34`, and `—` → `null`. Both minus signs, because the
@@ -1115,9 +1207,14 @@ function FillFlow({
         <div style={sx(`font:400 11px/1.6 ${MONO};color:${C.muted}`)}>
           <div>
             {contractText(quote.numContracts)} contracts for{" "}
-            {/* Click the amount, not a button beside it. This exact figure is
-                what `ensureAllowance` approves — never MaxUint256 — and what
-                `fillOrder` then spends. */}
+            {/* Click the amount, not a button beside it. `premium`, not
+                `totalCollateral`: the SDK caps the contract count at the
+                maker's remaining collateral and does NOT cap the collateral
+                figure, which comes back as the amount we asked for. This is the
+                number the chain will actually pull, computed from the count it
+                will actually use — see `premiumOf` in `src/desk/fill.ts`. The
+                approval is still `totalCollateral`, because an allowance must
+                cover what is pulled. */}
             <button
               onClick={() => decide.current?.(true)}
               style={sx(
@@ -1125,7 +1222,7 @@ function FillFlow({
                   `color:${C.accent};font:700 13px/1 ${MONO};padding:7px 10px;cursor:pointer`,
               )}
             >
-              ${usdText(quote.totalCollateral)}
+              ${usdText(quote.premium)}
             </button>
           </div>
           <div style={sx(`margin-top:6px;color:${C.faint}`)}>
@@ -1154,7 +1251,7 @@ function FillFlow({
       {outcome?.status === "filled" && (
         <div style={sx(`font:400 11px/1.6 ${MONO};color:${C.green}`)}>
           FILLED · {contractText(outcome.quote.numContracts)} contracts · $
-          {usdText(outcome.quote.totalCollateral)} ·{" "}
+          {usdText(outcome.quote.premium)} ·{" "}
           {outcome.approvalSkipped ? "1 tx (allowance already sufficient)" : "2 tx"}
           <div style={sx("margin-top:6px")}>
             <a
@@ -1262,7 +1359,7 @@ export function ParlayLegChip({ leg }: { leg: ParlayLegState }) {
       </div>
       {leg.quote && (
         <div style={sx(`font:400 10px/1.4 ${MONO};color:${C.muted}`)}>
-          {contractText(leg.quote.numContracts)} contracts · ${usdText(leg.quote.totalCollateral)}
+          {contractText(leg.quote.numContracts)} contracts · ${usdText(leg.quote.premium)}
           {leg.status === "filled" &&
             (leg.approvalSkipped ? " · 1 tx (allowance sufficient)" : " · 2 tx")}
         </div>
@@ -1356,7 +1453,12 @@ function ParlaySlip({
    */
   const legs: ParlayFillLeg[] = rows.map((row) => ({
     id: rowKey(row),
-    label: `${underlying}-${row.expiry}-${row.strike}-${row.type === "CALL" ? "C" : "P"}`,
+    // The structure rides on the label for the same reason it now rides on
+    // `rowKey`: `type` is the colour bucket, and a fly labelled `BTC-5 SEP-
+    // 85,000-C` reads on the ladder and on the confirm screen as a plain call
+    // at one strike. It is appended rather than substituted so a vanilla's
+    // label is byte-identical to the one this screen always printed.
+    label: legLabel(underlying, row),
     instrument: row.markTicker,
     entryMarkUsd: markUsdOf(row),
     order: row.order!,
@@ -1560,7 +1662,7 @@ function ParlaySlip({
               >
                 <span style={sx(`flex:1;min-width:0;color:${C.text}`)}>{leg.label}</span>
                 <span>{contractText(leg.quote!.numContracts)}</span>
-                <span style={sx(`color:${C.accent}`)}>${usdText(leg.quote!.totalCollateral)}</span>
+                <span style={sx(`color:${C.accent}`)}>${usdText(leg.quote!.premium)}</span>
               </div>
             ))}
             {/* Legs the book removed between the press and this screen, named

@@ -20,6 +20,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { MarketSource } from "../src/data/market.ts";
@@ -49,7 +50,9 @@ import {
   hydrateOrder,
   legFromCard,
   looksThrottled,
+  matchOrder,
   orderIdentity,
+  premiumOf,
   refFor,
   rowIdentity,
   runFill,
@@ -61,6 +64,7 @@ import {
   type FillOutcome,
   type FillQuote,
   type FillStep,
+  type OrderRef,
   type ParlayFillLeg,
   type ParlayFillResult,
   type ParlayLegState,
@@ -68,7 +72,7 @@ import {
   type RawFillOrder,
   type RawFillPreview,
 } from "../src/desk/fill.ts";
-import { Parlay, ParlayLegChip } from "../src/views/Parlay.tsx";
+import { Parlay, ParlayLegChip, rowKey } from "../src/views/Parlay.tsx";
 import type { OrderRow, PricingRow } from "../src/types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +122,15 @@ function makeOrder(over: Partial<RawFillOrder["rawApiData"]> = {}): RawFillOrder
   };
 }
 
+/**
+ * The frozen capture: thirty real resting orders and one `getMarketData()`
+ * response off Base mainnet, the same file `test/market-builder.test.ts` drives
+ * the whole builder with.
+ */
+const FIXTURE = (await Bun.file(
+  join(import.meta.dir, "fixtures", "orders.json"),
+).json()) as Parameters<typeof buildSnapshot>[0];
+
 /** The blotter row the server would have printed for `makeOrder()`. */
 const ROW: OrderRow = {
   side: "BUY",
@@ -142,6 +155,11 @@ function preview(over: Partial<RawFillPreview> = {}): RawFillPreview {
   return {
     numContracts: 150_000n,
     totalCollateral: 9_900n,
+    // $0.066 a contract, 8dp — the price that makes 0.15 contracts cost the
+    // $0.0099 above. The real SDK always returns this field (it is
+    // `order.price`, copied), and `premiumOf` needs it to say what a *capped*
+    // fill costs, so a stub without it is a stub of a preview that never ships.
+    pricePerContract: 6_600_000n,
     collateralToken: USDC,
     ...over,
   };
@@ -949,7 +967,7 @@ describe("runParlayFill — the cap is on the SUM, above the network", () => {
     // nothing for the day they do not.
     const s = spy({
       confirmSlip: async () => true,
-      previewFillOrder: () => preview({ totalCollateral: 1_500_000n }),
+      previewFillOrder: () => preview({ totalCollateral: 1_500_000n, pricePerContract: 1_000_000_000n }),
     });
     const { result } = await runSlip(s, [pleg("a"), pleg("b")]);
 
@@ -1181,7 +1199,13 @@ describe("runParlayFill — the approval is exact, per leg", () => {
     const s = spy({
       confirmSlip: async () => true,
       previewFillOrder: (_order, amount) =>
-        preview({ totalCollateral: amount, numContracts: amount * 10n }),
+        preview({
+          totalCollateral: amount,
+          numContracts: amount * 10n,
+          // 0.1 USDC a contract, so ten contracts per dollar cost exactly the
+          // amount asked for and the premium equals the ceiling here.
+          pricePerContract: 10_000_000n,
+        }),
     });
     const { result } = await runSlip(s, [
       pleg("small", { usdcAmount: 10_000n }),
@@ -1291,7 +1315,12 @@ function sdkPreview(order: RawFillOrder, usdcAmount: bigint): RawFillPreview {
   const numContracts = (usdcAmount * 100_000000n) / order.order.price;
   return {
     numContracts: numContracts < maxContracts ? numContracts : maxContracts,
+    // `usdcAmount` verbatim, exactly as the SDK does it — the request, uncapped
+    // (`dist/index.js`: `usdcAmount ?? numContracts * price / 1e8`).
     totalCollateral: usdcAmount,
+    // @ts-expect-error — the wire order's price is `string | bigint`; the point
+    // of this stub is that the string is what the SDK chokes on.
+    pricePerContract: order.order.price,
     collateralToken: USDC,
   };
 }
@@ -1377,8 +1406,32 @@ describe("runParlayFill — the wire's strings are rehydrated before the SDK see
     // behaviour and must stay.
     expect(result.status).toBe("filled");
     expect(result.filled.map((l) => l.id)).toEqual(["a", "c"]);
-    expect(result.spent).toBe(TARGET_FILL_USDC * 2n);
-    expect(result.totalDebit).toBe(TARGET_FILL_USDC * 2n);
+
+    // And what the two surviving legs actually SPENT, which is not what they
+    // asked for. Both read `TARGET_FILL_USDC * 2n` — $0.02 — until `premiumOf`
+    // existed, and this stub is the SDK's own arithmetic: each leg asked for
+    // $0.01, the maker's $10 of collateral behind a $4,400 strike capped it at
+    // 0.002272 contracts, and 2,272 × $0.0714 is **$0.000162**. Two orders of
+    // magnitude between the request and the spend, on a receipt that claimed
+    // the request. See `premiumOf` in `src/desk/fill.ts`.
+    const perLeg = (2_272n * 7_140_000n) / 100_000_000n;
+    expect(perLeg).toBe(162n);
+    expect(result.spent).toBe(perLeg * 2n);
+    expect(result.totalDebit).toBe(perLeg * 2n);
+    // The approval is the other number, and stays the request: an allowance
+    // has to cover what the chain pulls, and this one does with room to spare.
+    expect(s.allowanceArgs.map((a) => a[2])).toEqual([TARGET_FILL_USDC, TARGET_FILL_USDC]);
+    expect(result.filled[0]!.quote!.totalCollateral).toBe(TARGET_FILL_USDC);
+    expect(result.filled[0]!.quote!.premium).toBe(perLeg);
+
+    // The duel clock's ratio now has one fill's numbers on both sides of it:
+    // `contracts` is the capped count, `premium` is what those contracts cost.
+    const scored = filledLegsFor({
+      ...result,
+      filled: result.filled.map((l) => ({ ...l, instrument: "ETH-27SEP26-4400-C", entryMarkUsd: 1 })),
+    });
+    expect(scored[0]!.contracts).toBe(2_272 / 10 ** 6);
+    expect(scored[0]!.premium as number).toBe(162 / 10 ** 6);
   });
 
   test("every field the SDK multiplies fails closed on its own", () => {
@@ -2315,6 +2368,8 @@ describe("the parlay slip, on screen", () => {
       // 6dp — see `preview()`. The panel renders this through `contracts()`.
       numContracts: 150_000n,
       totalCollateral: 9_900n,
+      // What the fill pays. Equal to the ceiling here because nothing capped.
+      premium: 9_900n,
       collateralToken: USDC,
     };
     const rungs: [ParlayLegState, (html: string) => void][] = [
@@ -2440,5 +2495,310 @@ describe("the parlay slip, on screen", () => {
     expect(desk.container.innerHTML).toContain("resting order backs");
     await desk.unmount();
     globalThis.fetch = realFetch;
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The seventh money bug — one key, two contracts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The chain-table slip's row key, against the repo's own frozen capture.
+ *
+ * `rowKey` used to be `` `${type}-${strike}-${expiry}` ``, and the capture in
+ * `test/fixtures/orders.json` — thirty real resting orders off Base mainnet —
+ * carries two BTC contracts that all three of those fields agree about: a
+ * 85,000/86,000 **call spread** and a 85,000/86,000/87,000 **call fly**, same
+ * expiry, both quoting an ask, both fillable. `type` is the colour bucket so
+ * both read `CALL`; `strike` prints only the first strike under four of them so
+ * both read `85,000`; `expiry` is `"5 SEP"` with no year. One key,
+ * `CALL-85,000-5 SEP`, two products.
+ *
+ * The fixture is the whole point of this block: the collision is not
+ * constructed here, it is *found*, by the real `buildSnapshot` over a capture
+ * that was frozen for other reasons entirely.
+ */
+describe("the chain row key names one contract, not a bucket", () => {
+  const realFetch = globalThis.fetch;
+
+  function serveTradeOn() {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ referrer: "", features: { trade: true } }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+  }
+
+  /** The two colliding BTC rows, straight out of the real builder. */
+  function collidingRows(): PricingRow[] {
+    const snapshot = buildSnapshot(FIXTURE, NOW);
+    return (snapshot.pricing.BTC ?? []).filter(
+      (r) => r.type === "CALL" && r.strike === "85,000" && r.expiry === "5 SEP",
+    );
+  }
+
+  test("the frozen capture really does carry two fillable contracts under one printed identity", () => {
+    const rows = collidingRows();
+    expect(rows).toHaveLength(2);
+    // Different products, and the field that says so is the one the old key
+    // left out.
+    expect([...rows.map((r) => r.structure)].sort()).toEqual(["FLY", "SPREAD"]);
+    // Both pressable: this is a money path, not a rendering curiosity.
+    expect(rows.every((r) => r.order !== undefined)).toBe(true);
+    // Different premiums, so filling the wrong one is not a rounding error.
+    expect(rows[0]!.ask).not.toBe(rows[1]!.ask);
+    // And the old key, spelled out, so the assertion below cannot be read as
+    // trivially true.
+    for (const r of rows) expect(`${r.type}-${r.strike}-${r.expiry}`).toBe("CALL-85,000-5 SEP");
+  });
+
+  test("the two get different keys", () => {
+    const [spread, fly] = collidingRows() as [PricingRow, PricingRow];
+    expect(rowKey(spread)).not.toBe(rowKey(fly));
+  });
+
+  test("the key carries the option expiry in seconds, so a year cannot go missing", () => {
+    // `"5 SEP"` is what the row prints and what the old key used. The key now
+    // reads the order's own `expiry`, which is unix seconds and therefore
+    // carries the year the label drops.
+    const row = collidingRows()[0]!;
+    const seconds = String(row.order!.order.expiry);
+    expect(rowKey(row)).toContain(seconds);
+    expect(new Date(Number(seconds) * 1000).getUTCFullYear()).toBeGreaterThan(2000);
+  });
+
+  test("pressing + SLIP on one of them puts one row in the slip, not both", async () => {
+    // The failure this closes, end to end: both rows lit `IN SLIP`, `slipRows`
+    // resolved the shared key with `.find` and returned the first match, and
+    // the fill went to the contract the player did not press.
+    serveTradeOn();
+    const rows = collidingRows();
+    const desk = await mountDesk({
+      id: "thetanuts · base 8453",
+      meta: { ok: true, source: "live", fetchedAt: NOW },
+      underlyings: () => ["BTC"],
+      pricing: () => rows,
+      mmPricing: () => [],
+      orders: () => [],
+      spot: () => null,
+    });
+
+    expect(desk.slipToggles()).toHaveLength(2);
+    await desk.click("+ SLIP");
+    expect(desk.slipToggles().filter((b) => b.textContent === "IN SLIP")).toHaveLength(1);
+
+    await desk.unmount();
+    globalThis.fetch = realFetch;
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The request is not the spend
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `previewFillOrder` caps the size and does not cap the price.
+ *
+ * ```js
+ * if (numContracts > maxContracts) numContracts = maxContracts;
+ * const totalPremium = usdcAmount ?? numContracts * orderWithSig.order.price / 100000000n;
+ * ```
+ *
+ * — SDK 0.3.0, `node_modules/@thetanuts-finance/thetanuts-client/dist/index.js`.
+ * Every call in this app passes a `usdcAmount`, so `totalCollateral` comes back
+ * as **the request**, while `fillOrder` builds the on-chain order from the
+ * capped count. The app copied the request into the receipt, the slip total,
+ * `spent` and the duel clock's `premium`.
+ */
+describe("a capped fill reports what it spent, not what it asked for", () => {
+  /** A preview where the maker's collateral binds: half the contracts the
+   *  notional would have bought, at a round $1 a contract. */
+  function cappedPreview(_order: RawFillOrder, usdcAmount: bigint): RawFillPreview {
+    const price = 100_000_000n; //           $1.00 per contract, 8dp
+    const wanted = (usdcAmount * 100_000_000n) / price;
+    const maxContracts = wanted / 2n; //     the maker will absorb half of it
+    return {
+      numContracts: maxContracts,
+      // The SDK's own behaviour: the request, echoed back uncapped.
+      totalCollateral: usdcAmount,
+      pricePerContract: price,
+      collateralToken: USDC,
+    };
+  }
+
+  test("premiumOf reads the capped count at the order's own price", () => {
+    // 0.15 contracts at $0.066 is $0.0099 — the uncapped case, where the two
+    // figures agree and the bug was invisible.
+    expect(premiumOf(preview())).toBe(9_900n);
+    // Halve the contracts and the premium halves. The request does not.
+    expect(premiumOf(preview({ numContracts: 75_000n }))).toBe(4_950n);
+    // No price, no answer — and never the request standing in for one.
+    expect(premiumOf(preview({ pricePerContract: undefined }))).toBeNull();
+    expect(premiumOf(preview({ pricePerContract: 0n }))).toBeNull();
+    expect(premiumOf(preview({ numContracts: 0n }))).toBeNull();
+  });
+
+  test("a slip leg the maker's collateral caps spends half of what it asked for", async () => {
+    const s = spy({ confirmSlip: async () => true, previewFillOrder: cappedPreview });
+    const { result } = await runSlip(s, [pleg("a")]);
+
+    expect(result.status).toBe("filled");
+    const quote = result.filled[0]!.quote!;
+    // Asked for $0.01; got half the contracts; paid half.
+    expect(quote.usdcAmount).toBe(TARGET_FILL_USDC);
+    expect(quote.numContracts).toBe(5_000n);
+    expect(quote.premium).toBe(TARGET_FILL_USDC / 2n);
+    // The ceiling is still the request, and it is still what was approved —
+    // an allowance must cover what the chain pulls.
+    expect(quote.totalCollateral).toBe(TARGET_FILL_USDC);
+    expect(s.allowanceArgs[0]![2]).toBe(TARGET_FILL_USDC);
+
+    // What the player is told, and what the duel clock is told.
+    expect(result.spent).toBe(TARGET_FILL_USDC / 2n);
+    expect(result.totalDebit).toBe(TARGET_FILL_USDC / 2n);
+    expect(s.slipArgs[0]!.totalDebit).toBe(TARGET_FILL_USDC / 2n);
+    expect(s.slipArgs[0]!.maxLoss).toBe(TARGET_FILL_USDC / 2n);
+  });
+
+  test("the duel clock's ratio takes both of its numbers from the same fill", async () => {
+    // `scoreDetail` is `pnl / premium`. Before this, `contracts` came off the
+    // capped fill and `premium` off the request — one fill's numerator over
+    // another's denominator, which in a duel where one player's leg capped and
+    // the other's did not can flip the winner.
+    const s = spy({ confirmSlip: async () => true, previewFillOrder: cappedPreview });
+    const { result } = await runSlip(s, [
+      pleg("a", { instrument: "ETH-27SEP26-4400-C", entryMarkUsd: 2 }),
+    ]);
+    const scored = filledLegsFor(result);
+    expect(scored).toHaveLength(1);
+    expect(scored[0]!.contracts).toBe(0.005); //  5,000 at 6dp
+    expect(scored[0]!.premium as number).toBe(0.005); // $1 a contract, so they agree
+    // And it is emphatically not the request, which is what it used to be.
+    expect(scored[0]!.premium as number).not.toBe(Number(TARGET_FILL_USDC) / 10 ** 6);
+  });
+
+  test("the single-leg path caps the same way", async () => {
+    const s = spy({ confirm: async () => true, previewFillOrder: cappedPreview });
+    const outcome = await runFill(refFor(ROW)!, TARGET_FILL_USDC, s.deps, () => {});
+    if (outcome.status !== "filled") throw new Error("expected a fill");
+    expect(outcome.quote.premium).toBe(TARGET_FILL_USDC / 2n);
+    expect(outcome.quote.totalCollateral).toBe(TARGET_FILL_USDC);
+    // The confirmation the human clicked is the premium; the approval is the
+    // ceiling. Two numbers, two jobs, and the screen prints the first.
+    expect(s.confirmArgs[0]!.premium).toBe(TARGET_FILL_USDC / 2n);
+    expect(s.allowanceArgs[0]![2]).toBe(TARGET_FILL_USDC);
+  });
+
+  test("a preview that will not price itself is dropped, not filled at the request", async () => {
+    // The refusal, rather than the guess: without a price per contract there is
+    // no way to say what a capped fill costs, and the amount requested is not
+    // that number.
+    const s = spy({
+      confirmSlip: async () => true,
+      previewFillOrder: () => preview({ pricePerContract: undefined }),
+    });
+    const { result } = await runSlip(s, [pleg("a")]);
+
+    expect(result.status).toBe("refused");
+    expect(legState(result, "a").dropped).toBe("NO_FILL");
+    expect(legState(result, "a").quote).toBeUndefined();
+    // Nothing approved, nothing signed.
+    expect(s.calls).not.toContain("ensureAllowance");
+    expect(s.calls).not.toContain("fillOrder");
+  });
+
+  test("the leg chip prints the premium, not the ceiling", async () => {
+    // The two figures made deliberately different, so the assertion cannot
+    // pass by them being equal: 0.15 contracts that cost $0.0050 against a
+    // $0.0100 request.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(ParlayLegChip, {
+          leg: {
+            id: "a",
+            label: "ETH-27SEP-4400-C",
+            status: "previewed",
+            quote: {
+              usdcAmount: 10_000n,
+              numContracts: 150_000n,
+              totalCollateral: 10_000n,
+              premium: 5_000n,
+              collateralToken: USDC,
+            },
+          },
+        }),
+      );
+    });
+    expect(container.innerHTML).toContain("· $0.005<");
+    expect(container.innerHTML).not.toContain("· $0.01<");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An ambiguous match refuses — the coarse identity's safety, as a property
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `orderIdentity` discards the underlying, the year and every strike but the
+ * first, because the browser holds display strings and cannot derive more
+ * without the SDK in the bundle. That is a real coarseness, and this is the
+ * rule that makes it safe rather than lucky: **exactly one, or nothing.**
+ *
+ * The refusal happens at `refetch`, before a preview, before an approval and
+ * before a signature, so an ambiguity costs a refresh and never a dollar.
+ */
+describe("matchOrder — exactly one, or none", () => {
+  const ref = refFor(ROW)!;
+
+  test("the frozen capture's thirty orders carry thirty distinct identities", () => {
+    // Not a claim that a collision is impossible — a measurement of how coarse
+    // the key actually is on real data. The price at 4dp is what separates a
+    // spread from a fly at the same first strike.
+    const ids = (FIXTURE.orders ?? [])
+      .map((o) => orderIdentity(o as unknown as RawFillOrder))
+      .filter((id): id is string => id !== null);
+    expect(ids).toHaveLength(30);
+    expect(new Set(ids).size).toBe(30);
+  });
+
+  test("one match is the match", () => {
+    expect(matchOrder([makeOrder()], ref)).not.toBeNull();
+  });
+
+  test("two orders that print identically match neither", () => {
+    // Same side, same signature date, same first strike, same call/put, same
+    // price — a spread and a fly could do this. Picking one of them for the
+    // player is a decision this code has no basis to make.
+    const twins = [makeOrder(), { ...makeOrder(), signature: "0xother" }];
+    expect(twins.map(orderIdentity)).toEqual([ref.identity, ref.identity]);
+    expect(matchOrder(twins, ref)).toBeNull();
+  });
+
+  test("no match is no match", () => {
+    expect(matchOrder([], ref)).toBeNull();
+    expect(matchOrder([makeOrder({ strikes: ["460000000000"] })], ref)).toBeNull();
+  });
+
+  test("a nonce wins, and carries the same rule", () => {
+    const byNonce: OrderRef = { ...ref, nonce: "4242" };
+    expect(matchOrder([makeOrder()], byNonce)).not.toBeNull();
+    // A duplicated nonce is a book we do not understand, not a tie to break.
+    expect(matchOrder([makeOrder(), makeOrder()], byNonce)).toBeNull();
+    // And the nonce is authoritative: a matching identity does not rescue a
+    // reference whose nonce is nowhere on the book.
+    expect(matchOrder([makeOrder()], { ...ref, nonce: "9999" })).toBeNull();
+  });
+
+  test("a refusal reaches the player as ORDER_EXPIRED, with nothing spent", async () => {
+    const twins = [makeOrder(), { ...makeOrder(), signature: "0xother" }];
+    const s = spy({ refetchOrder: async (r) => matchOrder(twins, r) });
+    const error = failure((await run(s)).outcome);
+    expect(error.code).toBe("ORDER_EXPIRED");
+    expect(error.step).toBe("refetch");
+    expect(s.calls).toEqual(["getSigner", "refetchOrder"]);
   });
 });

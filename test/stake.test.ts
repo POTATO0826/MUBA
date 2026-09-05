@@ -7,10 +7,13 @@ import {
   MIN_DURATION_MINUTES,
   MIN_STAKE_USDC,
   poolOf,
+  potOf,
   stakeStep,
   stepStake,
   usdc,
+  winnerTakesUsdc,
 } from "../src/data/stake.ts";
+import { payoutOf } from "../src/desk/escrow.ts";
 
 describe("clampStake", () => {
   test("holds the 0.50 floor", () => {
@@ -115,11 +118,58 @@ describe("stepStake", () => {
   });
 });
 
-describe("poolOf", () => {
-  test("the winner takes both stakes", () => {
-    expect(poolOf(0.5)).toBe(1);
-    expect(poolOf(10)).toBe(20);
-    expect(poolOf(10_000)).toBe(20_000);
+/**
+ * The rake, on the screens that name it.
+ *
+ * `poolOf` returned `stake × 2` and every WINNER TAKES surface printed it,
+ * while `DuelEscrow.settle` pays `pot − 4%`. Two players at $10 read
+ * `WINNER TAKES $20.00` off a contract that transfers $19.20 — and those
+ * surfaces render only when a deployed escrow is named, i.e. only when the rake
+ * is real.
+ */
+describe("the pot and the payout are two different figures", () => {
+  test("potOf is both stakes, gross — what the escrow holds", () => {
+    expect(potOf(0.5)).toBe(1);
+    expect(potOf(10)).toBe(20);
+    expect(potOf(10_000)).toBe(20_000);
+  });
+
+  test("winnerTakesUsdc is the pot less the escrow's 4%", () => {
+    expect(winnerTakesUsdc(0.5)).toBe(0.96);
+    expect(winnerTakesUsdc(10)).toBe(19.2);
+    expect(winnerTakesUsdc(10_000)).toBe(19_200);
+    // The figure the screens print, spelled the way they print it.
+    expect(usdc(winnerTakesUsdc(10))).toBe("19.20 USDC");
+  });
+
+  test("it agrees with the on-chain payout, digit for digit, across the band", () => {
+    // `payoutOf` is the contract's own integer arithmetic in USDC 6dp
+    // (`src/desk/escrow.ts`). Two implementations of one figure is how the bug
+    // happened; this is what keeps them from drifting again. The sub-cent
+    // stakes are the ones a cents-scaled version of this would get wrong.
+    for (const stake of [0.5, 0.07, 0.13, 1, 2.5, 7.3, 10, 99.99, 1_000, 10_000]) {
+      expect(winnerTakesUsdc(stake), `$${stake}`).toBe(
+        Number(payoutOf(BigInt(Math.round(stake * 1_000_000)))) / 1_000_000,
+      );
+    }
+  });
+
+  test("a stake that is not a stake pays nothing rather than NaN", () => {
+    expect(winnerTakesUsdc(Number.NaN)).toBe(0);
+    expect(winnerTakesUsdc(0)).toBe(0);
+    expect(winnerTakesUsdc(-5)).toBe(0);
+  });
+
+  test("the old name is still the pot, and is therefore still the wrong number under WINNER TAKES", () => {
+    // Deliberately NOT redirected. `poolOf` feeds four surfaces and they do not
+    // all mean the same figure: `RoomLobby`'s WINNER TAKES and
+    // `stakeBasisLine`'s "winner takes …" want the payout, while `Create.tsx`
+    // heads the same number TWICE THE STAKE when no escrow is deployed — which
+    // a redirect would have made a 4% lie. The names carry the split instead.
+    expect(poolOf(10)).toBe(potOf(10));
+    expect(poolOf(10)).not.toBe(winnerTakesUsdc(10));
+    // The gap, in the units the screens print: $0.80 on a $10 stake.
+    expect(potOf(10) - winnerTakesUsdc(10)).toBeCloseTo(0.8, 10);
   });
 });
 
