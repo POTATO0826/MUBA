@@ -9,6 +9,7 @@ import {
   isPlayable,
   ladderBounds,
   ladderIndex,
+  ladderStep,
   liveExpiries,
   maxZoomSteps,
   minBoxHeight,
@@ -29,13 +30,17 @@ import {
   condorStrikeNumbers,
   isCondorUnderlying,
   validateSpec,
+  type CondorEconomics,
   type CondorSpec,
 } from "../data/condor.ts";
 import {
   matchListedZone,
   zoneBox,
   zoneCoversSpot,
+  rangerStrikeNumbers,
+  zoneEconomics,
   zoneToRanger,
+  zoneWingUsd,
   zonesFor,
   type ListedZone,
   type RangerSpec,
@@ -49,11 +54,21 @@ import {
   type NowBoundary,
   type PriceHistory,
 } from "../data/history.ts";
-import type { RoomSeat, RoomView } from "../data/room.ts";
-import { poolOf, usdc } from "../data/stake.ts";
+import {
+  PRACTICE_TAPE_CHIP,
+  PRACTICE_TAPE_NOTE,
+  liveOpenChip,
+  openFor,
+  type RoomSeat,
+  type RoomView,
+} from "../data/room.ts";
+import { MAX_FILL_USDC } from "../desk/fill.ts";
+import { usdc, winnerTakesUsdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
+import { expiryStamp, timeLeft, type Ticket, type TicketRow } from "../desk/ticket.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, meansOf, stateAge, type FeedState } from "../theme.ts";
+import { TicketToggle, useTradeTicket } from "../ui/TradeTicket.tsx";
 
 /**
  * The arena — draw a box, and the box is the option.
@@ -183,6 +198,93 @@ export const NOW_COPY =
 /** §4.3 and plan6 §A7 — the sentence that sits above every upside figure. */
 export const MAX_LOSS_COPY = "The premium you pay, all of it. There is nothing else at risk.";
 
+// ── Size: the half of a ticket that was missing ─────────────────────────────
+//
+// `contracts` was a prop with a default of 1 and the only caller forwarded its
+// own default, so there was no way to say how much to buy. An option ticket
+// without a quantity is not a ticket: the premium, the max loss, the max payout
+// and the multiple are all *position* figures and every one of them was frozen
+// at one contract. `economics` already scales both sides by the count
+// (`src/data/condor.ts`) — nothing was reading it.
+
+/**
+ * The panel's own ceiling on the stepper, and it is **the panel's** rather than
+ * the venue's.
+ *
+ * The maker's real remaining depth is `ListedZone.availableAmount`, published
+ * in the collateral token's own units at that token's own decimals — 6dp for
+ * USDC, 18dp for aBasWETH, 8dp for cbBTC — and this screen holds no collateral
+ * map to convert it with (`src/data/qualify.ts` needs the spot index and the
+ * `rawApiData.collateral` address to do it, and both are stripped before the
+ * ladder reaches here). So the depth cap is **not claimed**: inventing one from
+ * a number in unknown units is exactly the class of mistake this repo keeps a
+ * file of. What is claimed is this bound, which is ours, and the fill cap
+ * below, which is checked in code above the network.
+ */
+export const MAX_PANEL_CONTRACTS = 100;
+
+/** `MAX_FILL_USDC` in dollars — the build's own spend cap per press, checked in
+ *  `runFill` before a single dependency is touched, not merely in a view. */
+export const FILL_CAP_USD = Number(MAX_FILL_USDC) / 1_000_000;
+
+export const SIZE_COPY =
+  "How many contracts this position is. Max loss, max payout and the multiple below are all for the whole position, not for one contract.";
+
+/**
+ * What a fill this build will actually sign looks like, in dollars.
+ *
+ * Not a discouragement and not a disclaimer — a real bound the player is
+ * entitled to know before they size a position, because it is checked in
+ * `runFill` above the network and a UI that hid it would be promising a press
+ * that cannot happen.
+ */
+export function fillCapCopy(premiumPerContractUsd: number | null): string {
+  const base =
+    `Buying is capped at ${usd(FILL_CAP_USD, true)} a press in this build — the check is in ` +
+    "the fill path, not in this panel, so it holds however the position is sized.";
+  if (premiumPerContractUsd === null || !(premiumPerContractUsd > 0)) return base;
+  const affordable = Math.floor(FILL_CAP_USD / premiumPerContractUsd);
+  return affordable >= 1
+    ? `${base} At ${usd(premiumPerContractUsd, true)} a contract that is ${affordable} contract${affordable === 1 ? "" : "s"}.`
+    : `${base} At ${usd(premiumPerContractUsd, true)} a contract that is none at all: this box is priced and readable here, and not buyable from this build.`;
+}
+
+// ── Precision: what is genuinely discrete, and what is simply missing ───────
+
+/**
+ * The answer to *"is this how option trading works — I cannot size the box to
+ * the cent?"*, and it is honest in both directions.
+ *
+ * **Strikes really are discrete.** The venue lists ETH at $20/$50/$100 spacing
+ * and BTC at $500/$1,000; there is no $2,455.37 strike anywhere on this book or
+ * any other, so snapping is the instrument behaving correctly rather than a
+ * limitation this screen invented. What was missing is that nothing said so —
+ * the box just moved under the pointer and the reason was invisible.
+ */
+export const DISCRETE_STRIKES_COPY =
+  "Strikes are discrete. A box lands on prices the venue is quoting and on nothing between them — there is no $2,455.37 strike to buy, here or anywhere. The grid behind the chart is that list, drawn before you drag rather than after.";
+
+/**
+ * The other half, and the reason the first half is not the whole answer.
+ *
+ * `docs/plan7-measurements.md` records that a custom `CALL_CONDOR` **can** be
+ * minted at arbitrary strikes through a request for quote, with an 8-second
+ * minimum offer window and 30–60 s viable. So precision exists — on the other
+ * execution path, at the cost of waiting for a maker. `src/ui/RfqPanel.tsx` is
+ * written and is not mounted anywhere, so this build offers the listed path
+ * only, and says which rather than letting the snap read as the whole market.
+ */
+export const RFQ_PRECISION_COPY =
+  "A box the book does not list can be quoted on request at any strikes — a maker prices it on demand instead of it filling instantly. That path is built and is not wired into this screen in this build, so what is here is the venue's own strikes.";
+
+/** The gap to the next rung, said in the book's own numbers. */
+export function rungGapCopy(ladder: StrikeLadder | null): string | null {
+  if (!ladder || ladder.prices.length < 2) return null;
+  const step = ladderStep(ladder);
+  if (!(step > 0)) return null;
+  return `This column quotes ${ladder.prices.length} strikes, ${usd(step)} apart at the median. That spacing is the finest a box can be drawn.`;
+}
+
 // ── The listed path, said honestly ──────────────────────────────────────────
 //
 // plan7 §3.1 wanted snap-to-listed to be the day-one default. It is, but not
@@ -310,10 +412,17 @@ export interface DuelCustody {
  * it is a real setting, both seats agreed to it, and hiding it would make the
  * create screen's field look like it did nothing — but it is labelled for what
  * it is: notional, held by nobody.
+ *
+ * The custody branch says **winner takes** and therefore prints
+ * `winnerTakesUsdc` — the pot less `DuelEscrow.RAKE_BPS` (4%), i.e. 1.92× the
+ * stake — and not `poolOf`, which is the gross pot the escrow *holds*. It used
+ * to print the pot: on a $10 stake this line promised $20.00 against a contract
+ * that transfers $19.20. The branch is gated on a deployed escrow being named,
+ * so it appeared in exactly the configuration where the rake is real.
  */
 export function stakeBasisLine(stakeUsdc: number, custody: DuelCustody | null): string {
   return custody
-    ? `${usdc(stakeUsdc)} each · winner takes ${usdc(poolOf(stakeUsdc))}`
+    ? `${usdc(stakeUsdc)} each · winner takes ${usdc(winnerTakesUsdc(stakeUsdc))}`
     : `${usdc(stakeUsdc)} each, notional · nothing is held`;
 }
 
@@ -676,6 +785,281 @@ export function listedFill(
   return zone === null ? null : { zone, spec: zoneToRanger(zone) };
 }
 
+/**
+ * The money figures for **the instrument that will actually fill** — the eighth
+ * money bug, closed.
+ *
+ * ## The bug
+ *
+ * `matchListedZone` matches a drawn box to a listed zone on underlying, expiry,
+ * floor and ceiling. It does **not** match on the wing, and that is deliberate
+ * and correct: a listed zone's wings are the maker's, the player picks a band
+ * and takes the wings that come with it, and `LISTED_WING_COPY` says exactly
+ * that on screen. The wing appears in `matchListedZones` only as a sort key.
+ *
+ * The panel then computed `condorEconomics(boxToCondor(box), premium, …)` while
+ * `App.quoteBox` set `premium` from `zoneQuote(match.zone)` — the maker's real
+ * `previewFillOrder` price for **that order**. So the numerator (max payout,
+ * taken from the drawn box's wing) and the denominator (the premium, taken from
+ * the listed order) came from two different contracts, and the multiple between
+ * them was a ratio of two instruments.
+ *
+ * Reproduced against `test/fixtures/orders.json`: a box drawn on a listed band
+ * carrying a $4,000 wing, matched to a zone whose wing is $500 and whose
+ * previewed premium is $120 —
+ *
+ * ```
+ *   screen said:  MAX LOSS $120 · MAX PAYOUT $4,000 · 33.33×
+ *   order pays:   MAX LOSS $120 · MAX PAYOUT   $500 ·  4.17×
+ * ```
+ *
+ * Reachable, not theoretical: `wingEditable` blocks the stepper only *while* a
+ * match exists, and `endEdit` carries `current.base.wing` across a band drag —
+ * so widen the wing on an unlisted band, drag onto a listed one, and the panel
+ * is quoting one contract and paying out another. On today's live book
+ * `defaultWing` happens to equal the listed wing, which made it correct by
+ * coincidence rather than by construction.
+ *
+ * ## The fix
+ *
+ * One instrument answers all the money questions. With a match, that is the
+ * zone: `zoneEconomics` takes the wing off `match.zone` — the same order the
+ * premium was previewed against — so the numerator and the denominator are two
+ * facts about one contract and the ratio between them means something. Without
+ * a match the box is the condor the player drew and nothing changes.
+ *
+ * Exported so a test can drive the exact state the UI can reach — a `snapBox`
+ * with a widened wing on a listed band — without having to synthesise a drag.
+ */
+export function positionEconomics(
+  spec: CondorSpec | null,
+  match: ListedFill | null,
+  premiumPerContractUsd: number,
+  contracts: number,
+): CondorEconomics | null {
+  if (match) return zoneEconomics(match.zone, premiumPerContractUsd, contracts);
+  return spec ? condorEconomics(spec, premiumPerContractUsd, contracts) : null;
+}
+
+/**
+ * The wing the position actually has, in dollars — the maker's on a matched
+ * box, the player's on an unmatched one.
+ *
+ * The same correction as {@link positionEconomics}, applied to the figure the
+ * WING WIDTH row prints. That row already says *"Fixed here: this box fills a
+ * zone the maker already listed, and its wings came with it"* whenever there is
+ * a match; printing the drawn box's wing under that sentence made the sentence
+ * false about the number directly above it.
+ */
+export function positionWingUsd(box: Box | null, match: ListedFill | null): number | null {
+  if (match) return zoneWingUsd(match.zone);
+  if (!box) return null;
+  return strikeUsd(box.wing);
+}
+
+/**
+ * The arena's trade ticket — a zone or a drawn box, written as the position it
+ * is rather than as a rectangle.
+ *
+ * The cells on this board are deliberately price-free (§4.4: pricing several
+ * hundred structures nobody has quoted is either an invented model or an
+ * invented number), and that stays true — this is only ever built for a box the
+ * player has actually drawn or a zone the maker has actually listed, both of
+ * which are one real instrument each.
+ *
+ * ## What it may and may not say
+ *
+ *  - **The strikes, the band, the wing and the expiry** are the order's own, or
+ *    the drawing's, and are always available.
+ *  - **The money** is available only once something has priced it. A listed
+ *    zone is priced by `previewFillOrder` when it is picked; an unlisted box is
+ *    not priced at all until a maker answers an RFQ, which this build does not
+ *    ask. So max loss, the breakevens and the multiple render as dashes with
+ *    the reason rather than as estimates.
+ *  - **The greeks are not available, and the reason is real.** Not one of the
+ *    38 listed zones on the live book published a set (`src/data/ranger.ts`),
+ *    and `src/data/greeks.ts` can only compose one from four per-leg
+ *    volatilities, which the ladder this screen reads does not carry. So the
+ *    row says what `LISTED_NO_GREEKS_COPY` says: the figure is not hidden, it
+ *    does not exist for this instrument.
+ *
+ * Terminal settlement is stated in the app's own words — *lands in your box at
+ * expiry*, never "stays within". The instrument is European and the price has
+ * to be there at one instant, not throughout.
+ */
+export function zoneTicket(input: {
+  id: string;
+  underlying: string;
+  /** The four strikes in dollars, ascending. */
+  strikes: readonly [number, number, number, number];
+  expiry: number;
+  /** Premium per contract in dollars, or `null` when nothing has priced it. */
+  premium: number | null;
+  contracts: number;
+  econ: CondorEconomics | null;
+  /** The listed order this fills, when it fills one. */
+  match: ListedFill | null;
+  /** Live spot, or `null`. */
+  spot: number | null;
+  now: number;
+}): Ticket {
+  const { underlying, strikes, expiry, premium, contracts, econ, match, spot, now } = input;
+  const [a, floor, ceiling, d] = strikes;
+  const wing = floor - a;
+  const priced = premium !== null && premium > 0;
+  const rows: TicketRow[] = [
+    {
+      key: "instrument",
+      label: "INSTRUMENT",
+      value: `${underlying} · ${match ? "listed zone (RANGER)" : "long call condor"}`,
+      note: match
+        ? "A zone a maker has already created and signed. You buy it as it is."
+        : "Four legs at four strikes, held long. Nobody has created this one — a maker would have to price it on demand.",
+      source: match ? "venue" : "derived",
+    },
+    {
+      key: "strikes",
+      label: "STRIKES",
+      value: strikes.map((k) => usd(k)).join(" · "),
+      note: "The four lines the payoff turns on: it climbs from the first, is flat between the middle two, and falls to the fourth.",
+      source: match ? "venue" : "derived",
+    },
+    {
+      key: "band",
+      label: "BAND",
+      value: `${usd(floor)} – ${usd(ceiling)}`,
+      note: SETTLEMENT_COPY,
+      source: match ? "venue" : "derived",
+    },
+    {
+      key: "wing",
+      label: "WING",
+      value: usd(wing),
+      note: match
+        ? "The maker's, not yours — and it is the most this can pay per contract."
+        : "The distance beyond each edge, and the most this can pay per contract.",
+      source: match ? "venue" : "derived",
+    },
+    {
+      key: "expiry",
+      label: "EXPIRY",
+      value: `${expiryStamp(expiry)} · ${timeLeft(expiry * 1000 - now)} left`,
+      note: "European and cash-settled: the price has to land in the band at that instant, not stay there.",
+      source: "venue",
+    },
+    {
+      key: "spot",
+      label: "SPOT",
+      value:
+        spot === null
+          ? "—"
+          : `${usd(spot, true)} · ${spot >= floor && spot <= ceiling ? "inside the band" : spot < floor ? `${usd(floor - spot)} below the floor` : `${usd(spot - ceiling)} above the ceiling`}`,
+      note:
+        spot === null
+          ? "The venue publishes no spot for this underlying right now."
+          : "Where the price is today. It has to be in the band on the expiry date, and nowhere in particular before it.",
+      source: spot === null ? null : "venue",
+    },
+    {
+      key: "size",
+      label: "SIZE",
+      value: `${contracts} ${contracts === 1 ? "contract" : "contracts"}`,
+      note: "Both dollar figures below are for the whole position; the multiple between them is not affected by size.",
+      source: "derived",
+    },
+    {
+      key: "maxLoss",
+      label: "PREMIUM · MAX LOSS",
+      value: priced && econ ? usd(econ.maxLoss, true) : "—",
+      note: priced
+        ? MAX_LOSS_COPY
+        : match
+          ? "Pick this zone to have it priced against the maker's own order — nothing here estimates it."
+          : "Nothing has priced this box, and this build asks no maker for a quote, so there is no premium to state.",
+      source: priced ? "venue" : null,
+    },
+    {
+      key: "maxPayout",
+      label: "MAX PAYOUT",
+      value: econ ? usd(econ.maxPayout, true) : "—",
+      note: "Paid in full anywhere inside the band at expiry, and tapering to nothing across each wing.",
+      source: match ? "venue" : "derived",
+    },
+    {
+      key: "breakeven",
+      label: "BREAKEVEN",
+      value:
+        priced && premium !== null ? `${usd(a + premium)} – ${usd(d - premium)}` : "—",
+      note:
+        priced && premium !== null
+          ? "Between these two the position is ahead at expiry; outside them the premium is not recovered."
+          : "The outer strikes moved in by the premium paid. Without a premium there is nothing to move them by.",
+      source: priced ? "derived" : null,
+    },
+    {
+      key: "multiple",
+      label: "PAYOUT MULTIPLE",
+      value: econ && econ.payoutMultiple !== null ? `${econ.payoutMultiple.toFixed(2)}×` : "—",
+      note:
+        econ && econ.payoutMultiple !== null
+          ? "The ceiling divided by the premium — what the position returns if the price lands in your box at expiry."
+          : "The ceiling divided by the premium. It is absent rather than placeheld until a real premium exists.",
+      source: econ && econ.payoutMultiple !== null ? "derived" : null,
+    },
+    {
+      key: "greeks",
+      label: "DELTA · GAMMA · THETA · VEGA",
+      value: "—",
+      note: LISTED_NO_GREEKS_COPY,
+      source: null,
+    },
+  ];
+
+  return {
+    id: input.id,
+    state: match ? "live" : "not-dealt",
+    title: `${underlying} ${usd(floor)}–${usd(ceiling)} · by ${expiryLabel(expiry)}`,
+    subtitle: match
+      ? `RANGER · resting on the OptionBook · ${usd(wing)} wings`
+      : `CALL_CONDOR · not listed · ${usd(wing)} wings`,
+    banner: match ? LISTED_COPY : UNLISTED_COPY,
+    footer: [
+      match ? LISTED_WING_COPY : RFQ_PRECISION_COPY,
+      fillCapCopy(priced ? premium : null),
+    ],
+    rows,
+  };
+}
+
+/**
+ * Where the ladder on screen came from, and when it was read.
+ *
+ * The heading over the chart asserted `LIVE STRIKES` unconditionally on the
+ * populated path, and `src/data/thetanuts.tsx` deliberately keeps serving the
+ * last good ladder when a refresh fails (*"stale beats blank"*). So a board of
+ * real-but-old strikes wore a LIVE label while the footer said otherwise, with
+ * no age anywhere on the panel — and `theme.ts` is explicit that for STALE
+ * *"the age is the disclosure; the word alone is not"*.
+ *
+ * This is the same three-state seam `ParlayPick` grew for the option book: the
+ * source's own word, plus the timestamp of the read, so the screen can say
+ * which of the three it is instead of guessing. It is metadata about the
+ * snapshot rather than market data, so it does not break this view's rule that
+ * {@link BoxBuilderProps.snapshot} is the only book it reads.
+ *
+ * Omitted or `null` means the caller did not say. The heading then makes **no**
+ * provenance claim at all — it reads `ETH · STRIKES` — because the failure this
+ * closes is a claim nothing backed.
+ */
+export interface LadderFeed {
+  /** `theme.ts`'s vocabulary, not a private one. `feedState()` translates a
+   *  `MarketMeta.source` into it. */
+  state: FeedState;
+  /** `MarketMeta.fetchedAt`, ms. `0` means the snapshot carried no timestamp,
+   *  and `stateAge` reads that as "no age at all" rather than inventing one. */
+  at: number;
+}
+
 export interface BoxBuilderProps {
   /**
    * One raw `fetchOrders()` capture plus the bundled chain config — the ladder's
@@ -683,6 +1067,14 @@ export interface BoxBuilderProps {
    * is exactly this shape and so is `RawMarket` from `src/server/thetanuts.ts`.
    */
   snapshot: LadderSnapshot | null;
+  /**
+   * Where {@link BoxBuilderProps.snapshot} came from and when it was read.
+   *
+   * See {@link LadderFeed}. Optional, and omitting it makes the chart heading
+   * assert nothing rather than assert LIVE — a caller that has not thought
+   * about provenance degrades to silence, never to a claim.
+   */
+  feed?: LadderFeed | null;
   /** Live USD spot, for the marker line. `null` is ordinary and draws nothing. */
   spot?: (underlying: string) => number | null;
   /**
@@ -1016,6 +1408,7 @@ interface BoxEdit {
 
 export function BoxBuilder({
   snapshot,
+  feed = null,
   spot,
   qualified,
   history,
@@ -1041,6 +1434,22 @@ export function BoxBuilder({
   const [mountedAt] = useState(() => now ?? Date.now());
   const nowMs = now ?? mountedAt;
 
+  /**
+   * How old the ladder is — rendered for STALE and only for STALE.
+   *
+   * `theme.ts`'s rule, followed rather than re-argued: a STALE chip always
+   * appears beside the age of the read it is showing, because real numbers
+   * wearing the wrong timestamp are the one genuinely dangerous state and the
+   * word alone does not disclose it. A LIVE ladder was read inside the refresh
+   * window by definition, so an age beside it would be noise; a SEEDED one has
+   * no read to be old.
+   *
+   * Measured against this screen's own clock rather than a fresh `Date.now()`,
+   * so the age agrees with the divider, the expiry set and the ladder that were
+   * all derived from the same instant.
+   */
+  const ladderAge = feed && feed.state === "stale" ? stateAge(feed.at, nowMs) : null;
+
   const [underlying, setUnderlying] = useState<string>("ETH");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [box, setBox] = useState<Box | null>(null);
@@ -1055,6 +1464,26 @@ export function BoxBuilder({
    * be a centre in the wrong currency.
    */
   const [view, setView] = useState<BoxViewport>({ steps: DEFAULT_ZOOM_STEPS, centre: null });
+
+  /**
+   * How many contracts the position is — **the half of the ticket that did not
+   * exist.**
+   *
+   * `contracts` stays a prop so a caller (and every existing test) can pin the
+   * opening size, and this is the player's override of it. One state, clamped
+   * once, and every money figure on the panel reads `size` rather than the prop
+   * — `condorEconomics`/`zoneEconomics` already scale the premium and the
+   * ceiling together, so the multiple between them is size-free by construction
+   * and the two dollar figures move.
+   *
+   * `null` means "the player has not said", which is the prop's value, so a
+   * mount that never touches the stepper behaves exactly as it did.
+   */
+  const [sizeInput, setSizeInput] = useState<number | null>(null);
+  const size = Math.max(
+    1,
+    Math.min(MAX_PANEL_CONTRACTS, Math.floor(sizeInput ?? contracts) || 1),
+  );
   const plotRef = useRef<HTMLDivElement | null>(null);
 
   const trade = useTradeFlag(tradeEnabled);
@@ -1237,6 +1666,57 @@ export function BoxBuilder({
     return { segments: drawnSegments, clipped: inLadder.clipped, hidden };
   }, [history, band, extent, t0]);
   const hasLine = line.segments.length > 0;
+
+  /**
+   * The sentence for a chart that is blank **despite** having history — or
+   * `null`, which is every other case.
+   *
+   * Three states have to be told apart and only one of them is a blank chart
+   * that needs explaining:
+   *
+   *  - no history at all → `null`. Nothing arrived, nothing to say, and the
+   *    screen already says nothing.
+   *  - history arrived and some of it is on the board → `null`. `hasLine` is
+   *    true and the two clip clauses above cover the rest.
+   *  - history arrived and **none** of it is drawable → this string.
+   *
+   * Within the third, the cause matters and is not the same fact:
+   * `line.clipped` is outside the ladder's whole extent and no zoom recovers
+   * it, `line.hidden` is inside the ladder but outside the player's own window
+   * and one button does. Reporting them together would blame the book for a
+   * viewport, which is the mistake `docs/asset-gate.md` records this repo
+   * making once already in the other direction.
+   *
+   * The extent is named because it is the answer: the column's ladder is the
+   * band the venue quotes on that date, and the price simply has not been in
+   * it.
+   */
+  const emptyLine = useMemo(() => {
+    if (hasLine) return null;
+    const total = line.clipped + line.hidden;
+    if (total === 0) return null;
+    const are = total === 1 ? "print is" : "prints are";
+    if (line.hidden > 0 && line.clipped === 0) {
+      return (
+        `All ${total} ${are} inside the ladder but outside this zoom, so the plot is ` +
+        `empty — Fit ladder brings the line back.`
+      );
+    }
+    const where =
+      extent && chosen !== null
+        ? ` The book quotes ${underlying} at ${usd(extent.lo)}–${usd(extent.hi)} for ${expiryLabel(chosen)}, and the price has not been in that band.`
+        : "";
+    const rest =
+      line.hidden > 0
+        ? ` ${line.clipped} of them ${line.clipped === 1 ? "is" : "are"} outside the ladder entirely and no zoom recovers ${line.clipped === 1 ? "it" : "them"}; the other ${line.hidden} ${line.hidden === 1 ? "is" : "are"} inside it but outside this window.`
+        : "";
+    return (
+      `All ${total} ${are} outside this expiry's ladder, so there is no line to draw.` +
+      where +
+      rest +
+      " The chart is empty because of the book, not the chart — a print moved to fit would be a price that was never made."
+    );
+  }, [hasLine, line.clipped, line.hidden, extent, chosen, underlying]);
 
   const assets = useMemo(() => {
     const seen = new Set<string>(["ETH", "BTC"]);
@@ -1429,6 +1909,41 @@ export function BoxBuilder({
   /** True when the window is already the whole ladder — the zoom-out control's
    *  disabled state, and the reason the "hidden by zoom" line disappears. */
   const fitted = band !== null && band.below === 0 && band.above === 0;
+
+  /**
+   * Would one press of a zoom control actually move the camera?
+   *
+   * This is the fix for *"zoom buttons not working"*, and the button was not
+   * broken — it was **enabled while doing nothing**, which from the outside is
+   * indistinguishable. `zoomTo` clamps to the ladder's own rungs, so on a coarse
+   * column (BTC 11 Sep quotes three strikes $450 apart, `maxZoomSteps` = 1)
+   * pressing `+` at the default 3 steps clamps to 1, produces the identical
+   * window, and `applyView` correctly returns `false`. Silently.
+   *
+   * So the predicate is `applyView`'s own test, run ahead of the press: probe
+   * the window the button would produce and compare it with the one on screen.
+   * A control that cannot move is disabled, and the readout beside it says why
+   * in the book's own numbers rather than leaving the player pressing a dead
+   * key.
+   */
+  const zoomProbe = useCallback(
+    (steps: number): boolean => {
+      const next = Math.max(zoomLimits.min, Math.min(zoomLimits.max, steps));
+      const w = windowFor(next, view.centre);
+      if (!w || !band) return false;
+      return Math.abs(w.lo - band.lo) > 1e-9 || Math.abs(w.hi - band.hi) > 1e-9;
+    },
+    [zoomLimits, windowFor, view.centre, band],
+  );
+  const canZoomIn = zoomProbe(view.steps / 1.6);
+  const canZoomOut = zoomProbe(view.steps * 1.6);
+  /** `showing 12 of 14 rungs` — the state the controls are in, which is the
+   *  other half of "it did nothing": without it there is no way to tell a
+   *  window that is already the whole ladder from one that refused to move. */
+  const zoomState =
+    band === null || !ladder
+      ? null
+      : `showing ${ladder.prices.length - band.below - band.above} of ${ladder.prices.length} rungs`;
 
   /**
    * The wheel, attached by hand because React's `onWheel` is passive and a
@@ -1741,7 +2256,20 @@ export function BoxBuilder({
     }
   }, [box, ladder]);
 
-  const econ = spec ? condorEconomics(spec, premium ?? 0, contracts) : null;
+  /**
+   * Which instrument this box actually is — asked BEFORE the economics, and
+   * that ordering is the fix rather than a tidy-up.
+   *
+   * `matchListedZone` matches on underlying, expiry, floor and ceiling. **It
+   * deliberately does not match on the wing**, because a listed zone's wings
+   * are the maker's and the player does not choose them (`LISTED_WING_COPY`,
+   * and the docblock on `matchListedZones`). That is correct — and it is why
+   * the economics may not be computed from the drawn box once a zone is
+   * matched. See {@link positionEconomics}.
+   */
+  const match = useMemo(() => listedFill(box, snapshot, nowMs), [box, snapshot, nowMs]);
+
+  const econ = positionEconomics(spec, match, premium ?? 0, size);
   const quoted = typeof premium === "number" && premium > 0;
   /** `max payout ÷ premium paid`, or nothing at all. Never a placeholder. */
   const multiple = quoted && econ ? econ.payoutMultiple : null;
@@ -1762,7 +2290,6 @@ export function BoxBuilder({
     () => (chosen === null ? [] : zonesFor(snapshot, underlying, chosen, nowMs)),
     [snapshot, underlying, chosen, nowMs],
   );
-  const match = useMemo(() => listedFill(box, snapshot, nowMs), [box, snapshot, nowMs]);
   const spotListed = zones.some((z) => zoneCoversSpot(z, spotPrice));
 
   /**
@@ -1855,6 +2382,39 @@ export function BoxBuilder({
       : null;
 
   /**
+   * The rectangle under the pointer, described in the ladder's own numbers —
+   * `$2,440 – $2,480 · $40 · 1.6%`.
+   *
+   * Run through `snapBox` rather than off the raw pointer prices, so what it
+   * reports is where the edges will actually land. A readout that tracked the
+   * cursor would show a band the venue does not quote and then move the box on
+   * release, which is the confusing half of snapping said twice.
+   *
+   * The per-cent is of the band's own floor, because that is the question a
+   * player is asking while dragging: how much room is in this box. Nothing here
+   * is a price and nothing here asks for one — §4.1's *one quote per released
+   * box* is untouched.
+   */
+  const dragPreview = useMemo(() => {
+    if (!drag || !ladder || chosen === null) return null;
+    const lo = Math.min(drag.from, drag.to);
+    const hi = Math.max(drag.from, drag.to);
+    const floor = priceToStrike(lo);
+    const ceiling = priceToStrike(hi);
+    if (floor === null || ceiling === null) return null;
+    let snapped: Box;
+    try {
+      snapped = snapBox({ underlying, floor, ceiling, wing: floor, expiry: chosen }, ladder);
+    } catch {
+      return null;
+    }
+    const f = strikeUsd(snapped.floor);
+    const c = strikeUsd(snapped.ceiling);
+    if (f === null || c === null || !(c > f)) return null;
+    return `${usd(f)} – ${usd(c)} · ${usd(c - f)} tall · ${(((c - f) / f) * 100).toFixed(2)}%`;
+  }, [drag, ladder, chosen, underlying]);
+
+  /**
    * The box as it is right now, edit included — what gets *drawn*, as opposed
    * to what is committed.
    *
@@ -1898,6 +2458,76 @@ export function BoxBuilder({
     [startEdit, edit, moveEdit, endEdit],
   );
 
+  /**
+   * This room's opening print for the asset on screen, and whether it is real.
+   *
+   * Read through `openFor` and never off `room.open.px` directly — that is the
+   * seam's whole design: the function cannot return a bare number, so a screen
+   * has to destructure `live` before it can render `px`, and a practice-tape
+   * open cannot be drawn as a market one by omission. `live: false` is an
+   * ordinary answer (no venue answered at creation, or this asset has no feed),
+   * not a failure, and the strip says which rather than staying quiet.
+   */
+  const roomOpen = openFor(room?.open ?? null, underlying);
+
+  /**
+   * The trade ticket host — one panel, opened from a listed-zone chip, from the
+   * drawn box itself, or from the control beside the PRICE BAND row.
+   *
+   * The board's cells stay price-free (§4.4). A ticket is only ever built for
+   * an instrument that actually exists: a zone a maker has listed, or the one
+   * box the player has drawn.
+   */
+  const ticket = useTradeTicket();
+
+  /** The drawn box's ticket, or `null` when nothing is drawn. */
+  const boxTicket = useMemo(() => {
+    if (!spec) return null;
+    const strikes = match
+      ? rangerStrikeNumbers(match.spec)
+      : condorStrikeNumbers(spec);
+    return zoneTicket({
+      id: "box",
+      underlying,
+      strikes,
+      expiry: match ? match.zone.expiry : spec.expiry,
+      premium: quoted ? premium : null,
+      contracts: size,
+      econ,
+      match,
+      spot: spotPrice,
+      now: nowMs,
+    });
+  }, [spec, match, underlying, quoted, premium, size, econ, spotPrice, nowMs]);
+
+  /**
+   * One listed zone's ticket, built on demand from the chip's own order.
+   *
+   * The premium is `zoneQuote`'s only when this zone is the box on screen —
+   * i.e. only when the caller has already previewed a fill against this exact
+   * order. Every other chip is unpriced and says so, because a chip is an offer
+   * to draw a box, not a quote for one.
+   */
+  const chipTicket = useCallback(
+    (z: ListedZone): Ticket => {
+      const mine = match !== null && match.zone.index === z.index;
+      const zSpec = zoneToRanger(z);
+      return zoneTicket({
+        id: `zone-${z.floor}-${z.ceiling}-${z.wing}`,
+        underlying: z.underlying,
+        strikes: rangerStrikeNumbers(zSpec),
+        expiry: z.expiry,
+        premium: mine && quoted ? premium : null,
+        contracts: mine ? size : 1,
+        econ: mine ? econ : zoneEconomics(z, 0, 1),
+        match: { zone: z, spec: zSpec },
+        spot: spotPrice,
+        now: nowMs,
+      });
+    },
+    [match, quoted, premium, size, econ, spotPrice, nowMs],
+  );
+
   return (
     <div style={sx("padding:22px 28px;max-width:1240px;margin:0 auto;display:grid;gap:14px")}>
       {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -1933,6 +2563,35 @@ export function BoxBuilder({
             <span data-role="stake-basis" style={sx(`font:500 10.5px/1 ${MONO};color:${C.dim}`)}>
               {stakeBasisLine(room.stakeUsdc, custody)} · {room.durationMinutes} min
             </span>
+            {/* Where this duel's tape opens, and whether that open is real.
+
+                `openFor` exists so no caller can render a reference price where
+                a live one is implied — it refuses to hand back a bare number
+                and returns the flag alongside it. That was the whole point of
+                the shape, and until now nothing in this file destructured it:
+                a duel opened on a stored reference looked identical to one
+                opened on a Chainlink print. So both states get a chip, in the
+                vocabulary `src/data/room.ts` already holds, and the practice
+                case gets the sentence underneath as well — a chip a player has
+                to already understand is not a disclosure. */}
+            {roomOpen.live && room.open ? (
+              <span
+                data-role="room-open"
+                data-open-live="true"
+                style={sx(`font:500 10.5px/1 ${MONO};color:${C.green}`)}
+              >
+                {liveOpenChip(room.open)} · {underlying} {usd(roomOpen.px, true)}
+                {roomOpen.at === null ? "" : ` · ${stateAge(roomOpen.at, nowMs) ?? ""}`}
+              </span>
+            ) : (
+              <span
+                data-role="room-open"
+                data-open-live="false"
+                style={sx(`font:500 10.5px/1 ${MONO};color:${C.amber}`)}
+              >
+                {PRACTICE_TAPE_CHIP}
+              </span>
+            )}
             <div style={sx("flex:1")} />
             {seatIndex === null ? (
               <span style={sx(`font:500 11.5px/1 ${MONO};color:${C.muted}`)}>
@@ -1982,6 +2641,15 @@ export function BoxBuilder({
           {custody === null && (
             <span data-role="notional-stake" style={sx(`${NOTE};color:${C.amber}`)}>
               {NOTIONAL_STAKE_COPY}
+            </span>
+          )}
+
+          {/* The other half of the practice-tape disclosure. The chip names the
+              state; this says what it costs the player to know — the duel is
+              still fair, and the prices on it are still not live. */}
+          {!roomOpen.live && (
+            <span data-role="practice-tape" style={sx(`${NOTE};color:${C.amber}`)}>
+              {PRACTICE_TAPE_NOTE}
             </span>
           )}
 
@@ -2135,7 +2803,32 @@ export function BoxBuilder({
           {/* ── The chart ─────────────────────────────────────────────── */}
           <div style={sx(`${CARD};padding:14px 16px 10px;display:grid;gap:10px`)}>
             <div style={sx("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
-              <span style={sx(LABEL)}>{underlying} · LIVE STRIKES</span>
+              {/* The ladder's provenance, asserted only as far as the caller
+                  said it — never `LIVE` by default.
+
+                  This heading used to read `LIVE STRIKES` unconditionally, on a
+                  path `src/data/thetanuts.tsx` reaches with a **stale** ladder
+                  by design (*"stale beats blank"* — a failed refresh keeps the
+                  last good rows and re-labels the source, it does not empty the
+                  board). So a board of real-but-old strikes wore a LIVE label
+                  while the footer said STALE, and there was no age anywhere on
+                  the panel to settle it. `theme.ts` is explicit: for STALE *"the
+                  age is the disclosure; the word alone is not"* — so the age
+                  rides with the word, exactly as `ParlayPick`'s options chip
+                  does, and it is the same three-state vocabulary rather than a
+                  second one invented here. */}
+              <span style={sx(LABEL)}>
+                {underlying} · {feed ? `${FEED_STATE[feed.state].label} ` : ""}STRIKES
+              </span>
+              {feed && ladderAge && (
+                <span
+                  data-role="ladder-age"
+                  title={meansOf(feed.state)}
+                  style={sx(`font:500 10px/1 ${MONO};color:${FEED_STATE[feed.state].color}`)}
+                >
+                  {ladderAge}
+                </span>
+              )}
               {/* The ladder's own size first, then the part of it on screen.
                   Two numbers rather than one because they are two facts: how
                   much the venue is quoting, and how much the player is looking
@@ -2164,20 +2857,18 @@ export function BoxBuilder({
                 <button
                   data-role="zoom-out"
                   aria-label="Zoom out"
-                  disabled={fitted}
+                  disabled={!canZoomOut}
                   onClick={() => zoomTo(view.steps * 1.6, null)}
-                  style={sx(`${CHIP(false, fitted)};height:26px;padding:0 10px`)}
+                  style={sx(`${CHIP(false, !canZoomOut)};height:26px;padding:0 10px`)}
                 >
                   −
                 </button>
                 <button
                   data-role="zoom-in"
                   aria-label="Zoom in"
-                  disabled={view.steps <= zoomLimits.min}
+                  disabled={!canZoomIn}
                   onClick={() => zoomTo(view.steps / 1.6, null)}
-                  style={sx(
-                    `${CHIP(false, view.steps <= zoomLimits.min)};height:26px;padding:0 10px`,
-                  )}
+                  style={sx(`${CHIP(false, !canZoomIn)};height:26px;padding:0 10px`)}
                 >
                   +
                 </button>
@@ -2190,6 +2881,21 @@ export function BoxBuilder({
                   Fit ladder
                 </button>
               </div>
+
+              {/* What the zoom is doing, and — when it can do nothing — why.
+                  A control that is enabled and inert is the same experience as
+                  a broken one, so neither state is left to be inferred. */}
+              {zoomState && (
+                <span
+                  data-role="zoom-state"
+                  style={sx(`font:500 10px/1 ${MONO};color:${C.faint}`)}
+                >
+                  {zoomState}
+                  {!canZoomIn && !canZoomOut && ladder
+                    ? ` · the whole ladder is on screen and its ${ladder.prices.length} rungs are the resolution — there is nothing to zoom into`
+                    : ""}
+                </span>
+              )}
 
               {box && !frozen && (
                 <button onClick={reset} style={sx(`${CHIP(false)};height:26px`)}>
@@ -2452,18 +3158,48 @@ export function BoxBuilder({
                     scale, and unlike the cells they run the full width so the
                     history behind them can be read against a strike. Rungs the
                     window has scrolled past are skipped rather than clamped: a
-                    line drawn at the edge would claim a strike sits there. */}
-                {ladder.prices.map((price, i) =>
-                  price < band.lo || price > band.hi ? null : (
+                    line drawn at the edge would claim a strike sits there.
+
+                    Each carries its price, in the plot, **before** anything is
+                    dragged. That is the whole of this change: the snap targets
+                    were only ever discoverable by drawing a box and seeing where
+                    it landed, which reads as the app moving your rectangle for
+                    reasons of its own. Drawn, the lattice says what it is — the
+                    strikes the venue is quoting, and the only places an edge can
+                    go. `DISCRETE_STRIKES_COPY` is the sentence under the panel
+                    that names it.
+
+                    Labels thin out rather than overlap: past twenty rungs in the
+                    window every other one is labelled, and the lines all stay.
+                    A number that collides with its neighbour is less readable
+                    than no number, and the line is the load-bearing part. */}
+                {ladder.prices.map((price, i) => {
+                  if (price < band.lo || price > band.hi) return null;
+                  const edge = i === 0 || i === ladder.prices.length - 1;
+                  const shown = ladder.prices.filter((q) => q >= band.lo && q <= band.hi).length;
+                  const label = shown <= 20 || i % 2 === 0;
+                  return (
                     <div
                       key={ladder.strikes[i] ?? i}
+                      data-gridline={ladder.strikes[i] ?? ""}
                       style={sx(
                         `position:absolute;left:0;right:0;top:${clampPct(yPct(band, price))}%;height:0;` +
-                          `border-top:1px ${i === 0 || i === ladder.prices.length - 1 ? "solid" : "dashed"} ${C.line};pointer-events:none`,
+                          `border-top:1px ${edge ? "solid" : "dashed"} ${C.line};pointer-events:none`,
                       )}
-                    />
-                  ),
-                )}
+                    >
+                      {label && (
+                        <span
+                          style={sx(
+                            `position:absolute;left:5px;top:-11px;` +
+                              `font:500 8.5px/1 ${MONO};color:${C.faint};pointer-events:none`,
+                          )}
+                        >
+                          {usd(price)}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
 
                 {/* Spot, when the venue publishes one. */}
                 {spotPrice !== null && spotPrice >= band.lo && spotPrice <= band.hi && (
@@ -2520,7 +3256,21 @@ export function BoxBuilder({
                   />
                 ))}
 
-                {/* The drag: an outline and no numbers at all. */}
+                {/* The drag — an outline, and now the dimensions of it.
+
+                    §4.1's rule is *one quote per released box*, and it stands:
+                    nothing here asks for a price, `onQuote` still fires once, on
+                    release, and no premium is drawn until it has. What this adds
+                    is the part that was never a quote — how tall the rectangle
+                    under the pointer is, and where it will land once `snapBox`
+                    has had its say. A player was finding both out only after
+                    committing, which is what "no guideline on how much the box
+                    is drawn" describes.
+
+                    The snapped preview is the honest half: the numbers say the
+                    rungs the edges will move to, not the raw pointer prices, so
+                    the readout cannot promise a band the ladder does not
+                    express. */}
                 {dragBand && (
                   <div
                     data-role="drag"
@@ -2530,7 +3280,20 @@ export function BoxBuilder({
                         `top:${yPct(band, dragBand.hi)}%;bottom:${100 - yPct(band, dragBand.lo)}%;` +
                         `border:1px dashed ${C.accent}99;border-radius:3px;background:${C.accent}0d;pointer-events:none`,
                     )}
-                  />
+                  >
+                    {dragPreview && (
+                      <span
+                        data-role="drag-readout"
+                        style={sx(
+                          `position:absolute;left:6px;top:-10px;padding:2px 6px;border-radius:4px;` +
+                            `white-space:nowrap;font:700 9px/1 ${MONO};letter-spacing:.06em;` +
+                            `color:${C.bg};background:${C.accent}`,
+                        )}
+                      >
+                        {dragPreview}
+                      </span>
+                    )}
+                  </div>
                 )}
 
                 {/*
@@ -2657,6 +3420,7 @@ export function BoxBuilder({
                           <div
                             data-handle="move"
                             title="Drag to move. The box keeps its height in rungs and stops at the ends of the ladder."
+                            {...(boxTicket ? ticket.bind(boxTicket) : {})}
                             {...editHandlers("move")}
                             style={sx(
                               `position:absolute;inset:7px 9px;cursor:${live ? "grabbing" : "grab"};` +
@@ -3000,6 +3764,7 @@ export function BoxBuilder({
                       data-zone={`${z.floor}-${z.ceiling}`}
                       aria-pressed={on}
                       disabled={frozen}
+                      {...ticket.bind(chipTicket(z))}
                       onClick={() => {
                         if (frozen) return;
                         setPendingFloor(null);
@@ -3052,10 +3817,73 @@ export function BoxBuilder({
               {hasLine && line.clipped > 0
                 ? ` ${line.clipped} print${line.clipped === 1 ? "" : "s"} ran outside the ladder and ${line.clipped === 1 ? "is" : "are"} not drawn — the line is clipped, never rescaled.`
                 : ""}
+              {/* What the clip LOOKS like, which the count above does not say.
+                  A line that begins in the middle of the plot reads as a
+                  rendering defect; it is the price entering the board, and the
+                  prints before it are the ones just counted. */}
+              {hasLine && line.clipped + line.hidden > 0
+                ? " The drawn line therefore begins where the price entered the board, not where the history does."
+                : ""}
               {hasLine && line.hidden > 0
                 ? ` A further ${line.hidden} ${line.hidden === 1 ? "print is" : "prints are"} inside the ladder but outside this zoom — Fit ladder brings ${line.hidden === 1 ? "it" : "them"} back.`
                 : ""}
             </span>
+
+            {/*
+              ── The empty line, explained ─────────────────────────────────
+
+              The clause above only fires when there IS a line, because "an
+              absent chart makes no claims at all". That rule is right about a
+              chart with no history behind it and wrong about this case: the
+              history arrived, and **every print of it is off this column's
+              ladder**, so the plot is blank and the sentence that would have
+              said why is gated off by the very fact it is describing.
+
+              It is a real reading of a real book, not a chart defect. The venue
+              does not quote the same band on every date: BTC's 25 Sep ladder
+              sits at $85k–$86k, which contains 0% of the last thirty-three
+              hours of price, and its 11 Sep column contains 3%. No zoom setting
+              recovers a print that is outside the ladder's whole extent —
+              `fitToLadder` drops it rather than moving it, because a point
+              moved to fit is a price that was never printed.
+
+              **Deliberately not a fourth cell state.** The three the cells carry
+              — listed, drawable, not drawable — all answer "can a box be bought
+              here", which is a fact about resting orders. Coverage answers "has
+              the price been here", which is a fact about the history feed and
+              changes nothing about what is buyable: every rung of this column is
+              still drawable and still fillable. Hatching it would say the
+              opposite. So it is a sentence, in the same place as the other two
+              clip disclosures, and it names the column's band and date so the
+              reader knows which column it is about.
+
+              The two causes are separated for the same reason the clipped/hidden
+              pair is: one is the venue's and no zoom recovers it, the other is
+              the player's own viewport and one button does.
+            */}
+            {!hasLine && emptyLine !== null && (
+              <span data-role="no-coverage" style={sx(`${NOTE};color:${C.amber}`)}>
+                {emptyLine}
+              </span>
+            )}
+
+            {/* How the axis is divided, because the division is the reason the
+                history sometimes reads as a jagged burst against a long empty
+                stretch. Both halves are on one linear scale: the left is
+                whatever history arrived, the right runs to the expiry the box
+                is drawn against. Pick a date a week out and thirty-three hours
+                of prints get a fifth of the width; pick tomorrow and they get
+                half. Nothing is compressed non-linearly and no point is moved —
+                the axis simply has to hold both, and saying the proportion is
+                cheaper than leaving it to look broken. */}
+            {hasLine && (
+              <span data-role="axis-scale" style={sx(NOTE)}>
+                The axis holds {shortAge(Math.max(0, dividerMs - t0))} of history on the left and{" "}
+                {shortAge(Math.max(0, t1 - dividerMs))} to expiry on the right, on one linear scale
+                — a further-out expiry gives the past less of the width, and the prints stay where
+                they were made.
+              </span>
+            )}
 
             {/* The rungs the zoom is covering, said as a count with the way
                 back. A strike that has left the board silently is a strike the
@@ -3086,7 +3914,7 @@ export function BoxBuilder({
                 match={match}
                 econ={econ}
                 quoted={quoted}
-                contracts={contracts}
+                contracts={size}
                 trade={trade}
                 canSign={Boolean(onConfirm)}
                 onBack={() => setStage("draw")}
@@ -3095,7 +3923,21 @@ export function BoxBuilder({
             ) : (
               <>
                 <div style={sx("display:grid;gap:5px")}>
-                  <span style={sx(LABEL)}>PRICE BAND</span>
+                  <div style={sx("display:flex;align-items:center;gap:8px")}>
+                    <span style={sx(LABEL)}>PRICE BAND</span>
+                    <div style={sx("flex:1")} />
+                    {/* The keyboard and touch way into the ticket. Hovering the
+                        rectangle on the chart is the pointer's way in; this is
+                        the one that does not need a pointer, and it pins rather
+                        than hovers so a tap can read it. */}
+                    {boxTicket && (
+                      <TicketToggle
+                        id={boxTicket.id}
+                        open={ticket.openId === boxTicket.id}
+                        onToggle={(el) => ticket.pin(boxTicket, el)}
+                      />
+                    )}
+                  </div>
                   <span style={sx(VALUE)}>
                     {econ
                       ? `${usd(econ.zone.floor)} – ${usd(econ.zone.ceiling)}`
@@ -3124,8 +3966,15 @@ export function BoxBuilder({
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(LABEL)}>WING WIDTH</span>
                   <div style={sx("display:flex;align-items:center;gap:8px")}>
+                    {/* The maker's wing on a matched box, the player's on an
+                        unmatched one — `positionWingUsd`, the same instrument
+                        the max payout below is taken from. Printing the drawn
+                        box's wing here while the panel filled a listed zone put
+                        a number under the sentence that contradicts it. */}
                     <span data-role="wing-value" style={sx(VALUE)}>
-                      {box ? usd(strikeUsd(box.wing) ?? 0) : "—"}
+                      {positionWingUsd(box, match) === null
+                        ? "—"
+                        : usd(positionWingUsd(box, match) as number)}
                     </span>
                     <div style={sx("flex:1")} />
                     <button
@@ -3163,6 +4012,81 @@ export function BoxBuilder({
                   </span>
                 </div>
 
+                {/* ── SIZE ──────────────────────────────────────────────
+                    The quantity. An option ticket without one is not a ticket,
+                    and until now this screen had none: `contracts` was a prop
+                    defaulting to 1 that only ever received its own default, so
+                    every dollar figure below was frozen at one contract.
+
+                    Typed as well as stepped, because the complaint was about
+                    precision and a stepper alone is a slower way of saying no.
+                    The clamp is on read (`size`), not on the input, so a
+                    half-typed value does not fight the keyboard. */}
+                <div style={sx("display:grid;gap:5px")}>
+                  <span style={sx(LABEL)}>SIZE</span>
+                  <div style={sx("display:flex;align-items:center;gap:8px")}>
+                    <input
+                      data-role="size-input"
+                      aria-label="Contracts"
+                      inputMode="numeric"
+                      value={String(size)}
+                      onChange={(e) => {
+                        const n = Number(e.target.value.replace(/[^0-9]/g, ""));
+                        setSizeInput(Number.isFinite(n) && n > 0 ? n : 1);
+                      }}
+                      style={sx(
+                        `width:74px;height:26px;padding:0 8px;border:1px solid ${C.borderMid};` +
+                          `border-radius:6px;background:${C.raised};color:${C.text};` +
+                          `font:700 14px/1 ${MONO};text-align:right;outline:none`,
+                      )}
+                    />
+                    <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>
+                      {size === 1 ? "contract" : "contracts"}
+                    </span>
+                    <div style={sx("flex:1")} />
+                    <button
+                      data-role="size-down"
+                      aria-label="Fewer contracts"
+                      disabled={size <= 1}
+                      onClick={() => setSizeInput(size - 1)}
+                      style={sx(`${CHIP(false, size <= 1)};height:24px;padding:0 9px`)}
+                    >
+                      −
+                    </button>
+                    <button
+                      data-role="size-up"
+                      aria-label="More contracts"
+                      disabled={size >= MAX_PANEL_CONTRACTS}
+                      onClick={() => setSizeInput(size + 1)}
+                      style={sx(
+                        `${CHIP(false, size >= MAX_PANEL_CONTRACTS)};height:24px;padding:0 9px`,
+                      )}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span style={sx(NOTE)}>
+                    {SIZE_COPY}
+                    {quoted && premium !== null
+                      ? ` At ${usd(premium, true)} a contract, ${size} ${size === 1 ? "costs" : "cost"} ${usd(premium * size, true)}.`
+                      : " Nothing has priced this box yet, so there is no cost to scale."}
+                  </span>
+                  {/* The bound that is real, named where it bites — and the one
+                      that is NOT claimed, said too. The maker's remaining depth
+                      is published in the collateral token's own decimals and
+                      this screen holds no map to convert it, so it is not
+                      converted; a limit invented from a number in unknown units
+                      is how this repo's money bugs start. */}
+                  <span data-role="fill-cap" style={sx(NOTE)}>
+                    {fillCapCopy(quoted ? premium : null)}
+                  </span>
+                  <span style={sx(NOTE)}>
+                    The maker's remaining size is published in the collateral token's own units, and
+                    this screen does not convert it — so no depth limit is claimed here. The cap
+                    above is this build's own and is checked before anything signs.
+                  </span>
+                </div>
+
                 <div style={sx(`height:1px;background:${C.line}`)} />
 
                 {/* Max loss, above the upside figure. Always, at every detail
@@ -3181,7 +4105,7 @@ export function BoxBuilder({
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(LABEL)}>MAX PAYOUT</span>
                   <span data-role="max-payout" style={sx(`${VALUE};color:${C.green}`)}>
-                    {econ ? `${usd(econ.maxPayout, true)}${contracts === 1 ? " per contract" : ""}` : "—"}
+                    {econ ? `${usd(econ.maxPayout, true)}${size === 1 ? " per contract" : ""}` : "—"}
                   </span>
                   {/* §4.4 — computed, or absent. Never a dash, never an
                       estimate, and never a rate from a table in this repo. */}
@@ -3247,6 +4171,17 @@ export function BoxBuilder({
                     handles are small and a player should not have to find them
                     by hovering. The last clause is the limit, and it is the
                     ladder's rather than ours. */}
+                {/* The answer to "I cannot size the box to the cent", said
+                    where the snapping happens rather than left to be inferred
+                    from a rectangle that moves on release. Both halves: the
+                    instrument really is discrete, and the precise path really
+                    does exist and is not wired here. */}
+                <div data-role="precision" style={sx("display:grid;gap:5px")}>
+                  <span style={sx(NOTE)}>{DISCRETE_STRIKES_COPY}</span>
+                  {rungGapCopy(ladder) && <span style={sx(NOTE)}>{rungGapCopy(ladder)}</span>}
+                  <span style={sx(NOTE)}>{RFQ_PRECISION_COPY}</span>
+                </div>
+
                 {box && !frozen && !problem && (
                   <span data-role="edit-hint" style={sx(NOTE)}>
                     Drag the box to move it, its top or bottom edge to resize it, and its right edge
@@ -3265,6 +4200,10 @@ export function BoxBuilder({
           </div>
         </div>
       )}
+      {/* One panel, at the root and `position:fixed`, so it escapes the chart's
+          `overflow:hidden` and the two-column grid rather than being clipped by
+          either. */}
+      {ticket.panel}
     </div>
   );
 }
