@@ -126,14 +126,20 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `contracts/DuelEscrow.sol:154` — `MIN_STAKE`, **$0.001** of USDC at 6dp, i.e.
+ * `MIN_STAKE` in `contracts/DuelEscrow.sol` — **$0.001** of USDC at 6dp, i.e.
  * 1,000 base units.
  *
  * **This is a mirror, not a rule.** The floor is enforced on chain by
- * `require(stake >= MIN_STAKE, "stake too small")` at `DuelEscrow.sol:265`, and
+ * `require(stake >= MIN_STAKE, "stake too small")` in `DuelEscrow.open`, and
  * no client change can lower it — this constant exists so the panel can refuse
  * before spending gas to be refused, and it must equal the contract's value or
  * it is worse than useless.
+ *
+ * Cited by SYMBOL rather than by line throughout this file. Every constant in
+ * `DuelEscrow.sol` moved line during the testnet retarget — the natspec that
+ * explains this very change is what pushed them — and a line number is a claim
+ * that goes stale in silence. `MIN_STAKE`, `Status` and `open` are unique and
+ * greppable; a wrong line number is a citation that still looks right.
  *
  * It was `100_000` ($0.10). The contract's own natspec calls that floor
  * anti-grief: below some amount, opening duels nobody will join is free enough
@@ -330,7 +336,7 @@ export function stakeUnavailableReason(
 // Shapes
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `Status` in `contracts/DuelEscrow.sol:110-116`, by ordinal. */
+/** The `Status` enum in `contracts/DuelEscrow.sol`, by ordinal. */
 export const DUEL_STATUS = ["NONE", "OPEN", "FULL", "SETTLED", "REFUNDED"] as const;
 export type DuelStatus = (typeof DUEL_STATUS)[number];
 
@@ -1266,7 +1272,7 @@ export interface StakeWallet {
 
 /**
  * `keccak256(utf8Bytes(matchKey))` — the escrow's documented client rule
- * (`contracts/DuelEscrow.sol:89-91`), spelled `ethers.id`.
+ * (the `duelId` convention in `contracts/DuelEscrow.sol`), spelled `ethers.id`.
  *
  * Behind a dynamic import for `fill.ts`'s reason: **evaluation**, not bytes.
  * Nothing in ethers runs until an operator has set `THETADUEL_STAKE=on`, named

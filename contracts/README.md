@@ -6,7 +6,7 @@ is no foundry and no hardhat.
 
 | File | What it is |
 |---|---|
-| `DuelEscrow.sol` | The contract. ~400 lines, most of it natspec. Read it in full — it is written to be read in full. |
+| `DuelEscrow.sol` | The contract. Around 500 lines, the large majority of it natspec — six state-changing functions carry the rest. Read it in full; it is written to be read in full. |
 | `build.ts` | `bun contracts/build.ts` — compiles with the pinned solc and writes `out/DuelEscrow.json`. |
 | `deploy.ts` | `bun contracts/deploy.ts` — preflight by default; `--broadcast` deploys **to Base Sepolia**. Prints the BaseScan verification inputs. |
 | `out/DuelEscrow.json` | **Committed** artifact: `{abi, bytecode, deployedBytecode, metadata, solcVersion}`. This is the reviewed bytecode. |
@@ -77,7 +77,8 @@ the whole suite stayed green throughout. That is worth understanding rather than
 forgetting: the pin in `test/attest.test.ts` asserts the transcription is **stable**,
 not that it is **correct**. It cannot assert correctness, because the contract
 builds its `DOMAIN_SEPARATOR` from `block.chainid` at construction time
-(`DuelEscrow.sol:231-239`) and no source read can confirm what that will be.
+(in `DuelEscrow.sol`'s constructor) and no source read can confirm what that
+will be.
 
 What it would have cost: an escrow constructed on `84532` separates over
 `84532`, while an attestor signing over `8453` produces verdicts `settle`

@@ -3,11 +3,31 @@ pragma solidity 0.8.26;
 
 /**
  * @notice The minimal ERC-20 subset this escrow uses.
- * @dev    Native USDC on Base (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) is a
- *         well-behaved ERC-20: both calls return a `bool`. Every call site here
- *         `require`s that bool, so a token that returned nothing would make this
- *         contract unusable rather than silently lose funds. That is the
- *         intended trade: this escrow is for USDC and nothing else.
+ * @dev    Circle's USDC is a well-behaved ERC-20: both calls return a `bool`.
+ *         Every call site here `require`s that bool, so a token that returned
+ *         nothing would make this contract unusable rather than silently lose
+ *         funds. That is the intended trade: this escrow is for USDC and
+ *         nothing else.
+ *
+ *         The token this deployment actually pulls is Circle's **test** USDC on
+ *         Base Sepolia, 0x036CbD53842c5426634e7929541eC2318f3dCF7e, which
+ *         contracts/deploy.ts pins and refuses to substitute. It has no market
+ *         value; that is the point (see MIN_STAKE and the risk note below).
+ *
+ *         This paragraph named native USDC on Base mainnet
+ *         (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) until the retarget, and
+ *         the correction matters more than a comment usually would: deploy.ts
+ *         cites THIS natspec as the authority for the three properties the
+ *         escrow's accounting rests on, so it is where a reviewer asking "what
+ *         token does this assume?" lands. Naming the wrong one here would have
+ *         been a live citation pointing at the wrong chain's token.
+ *
+ *         The properties transfer because the implementation does: both are
+ *         FiatTokenV2 deployments from Circle, both 6 decimals, both return
+ *         `bool` from `transfer` and `transferFrom`. That shared lineage is why
+ *         the substitution is safe — NOT the fact that both are "USDC". A
+ *         hand-rolled mock ERC-20 would not be an acceptable stand-in, and
+ *         deploy.ts refuses one for that reason.
  */
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);

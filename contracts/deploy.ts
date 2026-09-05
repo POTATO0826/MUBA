@@ -89,7 +89,7 @@
  *   - this script deploys to **84532** (Base Sepolia), because that is the only
  *     chain the app will sign on. That changed first;
  *   - `src/server/attest.ts` declared `export const BASE_CHAIN_ID = 8453`,
- *     and `attest.ts:1846` folds that constant into the EIP-712 domain it signs
+ *     and `attest.ts` folds that constant into the EIP-712 domain it signs
  *     verdicts over. It now reads `84532`;
  *   - `test/attest.test.ts` pinned that value with `expect(BASE_CHAIN_ID)
  *     .toBe(8453)`, so the mismatch was *green* the whole time. It now pins
@@ -97,14 +97,14 @@
  *     transcription is **stable**, not that it is **correct**, because the
  *     contract reads `block.chainid` and no source read can confirm it. A
  *     passing suite was never going to be the thing that caught this;
- *   - `src/server/seats.ts:115` held a third, deliberately un-imported copy of
+ *   - `src/server/seats.ts` held a third, deliberately un-imported copy of
  *     the same number for the seat-reading provider. It now reads `84532` too.
  *     A wrong value there cannot mis-sign anything — it fails reads closed —
  *     but "fails closed" would have meant every seat read refused, on every
  *     duel, with `/api/lock` rejecting locks and nothing on screen saying why.
  *
  * Why it would have mattered: `DuelEscrow.sol` builds its `DOMAIN_SEPARATOR`
- * from `block.chainid` at construction (:231-239). An escrow constructed on
+ * from `block.chainid` in its constructor. An escrow constructed on
  * 84532 separates over 84532; an attestor signing over 8453 produces verdicts
  * that `settle` recovers a stranger from and reverts on — for every duel,
  * forever, with both stakes locked and only the six-hour `refund` to get them
@@ -153,7 +153,8 @@ import { ARTIFACT_PATH, CONTRACT_NAME, OPTIMIZER_RUNS, SOURCE_NAME, compileEscro
  * Circle's official **test** USDC on Base Sepolia, 6 decimals — the same
  * FiatTokenV2 lineage as native USDC on Base mainnet, so it returns `true`,
  * reverts on failure and takes no transfer fee. The escrow's whole accounting
- * rests on those three properties (`DuelEscrow.sol`:6), which is why this
+ * rests on those three properties (the `IERC20` natspec in `DuelEscrow.sol`,
+ * named rather than line-cited for the reason given below), which is why this
  * particular test token and not an arbitrary mock ERC-20: a hand-rolled test
  * token that returns nothing, or charges a fee, would break the escrow in the
  * exact way finding 5-1 describes, and would break it *quietly on testnet*
@@ -391,7 +392,8 @@ async function main(): Promise<void> {
       console.error("  deliberate — an unreadable domain is not a matching domain.");
     } else {
       console.error("  DuelEscrow builds DOMAIN_SEPARATOR from block.chainid at construction");
-      console.error("  (DuelEscrow.sol:231-239). An escrow constructed here would separate over");
+      console.error("  in DuelEscrow.sol's constructor). An escrow constructed here would");
+      console.error("  separate over");
       console.error(`  ${SIGNING_CHAIN_ID}, while the attestor signs verdicts over ${seen}.`);
       console.error("  `settle` would recover a stranger from EVERY verdict and revert on the");
       console.error("  attestor check — for every duel, forever — discovered only after both");
@@ -402,18 +404,23 @@ async function main(): Promise<void> {
       console.error("  attestor and the deploy target both said 8453 and agreed.");
       console.error("");
       console.error("  THE FIX (one line, owner-routed, NOT made by this script):");
-      console.error(`    src/server/attest.ts:279   export const SIGNING_CHAIN_ID = ${seen};`);
-      console.error(`                        ->     export const SIGNING_CHAIN_ID = ${SIGNING_CHAIN_ID};`);
-      console.error(`    test/attest.test.ts:807    expect(SIGNING_CHAIN_ID).toBe(${seen});`);
-      console.error(`                        ->     expect(SIGNING_CHAIN_ID).toBe(${SIGNING_CHAIN_ID});`);
-      console.error("    Also check src/server/seats.ts's own SIGNING_CHAIN_ID — a third,");
-      console.error("    deliberately un-imported copy of this number for the seat-reading");
-      console.error("    provider. (Named, not cited by line: the constant has already moved");
-      console.error("    line once during this retarget, and a banner that sends an operator");
-      console.error("    to the wrong line is the same defect as one naming a dead symbol.)");
-      console.error("    A wrong value there fails reads closed rather than mis-signing, but");
-      console.error("    it would refuse every seat read against this escrow. All three moved");
-      console.error("    together for the retarget and all three have to move together again.");
+      console.error(`    src/server/attest.ts   export const SIGNING_CHAIN_ID = ${seen};`);
+      console.error(`                    ->     export const SIGNING_CHAIN_ID = ${SIGNING_CHAIN_ID};`);
+      console.error(`    test/attest.test.ts    expect(SIGNING_CHAIN_ID).toBe(${seen});`);
+      console.error(`                    ->     expect(SIGNING_CHAIN_ID).toBe(${SIGNING_CHAIN_ID});`);
+      console.error("    src/server/seats.ts    its own SIGNING_CHAIN_ID — a third,");
+      console.error("                           deliberately un-imported copy of the same");
+      console.error("                           number, for the seat-reading provider.");
+      console.error("");
+      console.error("    Grep the symbol; these are deliberately not cited by line. All three");
+      console.error("    constants moved line during the Sepolia retarget, and a banner that");
+      console.error("    sends an operator to the wrong line at 3am is the same defect as one");
+      console.error("    naming a symbol the file no longer has. SIGNING_CHAIN_ID is unique");
+      console.error("    across the repo and greppable; a line number goes stale in silence.");
+      console.error("");
+      console.error("    A wrong value in seats.ts fails reads closed rather than mis-signing,");
+      console.error("    but it would refuse every seat read against this escrow. All three");
+      console.error("    moved together for the retarget and have to move together again.");
       console.error("    That constant is money-critical and lives with its test, so it is");
       console.error("    changed there and reviewed there, not from a deploy script.");
     }
