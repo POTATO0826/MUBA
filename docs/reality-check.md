@@ -263,6 +263,18 @@ BTC only (`src/state/options.ts:80-91`, `src/data/spot.ts`).
 
 **Fix:** add `options: Bun.env.THETADUEL_OPTIONS === "on"` to `index.ts:246`. One line.
 
+> **Since fixed, then defaulted on.** The key was added as `=== "on"` and the flag
+> became reachable — everything above was true when it was written and the finding
+> stands as the record of why the key exists. The default has since inverted: the
+> line now reads `options: Bun.env.THETADUEL_OPTIONS !== "off"`, the same opt-out
+> shape `market` uses, because "emitted but off unless you read the README" was
+> still the demo this section describes for anyone cloning the repo. The path is
+> read-only — `useOptionBook` fetches `/api/config`, `bookOf` reshapes a snapshot
+> `/api/market` already served, and what crosses into the match is a frozen plain
+> value; no wallet, no ethers, no approval, no transaction. `THETADUEL_TRADE` and
+> `THETADUEL_STAKE` are untouched and remain opt-IN on `=== "on"` exactly.
+> `test/market-route.test.ts` pins the new literal.
+
 **Second-order issue this exposes.** With the flag on, ETH DEGEN renders **×430.75** and
 **×439.94** beside AVAX DEGEN **×6.67** in the same grid. Seeded `mult` is `tierOdds(tier)`
 (≈1/band midpoint, 1.33–6.67); live `mult` is `multipleAt(…, REFERENCE_MOVE, …)` — the payout
@@ -484,6 +496,10 @@ a viewer who knows crypto will notice.
 ## 7. If one thing gets fixed before a demo
 
 **`index.ts:246` — add `options: Bun.env.THETADUEL_OPTIONS === "on"`.**
+
+> **Done, and then taken one step further.** The key was added; the default has
+> since been inverted to `!== "off"` so the intended demo is what a clone gets
+> with no `.env` at all. See the note at the end of §4.1.
 
 The home page promises *"Options pricing streams live from Thetanuts on Base."* Today that is
 true of `/desk` and of the box arena, and false of the parlay pick screen — the screen the demo

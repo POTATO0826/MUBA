@@ -1199,9 +1199,12 @@ ${el.innerHTML}`,
   /**
    * **The rollback story, held as a string comparison.**
    *
-   * `THETADUEL_OPTIONS` unset means `useOptionBook` answers `undefined`, `book`
-   * is absent, and this screen must be the screen that shipped before any of
-   * the live path existed — not "close to it". Byte-for-byte over the rendered
+   * `THETADUEL_OPTIONS=off` — or a seeded source, or a static build with no
+   * server to ask — means `useOptionBook` answers `undefined`, `book` is absent,
+   * and this screen must be the screen that shipped before any of the live path
+   * existed — not "close to it". (The flag itself is opt-out now, on by default;
+   * what this test pins is the no-book render, which is every one of the degrade
+   * paths above and is where the kill switch has to land.) Byte-for-byte over the rendered
    * card faces is the only version of that claim worth asserting, because every
    * near-miss (a stray chip, a reordered row, a re-rounded number) is invisible
    * to a substring check.

@@ -5,13 +5,21 @@ import type { OptionBook } from "../desk/optionize.ts";
 import type { PricingRow } from "../types.ts";
 
 /**
- * The opt-in flag, and the book it turns into.
+ * The kill switch, and the book it turns into.
  *
- * Two jobs, one hook, because they are the same decision: `THETADUEL_OPTIONS=on`
- * is what makes a match's cards market-priced, and a book with nothing quotable
- * in it is the same as the flag being off — both answer `undefined`, and
+ * Two jobs, one hook, because they are the same decision: `features.options` is
+ * what makes a match's cards market-priced, and a book with nothing quotable in
+ * it is the same as the flag being off — both answer `undefined`, and
  * `undefined` is what makes `src/state/match.ts` deal exactly the legs it has
  * always dealt.
+ *
+ * The flag is OPT-OUT (`THETADUEL_OPTIONS=off`), the shape `THETADUEL_MARKET`
+ * uses, and for the same reason: nothing below reads a wallet, and nothing below
+ * can sign. It was opt-in until the default was measured — a clone with the flag
+ * unset showed all 24 cards reading `MAX LOSS —` beneath a home page promising
+ * live Thetanuts pricing, which is a worse claim about the venue than a live card
+ * is. The reasons this hook answers `undefined` are unchanged; only the default
+ * moved. See the flag's own paragraph in `index.ts`.
  *
  * ## Why it is a separate file from `state/match.ts`
  *
@@ -26,14 +34,20 @@ import type { PricingRow } from "../types.ts";
  *
  * `useTradeConfig` (`src/views/Parlay.tsx`) and `useStakeConfig`
  * (`src/state/stake.ts`) both skip the config fetch when there is nothing for the
- * flag to enable. Same here: a seeded source has no chain and no spot, so the
- * flag could only ever resolve to "off", and skipping the call is what keeps the
- * default build — and every existing test, all of which mount on
- * `mockMarketSource` — free of a network call whose answer it would discard.
+ * flag to enable. Same here, and the reason survived the flag becoming opt-out
+ * intact: a seeded source publishes no spot and no chain, so `bookOf` would hand
+ * back `undefined` however the answer came out. Skipping the call is what keeps
+ * the default build — and every existing test, all of which mount on
+ * `mockMarketSource` — free of a network round trip whose answer it would
+ * discard. `enabled` therefore stays `false` over a fixture even though the
+ * server would now say `true`, and that is not a stale default: it is the same
+ * `undefined` by a shorter route.
  *
- * Everything that fails leaves this at `undefined`: no server, a 500, a body
- * that is not JSON, a flag that is absent. Opt-in means the absence of the flag
- * is the absence of the feature.
+ * Everything that fails leaves this at `undefined` too: no server, a 500, a body
+ * that is not JSON, a `features` block with no `options` key. `=== true`
+ * exactly — a flag that does not reach us is not a flag we assume. That is what
+ * keeps a static build (no server to ask) on the seeded cards rather than on a
+ * half-priced screen.
  */
 export function useOptionBook(source: MarketSource): OptionBook | undefined {
   const [enabled, setEnabled] = useState(false);

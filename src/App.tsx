@@ -114,7 +114,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   const stake = useDuelStake(active);
 
   /**
-   * The live option book, behind `THETADUEL_OPTIONS=on`.
+   * The live option book, on by default and killed by `THETADUEL_OPTIONS=off`.
    *
    * Read here rather than inside the match because `src/state/match.ts` may not
    * touch a market source — the determinism scan forbids it, and a match that

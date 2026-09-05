@@ -229,22 +229,43 @@ const server = Bun.serve({
      *   - `market` is OPT-OUT (`THETADUEL_MARKET=off` is the kill switch): live
      *     market data is read-only and display-only, so the safe default is on
      *     and a dead API degrades to the mock rather than to a broken page.
-     *   - `options` is OPT-IN (`=on` exactly). It moves no money — it decides
-     *     whether a match's parlay cards are dealt off the live Thetanuts book
-     *     (`src/state/options.ts`) instead of the seeded tape. It is opt-in
-     *     rather than opt-out because a dealt card is a *claim about a venue*:
-     *     with the flag off the screen is the offline game it has always been,
-     *     and nothing on it says otherwise. Absent means absent —
-     *     `useOptionBook` requires `=== true` and fails closed on anything
+     *   - `options` is OPT-OUT (`THETADUEL_OPTIONS=off` is the kill switch), for
+     *     the same reason `market` is: it moves no money. It decides whether a
+     *     match's parlay cards are dealt off the live Thetanuts book
+     *     (`src/state/options.ts`) instead of the seeded tape — a reshape of the
+     *     snapshot `/api/market` already served, never a signature.
+     *
+     *     It was OPT-IN (`=on` exactly) until the default was judged by what it
+     *     produced. The old argument was that a dealt card is a *claim about a
+     *     venue*, so an operator should have to ask for it. But with the flag
+     *     absent — the default for everyone who clones this repo — all 24 cards
+     *     on the pick screen printed `MAX LOSS —` and "no live premium" while
+     *     the home page promised live Thetanuts pricing. That is the louder
+     *     false claim, and it was the out-of-the-box experience. The opt-in
+     *     argument only held while the book might not be there; the book is
+     *     there, and `bookOf` already degrades to `undefined` — which is to say,
+     *     to exactly the seeded screen — for any ticker with no live spot or no
+     *     chain. So "on" cannot invent a card the venue does not list, and "off"
+     *     stays one word away.
+     *
+     *     The asymmetry with `stake`/`trade` below is structural, not a matter
+     *     of nerve: **nothing on the options path can reach a signer.**
+     *     `useOptionBook` reads this envelope, `bookOf` reshapes a
+     *     `MarketSource`, and what crosses into the match is a frozen plain
+     *     value. No wallet, no ethers, no approval, no transaction — the fill
+     *     flow is gated on `features.trade`, separately, and is exactly as
+     *     reachable with this flag on as with it off.
+     *
+     *     `useOptionBook` still requires `=== true` and fails closed on anything
      *     else, so this key must be emitted for the flag to exist at all.
      *   - `stake` and `trade` are OPT-IN (`=on` exactly): both move real money
      *     on Base mainnet. Anything that can spend USDC is off until an
      *     operator says otherwise, in this process, on purpose.
      *
      * **Every key a client reads must appear here.** A flag the server never
-     * emits is not "off", it is unreachable: `THETADUEL_OPTIONS=on` read
-     * nothing at all until this envelope carried `options`, so the
-     * market-priced parlay card could not be turned on in any configuration.
+     * emits is not "off", it is unreachable: `THETADUEL_OPTIONS` read nothing
+     * at all until this envelope carried `options`, so the market-priced parlay
+     * card could not be turned on in any configuration.
      * `test/market-route.test.ts` pins the two sets equal.
      *
      * `no-store`, like the alias: flipping a kill switch must take effect on
@@ -259,7 +280,7 @@ const server = Bun.serve({
           escrow: Bun.env.THETADUEL_ESCROW ?? "",
           features: {
             market: Bun.env.THETADUEL_MARKET !== "off",
-            options: Bun.env.THETADUEL_OPTIONS === "on",
+            options: Bun.env.THETADUEL_OPTIONS !== "off",
             stake: Bun.env.THETADUEL_STAKE === "on",
             trade: Bun.env.THETADUEL_TRADE === "on",
           },

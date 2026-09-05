@@ -20,11 +20,13 @@ bun run build    # → dist/
 
 **Out of the box nothing is written to a chain.** The seeded game — the board,
 the tape, the duel, the PTS ledger — needs no wallet, no key and no `.env`, and a
-mock wallet stands in for a real one. Two live edges are on by default and want
+mock wallet stands in for a real one. Three live edges are on by default and want
 nothing from you: the news wire (four public RSS feeds, fetched server-side;
-`THETADUEL_NEWS=off` for the seeded wire alone) and the Thetanuts market read
-(`THETADUEL_MARKET` to opt out). **Everything that can spend money is opt-IN and
-off** — `THETADUEL_TRADE=on` for the real fill, `THETADUEL_STAKE=on` plus a
+`THETADUEL_NEWS=off` for the seeded wire alone), the Thetanuts market read
+(`THETADUEL_MARKET=off` to opt out) and the market-priced parlay cards
+(`THETADUEL_OPTIONS=off` to opt out). All three only *read* — none of them can
+sign, approve or spend. **Everything that can spend money is opt-IN and off** —
+`THETADUEL_TRADE=on` for the real fill, `THETADUEL_STAKE=on` plus a
 deployed escrow for the side bet. See *Thetanuts — what is actually live* for
 what each flag reaches and, just as importantly, what has never run.
 
@@ -536,6 +538,7 @@ Four sentences, and each one is checkable in the tree:
 | `/desk` book, MM chain, payoff spot label, $1 previews | LIVE, on whatever the market route last held | same |
 | Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it; every other name renders exactly the seeded app | same |
 | Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed live run passes (`docs/asset-gate.md`). Wired into the lobby: `qualifiedAssets()` reaches `CreateLobby` (the greyed-sector reason and the DEEP/THIN grade) and the lobby board's own grade tag (`grades={...}` on `<LobbyCard>` at both its call sites) | — |
+| Market-priced parlay cards on the pick screen — real strikes, the option's own delta as the probability, a premium-derived payout | LIVE, read-only. Reshapes the snapshot `/api/market` already served (`src/state/options.ts` → `src/desk/optionize.ts`) into a frozen value the match holds; a ticker with no live spot or no chain deals its seeded card instead | `THETADUEL_OPTIONS` opt-out |
 | Parlay fill — N sequential vanilla fills, one tx per leg, $2 cap on the leg **and** the slip sum | CODE COMPLETE, **never executed on Base**. Preview-all-first, exact approvals, stale legs dropped before the first signature, keep-what-landed on a failure, and the policy on screen before you sign | `THETADUEL_TRADE=on` opt-IN, default off |
 | Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** | owner |
 | Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`); the verdict is re-derived from committed picks and one snapshot the server reads itself, frozen onto the lock so a re-attest cannot re-roll it | `ATTESTOR_PRIVATE_KEY` |
@@ -570,9 +573,15 @@ Four sentences, and each one is checkable in the tree:
   (`src/components/MatchSpin.tsx`); `qualifiedAssets()` reaches `CreateLobby`
   and the lobby board's grade tag. A card with no qualifying quote now renders
   a dead slot instead of always existing, and DEEP/THIN reflects a real
-  measurement rather than defaulting to `THIN`. Set `THETADUEL_OPTIONS=on` to
-  see it: without it the pick screen still shows the seeded cards, on purpose,
-  so a demo without a live book never shows a broken one. Every claim here is
+  measurement rather than defaulting to `THIN`. **On by default** — it is a read
+  of the same book `/api/market` already serves, it signs nothing, and
+  `THETADUEL_OPTIONS=off` turns it back to the seeded cards. It was opt-IN at
+  first, on the reasoning that a dealt card is a claim about a venue; that
+  reasoning inverted once the default was measured, because a clone with the flag
+  unset showed all 24 cards reading `MAX LOSS —` under a home page promising live
+  Thetanuts pricing. A demo without a live book still never shows a broken one:
+  where a ticker has no live spot or no chain the card falls back to seeded on its
+  own, flag or no flag. Every claim here is
   measured item by item, with a `file:line` for each, in
   [`docs/plan6-audit.md`](docs/plan6-audit.md) and
   [`docs/plan7-audit.md`](docs/plan7-audit.md).

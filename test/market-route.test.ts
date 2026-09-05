@@ -964,6 +964,13 @@ const READ = await (async () => {
  * the server never emits is not "off"; it is unreachable, and no test could see
  * the difference because the flag path was never exercised.
  *
+ * The line is there now, and its shape has since changed once more: `options` is
+ * OPT-OUT (`!== "off"`), because "emitted but off by default" turned out to be
+ * the same demo as "never emitted" for anyone who had not read the README. Both
+ * failures are the same failure — the screen promising a live venue and printing
+ * `MAX LOSS —` — and the second test below is what makes the current default a
+ * thing you have to edit on purpose.
+ *
  * The third test is the general form, and it is the one that matters: **every
  * `features.<key>` any client reads must be a key this envelope emits.** Wire a
  * flag into a hook and forget the server, and it fails by name.
@@ -974,17 +981,32 @@ describe("/api/config carries every feature flag a client reads", () => {
     expect(EMITTED.size).toBeGreaterThanOrEqual(4);
   });
 
-  test("`options` is emitted, and it is opt-in on `=== \"on\"` exactly", () => {
+  test("`options` is emitted, and it is opt-out on `!== \"off\"` exactly", () => {
     expect(EMITTED.has("options")).toBe(true);
-    // The same shape `stake` and `trade` use, and for the same reason: absence
-    // of the flag is absence of the feature. `!== "off"` here would turn every
-    // build's parlay cards live by default, and a dealt card is a claim about a
-    // venue rather than a display preference.
-    expect(FEATURES).toContain('options: Bun.env.THETADUEL_OPTIONS === "on"');
+    // The same shape `market` uses, and for the same reason: the options path
+    // moves no money. It reshapes a snapshot `/api/market` already served and
+    // hands the match a frozen plain value — no wallet, no ethers, no approval.
+    //
+    // It read `=== "on"` until the default was judged by what it produced. The
+    // argument for opt-in was that a dealt card is a claim about a venue rather
+    // than a display preference; the argument against is that with the flag
+    // absent — every clone of this repo — all 24 cards printed `MAX LOSS —` and
+    // "no live premium" while the home page promised live Thetanuts pricing,
+    // which is the louder false claim. `bookOf` still answers `undefined`, i.e.
+    // the seeded screen, for any ticker with no live spot or no chain, so "on"
+    // cannot invent a card the venue does not list.
+    //
+    // The assertion stays a pinned literal rather than a loose "is `options`
+    // mentioned" — that weaker form would have passed throughout the outage
+    // above. Pin the shape: changing the default must mean changing this line.
+    expect(FEATURES).toContain('options: Bun.env.THETADUEL_OPTIONS !== "off"');
+    // …and the two flags that CAN spend USDC stay opt-IN on `=== "on"` exactly.
+    // Nothing about the options default reaches them, and this pair is what
+    // fails if a later edit generalises "read-only defaults on" one flag too far.
     expect(FEATURES).toContain('stake: Bun.env.THETADUEL_STAKE === "on"');
     expect(FEATURES).toContain('trade: Bun.env.THETADUEL_TRADE === "on"');
-    // …and `market` stays the one opt-OUT flag: read-only display data, so the
-    // safe default is on and a dead API degrades to the mock.
+    // …and `market`, the flag `options` now matches: read-only display data, so
+    // the safe default is on and a dead API degrades to the mock.
     expect(FEATURES).toContain('market: Bun.env.THETADUEL_MARKET !== "off"');
   });
 
