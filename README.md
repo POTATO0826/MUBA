@@ -51,22 +51,67 @@ result screen's second phase, so a result link still replays both.
 
 ## Live arena
 
-The **Live arena** header tab keeps the newer invite-based PvP flow alongside
-the seeded match flow above. It uses the same wallet and live Thetanuts market
-source, but offers two shorter modes:
+`/arena` — the **Live arena** header tab — is the newer invite-based PvP flow
+alongside the seeded match flow above. It shares the same wallet and live
+Thetanuts market source, and it now has exactly one mode.
 
-- **Parlay · RFQ** — choose up to four strikes on one underlying; the captured
-  volatility edge decides the round.
-- **Find a difference** — pick the largest hidden volatility outlier in the
-  live order book.
+**Draw a box on the price chart — the box is the option.** Its dimensions are
+the price, and the price comes from Thetanuts, not from us. The two modes this
+replaced — **Parlay · RFQ** and **Find a difference** — were both deleted in
+`9d8f704`: `src/views/SpotDiff.tsx` and `src/views/ParlayRfq.tsx` are gone,
+`GameMode` is the single member `"box"`, and `edge`-based scoring has no reader
+left.
 
-`/arena` opens the mode hub. Creating a duel stores an in-memory room and
-produces a `/room/:id` invite. The challenger claims the second seat, both
-players ready up, and their picks remain hidden until both have locked. Room
-state is intentionally process-local: restarting the Bun server expires every
-invite. The room transport currently trusts the posted wallet address, so the
-flow is suitable for a prototype but must add signed nonces before its USDC
-labels become real custody.
+A box is a four-strike zone: a floor and a ceiling that pay maximum, wings of
+equal width either side that decay the payout to zero outside them. It snaps
+to strikes the live book actually quotes, drawn over real Chainlink-on-Base
+price history (`src/data/history.ts`) with a visible "now" divider — the box
+can only ever extend right of it. **Settlement is terminal**: the price does
+not have to stay in the band, it has to land there at expiry, so the copy
+says "lands in your box at expiry" and never "stays within." Settlement
+itself takes a TWAP of that same Chainlink feed, so the last tick the chart
+drew and the print the option actually settles on can differ slightly — the
+screen says that too, not just the happy path.
+
+The box fills one of two real ways, and neither is a fallback for the other:
+
+- **Off the book.** If the box lands on a zone a market maker has already
+  listed, it fills instantly through the OptionBook as a `RANGER` — the
+  product the book actually carries (62% of everything it has ever traded; a
+  listed *condor* has never existed there). Listed on ETH and BTC only,
+  roughly three zones per (asset, expiry) — most drawn boxes match nothing
+  listed, and the screen says so rather than snapping somewhere arbitrary.
+- **RFQ.** Any other box is quoted as a `CALL_CONDOR` through the
+  OptionFactory's sealed-bid auction: you'd name a max bid, and market makers
+  answer or don't. This is the mode's special part — any strike, any expiry —
+  and the auction logic (`src/desk/boxauction.ts`, `src/ui/RfqPanel.tsx`) is
+  built and tested against the live SDK, but it is not yet mounted behind a
+  screen a player can reach: the running arena can quote and show an unmatched
+  box, not send a request for one.
+
+Two players draw blind against the same underlying and budget, dealt by
+`spinSlice`; at reveal both boxes render on one chart, yours outlined and
+theirs filled, so where you agreed shows as overlap. If either side never
+fills, no verdict is signed and there is no tiebreak.
+
+**Two things this screen has to say plainly, because it is specific about
+money and must be exactly as specific about what it does not hold:**
+
+- **Stakes in the arena are notional.** `DuelEscrow` is compiled and
+  adversarially reviewed but **never deployed** — no USDC is approved,
+  transferred or escrowed on this path, on any duel. The arena's own copy says
+  so on every duel strip and at every reveal; a duel here is for pride, not
+  for a pot.
+- **Nothing has ever been filled on chain from this repo.** The listed-zone
+  path prices a real premium straight off the live book (verified
+  digit-for-digit against `/api/market`, `docs/reality-check.md` §1.3(b)), and
+  the RFQ path is built end to end against real orders — but neither has
+  signed a real transaction. See *Thetanuts — what is actually live* below.
+
+The room transport (`/room/:id`) is unchanged underneath: an in-memory invite,
+process-local — restarting the Bun server expires every room — that currently
+trusts the posted wallet address, so it is suitable for a prototype but needs
+signed nonces before its numbers mean custody.
 
 ## Determinism
 
@@ -442,7 +487,8 @@ src/
                       DitherReveal, StarfieldButton, Sparkline
   ui/                 Header, Footer, SoundToggle, LobbyCards, LadderRow
   views/              Lobby (home), Battles, CreateLobby, Room, Study,
-                      ParlayPick, Live, Result, Ranking, Parlay (desk)
+                      ParlayPick, Live, Result, Ranking, Parlay (desk),
+                      Hub, Create, RoomLobby, BoxBuilder (the Live arena)
 ```
 
 ### Why style strings survive
@@ -486,10 +532,10 @@ Four sentences, and each one is checkable in the tree:
 
 | Surface | State | Behind |
 |---|---|---|
-| `/api/market` — Base order book + MM pricing + greeks | CODE LIVE, **book route currently 404** — see the outage below. `/api/market` answers from its last good snapshot and labels itself `stale` | `THETADUEL_MARKET` opt-out |
+| `/api/market` — Base order book + MM pricing + greeks | CODE LIVE. The book was briefly misreported 404 from a local TLS problem (retracted below, see `docs/book-endpoint.md`) — the venue itself never went down. `/api/market` degrades to its last good snapshot and labels itself `stale` only on a genuine failure | `THETADUEL_MARKET` opt-out |
 | `/desk` book, MM chain, payoff spot label, $1 previews | LIVE, on whatever the market route last held | same |
 | Board spot annotations (`seeded · live`) + book-delta advisory | LIVE where Thetanuts prices it; every other name renders exactly the seeded app | same |
-| Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed **live** run says `BOOK UNREACHABLE` and exits 1, the committed **table** is the frozen capture. Not yet wired into the lobby — `CreateLobby` accepts a qualified list and nothing passes one | — |
+| Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed live run passes (`docs/asset-gate.md`). Wired into the lobby: `qualifiedAssets()` reaches `CreateLobby` (the greyed-sector reason and the DEEP/THIN grade) and the lobby board's own grade tag (`grades={...}` on `<LobbyCard>` at both its call sites) | — |
 | Parlay fill — N sequential vanilla fills, one tx per leg, $2 cap on the leg **and** the slip sum | CODE COMPLETE, **never executed on Base**. Preview-all-first, exact approvals, stale legs dropped before the first signature, keep-what-landed on a failure, and the policy on screen before you sign | `THETADUEL_TRADE=on` opt-IN, default off |
 | Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** | owner |
 | Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`); the verdict is re-derived from committed picks and one snapshot the server reads itself, frozen onto the lock so a re-attest cannot re-roll it | `ATTESTOR_PRIVATE_KEY` |
@@ -517,16 +563,19 @@ Four sentences, and each one is checkable in the tree:
   NOT ask the protocol team about this. Full teardown: `docs/book-endpoint.md`.
 
 
-- **Plan 6's engine is ahead of its UI.** `cardsForSlice`, `multipleAt`,
-  `spinSlice` and `qualifiedUnderlyings` are built, pure and unit-tested — and
-  none of them has a production call site yet. So: the pick screen still deals
-  eight seeded cards priced by `desk/optionize.ts` rather than by the protocol's
-  own `calculatePayout`; **no screen renders a dead slot**, so a card always
-  exists; and the DEEP/THIN grade falls back to `THIN` for every symbol because
-  nothing has measured the book. Two edits close all of that, and both are
-  plumbing over code that already exists. Do not read a green suite as a wired
-  product. Every claim in this section is measured item by item, with a
-  `file:line` for each, in [`docs/plan6-audit.md`](docs/plan6-audit.md).
+- ~~**Plan 6's engine is ahead of its UI.**~~ **Closed — the wiring landed.**
+  `cardsForSlice` and `multipleAt` now price the pick screen's cards
+  (`src/views/ParlayPick.tsx`) and the legs that actually settle
+  (`src/state/match.ts`); `spinSlice` deals the slice reveal
+  (`src/components/MatchSpin.tsx`); `qualifiedAssets()` reaches `CreateLobby`
+  and the lobby board's grade tag. A card with no qualifying quote now renders
+  a dead slot instead of always existing, and DEEP/THIN reflects a real
+  measurement rather than defaulting to `THIN`. Set `THETADUEL_OPTIONS=on` to
+  see it: without it the pick screen still shows the seeded cards, on purpose,
+  so a demo without a live book never shows a broken one. Every claim here is
+  measured item by item, with a `file:line` for each, in
+  [`docs/plan6-audit.md`](docs/plan6-audit.md) and
+  [`docs/plan7-audit.md`](docs/plan7-audit.md).
 
 The seeded game never depends on any of it: kill every flag and the app is
 byte-for-byte the offline build. **Residual trust, stated plainly:** the attest

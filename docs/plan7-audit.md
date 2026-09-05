@@ -272,3 +272,110 @@ bun test test/box.test.ts test/boxbuilder.test.tsx test/boxduel.test.tsx test/rf
 
 Rows 1, 2, 3, 4, 6, 13, 20, 28 and 29 are greps and reads, and their patterns are
 in the Evidence column verbatim.
+
+---
+
+# Second pass — three PARTIALs and a README close, 2026-09-05, HEAD `01da9fd`
+
+Scope is narrow, same rule as `docs/plan6-audit.md`'s later passes: only the
+rows this file left open, re-verified against the tree rather than against a
+commit message. Nothing below rewrites the table above — the first-pass
+verdicts stay exactly as written, because they show what was true when they
+were taken.
+
+Three commits landed between the first pass (HEAD `8b457f2`) and this one:
+`0541a70` and `a760ce8` ("the arena stops promising money nothing holds" / "…
+and the tripwire grows teeth"), and `28c8551` ("the last three audited
+PARTIALs — and the ranger trap has a number"). Plus this session's own edit to
+`README.md`'s "Live arena" section, which is row 6's own fix.
+
+## Row 12 — `isRanger` — **PARTIAL → PASS**
+
+The first pass found the ranger half of the property test thin (fixture-only,
+n=2) and `isRanger` itself vacuous — no call to `calculatePayoutAtPrice` or
+`calculateMaxPayout` anywhere in `src/`. `28c8551` closes the vacuity, which
+was the sharper half of the finding: `src/data/ranger.ts:609-615` —
+`rangerPayoutOrder(spec)` — is now **the only constructor** of a
+`RangerPayoutOrder` in the repo, it sets `isRanger: true` unconditionally
+(`:613`), and both SDK helpers are only ever called through it
+(`:628 calculateMaxPayout(rangerPayoutOrder(spec), …)`, `:644
+calculatePayoutAtPrice(rangerPayoutOrder(spec), …)`) — the first live callers
+of either helper this repo has had. A test now locks the trap the commit
+message describes finding: `test/box.test.ts:1340` asserts a flagged order
+prices as a ranger, `:1346` constructs the same order unflagged, and
+`:1367`/`test/market-builder.test.ts:1372` assert a ranger fed to either
+helper without the flag prices as a `call_condor` instead — silently at half
+the correct collateral (measured: 1000 USDC flagged vs 500 unflagged on the
+same four strikes). The fixture-only property-test half of the original
+finding is unchanged (still `test/box.test.ts:921,1214`, still n=2 on this
+capture) — narrower than a property test over every matching box, but the
+part of row 12 that was actually dangerous (an unflagged call reachable at
+all) is closed.
+
+## Row 17 — short leg via RFQ — **PARTIAL → PASS**
+
+The first pass found `RfqInput.isLong: boolean` at the desk boundary — both
+callers happened to pass `true`, but nothing refused `false`. `28c8551`
+closes it exactly the way **D2** below recommended: `src/desk/rfq.ts:467` —
+`isLong: true;` — is now the literal type, and `:1228` —
+`if (input.isLong !== true) return raise("SHORT_REFUSED", "cap");` — refuses
+in the cap phase, above every dependency, the same place `assertCollateralZero`
+guards `collateralAmount`. A short leg now cannot compile (`@ts-expect-error`
+on `{ isLong: false }`, already asserted at the data layer) **and** cannot
+reach a dep at the desk layer even if a caller coerced past the type. Defect
+**D2** is closed by the same commit; see below.
+
+## Row 24 / Defect D1 — the refund promise — **PARTIAL → PASS**
+
+The first pass's sharpest finding: the arena printed "DuelEscrow's six-hour
+refund returns both stakes, rake-free" and a `winner takes $X` pot line, for a
+contract that is compiled, reviewed, and never deployed, on a stake that is an
+in-memory number nobody ever escrows. `0541a70` and `a760ce8` fix this by
+choice, not by building the missing path: `src/views/BoxBuilder.tsx` now
+carries a `DuelCustody` seam (`escrow` address + `refundHours`, `:269-275`)
+that every claim about custody is gated on, defaulting to `null` — the honest
+state — everywhere `App.tsx` constructs it today. `stakeBasisLine` (`:285`)
+prints "notional · nothing is held" without custody and only prices a "winner
+takes" pot with a named escrow; `NO_FILL_COPY` (`:355`) now reads "Nothing was
+staked on this duel, so there is nothing to return" instead of naming a
+mechanism, a window and a rake. Verified live: `grep -n "six-hour refund"
+src/views/BoxBuilder.tsx` returns exactly one hit, `:253`, inside the docblock
+recording this history — not in any rendered string. A screen-scanning
+tripwire (`a760ce8`) mounts all four player states and greps rendered text for
+"winner takes", "refund", "rake", "escrow", "both stakes", "the pot", with the
+disclaimer node itself pinned to its exact copy so the exemption cannot
+smuggle a promise back in; the commit message records verifying it by
+reinstating each old sentence and watching the tripwire fail by name. The
+literal escrow refund *path* plan 7 §6.1 describes still does not exist —
+`DuelEscrow` is still not deployed, and that is unchanged and owner-only — but
+the checklist item's substance, that an unfillable promise not be printed as
+fact, is now true rather than merely asserted.
+
+## Row 6 — README names the price source — **PARTIAL → PASS**
+
+Closed by this session's edit to `README.md`'s "Live arena" section: it now
+names Chainlink-on-Base as the arena's price-history feed
+(`src/data/history.ts`), repeats the TWAP settlement caveat, and the "Parlay ·
+RFQ" / "Find a difference" bullets this row's own evidence quoted are gone —
+replaced with what the one remaining mode, the box, actually is.
+
+## Defect D2 — closed alongside row 17
+
+Covered above: `RfqInput.isLong` is the literal `true`, and `assertLongOnly`
+(`rfq.ts:1228`) refuses a coerced `false` in the cap phase. No further action.
+
+## Second-pass scoreboard
+
+**PASS 27 · PARTIAL 0 · FAIL 0 · OWNER-ONLY 2.**
+
+Every row that was open at the first pass is now closed except the two rows
+no agent can close: 28 and 29, one real `RANGER` fill and one real
+`CALL_CONDOR` fill on Base, each with a Basescan link in the README. Re-checked
+this pass: `grep -rn "basescan.org/tx" README.md docs/` returns nothing but
+this file's own descriptions of the absence, and `App.tsx` still mounts
+`<BoxBuilder>` with no `onConfirm` (`grep -n "onConfirm" src/App.tsx` finds
+only the docblock explaining why it is deliberately not wired to the duel
+lock) and `RfqPanel` still has no mount anywhere in `src/` outside its own
+tests — so rows 28 and 29 remain not just owner-only but, as the first pass
+found, currently unreachable from the running app as well. Building the mount
+is not this file's job; recording that it still has not happened is.

@@ -426,3 +426,54 @@ bookkeeping correction above, not a row that moved.
 
 The single open PARTIAL is still item 19(c), and it is still one prop at two
 call sites. Plan 7's own audit is in `docs/plan7-audit.md`.
+
+**Closed in the fourth pass below — see there for the commit and the greps.**
+
+---
+
+# Fourth pass — item 19 closes, re-verified 2026-09-05, HEAD `01da9fd`
+
+`28c8551` ("Fix: the last three audited PARTIALs — and the ranger trap has a
+number") wires the one prop the third pass's own re-check said was still
+missing: `grades` into `<LobbyCard>` at its two call sites. Re-run directly
+against the tree, not against the commit message:
+
+| Grep | Result at `01da9fd` |
+|---|---|
+| `grep -n "grades=" src/views/Battles.tsx` | `:115` — `<LobbyCard … grades={grades} />` |
+| `grep -n "grades=" src/views/Lobby.tsx` | `:59` — `<LobbyCard … grades={grades} />` |
+| `grep -n "grades=" src/App.tsx` | `:605` and `:617` — the two calls that feed `Battles` and `Lobby` their `grades` |
+| `grep -n "grades=" src/views/CreateLobby.tsx` | `:525` — unchanged, still `<LiveSector>`, not `<LobbyCard>` — this was never the gap |
+
+The commit's own note matters here, because a blind prop-drill would have
+reintroduced a different bug: `LobbyCard` slices the alphabetically-first two
+entries out of whatever index it is handed, so passing the *whole* qualified
+index (rather than the lobby's own book) would have printed the wrong two
+symbols on a lobby whose sectors do not start at the top of the alphabet
+(the commit's own example: AVAX/BNB on a MAJORS lobby, ETH on a MEME-only
+one). The fix is not in `Battles.tsx`/`Lobby.tsx` — they still hand the whole
+index straight through as `grades={grades}` — it is inside `LobbyCard` itself:
+`src/ui/LobbyCards.tsx:175` — `const graded = grades ? bookForSectors(lobby.sectors).slice(0, 2) : []`
+— reads the lobby's own book via `bookForSectors`, the same function the spin
+deals from, before indexing into `grades` (`:294`, `grade={grades?.[underlying] ?? null}`).
+So the two call sites can stay dumb and pass the raw index; no card can wear
+another card's book regardless.
+
+**Verdict: item 19 is PASS.** All three of its surfaces now have a real
+caller: (a) the slice reveal (closed second pass, unchanged since); (b) the
+create screen's real/NOT-GRADED distinction (closed second pass, unchanged
+since); (c) the lobby board's own `GradeTag`, closed here by `28c8551`. This
+is recorded as a fourth verdict rather than by editing the second- and
+third-pass rows above, on this file's own rule: the earlier verdicts stay
+exactly as written because they show what was true when they were taken.
+
+## Fourth-pass scoreboard
+
+**PASS 19 · PARTIAL 0 · FAIL 0 · OWNER-ONLY 2.**
+
+Every row plan 6 §9 asks for is now PASS except the two that were never in an
+agent's power to close. Both OWNER-ONLY rows (20, 21) are unchanged:
+`grep -rn "basescan.org/tx" README.md docs/` still returns nothing but this
+file's own two prior descriptions of the absence. Nobody has filled anything
+on Base, and there is still no BaseScan link anywhere in the repo. Plan 7's
+own audit is in `docs/plan7-audit.md`.
