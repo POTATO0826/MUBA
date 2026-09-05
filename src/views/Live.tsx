@@ -3,7 +3,6 @@ import type { ModeSpec } from "../data/modes.ts";
 import { buildChartCard } from "../engine/chart.ts";
 import { legState } from "../engine/match.ts";
 import type { ParlayLeg } from "../engine/parlay.ts";
-import { windowLabel } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, tag } from "../theme.ts";
 import type { Player } from "../types.ts";
@@ -35,7 +34,6 @@ interface LiveProps {
 export function Live(p: LiveProps) {
   const nLegs = p.myLegs.length;
   const progress = (p.pos / p.settleAt) * 100;
-  const firstSym = p.arena[0];
   const cols = Math.min(3, Math.max(2, p.arena.length));
 
   const raceNote = p.raceDone
@@ -52,8 +50,12 @@ export function Live(p: LiveProps) {
       <div style={sx("display:flex;align-items:center;gap:16px;margin-bottom:18px")}>
         <h2 style={sx(`margin:0;font:700 19px/1 ${SANS};letter-spacing:-.02em`)}>Live duel · {p.lobbyName}</h2>
         <span style={sx(tag(p.mode.color))}>
+          {/* The mode's own three true numbers, and nothing else. This badge
+              used to carry a fourth — `windowLabel(arena[0], salt)`, a hashed
+              `OCT 2013 · JAN 2014` — which labelled the WHOLE duel with one
+              ticker's invented history. It is gone with the function; the
+              duration here is the mode's declared window and is real. */}
           {p.mode.label} · {p.mode.duration} · TAPE ×{p.mode.compression}
-          {firstSym ? ` · ${windowLabel(firstSym, p.salt)}` : ""}
         </span>
         <div style={sx("flex:1")} />
         <span style={sx(`font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>POOL</span>

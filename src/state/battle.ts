@@ -4,9 +4,10 @@ import {
   clampStake,
   MIN_DURATION_MINUTES,
   MIN_STAKE_USDC,
-  poolOf,
+  potOf,
   stepStake,
   usdc,
+  winnerTakesUsdc,
 } from "../data/stake.ts";
 import type { GameMode } from "../types.ts";
 
@@ -118,9 +119,33 @@ export function useBattle() {
 
   const derived = useMemo(
     () => ({
-      /** The pot the winner would take: both stakes. Notional until an escrow
-       *  is deployed and the arena is routed through it — see `stakeUsdc`. */
-      prizeLabel: usdc(poolOf(state.stakeUsdc)),
+      /**
+       * **Both stakes, gross.** What an escrow would *hold* between `open` and
+       * `settle`, and what a refund splits back — never what anyone is paid.
+       *
+       * This used to be the only figure here, under the name `prizeLabel`, and
+       * `Create` headed it **WINNER TAKES** whenever custody was named. It is
+       * `stake × 2`, and `DuelEscrow.settle` pays `pot − 4%`, so on a $10 stake
+       * that screen claimed $20.00 against a contract that transfers $19.20.
+       *
+       * The name is now the unit. Two labels sat over one number and the number
+       * could only be right for one of them: `TWICE THE STAKE` is an assertion
+       * about arithmetic and is exactly this, while `WINNER TAKES` is an
+       * assertion about a transfer and is {@link payoutLabel}. Redirecting the
+       * single field would have fixed the second by making the first a fresh 4%
+       * lie in the other direction, which is why there are two.
+       */
+      potLabel: usdc(potOf(state.stakeUsdc)),
+      /**
+       * **What the escrow actually transfers to the winner:** the pot less
+       * `DuelEscrow.RAKE_BPS` (4%), digit-for-digit against the contract's own
+       * `payoutOf` — see `winnerTakesUsdc`.
+       *
+       * Only rendered where custody is named, because it is only true there.
+       * With no escrow nothing is held and nothing is paid, and the honest
+       * figure to show is the pot beside a label that claims nothing about it.
+       */
+      payoutLabel: usdc(winnerTakesUsdc(state.stakeUsdc)),
       /** What one player would risk. Nothing takes it today. */
       entryLabel: usdc(state.stakeUsdc),
     }),

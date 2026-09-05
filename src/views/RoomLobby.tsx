@@ -1,7 +1,7 @@
 import { PlayerMark } from "../components/PlayerMark.tsx";
 import { useEffect, useState } from "react";
 import type { RoomView } from "../data/room.ts";
-import { poolOf, usdc } from "../data/stake.ts";
+import { usdc, winnerTakesUsdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import type { Room } from "../state/room.ts";
@@ -195,12 +195,22 @@ export function RoomLobby({
         <div style={sx("flex:1")} />
         {/* WINNER TAKES $20.00 stood here unconditionally. It is a claim about
             custody — a pot, held, paid to whoever wins — and it is now gated on
-            the thing that would do the holding. */}
+            the thing that would do the holding.
+
+            The gate was the first half of the correction and the figure is the
+            second. Gating it made the sentence appear only where an escrow is
+            named, which is precisely where the rake is real: `DuelEscrow.settle`
+            pays `pot − RAKE_BPS/BPS`, so `poolOf` — the gross pot — was the one
+            number this line could not be. `winnerTakesUsdc` is the transfer, and
+            `test/stake.test.ts` pins it against the contract's own `payoutOf`
+            rather than against a literal, so the two cannot drift. The pot is
+            still on screen, in `stakeBasisLine` above, under a label that claims
+            only what it is. */}
         {custody !== null && (
           <>
             <span style={sx(LABEL)}>WINNER TAKES</span>
             <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>
-              {usdc(poolOf(room.stakeUsdc))}
+              {usdc(winnerTakesUsdc(room.stakeUsdc))}
             </span>
           </>
         )}

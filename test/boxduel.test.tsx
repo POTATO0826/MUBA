@@ -28,7 +28,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { liveExpiries, type Box, type LadderSnapshot } from "../src/data/box.ts";
 import type { RoomSeat, RoomView } from "../src/data/room.ts";
-import { poolOf, usdc } from "../src/data/stake.ts";
+import { potOf, usdc, winnerTakesUsdc } from "../src/data/stake.ts";
 import {
   _resetRooms,
   createRoom,
@@ -568,12 +568,16 @@ describe("custody is claimed only when something holds the stake", () => {
 
     // And the same asymmetry in the strip.
     expect(stakeBasisLine(10, null)).toBe(`${usdc(10)} each, notional · nothing is held`);
-    // Derived from `poolOf`, never typed: the pot is the escrow's arithmetic
-    // (stake × 2, less the house rake), and a number frozen here would go
-    // stale the day that rake changes — which is exactly what happened.
+    // Derived from `winnerTakesUsdc`, never typed: what the winner takes is the
+    // escrow's own arithmetic (stake × 2, less the house rake), and a number
+    // frozen here would go stale the day that rake changes — which is exactly
+    // what happened. `potOf` is the gross pot and is NOT this figure: it is
+    // asserted below to be strictly larger, so pointing this line back at the
+    // pot fails rather than silently restoring the 2× promise.
     expect(stakeBasisLine(10, held)).toBe(
-      `${usdc(10)} each · winner takes ${usdc(poolOf(10))}`,
+      `${usdc(10)} each · winner takes ${usdc(winnerTakesUsdc(10))}`,
     );
+    expect(winnerTakesUsdc(10)).toBeLessThan(potOf(10));
   });
 
   test("custody, when it is real, reaches the screen", () => {
@@ -590,8 +594,9 @@ describe("custody is claimed only when something holds the stake", () => {
       />,
     );
     // The promise comes back, and the disclaimer goes away — one switch, and
-    // the escrow address is what throws it.
-    expect(text()).toContain(`winner takes ${usdc(poolOf(10))}`);
+    // the escrow address is what throws it. The figure is what the escrow
+    // *pays* (`winnerTakesUsdc`, pot less the 4% rake), never the pot it holds.
+    expect(text()).toContain(`winner takes ${usdc(winnerTakesUsdc(10))}`);
     expect(text()).toContain("6-hour refund returns both stakes, rake-free");
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
   });
@@ -643,7 +648,12 @@ describe("custody is claimed only when something holds the stake", () => {
       <Create
         state={INITIAL_STATE}
         entryLabel={usdc(10)}
-        prizeLabel={usdc(20)}
+        // Two figures under two labels. `potOf` is what TWICE THE STAKE
+        // asserts, `winnerTakesUsdc` is what WINNER TAKES asserts, and the
+        // screen may never print one under the other's heading — derived, not
+        // typed, so the test moves with the rake rather than pinning $19.20.
+        potLabel={usdc(potOf(10))}
+        payoutLabel={usdc(winnerTakesUsdc(10))}
         inviteUrl={null}
         creating={false}
         createError={null}
@@ -773,13 +783,22 @@ describe("custody is claimed only when something holds the stake", () => {
     // One seam, one switch, three screens — and the switch is an address, not a
     // flag, so nothing here can be turned on by optimism.
     mount(hub(CONNECTED, [view(id)], held));
-    expect(text()).toContain(`winner takes ${usdc(poolOf(10))}`);
+    // Same `stakeBasisLine`, so the same rake-aware figure — the hub cannot
+    // drift from the arena strip because there is one sentence behind both.
+    expect(text()).toContain(`winner takes ${usdc(winnerTakesUsdc(10))}`);
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
     unmount();
 
     mount(create(held));
     expect(text()).toContain("WINNER TAKES");
     expect(text()).toContain("Both stakes");
+    // The figure under WINNER TAKES is the transfer, and the pot is the
+    // sentence below it — two labels, two numbers, and the screen may not swap
+    // them. Printing the pot up here is the exact 4% overstatement this panel
+    // shipped with; both are asserted, so a redirect in either direction fails.
+    expect(text()).toContain(`WINNER TAKES${usdc(winnerTakesUsdc(10))}`);
+    expect(text()).toContain(`${usdc(potOf(10))} in the pot`);
+    expect(text()).toContain("less the escrow's 4% rake");
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
     unmount();
 
@@ -793,9 +812,13 @@ describe("custody is claimed only when something holds the stake", () => {
       />,
     );
     expect(text()).toContain("WINNER TAKES");
-    // `poolOf` again, not a literal — the lobby renders the escrow's own
-    // arithmetic and the test must move with it.
-    expect(text()).toContain(usdc(poolOf(10)));
+    // `winnerTakesUsdc`, not a literal — the lobby renders the escrow's own
+    // arithmetic and the test must move with it. It used to be `poolOf`, the
+    // gross pot, and this line passed while the screen overstated the payout by
+    // the whole 4% rake; the pot is asserted absent from the figure so the
+    // redirect cannot come back.
+    expect(text()).toContain(usdc(winnerTakesUsdc(10)));
+    expect(text()).not.toContain(`WINNER TAKES${usdc(potOf(10))}`);
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
     unmount();
   });

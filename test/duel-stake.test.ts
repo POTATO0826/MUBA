@@ -1342,9 +1342,12 @@ describe("the room with staking off renders today's DOM", () => {
     serveConfig({ escrow: ESCROW, chainId: 8453, features: { stake: true } });
     const { html, panel } = await roomParts({ wallet: WALLET });
 
-    // The room still shows the PTS pool’s own ETH figures, and the side bet
-    // still shows dollars. What must not exist is a bridge between them.
-    expect(html).toContain("4.80 ETH");
+    // The room still shows the PTS pool’s own notional figures, and the side
+    // bet still shows dollars. What must not exist is a bridge between them.
+    // (`Ξ`, not `ETH`: the pool is notional and only PTS moves, so the unit
+    // word was itself a claim — see `state/match.ts`'s `prizeLabel`. The glyph
+    // is what changed; the separation this test is about did not.)
+    expect(html).toContain("4.80 Ξ");
     expect(panel).toContain("$1.00");
 
     // The panel names the PTS pool exactly once, and only to say the two are
@@ -1355,7 +1358,7 @@ describe("the room with staking off renders today's DOM", () => {
 
     // Everywhere else in the panel: no ETH, no points, no rate. A conversion
     // would have to name the other unit somewhere, and it never does.
-    for (const other of ["ETH", "PTS", "point", "≈", "worth", "equals", "convert"]) {
+    for (const other of ["ETH", "Ξ", "PTS", "point", "≈", "worth", "equals", "convert"]) {
       expect(rest.includes(other)).toBe(false);
     }
 

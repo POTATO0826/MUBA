@@ -19,6 +19,7 @@ import { zoneQuote } from "./data/ranger.ts";
 import { mockNewsSource, type NewsSource } from "./data/news.ts";
 import { meta } from "./data/universe.ts";
 import { parseRoute, routePath, type Route } from "./lib/route.ts";
+import { feedState } from "./theme.ts";
 import { useSoundUnlock } from "./lib/sound/index.ts";
 import { sx } from "./lib/sx.ts";
 import { useLedger } from "./state/ledger.ts";
@@ -528,7 +529,12 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
         <Create
           state={arena}
           entryLabel={arenaDerived.entryLabel}
-          prizeLabel={arenaDerived.prizeLabel}
+          // Two figures, because the panel prints one number under two labels
+          // that claim different things — the gross pot under TWICE THE STAKE,
+          // the pot less the escrow's 4% rake under WINNER TAKES. See
+          // `useBattle`'s `derived`.
+          potLabel={arenaDerived.potLabel}
+          payoutLabel={arenaDerived.payoutLabel}
           inviteUrl={roomState.inviteUrl}
           creating={roomState.busy}
           createError={roomState.error}
@@ -555,6 +561,13 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
       {boxTab && (
         <BoxBuilder
           snapshot={ladderOf(source)}
+          // The ladder's provenance, so the chart heading can say which of the
+          // three states it is in instead of asserting LIVE unconditionally.
+          // `useLiveMarket` keeps serving the last good ladder when a refresh
+          // fails — "stale beats blank" — so `source.meta` is the only thing
+          // that knows the board is old, and the heading had no way to.
+          // `feedState` is the one translation of the wire's own word.
+          feed={{ state: feedState(source.meta.source), at: source.meta.fetchedAt }}
           spot={(u) => source.spot(u)}
           // Everything the venue has a book for — so an asset that cannot carry
           // a condor still appears, greyed, with the reason (§2.1). `[]` on the

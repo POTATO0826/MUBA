@@ -118,25 +118,26 @@ export function winnerTakesUsdc(stakeUsdc: number): number {
 }
 
 /**
- * The old name. **It is the pot, and three screens print it as the payout.**
+ * The old name. **It is the pot, and it has no callers left.**
  *
- * This is deliberately still `stake × 2` rather than quietly redirected to
- * {@link winnerTakesUsdc}, and the reason is that its call sites do not all
- * mean the same thing:
+ * It was deliberately left as `stake × 2` rather than quietly redirected to
+ * {@link winnerTakesUsdc}, because its call sites did not all mean the same
+ * thing and a single alias could not be right for all of them:
  *
- *  - `src/views/RoomLobby.tsx` prints it under **WINNER TAKES**, gated on a
- *    deployed escrow → wants {@link winnerTakesUsdc}.
+ *  - `src/views/RoomLobby.tsx` printed it under **WINNER TAKES**, gated on a
+ *    deployed escrow → now {@link winnerTakesUsdc}.
  *  - `src/views/BoxBuilder.tsx`'s `stakeBasisLine` says *"winner takes …"*, on
- *    the same gate → wants {@link winnerTakesUsdc}.
- *  - `src/state/battle.ts`'s `prizeLabel` feeds `src/views/Create.tsx`, which
- *    heads the very same figure **WINNER TAKES** with custody and **TWICE THE
- *    STAKE** without it. Two labels, two figures, one number today — so this
- *    one needs *both* names, not a redirect.
+ *    the same gate → now {@link winnerTakesUsdc}.
+ *  - `src/state/battle.ts` fed `src/views/Create.tsx`, which heads the very
+ *    same figure **WINNER TAKES** with custody and **TWICE THE STAKE** without
+ *    it. Two labels, two figures, one number — so that one needed *both*
+ *    names, and it now has them: `potLabel` and `payoutLabel`.
  *
- * A single alias cannot be right for all four, and a redirect would have turned
- * "TWICE THE STAKE" into a 4% lie while fixing the other three. So the split
- * lives here, the names say which is which, and the four call sites are a
- * routing job rather than a guess this module gets to make on their behalf.
+ * A redirect would have turned "TWICE THE STAKE" into a 4% lie while fixing the
+ * other three. The split lived here until every call site had said which figure
+ * it meant; they all have, so the only thing this name still does is keep a
+ * test that pins the distinction (`test/stake.test.ts`) and stop the old
+ * spelling coming back by accident.
  *
  * @deprecated Say which figure you mean: {@link potOf} for the gross pot,
  * {@link winnerTakesUsdc} for what the escrow actually pays out.

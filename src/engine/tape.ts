@@ -119,41 +119,55 @@ export function series(sym: string, salt: number, openPx?: number): readonly num
   return out;
 }
 
-const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-
 /**
- * A plausible three-month historical window, derived from the same seed as the
- * tape so the label and the data agree.
+ * How much of a generated tape a card is drawing, said in the only unit the
+ * tape has: prints.
  *
- * ⚠ **This label is invented, and it is now inconsistent with a live open.** It
- * returns something like `NOV 2018 · FEB 2019`, which was a defensible dress for
- * a walk that opened on a stored 2024 reference. A tape opening on a Chainlink
- * print read minutes ago is not a 2018 window, and printing this over it states
- * a date that is wrong by seven years. `docs/reality-check.md` §5.10 already
- * records the related anachronism (an AVAX headline datelined eighteen months
- * before Avalanche launched).
+ * ## What this replaced, and why it had to go
  *
- * It is left as-is because its two callers — `views/Live.tsx` and the seeded
- * wire fixture — are outside this change's file grant, and because the fix is a
- * decision rather than a rename: either the label becomes the *real* window
- * (`open.at` back through the duel's duration, which is true and boring) or the
- * screen drops it. Whichever, the caller has to know whether its open was live,
- * and `openFor()` in `src/data/room.ts` is where it finds out.
+ * Until now this file exported `windowLabel(sym, salt)`, which hashed the
+ * ticker and the salt into a month and a year in 2017–2024 and printed the
+ * result as `OCT 2013 · JAN 2014` under the chart. Nothing about that was true.
+ * The tape is a seeded forward walk opening on a reference or live price; it is
+ * not any asset's price in any period, and the label named a period anyway. The
+ * owner's screenshot caught it in the most obvious possible form — `AVAX · JUN
+ * 2017 · SEP 2017`, eighteen months before Avalanche existed — and
+ * `docs/reality-check.md` §5.10 had already recorded the same shape on the wire
+ * beside it. Its own docblock called it "a plausible three-month historical
+ * window", which is the tell: plausible is what a fabrication is.
  *
- * The second caller is named in prose rather than by path on purpose. The
- * source scan in `test/determinism.test.ts` greps this file for a short list of
- * live-data module paths and that fixture's path is one of them, so writing it
- * out here failed the scan. That is the guard working, not a false positive: it
- * cannot tell a comment from an import, and one that could would be one
- * refactor away from missing a real one.
+ * The seeded wire fixture reproduced the identical hash to date its stories
+ * inside that invented window, so the two agreed with each other and the
+ * fabrication was *internally consistent*. That made it more convincing, not
+ * less. Both are gone; the fixture now files its session on a real calendar day.
+ *
+ * (That fixture is named in prose rather than by path, and so is the live news
+ * module. The source scan in `test/determinism.test.ts` greps this file for a
+ * short list of live-data module paths, and it cannot tell a comment from an
+ * import — a scan that could would be one refactor away from missing a real
+ * one. Writing either path out here fails the guard, correctly.)
+ *
+ * ## What this says instead
+ *
+ * The literal truth and nothing past it: which prints of the generated walk are
+ * on screen, out of how many the walk has. `PRINTS 51–110 OF 200`. There is no
+ * date because there is no date to give, and the reader is told the resolution
+ * they are looking at rather than being sold a period the data cannot support —
+ * which also happens to be exactly what a zoom control needs to print.
+ *
+ * The mode's simulated duration ("24 HOURS") is a *separate* and genuinely true
+ * statement, and it stays where it already lived: on the mode badge, and on the
+ * study screen's zoom readout. It is a declared rule of the game, not a claim
+ * about history, and it must not be folded in here — a card that said `6H` with
+ * no other context would be one refactor away from being read as a date again.
+ *
+ * `from` is 0-indexed into the tape; the label prints 1-indexed prints, because
+ * "print 1" is the opening print and there is no print zero on a tape.
  */
-export function windowLabel(sym: string, salt: number): string {
-  let s = salt;
-  for (let i = 0; i < sym.length; i++) s = (s * 33 + sym.charCodeAt(i)) >>> 0;
-  const m = s % 12;
-  const y = 2017 + ((s >> 4) % 8);
-  const end = m + 3 > 11 ? `${MONTHS[(m + 3) % 12]} ${y + 1}` : `${MONTHS[m + 3]} ${y}`;
-  return `${MONTHS[m]} ${y} · ${end}`;
+export function spanLabel(from: number, count: number, total: number = TAPE_LEN): string {
+  const a = Math.max(1, Math.floor(from) + 1);
+  const b = Math.max(a, Math.min(total, Math.floor(from) + Math.floor(count)));
+  return `PRINTS ${a}–${b} OF ${total}`;
 }
 
 /** Price formatting that stays readable from PEPE (1.12e-5) to BTC (96,410). */
@@ -165,14 +179,32 @@ export function fmtPx(v: number): string {
 }
 
 /**
- * Sparkline geometry for the first `count` prints of `data`, scaled into a
- * `w × h` box.
+ * Sparkline geometry for `count` prints of `data` starting at `from`, scaled
+ * into a `w × h` box.
  *
  * The x-axis is normalised to `count`, so the plotted line always spans the full
  * width and the head sits at the right edge. During the live fight `count` grows
  * every tick: the chart keeps filling the card and gains resolution rather than
  * creeping in from the left. The y-axis rescales to the plotted slice only, which
  * is why an early window looks as dramatic as a finished one.
+ *
+ * ## `from`, and why it can only ever be a camera
+ *
+ * `from` is the study screen's zoom: the player asks for the last eighth of the
+ * window and this draws prints 97–110 instead of 1–110. It **selects existing
+ * prints and does nothing else**. It cannot resample, cannot interpolate and
+ * cannot invent resolution the tape does not have — a 14-print slice stretched
+ * across 260 units is fourteen real prints joined by thirteen straight
+ * segments, and the card says "PRINTS 97–110 OF 200" beside it so the reader
+ * knows that is what they are looking at. The moment this function grew a
+ * smoothing pass it would start drawing prices nothing generated, which is the
+ * same class of thing as the invented date label this file just lost.
+ *
+ * The dashed baseline follows the slice rather than the tape: `baseY` is the
+ * *plotted* opening print. A zoomed card whose baseline stayed pinned to print 1
+ * would draw a reference line outside its own y-range, or worse, inside it and
+ * meaning nothing. At `from = 0` — every existing caller — the two are the same
+ * number and this is a no-op.
  */
 export function geom(
   data: readonly number[],
@@ -180,9 +212,11 @@ export function geom(
   w: number,
   h: number,
   pad: number,
+  from = 0,
 ): Geometry {
   const span = Math.max(2, count);
-  const pts = data.slice(0, span);
+  const start = Math.max(0, Math.min(Math.max(0, data.length - 2), Math.floor(from)));
+  const pts = data.slice(start, start + span);
   let lo = Infinity;
   let hi = -Infinity;
   for (const v of pts) {
@@ -199,7 +233,7 @@ export function geom(
   return {
     path,
     fill: `${path}L${X(pts.length - 1).toFixed(1)},${h}L0,${h}Z`,
-    baseY: Y(data[0] ?? lo).toFixed(1),
+    baseY: Y(pts[0] ?? lo).toFixed(1),
     headX: X(pts.length - 1).toFixed(1),
     headY: Y(last).toFixed(1),
     last,

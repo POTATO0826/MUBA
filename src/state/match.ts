@@ -608,10 +608,45 @@ export function useMatch(route: Route, options: MatchOptions = {}) {
       secondsLeft,
       raceDone: pos >= spec.settleAt,
       verdict,
-      prizeLabel: lobby ? `${lobby.prize.toFixed(2)} ETH` : "—",
-      entryLabel: lobby ? `${(lobby.prize / 2).toFixed(2)} ETH` : "—",
-      formPrizeLabel: `${state.form.prize.toFixed(2)} ETH`,
-      formEntryLabel: `${(state.form.prize / 2).toFixed(2)} ETH`,
+      /**
+       * The notional pool, and the entry that is half of it.
+       *
+       * ## Why the glyph changed
+       *
+       * These read `"4.80 ETH"` until the honesty pass. Nothing on this path is
+       * staked, nothing is paid, and the only quantity that ever moves is
+       * points (`stakePointsFor` in `src/data/lobbies.ts` — the seeded
+       * `prize: 4.8` is 2,400 PTS an entry and nothing else). The unit word was
+       * the whole of the claim: a player reading "4.80 ETH" on the room and the
+       * result screen is reading ether, which is not a thing this app has, has
+       * held, or has ever transferred.
+       *
+       * `Ξ` is what `src/ui/LobbyCards.tsx` already prints for **this exact
+       * number** — `lobby.prize` renders as `4.80 Ξ pool` on the board card a
+       * player clicks to get here — so the choice is not between two units but
+       * between one number rendered two ways on two screens. A board that says
+       * `Ξ` and a room that says `ETH` is a conversion nobody performed, which
+       * is the shape of six of the seven money bugs in `docs/reality-check.md`.
+       * The arena's real, USDC-denominated pool goes through `usdc(...)` in
+       * `src/state/battle.ts` and is deliberately *not* this.
+       *
+       * The glyph is a mark on a notional figure, not a promise, and what says
+       * so is `NOTIONAL_POOL_LINE` — "notional · nothing is held · settles in
+       * PTS" — which is rendered beside every one of these on every surface
+       * that prints them (`LobbyCards`, `CreateLobby`, `Room`, `Result`). This
+       * change is belt-and-braces to that: the disclosure is what carries the
+       * truth, and the unit should not be quietly arguing with it.
+       *
+       * Not converted to `PTS` here, though that is the unit that actually
+       * moves: `prize` is 4.8 and the pool in points is 4,800, so printing
+       * `"4.80 PTS"` would be a fresh thousand-fold error, and printing
+       * `"4,800 PTS"` would put a second scale of the same pool on screen
+       * beside `stakePoints`. One number, one scale, one disclosure.
+       */
+      prizeLabel: lobby ? `${lobby.prize.toFixed(2)} Ξ` : "—",
+      entryLabel: lobby ? `${(lobby.prize / 2).toFixed(2)} Ξ` : "—",
+      formPrizeLabel: `${state.form.prize.toFixed(2)} Ξ`,
+      formEntryLabel: `${(state.form.prize / 2).toFixed(2)} Ξ`,
     };
   }, [
     state.lobbies,

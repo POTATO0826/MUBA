@@ -16,6 +16,7 @@ import {
 } from "../data/spot.ts";
 import { meta } from "../data/universe.ts";
 import { OPTIONS_CHIP, SETTLEMENT_NOTE, type OptionBook } from "../desk/optionize.ts";
+import { cardTicket, type SeededReason } from "../desk/ticket.ts";
 import {
   PARLAY_CARDS,
   REFERENCE_MOVE,
@@ -50,6 +51,7 @@ import {
   type FeedState,
 } from "../theme.ts";
 import { DetailToggle } from "../ui/DetailToggle.tsx";
+import { TicketToggle, useTradeTicket, type TradeTicketHost } from "../ui/TradeTicket.tsx";
 import type { Player, PricingRow } from "../types.ts";
 
 /**
@@ -358,6 +360,35 @@ export function ParlayPick(p: ParlayPickProps) {
    * an ordered list of quantities rather than a permission.
    */
   const detail = useCardDetail(rankAt(p.xp ?? PLAYER.xp).tier);
+
+  /**
+   * The trade ticket — one panel for the whole screen, opened by whichever card
+   * the pointer, the keyboard or a tap is on.
+   *
+   * The card face is the game's summary of a position (§E2's six quantities,
+   * progressively disclosed). This is the position itself, written the way the
+   * option is written: the contract's own name, its expiry and the time on it,
+   * the premium **as** the max loss, the breakeven, the payoff's shape, and the
+   * greeks with their windows and their provenance. Every figure comes from
+   * `cardTicket`, which is pure and is the one place that decides what may
+   * honestly be said about a card the book did not deal.
+   *
+   * One host rather than one per card because the panel is `position:fixed` and
+   * has to escape the section border and the two-column grid the cards live
+   * inside — the same reason `CreateLobby` hoists its sector tip.
+   */
+  const ticket = useTradeTicket();
+
+  /**
+   * The clock the ticket's "time left" is measured against.
+   *
+   * `Date.now()` in render, for the footer's reason and the book-age line's: a
+   * countdown that ticked would re-render the whole pick grid once a second for
+   * a figure nobody reads to the minute. It refreshes when anything else on the
+   * screen does — coarse, honest, free — and the pick clock above already
+   * re-renders this component every second anyway on a timed mode.
+   */
+  const ticketNow = Date.now();
 
   /**
    * Live spot for the dealt tickers, `null` for most of them. Three to five
@@ -705,7 +736,17 @@ export function ParlayPick(p: ParlayPickProps) {
                      */
                     const live = dealt ? (dealt[i] ?? null) : null;
                     if (dealt && live === null) {
-                      return <DeadSlot key={card.id} sym={sym} card={card} />;
+                      return (
+                        <DeadSlot
+                          key={card.id}
+                          sym={sym}
+                          card={card}
+                          leg={leg}
+                          spot={liveSpot ?? p.book?.spot[sym] ?? 0}
+                          now={ticketNow}
+                          ticket={ticket}
+                        />
+                      );
                     }
                     /**
                      * The `book Δ` second opinion — the book's own read on the
@@ -725,12 +766,39 @@ export function ParlayPick(p: ParlayPickProps) {
                     const advisory = live
                       ? null
                       : bookDeltaNote(sym, card.stance, leg.strike / leg.px, p.source);
+                    /**
+                     * This card's trade ticket — the whole position, in the
+                     * instrument's own language.
+                     *
+                     * Built here rather than inside the face because it needs
+                     * three things the face never sees: the dealt row (for the
+                     * greeks and the venue's own IV), why the slot is seeded
+                     * when it is, and a clock. `cardTicket` picks the live or
+                     * the seeded ticket off `card` alone, so a caller cannot
+                     * hand a seeded slot a market-priced panel.
+                     */
+                    const tk = cardTicket({
+                      sym,
+                      tier: card.tier,
+                      stance: card.stance,
+                      id: `${sym}:${card.id}`,
+                      card: live,
+                      leg,
+                      spot: liveSpot ?? p.book?.spot[sym] ?? 0,
+                      now: ticketNow,
+                      reason: seededReason(p.book, dealt),
+                    });
+                    const ticketOpen = ticket.openId === tk.id;
                     return (
+                      <div key={card.id} style={sx("position:relative;display:grid")}>
                       <button
-                        key={card.id}
                         data-parlay={`${sym}:${card.id}`}
                         aria-pressed={on}
-                        onPointerEnter={() => sfx("parlay.card.hover", { pitch: TIER_PITCH[card.tier] })}
+                        {...ticket.bind(tk)}
+                        onPointerEnter={(e) => {
+                          sfx("parlay.card.hover", { pitch: TIER_PITCH[card.tier] });
+                          ticket.bind(tk).onPointerEnter(e);
+                        }}
                         onClick={() => {
                           sfx("parlay.card.pick", { pitch: TIER_PITCH[card.tier] });
                           p.onPick(sym, card.id);
@@ -793,6 +861,20 @@ export function ParlayPick(p: ParlayPickProps) {
                           </div>
                         )}
                       </button>
+                      {/* The explicit way in, for a touch screen and for anyone
+                          who would rather press than hover. A SIBLING of the
+                          card, not a child: the card is a `<button>` and a
+                          button inside a button is invalid markup that browsers
+                          repair by unnesting it — which would move it out of the
+                          grid cell it is positioned against. It sits opposite
+                          the pick tick, so pressing it never picks. */}
+                      <TicketToggle
+                        id={tk.id}
+                        open={ticketOpen}
+                        onToggle={(el) => ticket.pin(tk, el)}
+                        style={`position:absolute;${on ? "top:29px" : "top:8px"};right:8px`}
+                      />
+                      </div>
                     );
                   })}
                 </div>
@@ -972,8 +1054,30 @@ export function ParlayPick(p: ParlayPickProps) {
           </div>
         </div>
       </div>
+      {/* One panel, at the root, `position:fixed` — so it escapes the section
+          borders and the two-column grid rather than being clipped by them. */}
+      {ticket.panel}
     </div>
   );
+}
+
+/**
+ * Why a slot carries no contract, in the three cases that are actually
+ * different to a reader.
+ *
+ * `not-dealt` is decided at the slot (the `DeadSlot` branch above knows it), so
+ * this answers only the two that are decided per screen and per ticker: no book
+ * reached this screen at all, or one did and carries no chain for this name.
+ * Collapsing them would let the panel say "the book carries no chain for AVAX"
+ * on a screen that never got a book, which is a claim about a read that did not
+ * happen.
+ */
+export function seededReason(
+  book: OptionBook | undefined,
+  dealt: readonly (LiveCard | null)[] | null,
+): SeededReason {
+  if (!book) return "no-book";
+  return dealt === null ? "no-chain" : "not-dealt";
 }
 
 /**
@@ -1056,14 +1160,51 @@ function faceValues(
  * statement about the market at deal time and it is more informative than the
  * eight cards it replaces one of.
  */
-function DeadSlot({ sym, card }: { sym: string; card: ParlayCard }) {
+function DeadSlot({
+  sym,
+  card,
+  leg,
+  spot,
+  now,
+  ticket,
+}: {
+  sym: string;
+  card: ParlayCard;
+  leg: ParlayLeg;
+  spot: number;
+  now: number;
+  ticket: TradeTicketHost;
+}) {
   const tc = TIER_COLOR[card.tier];
+  /**
+   * A slot the book refused to deal gets a ticket too, and it is the most
+   * informative one on the screen: it names the band nothing fell in, and on
+   * SAFE it says why nothing ever will.
+   *
+   * `tabIndex={0}` rather than a button, because there is nothing to press —
+   * the slot is not pickable and making it a control would put a dead button in
+   * the tab order. A `tabIndex` on a non-interactive element is exactly what
+   * ARIA reserves for "focusable so it can describe itself".
+   */
+  const tk = cardTicket({
+    sym,
+    tier: card.tier,
+    stance: card.stance,
+    id: `${sym}:${card.id}`,
+    card: null,
+    leg,
+    spot,
+    now,
+    reason: "not-dealt",
+  });
   return (
     <div
       data-parlay-dead={`${sym}:${card.id}`}
       aria-disabled
+      tabIndex={0}
+      {...ticket.bind(tk)}
       style={sx(
-        "text-align:left;position:relative;padding:12px;border-radius:10px;" +
+        "text-align:left;position:relative;padding:12px;border-radius:10px;outline:none;" +
           `border:1px dashed ${C.borderMid};background:${C.bg};opacity:.72`,
       )}
     >

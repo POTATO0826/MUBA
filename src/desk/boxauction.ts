@@ -258,13 +258,28 @@ export function boxWaitOptions(windowSec: number = BOX_OFFER_WINDOW_SEC): {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A decrypted bid's premium, in dollars. `null` for a bid we could not open.
+ * A decrypted bid's premium, in dollars, **for the whole position**. `null` for
+ * a bid we could not open.
  *
  * The nullability is load-bearing. plan7 §9: *"Prices shown come from
  * `previewFillOrder` or a decrypted offer, never from a mid."* An unreadable
  * offer has no price we are entitled to display, and the correct rendering of it
  * is the sentence that says so — not a mid, not the reserve, not a dash that
  * looks like a number.
+ *
+ * ## The unit, said out loud, because it is not the obvious one
+ *
+ * `offerAmount` is what the maker bid for the request as a whole, in USDC 6dp.
+ * The division below is a **decimal conversion** — micro-USDC to dollars — and
+ * `BOX_CONTRACTS` is standing in for `10⁶` because one contract in 6dp units
+ * happens to be the same integer as the token's scale. Two different facts, one
+ * numeral, and the coincidence held only while every request was for exactly
+ * one contract.
+ *
+ * So this is a **position total**, never a per-contract price, and that is the
+ * right shape for its callers: `RfqPanel` renders it as MAX LOSS, and the most
+ * a long condor can lose is the whole premium it paid. {@link boxEconomics} is
+ * where it has to become per-contract, and it says why there.
  */
 export function offerPremiumUsd(offer: RfqOffer | null | undefined): number | null {
   if (!offer || offer.unreadable || offer.offerAmount === null) return null;
@@ -279,20 +294,45 @@ export function offerPremiumUsd(offer: RfqOffer | null | undefined): number | nu
  * `max payout ÷ premium paid` in the repo — so this file has no arithmetic of
  * its own to get wrong and no place for a rate to hide.
  *
- * @param premiumUsd The premium from a **decrypted offer**. Not a mid, not the
- * max bid, not an estimate.
+ * ## The division, and why it is here rather than in `offerPremiumUsd`
+ *
+ * `economics` takes `premiumPerContractUsd` and scales it by `numContracts`
+ * itself — *"both inputs are per contract; every output is a total"*. What this
+ * function is handed is the opposite: {@link offerPremiumUsd} is the maker's
+ * bid for the **whole position**. Passing it straight through double-counted
+ * the size, and was invisible because nothing has ever requested more than one
+ * contract, where a position total and a per-contract price are the same
+ * number. At two contracts it reported twice the max loss and half the
+ * multiple; at ten, ten times and a tenth.
+ *
+ * The division belongs here and not in `offerPremiumUsd` because `RfqOffer`
+ * does not carry a size. An offer is a bid on a *request*, and the request is
+ * `boxRfqInput`'s, built with the very `numContracts` this function is handed —
+ * so the count is knowable at this seam and nowhere upstream of it. Teaching
+ * `offerPremiumUsd` to divide would mean either widening `RfqOffer`
+ * (`src/desk/rfq.ts`, which reads the indexer and would then be carrying a
+ * number the indexer did not send) or trusting a caller to pass the size to a
+ * function whose other caller — the MAX LOSS line — wants the undivided total.
+ * One conversion, at the one place that holds both halves.
+ *
+ * `maxLoss` therefore comes back out as the position total again — `perContract
+ * × contracts` is the number that went in — so the panel's MAX LOSS and this
+ * function's `maxLoss` still agree, which is the property that says the round
+ * trip is a unit change and not an arithmetic one.
+ *
+ * @param premiumUsd The premium from a **decrypted offer**, for the whole
+ * position. Not a mid, not the max bid, not an estimate.
  */
 export function boxEconomics(
   spec: CondorSpec,
   premiumUsd: number | null,
   numContracts: string | bigint = BOX_CONTRACTS,
 ): CondorEconomics {
-  return economics(
-    wingUsd(spec),
-    zoneUsd(spec),
-    premiumUsd === null ? 0 : premiumUsd,
-    contractsOf(numContracts),
-  );
+  const contracts = contractsOf(numContracts);
+  // A count of zero is already `economics`' "no position" case and returns
+  // zeros, so there is nothing to divide by and nothing worth dividing.
+  const perContract = premiumUsd === null || contracts <= 0 ? 0 : premiumUsd / contracts;
+  return economics(wingUsd(spec), zoneUsd(spec), perContract, contracts);
 }
 
 /**

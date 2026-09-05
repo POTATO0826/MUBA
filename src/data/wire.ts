@@ -65,6 +65,21 @@ export interface WireItem {
   dateline: string;
   /** "(END) REUTERS / 09-01-26 0928ET / Copyright (c) 2026 Thomson Reuters." */
   signature: string;
+  /**
+   * What in this row's **own words** ties it to price — see {@link priceSignal}.
+   *
+   * Evidence, not a score. Each entry names the thing that matched ("quotes a
+   * move of 3.2%"), so the terminal can show the reader *why* a row survived
+   * its price filter instead of asking them to trust a number. Absent or empty
+   * means the classifier found none of the three markers, which is a statement
+   * about the text and emphatically **not** a claim that the story did not move
+   * the price. Nothing in this app can know that.
+   *
+   * Optional because a `WireItem` also arrives as untyped JSON off `/api/news`:
+   * an older envelope without it leaves every row unmarked, and the terminal's
+   * filter simply reports that it has nothing to go on.
+   */
+  signal?: readonly string[];
   /** Desk rows only: "DESK" | "COACH". */
   who?: string;
 }
@@ -334,6 +349,135 @@ const OWNER: Readonly<Record<string, string>> = {
   [DESK_PUB]: "ThetaDuel Research",
 };
 
+/**
+ * Words a story uses when it is reporting a move rather than an announcement.
+ *
+ * Present tense and past tense both, because a wire headline writes "Solana
+ * Surges" and its body writes "surged". Exported so the classifier's vocabulary
+ * is inspectable from a test rather than buried in a regex literal.
+ */
+export const MOVE_WORDS: readonly string[] = [
+  "surge", "surges", "surged", "plunge", "plunges", "plunged",
+  "rally", "rallies", "rallied", "jump", "jumps", "jumped",
+  "slump", "slumps", "slumped", "tumble", "tumbles", "tumbled",
+  "soar", "soars", "soared", "sink", "sinks", "sank", "sunk",
+  "slide", "slides", "slid", "climb", "climbs", "climbed",
+  "drop", "drops", "dropped", "fall", "falls", "fell", "fallen",
+  "rise", "rises", "rose", "risen", "gain", "gains", "gained",
+  "spike", "spikes", "spiked", "crash", "crashes", "crashed",
+  "selloff", "sell-off", "rebound", "rebounds", "rebounded",
+  "breakout", "outperform", "underperform", "extend", "extends", "extended",
+  "record high", "all-time high", "52-week", "bear market", "bull market",
+];
+
+/**
+ * Things that are known to move a price when they happen, named literally.
+ *
+ * A deliberately conservative list of *nouns*, not adjectives: an item that
+ * says "ETF" or "SEC" or "hack" is talking about an event with a price
+ * consequence, whereas an item that says "exciting" or "major" is talking about
+ * itself. Multi-word entries are matched as phrases with flexible whitespace.
+ */
+export const EVENT_WORDS: readonly string[] = [
+  "etf", "sec", "cftc", "federal reserve", "fed", "rate cut", "rate hike",
+  "interest rate", "cpi", "inflation", "halving", "hack", "hacked", "exploit",
+  "outage", "listing", "delisting", "listed", "inflow", "inflows", "outflow",
+  "outflows", "liquidation", "liquidations", "unlock", "upgrade", "downgrade",
+  "earnings", "guidance", "buyback", "lawsuit", "settlement", "approval",
+  "approved", "rejected", "short squeeze", "open interest", "funding rate",
+  "treasury", "acquisition", "merger", "partnership", "mainnet", "fork",
+];
+
+/**
+ * The first vocabulary entry this text uses, or `null`.
+ *
+ * A lookup rather than a generated alternation, and deliberately so. The word
+ * lists above are *data* — a future entry could legitimately contain a dot, a
+ * dollar sign or a bracket — and a regex built by escaping data is a regex one
+ * missed escape away from either throwing or, far worse, silently matching the
+ * wrong thing and marking half the wire. There is no escaping here to get
+ * wrong.
+ *
+ * Bounding is structural: the haystack is padded with a space, every run of
+ * characters that is not alphanumeric (or `-`, which "sell-off" and "52-week"
+ * need) collapses to one space, and every needle is searched for *with its own
+ * spaces around it*. So "fell" cannot match inside "fellowship", "fed" cannot
+ * match inside "federated", and multi-word entries like "rate cut" and
+ * "all-time high" match as phrases for free.
+ *
+ * Order in the list is the order of preference, which is why the plain stem is
+ * listed before its inflections: " surge " does not occur in "solana surges",
+ * so the walk falls through to " surges " and reports the word the story
+ * actually used.
+ */
+function firstWord(text: string, vocabulary: readonly string[]): string | null {
+  const hay = ` ${text.toLowerCase().replace(/[^a-z0-9-]+/g, " ")} `;
+  for (const w of vocabulary) {
+    if (hay.includes(` ${w} `)) return w;
+  }
+  return null;
+}
+
+/** A percentage the text states itself: "3.2%", "21%", "-4.0 %". */
+const PCT_RE = /(\d+(?:\.\d+)?)\s?%/;
+
+/** A price the text states itself — a currency figure, or a grouped thousand.
+ *  Bare small integers are not levels ("3 blockchains", "5 years"), which is
+ *  why this wants either a symbol or a thousands separator to fire. */
+const LEVEL_RE = /(?:[$€£]\s?\d[\d,.]*|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b)/;
+
+/**
+ * What, in a story's own words, ties it to a price.
+ *
+ * ## The problem this is answering, and the honest limit of the answer
+ *
+ * The owner's note: *"news should only cover major news that's affecting each
+ * crypto or stock's movements or smtg."* The wire was carrying every headline a
+ * per-ticker feed returned, up to and including a stadium logo announcement,
+ * sitting beside a chart the player is reading for behaviour.
+ *
+ * **What cannot be built here is a relevance score.** Nothing in this app knows
+ * whether a story caused a move. There is no attribution data, no event study,
+ * no per-headline price impact — and a number invented to stand in for one,
+ * printed as though it were measured, would be exactly the fabrication this
+ * session removed from the chart's date label. So this measures the only thing
+ * a headline and a description actually contain: **whether the item talks about
+ * price at all**, in three literal ways.
+ *
+ *  1. **It quotes a percentage.** A story reporting a move states the move.
+ *  2. **It quotes a price level.** A currency figure or a grouped thousand.
+ *  3. **It uses a move word or names a market event.** {@link MOVE_WORDS} and
+ *     {@link EVENT_WORDS}, both word-bounded.
+ *
+ * Each hit is returned as a short sentence naming what matched, so a reader can
+ * see the evidence rather than a coefficient. An empty result means *the text
+ * carries none of the three markers* — nothing more. A quiet, genuinely
+ * market-moving story written without a number would come back empty, and a
+ * puff piece that happens to mention "$5 million partnership" would not. That
+ * is why the terminal's filter is opt-in and reversible, and why nothing in
+ * this app is allowed to delete an unmarked row.
+ *
+ * ## Where it may not go
+ *
+ * Presentation only, like the rest of the wire. `src/engine/**` and
+ * `src/state/match.ts` are forbidden from importing this module at all
+ * (`test/determinism.test.ts`), so no ranking derived from it can ever reach a
+ * seed, a pick or a settlement.
+ */
+export function priceSignal(text: string): readonly string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  const pct = PCT_RE.exec(text);
+  if (pct) out.push(`quotes a move of ${pct[1]}%`);
+  const level = LEVEL_RE.exec(text);
+  if (level) out.push(`quotes a level of ${level[0].trim()}`);
+  const move = firstWord(text, MOVE_WORDS);
+  if (move) out.push(`move word “${move}”`);
+  const event = firstWord(text, EVENT_WORDS);
+  if (event) out.push(`names “${event.toUpperCase()}”`);
+  return out;
+}
+
 const pad2 = (n: number): string => String(n).padStart(2, "0");
 
 /** Fisher-Yates on a copy, driven by the match sequence. */
@@ -348,35 +492,60 @@ function shuffled<T>(list: readonly T[], random: () => number): T[] {
   return out;
 }
 
-/**
- * The hash `windowLabel()` uses in engine/tape.ts, reproduced so the wire's
- * dateline lands inside the window the chart card is labelled with. Kept local
- * rather than exported from tape.ts: the engine owes the wire nothing.
- */
-function windowSeed(sym: string, salt: number): number {
-  let s = salt;
-  for (let i = 0; i < sym.length; i++) s = (s * 33 + sym.charCodeAt(i)) >>> 0;
-  return s >>> 0;
-}
+/** The seeded session opens between 06:00 and 10:00 on its day. Filing walks
+ *  forward from there by 30–900s a row, so a full feed closes well before the
+ *  day does and the band above it can never split in two. */
+const SESSION_OPEN_H = 6;
+const SESSION_OPEN_SPAN_H = 4;
 
 /**
- * The session the wire is filed in: the last month of the studied window, on a
- * day derived from the same hash. Built in a UTC frame and read back with UTC
- * getters, so the clock is the same on every machine no matter its zone — the
- * synthetic session is declared to be ET, not converted into it.
+ * The calendar day the seeded wire files its session on: **today**.
+ *
+ * ## What this replaced
+ *
+ * A hash. `windowSeed()` reproduced, byte for byte, the arithmetic inside
+ * `windowLabel()` in `engine/tape.ts` so that the wire's datelines would land
+ * inside the invented 2017–2024 "historical window" the chart cards were
+ * labelled with. Both were fabrications, and reproducing the hash here made
+ * them agree with each other — a wire datelined `FEB 2019` under a chart
+ * labelled `NOV 2018 · FEB 2019` looks *more* real than either does alone,
+ * which is precisely what made it worth removing. `docs/reality-check.md` §5.10
+ * is the version of this a reader caught on screen: an AVAX story filed
+ * eighteen months before Avalanche launched.
+ *
+ * `windowLabel` is gone. There is no historical window to date a story inside
+ * any more, and there never was one to date it inside.
+ *
+ * ## Why today, and what that costs
+ *
+ * A fixture still has to carry a dateline — `time`, `day`, `dateline` and
+ * `signature` are provenance, the terminal draws all four, and a wire with no
+ * clock is not a wire. So the session is declared to be **the current UTC day**
+ * and the clock walks within it. That is a fixture openly dated today rather
+ * than a fixture dressed as history, it can never be impossible for any asset
+ * on any board, and the terminal already chips the whole feed `SEEDED` beside
+ * it.
+ *
+ * The cost is that `mockWire` reads a clock, and the clock is therefore an
+ * argument: `nowMs` defaults to `Date.now()` and tests pass a fixed value. Two
+ * players derive the seeded feed independently, so they agree exactly while
+ * they are on the same UTC day and would differ by one date across a midnight
+ * boundary. That is a real but narrow edge and it is the *fallback* feed:
+ * whenever the live source answers, both seats replay one envelope frozen
+ * server-side, which is the path the shared-wire guarantee actually runs on.
+ * Trading a permanent falsehood for a once-a-day off-by-one date on the offline
+ * fixture is the right side of that trade.
+ *
+ * Built in a UTC frame and read back with UTC getters, as it always was, so the
+ * clock is the same on every machine no matter its zone — the synthetic session
+ * is *declared* to be ET, not converted into it.
  */
-function sessionStart(sym: string, salt: number, random: () => number): number {
-  const s = windowSeed(sym, salt);
-  const m = s % 12;
-  const y = 2017 + ((s >> 4) % 8);
-  // windowLabel's end month — the wire files at the close of the window.
-  const endM = (m + 3) % 12;
-  const endY = m + 3 > 11 ? y + 1 : y;
-  const day = 1 + ((s >> 8) % 28);
-  const hh = 6 + Math.floor(random() * 4);
+function sessionStart(nowMs: number, random: () => number): number {
+  const d = new Date(Number.isFinite(nowMs) ? nowMs : Date.now());
+  const hh = SESSION_OPEN_H + Math.floor(random() * SESSION_OPEN_SPAN_H);
   const mm = Math.floor(random() * 60);
   const ss = Math.floor(random() * 60);
-  return Date.UTC(endY, endM, day, hh, mm, ss);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, mm, ss);
 }
 
 function timeOf(ts: number): string {
@@ -488,6 +657,9 @@ export function mockWire(
   syms: readonly string[],
   salt: number,
   deskLines: readonly Brief[],
+  /** The day the fixture files its session on — see {@link sessionStart}.
+   *  Defaults to now; tests pass a fixed value so the feed stays pinnable. */
+  nowMs: number = Date.now(),
 ): readonly WireItem[] {
   const random = seededRandom(salt * 131 + syms.length);
 
@@ -520,7 +692,7 @@ export function mockWire(
   // One clock for the whole feed: a seeded open, then 30–900s between filings,
   // walked forward and handed out newest-first.
   const total = desk.length + news.length;
-  const start = sessionStart(syms[0] ?? "MKT", salt, random);
+  const start = sessionStart(nowMs, random);
   const stamps: number[] = [start];
   for (let i = 1; i < total; i++) stamps.push(stamps[i - 1]! + (30 + Math.floor(random() * 871)) * 1000);
   stamps.reverse();
@@ -543,6 +715,7 @@ export function mockWire(
       link: null,
       dateline: `${shortDate(ts)} ${timeOf(ts)}: ${who}: ${b.text}`,
       signature: signatureOf(DESK_PUB, ts),
+      signal: priceSignal(`${b.text} ${deskBody}`),
       who,
     });
   });
@@ -562,6 +735,10 @@ export function mockWire(
       link: null,
       dateline: `${shortDate(ts)} ${timeOf(ts)}: ${d.sym}: ${d.headline}`,
       signature: signatureOf(d.publisher, ts),
+      // Measured off the row's own words, exactly as the live path measures it
+      // — one classifier, so the terminal's filter behaves the same whichever
+      // feed is up.
+      signal: priceSignal(`${d.headline} ${d.body}`),
     });
   });
   return out;

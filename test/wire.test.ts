@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { briefsFor } from "../src/data/briefs.ts";
 import { bookFor } from "../src/data/lobbies.ts";
-import { DOWN_WORDS, UP_WORDS, WIRE_PER_SYM, mockWire } from "../src/data/wire.ts";
+import { DOWN_WORDS, UP_WORDS, WIRE_PER_SYM, mockWire, priceSignal } from "../src/data/wire.ts";
 import { spinCase } from "../src/engine/spin.ts";
 import { TAPE_LEN, fmtPx, pctAt, series } from "../src/engine/tape.ts";
 
@@ -252,6 +252,122 @@ describe("mockWire — the wire never contradicts the chart", () => {
         // Every body prints at least one figure read straight off the window.
         expect(it.body.includes(last) || it.body.includes(lo)).toBe(true);
       }
+    }
+  });
+});
+
+/**
+ * The date the seeded wire files its session on.
+ *
+ * `mockWire` used to derive it from `windowSeed()` — a byte-for-byte copy of
+ * the hash inside `windowLabel()` in `engine/tape.ts` — so that its datelines
+ * would land inside the invented 2017–2024 "historical window" the chart cards
+ * were labelled with. Two fabrications agreeing with each other, which is
+ * strictly worse than one: `docs/reality-check.md` §5.10 is the version a
+ * reader caught on screen, an AVAX story datelined eighteen months before
+ * Avalanche launched.
+ *
+ * Both are gone. The fixture is now openly dated *today* — a fixture with a
+ * real date rather than a fixture dressed as history — and the clock it is an
+ * argument, which is what these tests hold it to.
+ */
+describe("mockWire — the session is dated, not invented", () => {
+  /** A fixed Thursday, so the assertions below are about the code and not
+   *  about the day the suite happens to run on. */
+  const DAY = Date.UTC(2026, 8, 3, 14, 22, 9);
+
+  test("every row falls on the day it was built for", () => {
+    for (const salt of [1, 424242, 918273]) {
+      for (const it of mockWire(MIXED, salt, briefsFor(MIXED, salt), DAY)) {
+        const d = new Date(it.ts);
+        expect(d.getUTCFullYear()).toBe(2026);
+        expect(d.getUTCMonth()).toBe(8);
+        expect(d.getUTCDate()).toBe(3);
+        // One session: the feed opens and closes inside its own day, so the
+        // terminal draws exactly one band over it.
+        expect(it.day).toBe("THU · 09-03-26");
+      }
+    }
+  });
+
+  test("no row is ever datelined before the assets on it existed", () => {
+    // The shape of §5.10, pinned. Nothing on this board launched before 2013
+    // and the fixture may not claim a year that predates the app itself.
+    for (const syms of [STOCKS, CRYPTO, MIXED]) {
+      for (const salt of [1, 3, 424242, 918273, 777777]) {
+        for (const it of mockWire(syms, salt, briefsFor(syms, salt))) {
+          expect(new Date(it.ts).getUTCFullYear()).toBeGreaterThanOrEqual(2025);
+        }
+      }
+    }
+  });
+
+  test("the same day and the same salt still produce a deep-equal wire", () => {
+    // The clock is an argument precisely so the fixture stays pinnable: two
+    // seats deriving the seeded feed on one day agree byte for byte.
+    expect(mockWire(MIXED, 424242, briefsFor(MIXED, 424242), DAY)).toEqual(
+      mockWire(MIXED, 424242, briefsFor(MIXED, 424242), DAY),
+    );
+    // …and a different day is a different session, dated as such.
+    const next = mockWire(MIXED, 424242, briefsFor(MIXED, 424242), DAY + 86_400_000);
+    expect(next[0]!.day).toBe("FRI · 09-04-26");
+    expect(next[0]!.ts).not.toBe(mockWire(MIXED, 424242, briefsFor(MIXED, 424242), DAY)[0]!.ts);
+  });
+
+  test("the hour of day does not move the session, only the date does", () => {
+    const morning = mockWire(CRYPTO, 7, briefsFor(CRYPTO, 7), Date.UTC(2026, 8, 3, 0, 0, 1));
+    const night = mockWire(CRYPTO, 7, briefsFor(CRYPTO, 7), Date.UTC(2026, 8, 3, 23, 59, 59));
+    expect(morning).toEqual(night);
+  });
+});
+
+/**
+ * What ties a story to a price, measured off its own words.
+ *
+ * The owner's note was that the wire should carry *"major news that's affecting
+ * each crypto or stock's movements"*. The honest limit on answering that is the
+ * whole design of {@link priceSignal}: nothing in this app knows whether a
+ * story caused a move, so this measures the only thing a headline actually
+ * contains — whether it talks about price at all — and returns the evidence
+ * rather than a score. These tests hold it to that limit in both directions:
+ * it must catch price copy, and it must not pretend to catch anything else.
+ */
+describe("priceSignal — evidence, not a score", () => {
+  test("a quoted percentage, level, move word and event are each found and named", () => {
+    expect(priceSignal("Solana Surges 7.4% After ETF Inflows").join(" | ")).toContain("7.4%");
+    expect(priceSignal("Bitcoin Cleared $81,000 Overnight").join(" | ")).toContain("$81,000");
+    expect(priceSignal("XRP tumbled into the close").some((r) => r.includes("tumble"))).toBe(true);
+    expect(priceSignal("Regulator opens an SEC review").some((r) => r.includes("SEC"))).toBe(true);
+  });
+
+  test("a story with none of the three markers comes back empty", () => {
+    // The stadium-logo shape: a real headline, filed under a real ticker, that
+    // says nothing about price. Empty is a statement about the TEXT and never a
+    // claim that the story did not move anything.
+    expect(priceSignal("Florida Athletics Debuts XRP cryptocurrency logo at Ben Hill Griffin Stadium")).toEqual([]);
+    expect(priceSignal("Where Will Solana Be in 5 Years?")).toEqual([]);
+    expect(priceSignal("")).toEqual([]);
+  });
+
+  test("the vocabulary is word-bounded, so it cannot match inside a longer word", () => {
+    // "fell" is a move word; "fellowship" is not. "fed" is an event word;
+    // "federated" is not. A substring test would mark half the wire.
+    expect(priceSignal("The fellowship announced its cohort")).toEqual([]);
+    expect(priceSignal("A federated identity standard shipped")).toEqual([]);
+  });
+
+  test("a bare small integer is not a price level", () => {
+    // "3 blockchains", "5 years" — the level rule wants a currency symbol or a
+    // thousands separator, or it would fire on every headline with a number.
+    expect(priceSignal("Grayscale Names 3 Blockchains Leading The Boom")).toEqual([]);
+  });
+
+  test("every seeded row carries the classifier's verdict, whatever it is", () => {
+    for (const it of mockWire(MIXED, 424242, briefsFor(MIXED, 424242))) {
+      expect(Array.isArray(it.signal)).toBe(true);
+      // The verdict is reproducible from the row's own words — the terminal is
+      // not being handed a number it cannot check.
+      if (it.kind === "news") expect(it.signal).toEqual(priceSignal(`${it.headline} ${it.body}`));
     }
   });
 });
