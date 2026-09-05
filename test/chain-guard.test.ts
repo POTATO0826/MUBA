@@ -426,7 +426,7 @@ describe("the wallet refuses to operate off the signing chain", () => {
 // The config surface
 // ─────────────────────────────────────────────────────────────────────────────
 
-const INDEX_SRC = await read("index.ts");
+const INDEX_SRC = await read("src/server/http.ts");
 
 /** The `/api/config` response literal, as source text. `index.ts` imports
  *  `src/index.html`, which only Bun's HTML bundler resolves, so the handler

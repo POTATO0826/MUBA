@@ -1002,7 +1002,7 @@ describe("the seeded source has no book, and says so", () => {
 // ─── /api/config: the envelope, and the flags it must carry ──────────────────
 
 const ROOT = join(import.meta.dir, "..");
-const INDEX_SRC = await Bun.file(join(ROOT, "index.ts")).text();
+const INDEX_SRC = await Bun.file(join(ROOT, "src/server/http.ts")).text();
 
 /** The `features: { … }` object literal inside the `/api/config` handler, as
  *  source text. Read rather than executed: `index.ts` imports

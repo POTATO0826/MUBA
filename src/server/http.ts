@@ -1,0 +1,364 @@
+// FIRST, and it matters that it is first: this is the opt-in DNS resolver
+// override, and it must be applied before anything opens a connection. See the
+// `install()` call below, and `src/server/resolver.ts` for what it is for.
+import { install as installResolver } from "./resolver.ts";
+import { ROOM_ERROR_STATUS, type RoomResult } from "../data/room.ts";
+import { DATA_CHAIN_ID, SIGNING_CHAIN_ID } from "../data/wallet.ts";
+import { createAttestService } from "./attest.ts";
+import { createNewsService } from "./news.ts";
+import { captureOpen } from "./openspot.ts";
+import {
+  createRoom,
+  joinRoom,
+  listRoomsFor,
+  pickRoom,
+  readRoom,
+  readyRoom,
+} from "./rooms.ts";
+import { createMarketService } from "./thetanuts.ts";
+
+/**
+ * Bun serves the app directly from `index.html`: it walks the tags, bundles
+ * `client.tsx` and `styles.css`, and hot-reloads them in development. No Vite,
+ * no build step.
+ */
+
+/**
+ * The `THETADUEL_DNS` escape hatch, applied before the first socket.
+ *
+ * **Unset — the default, and what every clone of this repo gets — this call
+ * does nothing whatsoever.** It reads one env var, finds it empty, and returns
+ * without touching a global. Nothing below behaves differently for its
+ * presence.
+ *
+ * Set, it points this process's hostname resolution at the DNS servers named in
+ * it, because some networks (a phone hotspot running OpenDNS, in the case that
+ * prompted this) block `*.workers.dev` by category — and the Thetanuts book is
+ * served from a Cloudflare Worker. `src/server/resolver.ts` documents the
+ * measurement, why `dns.setServers` alone is not enough under Bun, and, in
+ * detail, what the override does and does not touch. It does **not** weaken
+ * certificate validation.
+ *
+ * Why here, as the first statement rather than inside a service: the override
+ * has to be in place before any connection is opened. ES imports are hoisted,
+ * so the modules above have already been *evaluated* by the time this line
+ * runs — but none of them dials out at module scope. `createMarketService`
+ * builds its SDK client lazily on the first read, `createAttestService` reads
+ * no key until first use, and the news service fetches nothing until a request
+ * arrives. The first socket of the process cannot be opened before
+ * `Bun.serve` below has answered something, which is well after this line.
+ */
+installResolver();
+
+/**
+ * One service instance for the process, because both of its caches — the
+ * per-feed TTL cache and the frozen per-match snapshot — are what make two
+ * players on the same seed read the same wire. Constructing it per request
+ * would defeat both and hammer the feeds.
+ */
+const news = createNewsService();
+
+/**
+ * One market service for the process, for the same reason: its 15s TTL and its
+ * in-flight dedupe are what keep a lobby full of pollers down to one read of
+ * the Base RPC, which throttles. A per-request instance would cache nothing.
+ *
+ * Constructing it does not open a socket — the SDK client is built lazily on
+ * the first read — so a process with `THETADUEL_MARKET=off` never touches the
+ * chain at all.
+ */
+const market = createMarketService();
+
+/**
+ * One attest service for the process, and here the single instance is not an
+ * optimisation but the feature: the committed picks live in ITS map. A
+ * per-request instance would forget every lock the moment it answered, so
+ * `/api/attest` would have nothing to re-derive from and first-write-wins —
+ * the property that stops a losing player re-locking a winning slip — would
+ * mean nothing.
+ *
+ * Constructing it reads no key and opens nothing: the attestor signer is built
+ * lazily from `ATTESTOR_PRIVATE_KEY` on first use, so a process without one
+ * boots normally and simply answers the three routes with
+ * `{ ok: false, reason: "attestor not configured" }`.
+ */
+const attest = createAttestService();
+
+const NO_STORE = { "cache-control": "no-store" };
+
+function roomResponse(result: RoomResult): Response {
+  if (result.ok) return Response.json(result.room, { headers: NO_STORE });
+  return Response.json(
+    { error: result.error, code: result.code },
+    { status: ROOM_ERROR_STATUS[result.code], headers: NO_STORE },
+  );
+}
+
+/** Room bodies are untrusted; the room store validates every field. */
+async function roomBody(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const parsed: unknown = await req.json();
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The optional media: the room's waiting music and the two button clips. They
+ * are deliberately NOT `import`s from `src/`: Bun's html bundler resolves
+ * imports at startup and a missing one is a build error, whereas these files
+ * are optional by design — operator-supplied, likely licensed, and gitignored.
+ * A route that answers from disk turns "no file" into one clean 404 that the
+ * sound engine already treats as silence.
+ */
+const audio = (name: string) => async (): Promise<Response> => {
+  const file = Bun.file(`${import.meta.dir}/../assets/${name}`);
+  if (!(await file.exists())) return new Response(null, { status: 404 });
+  return new Response(file, {
+    headers: { "content-type": "audio/mpeg", "cache-control": "public, max-age=3600" },
+  });
+};
+
+/**
+ * An allowlist, not a `/assets/:name` parameter: every servable file is named
+ * here in full, so no request can name a file this map does not, and a
+ * traversal has nothing to reach. Adding an asset is adding a line.
+ */
+const ASSETS = {
+  "/assets/room-inspect.mp3": audio("room-inspect.mp3"),
+  "/assets/exo-kill-1.mp3": audio("exo-kill-1.mp3"),
+  "/assets/exo-kill-2.mp3": audio("exo-kill-2.mp3"),
+  "/assets/exo-kill-3.mp3": audio("exo-kill-3.mp3"),
+  "/assets/exo-kill-4.mp3": audio("exo-kill-4.mp3"),
+  // Sliced from the owner's case-open recording by `src/assets/slice-case-open.sh`
+  // and played by the `spin.tick` / `spin.land` recipes, which keep their synth
+  // as the fallback — so a 404 here is a voicing change, not a silence.
+  "/assets/case-tick.mp3": audio("case-tick.mp3"),
+  "/assets/case-land.mp3": audio("case-land.mp3"),
+  // The pick-phase bed (owner-supplied, gitignored like every ripped track):
+  // absent, the parlay screen is silent — never an error.
+  "/assets/parlay-pick.mp3": audio("parlay-pick.mp3"),
+};
+
+export const routes = {
+    // Bun matches most-specific first, so this wins over the `/*` catch-all
+    // below. `handle` never throws and always answers 200 with a typed
+    // envelope — a dead feed degrades the wire, it does not fail the request.
+    "/api/news": (req: Request) => news.handle(new URL(req.url)),
+
+    /**
+     * The live Base option book, same contract as `/api/news`: always 200,
+     * always a typed envelope, `ok` is the client's only decision.
+     *
+     * `{ ok: false, reason: "disabled" }` is what `THETADUEL_MARKET=off`
+     * produces — the kill switch is read per request inside the service, so an
+     * operator flipping it does not have to restart the process.
+     */
+    "/api/market": () => market.handle(),
+
+    /**
+     * The settlement referee, in two halves — same always-200 envelope again.
+     *
+     * `/api/lock` commits `{matchKey, picks, a, b, sig}` FIRST-WRITE-WINS: a
+     * second lock on the same match returns the first payload untouched. That
+     * is what pins a slip before the tape can be watched. `sig` is seat `a`'s
+     * EIP-191 signature over the canonical lock message (attest.ts documents
+     * the exact layout) — a lock nobody signed for names nobody's seat.
+     *
+     * `/api/attest` then takes the match key and NOTHING ELSE. It re-derives
+     * the winner here, from the seed and the committed picks, and signs the
+     * escrow's EIP-712 `Verdict`. A `winner` in the request body is ignored —
+     * the server signing a client's claim is the one failure that would pay the
+     * wrong player, so the route is shaped so it cannot happen.
+     *
+     * `ATTESTOR_PRIVATE_KEY` is read inside the service and never leaves it:
+     * a signature and an address are the only things these routes return.
+     */
+    "/api/lock": (req: Request) => attest.handleLock(req),
+    "/api/attest": (req: Request) => attest.handleAttest(req),
+
+    /**
+     * What this process knows about one duel: locked here, attested here. It
+     * reads nothing on chain — plan 5's staking UI watches `DuelJoined` itself
+     * — so it answers from memory and needs no `await`.
+     */
+    "/api/duel-status": (req: Request) => attest.handleStatus(new URL(req.url)),
+
+    // Invite-based live-data rooms. These sit beside the original seeded
+    // match/attestation routes so either duel format remains playable.
+    "/api/rooms": {
+      POST: async (req: Request) => {
+        const input = await roomBody(req);
+        // The opening print for this room's tapes, read ONCE, here, and frozen
+        // into the room beside its seed — `src/server/openspot.ts` explains at
+        // length why it is captured on the server at creation rather than by
+        // each client at render. It never throws and never blocks the room: a
+        // dead book and a dead oracle both return `null`, which the room
+        // carries honestly as "no live open" rather than silently as the 2024
+        // reference price the tape used to walk from.
+        return roomResponse(
+          createRoom(
+            {
+              address: input.address,
+              stakeUsdc: input.stakeUsdc,
+              durationMinutes: input.durationMinutes,
+              lobbyName: input.lobbyName,
+              mode: input.mode,
+            },
+            await captureOpen({ snapshot: () => market.snapshot() }),
+          ),
+        );
+      },
+    },
+    "/api/rooms/mine": (req: Request) =>
+      Response.json(
+        { rooms: listRoomsFor(new URL(req.url).searchParams.get("address")) },
+        { headers: NO_STORE },
+      ),
+    "/api/rooms/:id": (req: Request & { params: { id: string } }) =>
+      roomResponse(readRoom(req.params.id)),
+    "/api/rooms/:id/join": {
+      POST: async (req: Request & { params: { id: string } }) =>
+        roomResponse(joinRoom(req.params.id, (await roomBody(req)).address)),
+    },
+    "/api/rooms/:id/pick": {
+      POST: async (req: Request & { params: { id: string } }) => {
+        const input = await roomBody(req);
+        return roomResponse(pickRoom(req.params.id, input.address, input.pick));
+      },
+    },
+    "/api/rooms/:id/ready": {
+      POST: async (req: Request & { params: { id: string } }) =>
+        roomResponse(readyRoom(req.params.id, (await roomBody(req)).address)),
+    },
+
+    /**
+     * The WalletConnect project id, read at boot by `src/wallet/project.ts`.
+     *
+     * It goes over the wire rather than into the bundle because Bun's HTML
+     * bundler does not inline `process.env` for `Bun.serve` routes — a
+     * build-time read would work under `bun run build` and silently be
+     * `undefined` under `bun dev`. The id is public either way (it ships in
+     * every dApp bundle and is domain-restricted in the dashboard); serving it
+     * just keeps it out of git.
+     *
+     * Unset means the app falls back to the mock wallet.
+     */
+    "/api/wallet-config": () =>
+      Response.json(
+        { projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "" },
+        { headers: { "cache-control": "no-store" } },
+      ),
+
+    /**
+     * The whole client-visible boot configuration, of which the wallet id is
+     * now one field. `/api/wallet-config` above stays byte-identical as the
+     * alias `src/wallet/config.ts` already fetches — this route supersets it
+     * rather than replacing it, so the wallet layer needs no edit and the
+     * rollback story ("flags off → today's app") stays exact.
+     *
+     * Everything here is public by construction: a WalletConnect id, a chain
+     * id, two on-chain addresses and three booleans. The secrets that make
+     * these useful — `RPC_URL`, `ATTESTOR_PRIVATE_KEY` — are read only on the
+     * server and never appear in this envelope (`test/secrets.test.ts` holds
+     * that line for the bundle).
+     *
+     * Feature flags, and why they default the way they do:
+     *   - `market` is OPT-OUT (`THETADUEL_MARKET=off` is the kill switch): live
+     *     market data is read-only and display-only, so the safe default is on
+     *     and a dead API degrades to the mock rather than to a broken page.
+     *   - `options` is OPT-OUT (`THETADUEL_OPTIONS=off` is the kill switch), for
+     *     the same reason `market` is: it moves no money. It decides whether a
+     *     match's parlay cards are dealt off the live Thetanuts book
+     *     (`src/state/options.ts`) instead of the seeded tape — a reshape of the
+     *     snapshot `/api/market` already served, never a signature.
+     *
+     *     It was OPT-IN (`=on` exactly) until the default was judged by what it
+     *     produced. The old argument was that a dealt card is a *claim about a
+     *     venue*, so an operator should have to ask for it. But with the flag
+     *     absent — the default for everyone who clones this repo — all 24 cards
+     *     on the pick screen printed `MAX LOSS —` and "no live premium" while
+     *     the home page promised live Thetanuts pricing. That is the louder
+     *     false claim, and it was the out-of-the-box experience. The opt-in
+     *     argument only held while the book might not be there; the book is
+     *     there, and `bookOf` already degrades to `undefined` — which is to say,
+     *     to exactly the seeded screen — for any ticker with no live spot or no
+     *     chain. So "on" cannot invent a card the venue does not list, and "off"
+     *     stays one word away.
+     *
+     *     The asymmetry with `stake`/`trade` below is structural, not a matter
+     *     of nerve: **nothing on the options path can reach a signer.**
+     *     `useOptionBook` reads this envelope, `bookOf` reshapes a
+     *     `MarketSource`, and what crosses into the match is a frozen plain
+     *     value. No wallet, no ethers, no approval, no transaction — the fill
+     *     flow is gated on `features.trade`, separately, and is exactly as
+     *     reachable with this flag on as with it off.
+     *
+     *     `useOptionBook` still requires `=== true` and fails closed on anything
+     *     else, so this key must be emitted for the flag to exist at all.
+     *   - `stake` and `trade` are OPT-IN (`=on` exactly). They stay opt-in even
+     *     though the wallet is now pinned to a testnet and neither can spend
+     *     real money any more: a flag that guards a signature should not be
+     *     loosened because a *second*, independent control was added. Removing
+     *     one of two locks because the other one holds is how both end up open.
+     *
+     *     What did change is what turning them on can achieve. `trade` arms a
+     *     fill against the mainnet OptionBook, and the signing wallet is on
+     *     Base Sepolia — so an armed fill now refuses at the chain guard
+     *     instead of transacting. The screens say so rather than leaving a
+     *     button that can only ever fail; see `CHAIN_SPLIT_NOTE`.
+     *
+     * **Every key a client reads must appear here.** A flag the server never
+     * emits is not "off", it is unreachable: `THETADUEL_OPTIONS` read nothing
+     * at all until this envelope carried `options`, so the market-priced parlay
+     * card could not be turned on in any configuration.
+     * `test/market-route.test.ts` pins the two sets equal.
+     *
+     * `no-store`, like the alias: flipping a kill switch must take effect on
+     * the next reload, not after a cache expires.
+     */
+    "/api/config": () =>
+      Response.json(
+        {
+          projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "",
+          // ── Two chains, two fields, and never one number for both ──────────
+          //
+          // This was a single `chainId: 8453` until the wallet was pinned to a
+          // testnet. It cannot be one field any more, because the two halves of
+          // the app genuinely run on different chains and a single number would
+          // have to lie about one of them. `docs/reality-check.md` is eight
+          // findings long and every one of them is a value that meant something
+          // other than its name; a chain id collapsed across a signing boundary
+          // would have been the ninth, and the most expensive.
+          //
+          // `signingChainId` — Base Sepolia. The ONLY chain a wallet may
+          // connect to, approve on, or send from. `DuelEscrow` is deployed
+          // here, staking settles here, and every guard in `src/desk/` refuses
+          // anything else (`assertSigningChain`, `src/data/wallet.ts`). This is
+          // the field to read before arming anything that can spend.
+          //
+          // `dataChainId` — Base mainnet. Where the options book is READ from,
+          // and nothing else. The Thetanuts SDK supports `8453 | 1` and has no
+          // testnet deployment at all, so real strikes, premiums and the vol
+          // smile exist on mainnet or they do not exist. Reading signs nothing.
+          //
+          // Any client reading one of these must never render it as the other.
+          // `useStakeConfig` takes `signingChainId` and deliberately does not
+          // fall back to a legacy `chainId`, so a stale server fails closed
+          // rather than arming staking against the chain we refuse to sign on.
+          signingChainId: SIGNING_CHAIN_ID,
+          dataChainId: DATA_CHAIN_ID,
+          referrer: Bun.env.THETADUEL_REFERRER ?? "",
+          escrow: Bun.env.THETADUEL_ESCROW ?? "",
+          features: {
+            market: Bun.env.THETADUEL_MARKET !== "off",
+            options: Bun.env.THETADUEL_OPTIONS !== "off",
+            stake: Bun.env.THETADUEL_STAKE === "on",
+            trade: Bun.env.THETADUEL_TRADE === "on",
+          },
+        },
+        { headers: { "cache-control": "no-store" } },
+      ),
+    ...ASSETS,
+};
