@@ -1,5 +1,5 @@
 import { LIVE_SYMS, UNIVERSE, meta } from "../data/universe.ts";
-import type { WireItem } from "../data/wire.ts";
+import { priceSignal, type WireItem } from "../data/wire.ts";
 import { TAPE_LEN, fmtPx, pctAt, series } from "../engine/tape.ts";
 import { hash } from "../lib/hash.ts";
 import { parseRss, unwrapCdata, type RssItem } from "../lib/rss.ts";
@@ -788,6 +788,12 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
       link: safeLink(raw.link),
       dateline: `${et.shortDate} ${et.time}: ${spec.sym}: ${headline}`,
       signature: signatureOf(publisher, et),
+      // Measured off the feed's OWN words — the headline and the description
+      // the publisher wrote — never off a tier-2 desk note. A desk note is
+      // generated from the tape and always quotes a percentage, so classifying
+      // one would mark every stub row "price-relevant" on the strength of a
+      // sentence this server wrote itself.
+      signal: priceSignal(`${headline} ${stub ? "" : raw.description}`),
     };
   }
 
@@ -843,13 +849,13 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
     }
 
     // Pass 2 — the pool: every remaining row inside its ticker's ceiling,
-    // ranked by recency.
+    // ranked by whether it talks about price, then by recency.
     const pool: WireItem[] = [];
     for (const t of tickers) {
       const list = byTicker.get(t) ?? [];
       pool.push(...list.slice(cursors.get(t) ?? 0, (cursors.get(t) ?? 0) + Math.max(0, perTicker - 1)));
     }
-    pool.sort(byRecency);
+    pool.sort(bySignalThenRecency);
     for (const it of pool) {
       if (picked.length >= q.limit) break;
       take(it);
@@ -865,6 +871,45 @@ export function createNewsService(deps: NewsDeps = {}): NewsService {
    *  swap places between two identical requests. */
   function byRecency(a: WireItem, b: WireItem): number {
     return b.ts - a.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  }
+
+  /**
+   * The pool's order: rows that talk about price first, then recency.
+   *
+   * ## What this changes, and what it deliberately does not
+   *
+   * This is a **budget** rule, not a visibility rule. `q.limit` rows fit on the
+   * wire and a per-ticker feed routinely offers three times that, so something
+   * has to decide which ones travel. Recency alone spent that budget on
+   * whatever a feed happened to publish most recently — which is how a stadium
+   * logo announcement ended up on a board next to three charts the player is
+   * reading for behaviour. Ranking the pool on {@link priceSignal} spends it on
+   * the copy that at least *states* a move, a level or a market event.
+   *
+   * Three properties it keeps, each of them load-bearing:
+   *
+   *  - **Nothing is filtered out.** A row with no signal still enters the pool
+   *    and still gets taken when there is budget left. On a quiet ticker with
+   *    four off-topic stories, all four still travel. Silently dropping real
+   *    news would be its own dishonesty, and the count-only marker on the
+   *    terminal (`NewsWire`) is the reversible half of the same idea.
+   *  - **The floor is untouched.** Pass 1 already claimed each dealt ticker's
+   *    newest row before this runs, so a quiet name cannot be ranked off the
+   *    board — the every-dealt-ticker-appears guarantee is upstream of here.
+   *  - **The final order is still chronological.** Selection decides who is in;
+   *    `picked.sort(byRecency)` below decides the order, unchanged. A wire that
+   *    printed "relevant" rows above older ones would be a wire whose clock ran
+   *    backwards, which is the exact illegibility the day bands exist to fix.
+   *
+   * The comparator reads only `signal.length > 0`, not the count. Two markers
+   * are not twice the relevance of one, and ordering on the count would be
+   * inventing a score out of a boolean — see {@link priceSignal} on why there
+   * is no score to invent.
+   */
+  function bySignalThenRecency(a: WireItem, b: WireItem): number {
+    const sa = (a.signal?.length ?? 0) > 0 ? 1 : 0;
+    const sb = (b.signal?.length ?? 0) > 0 ? 1 : 0;
+    return sb - sa || byRecency(a, b);
   }
 
   // ── the snapshot ──────────────────────────────────────────────────────────
