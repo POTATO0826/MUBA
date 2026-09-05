@@ -61,17 +61,35 @@ import { decayOver } from "../src/data/greeks.ts";
 import { DUEL_WINDOW } from "../src/desk/optionize.ts";
 import {
   DASH,
+  bandChance,
+  boxBreakevens,
   boxGreekRows,
   boxGreeks,
+  condorSketch,
   money,
+  strikeDistances,
   type Ticket,
   type TicketRow,
 } from "../src/desk/ticket.ts";
+import { SOURCE_LEGEND, SOURCE_TAG } from "../src/ui/TradeTicket.tsx";
+import { d1d2, normCdf } from "../src/data/greeks.ts";
 import { MAX_FILL_USDC } from "../src/desk/fill.ts";
 import {
+  BREAKEVEN_NOTE,
+  BUYING_OFF_CHIP,
   BoxBuilder,
+  DRAW_HINT_CHIP,
+  EDIT_HINT_CHIP,
+  EXPIRY_SOURCE_CHIP,
   FIELD_NOTES,
   FILL_CAP_USD,
+  FROZEN_HINT_CHIP,
+  LISTED_CHIP,
+  LOCKED_NEXT_CHIP,
+  NO_DEPTH_CHIP,
+  NO_ZONES_COPY,
+  STRIKE_SHAPE_NOTE,
+  UNLISTED_CHIP,
   HISTORY_PCT,
   MAX_LOSS_COPY,
   MAX_PANEL_CONTRACTS,
@@ -87,7 +105,9 @@ import {
   decodeBoxPick,
   encodeBoxPick,
   expiryLabel,
+  fillCapChip,
   fillCapCopy,
+  minBoxChip,
   labelledRungPrices,
   listedFill,
   positionEconomics,
@@ -142,6 +162,19 @@ afterEach(() => {
 });
 
 const text = () => container.textContent ?? "";
+
+/**
+ * A visible word, counted the way the owner counts them.
+ *
+ * His second note was that the panel is *"too many words, its crowding that
+ * section with info that could be few words"*, so the budget is a number and
+ * not a judgement, and it is asserted rather than eyeballed. A word is a
+ * whitespace-separated token carrying at least one letter or digit — so an
+ * em-dash separator and a · cost nothing, and `$2.00` costs one.
+ */
+function words(t: string): number {
+  return t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+}
 const all = (selector: string) => [...container.querySelectorAll(selector)];
 const click = (el: Element) => act(() => (el as HTMLElement).click());
 
@@ -368,7 +401,12 @@ describe("BoxBuilder", () => {
     expect(multiple).toBe("14.00× the premium");
   });
 
-  test("buying is inert without the trade flag", () => {
+  test("buying is not offered at all where it cannot succeed", () => {
+    // It used to be offered and disabled, and that was the dead end the owner
+    // hit: *"im stuck at this step unable to do anything after locking?"*. The
+    // button can never enable in any build there is — `App` has never passed
+    // `onConfirm`, so `canSign` is false before `features.trade` is consulted —
+    // and a permanently disabled primary action is worse than no action.
     mount(
       <BoxBuilder {...BASE} premium={5} onConfirm={() => {
         throw new Error("a build without features.trade must not reach a signature");
@@ -379,10 +417,33 @@ describe("BoxBuilder", () => {
     click(rungs[3] as Element);
     click(all("button").find((b) => b.textContent === "Review this box") as Element);
 
-    const buy = all("button").find((b) => b.textContent === "Buy this box") as HTMLButtonElement;
-    expect(buy.disabled).toBe(true);
-    click(buy); // a disabled button fires nothing; the throw above is the assertion
-    expect(text()).toContain("Buying is switched off in this build");
+    expect(all("button").find((b) => b.textContent === "Buy this box")).toBeUndefined();
+    // And the step still ends somewhere: one action, and it works.
+    const back = container.querySelector('[data-role="review-back"]') as HTMLButtonElement;
+    expect(back).not.toBeNull();
+    expect(back.disabled).toBe(false);
+    click(back);
+    expect(text()).not.toContain("CONFIRM");
+  });
+
+  test("the honest line is eight words, and the paragraph is behind its \u24d8", () => {
+    mount(<BoxBuilder {...BASE} premium={5} />);
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[3] as Element);
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+
+    const chip = container.querySelector('[data-role="buying-off"]')?.textContent ?? "";
+    expect(chip).toBe(BUYING_OFF_CHIP);
+    expect(words(chip)).toBeLessThanOrEqual(8);
+    // Compress, never hide: the sentence is still reachable, and it still uses
+    // the house phrase.
+    act(() => {
+      hover(info("box:buy") as HTMLButtonElement, "touch");
+    });
+    const open = tip()?.textContent ?? "";
+    expect(open).toContain("Buying is switched off in this build");
+    expect(open).toContain("has never been handed a confirm action");
   });
 
   test("settlement copy is terminal, and the banned words are absent", () => {
@@ -565,18 +626,30 @@ describe("the listed zone, on screen", () => {
     );
   });
 
-  test("says it fills off the book, that the wings are the maker's, and that there are no greeks", () => {
+  test("says it fills off the book and whose wings it comes with, in six words", () => {
+    // Three stacked paragraphs became one chip. The long forms are neither
+    // deleted nor hidden — `LISTED_COPY` and `LISTED_WING_COPY` are the banner
+    // and the footer of the box's own ticket, one hover away — and what stays
+    // on the panel is the half that changes a decision.
     mountOnBtc();
     click(all("[data-zone]")[0] as Element);
     const body = text();
-    expect(body).toContain("fills straight off the book");
-    expect(body).toContain("wings are the maker's");
-    // §2.4's delta shading cannot apply to a listed zone, and the screen says
-    // why rather than leaving a gap where a figure would be.
-    expect(body).toContain("no greeks for a listed zone");
-    expect(body).not.toContain("No listed zone matches this box");
+    expect(container.querySelector('[data-role="listed"]')?.textContent).toBe(LISTED_CHIP);
+    expect(words(LISTED_CHIP)).toBeLessThanOrEqual(8);
+    expect(body).not.toContain(UNLISTED_CHIP);
     // §7 — the word is still nowhere on the screen.
     expect(body).not.toMatch(/\bRFQ\b/);
+  });
+
+  test("the sentence the chip was carved out of is on the box's own ticket", () => {
+    mountOnBtc();
+    click(all("[data-zone]")[0] as Element);
+    act(() => {
+      hover(info("box") as HTMLButtonElement, "touch");
+    });
+    const open = tip()?.textContent ?? "";
+    expect(open).toContain("fills straight off the book");
+    expect(open).toContain("wings are the maker's");
   });
 
   test("a box that matches nothing says so, and hands the caller no fill", () => {
@@ -591,8 +664,8 @@ describe("the listed zone, on screen", () => {
     click(rungs[1] as Element);
 
     expect(quotes).toEqual([null]);
-    expect(text()).toContain("No listed zone matches this box");
-    expect(text()).not.toContain("fills straight off the book");
+    expect(container.querySelector('[data-role="listed"]')?.textContent).toContain(UNLISTED_CHIP);
+    expect(text()).not.toContain(LISTED_CHIP);
   });
 
   test("an expiry with nothing listed says that too, rather than showing an empty strip", () => {
@@ -604,7 +677,7 @@ describe("the listed zone, on screen", () => {
     const rungs = all("[data-rung]");
     click(rungs[0] as Element);
     click(rungs[1] as Element);
-    expect(text()).toContain("The book lists no zone at all on this expiry");
+    expect(text()).toContain(NO_ZONES_COPY);
   });
 
   test("a listed zone that does not contain the current price says so", () => {
@@ -1097,9 +1170,12 @@ describe("editing a committed box", () => {
     drawBox();
     click(all("button").find((b) => b.textContent === "Lock this box") as Element);
     expect(all("[data-handle]").length).toBe(0);
-    expect(container.querySelector('[data-role="edit-hint"]')?.textContent).toContain(
-      "can no longer be moved or resized",
+    expect(container.querySelector('[data-role="edit-hint"]')?.textContent).toBe(
+      FROZEN_HINT_CHIP,
     );
+    // And no \u24d8 beside it: there is nothing left to explain about editing a
+    // box that cannot be edited.
+    expect(info("box:draw")).toBeNull();
   });
 });
 
@@ -1136,8 +1212,9 @@ describe("the wing, which is the maximum payout", () => {
     expect(
       (container.querySelector('[data-role="wing-up"]') as HTMLButtonElement).disabled,
     ).toBe(true);
-    expect(text()).toContain("wings are the maker's");
-    expect(text()).toContain("its wings came with it");
+    expect(container.querySelector('[data-role="wing-state"]')?.textContent).toBe(
+      "the maker's, fixed",
+    );
   });
 });
 
@@ -1460,24 +1537,38 @@ describe("position size — the half of a ticket that was missing", () => {
     // `MAX_FILL_USDC` is checked in `runFill` before a dependency is touched,
     // so the panel is reporting a bound rather than imposing one.
     expect(FILL_CAP_USD).toBe(Number(MAX_FILL_USDC) / 1_000_000);
+    // The sentence still exists, and it is still exact — it is what the \u24d8
+    // carries.
     expect(fillCapCopy(null)).toContain("$2.00 a press");
     expect(fillCapCopy(0.5)).toContain("4 contracts");
-    // A box that costs more than the cap says so plainly rather than offering a
-    // button that cannot fire.
     expect(fillCapCopy(120)).toContain("none at all");
+    // What is on the panel is the same bound in four words. Compress, never
+    // hide: the number is still there, unrounded, without a gesture.
+    expect(fillCapChip(null)).toBe("capped $2.00 / press");
+    expect(fillCapChip(0.5)).toBe("capped $2.00 / press \u00b7 4 contracts");
+    expect(fillCapChip(120)).toBe("capped $2.00 / press \u00b7 none affordable");
+    expect(words(fillCapChip(0.5))).toBeLessThanOrEqual(8);
     mountOnBtc({ premium: 120 });
     click(all("[data-zone]")[0] as Element);
-    expect(container.querySelector('[data-role="fill-cap"]')?.textContent).toContain(
-      "none at all",
+    expect(container.querySelector('[data-role="fill-cap"]')?.textContent).toBe(
+      fillCapChip(120),
     );
   });
 
   test("no depth limit is claimed, because none was measured", () => {
     // `availableAmount` is in the collateral token's own decimals and this
     // screen holds no map to convert it. Inventing a cap from it is the shape
-    // of every money bug in this repo.
-    mount(<BoxBuilder {...BASE} />);
-    expect(text()).toContain("does not convert it — so no depth limit is claimed here");
+    // of every money bug in this repo, and the refusal is untouched — only its
+    // length changed.
+    drawEthBox();
+    expect(container.querySelector('[data-role="no-depth"]')?.textContent).toBe(NO_DEPTH_CHIP);
+    expect(words(NO_DEPTH_CHIP)).toBeLessThanOrEqual(8);
+    // The paragraph is behind the \u24d8 the field already had, and it is the
+    // whole of the old sentence.
+    act(() => {
+      hover(info("box:size") as HTMLButtonElement, "touch");
+    });
+    expect(tip()?.textContent).toContain("does not convert it — so no depth limit is claimed here");
   });
 });
 
@@ -1537,16 +1628,33 @@ describe("the strikes are visible before the drag, and their discreteness is sai
     expect(rungs.some((r) => /\$[\d,]/.test(r.textContent ?? ""))).toBe(true);
   });
 
-  test("the panel answers 'why can I not size it to the cent' in both directions", () => {
+  test("the panel answers 'why can I not size it to the cent' in six words", () => {
+    // Three paragraphs in the primary column became one line and one \u24d8. The
+    // part that changes with the column — the spacing — stays visible as a
+    // figure; the reference behind it is one story about one book.
     mount(<BoxBuilder {...BASE} />);
     const said = container.querySelector('[data-role="precision"]')?.textContent ?? "";
-    // The instrument really is discrete …
-    expect(said).toContain("Strikes are discrete");
-    expect(said).toContain("strikes, ");
-    expect(said).toContain("apart at the median");
-    // … and the precise path really does exist, and is honestly not wired here.
-    expect(said).toContain("quoted on request at any strikes");
-    expect(said).toContain("not wired into this screen in this build");
+    expect(said).toContain("strikes are discrete");
+    expect(said).toContain("$20 apart here");
+    expect(words(said)).toBeLessThanOrEqual(9);
+  });
+
+  test("both directions of the answer are behind that one \u24d8, expiry included", () => {
+    // The instrument really is discrete, the precise path really does exist and
+    // is honestly not wired — and the owner's separate question about the dates
+    // has the same answer, so it shares the note rather than opening a second
+    // explanation of one book.
+    mount(<BoxBuilder {...BASE} />);
+    act(() => {
+      hover(info("box:book") as HTMLButtonElement, "touch");
+    });
+    const open = tip()?.textContent ?? "";
+    expect(open).toContain("Strikes are discrete");
+    expect(open).toContain("quoted on request at any strikes");
+    expect(open).toContain("not wired into this screen in this build");
+    // The dates, said as the book's rather than as a rule of ours.
+    expect(open).toContain("the book's own listing schedule");
+    expect(open).toContain("Any other expiry can be asked for");
   });
 
   test("the gap sentence is the ladder's own arithmetic, not a constant", () => {
@@ -1666,11 +1774,18 @@ describe("the panel reads as figures, with the teaching behind an ⓘ", () => {
     // will actually sign, and the depth limit it deliberately does not claim.
     drawEthBox();
     const said = text();
-    expect(said).toContain("Nothing has priced this box yet, so there is no cost to scale.");
-    expect(said).toContain("Nothing has priced this box yet, so there is no figure to print.");
-    expect(said).toContain("Buying is capped at $2.00 a press in this build");
-    expect(said).toContain("does not convert it — so no depth limit is claimed here");
-    expect(said).toContain("widths at this band");
+    // Every one of these is still on the panel with no interaction at all. What
+    // changed is the length: the four lines below were 80 words between them
+    // and are now 14, and each one's sentence is on the \u24d8 its field already
+    // carried.
+    expect(container.querySelector('[data-role="size-cost"]')?.textContent).toBe("unpriced");
+    expect(container.querySelector('[data-role="max-loss-absent"]')?.textContent).toBe(
+      "not priced yet",
+    );
+    expect(container.querySelector('[data-role="fill-cap"]')?.textContent).toBe(fillCapChip(null));
+    expect(container.querySelector('[data-role="no-depth"]')?.textContent).toBe(NO_DEPTH_CHIP);
+    expect(container.querySelector('[data-role="wing-state"]')?.textContent).toBe("2 widths here");
+    expect(said).not.toContain("so there is no cost to scale");
     // "Lands in", never "stays within" — the one line that is both teaching and
     // disclosure, and it stayed visible because a player who believes the price
     // must STAY in the band draws a box far too wide and pays for range they
@@ -2000,7 +2115,12 @@ const STRADDLE = [2460, 2480, 2550, 2570] as [number, number, number, number];
 /** The same box drawn below spot, so every sign is the textbook one. */
 const BELOW = [2420, 2440, 2460, 2480] as [number, number, number, number];
 
-function ethTicket(strikes: [number, number, number, number]): Ticket {
+function ethTicket(
+  strikes: [number, number, number, number],
+  /** Overrides, for the cases that are about an input being absent — a board
+   *  with no spot is an ordinary reading, not an error. */
+  over: { spot?: number | null } = {},
+): Ticket {
   return zoneTicket({
     id: "box",
     underlying: "ETH",
@@ -2010,7 +2130,7 @@ function ethTicket(strikes: [number, number, number, number]): Ticket {
     contracts: 1,
     econ: null,
     match: null,
-    spot: FIXTURE.prices.ETH as number,
+    spot: over.spot === undefined ? (FIXTURE.prices.ETH as number) : over.spot,
     now: NOW,
     smile: smileFor("ETH", ETH_5SEP),
   });
@@ -2040,7 +2160,16 @@ const rowOf = (t: Ticket, key: string) => t.rows.find((r) => r.key === key);
 /** The typographic minus `money()` prints, so a sign assertion cannot pass on a
  *  hyphen the formatter never emits. */
 const MINUS = "−";
-const GREEK_KEYS = ["delta", "gamma", "theta", "vega", "iv"] as const;
+/**
+ * The risk rows, in the order they are printed.
+ *
+ * `gamma` and `vega` share a row now — `GAMMA · VEGA` — and that merge is not a
+ * tidy-up: it is what paid for the chance row and the payoff sketch without
+ * moving the 900px cap. They answer one question between them (what the
+ * *market* changing does to this position, as against what the *price* does),
+ * they are both `model`, and both keep their own unit inside the value.
+ */
+const GREEK_KEYS = ["delta", "theta", "gammaVega", "iv"] as const;
 
 describe("the smile the screen was already holding", () => {
   test("it is built from single-strike orders on this capture, and nothing else", () => {
@@ -2085,7 +2214,7 @@ describe("the smile the screen was already holding", () => {
 });
 
 describe("a box the smile reaches carries all five, labelled", () => {
-  test("delta, gamma, theta, vega and implied vol, in that order", () => {
+  test("the risk figures come in the order a trader reads them", () => {
     const t = ethTicket(STRADDLE);
     const keys = t.rows.map((r) => r.key);
     expect(keys.filter((k) => (GREEK_KEYS as readonly string[]).includes(k))).toEqual([
@@ -2107,10 +2236,14 @@ describe("a box the smile reaches carries all five, labelled", () => {
     // of bug that shipped twice in this repo.
     const t = ethTicket(STRADDLE);
     expect(rowOf(t, "delta")?.value).toContain("per $1");
-    expect(rowOf(t, "gamma")?.value).toContain("per $1");
     expect(rowOf(t, "theta")?.label).toBe("THETA · PER CALENDAR DAY");
-    expect(rowOf(t, "vega")?.label).toBe("VEGA · PER IV POINT");
     expect(rowOf(t, "iv")?.value).toContain("4-leg mean");
+    // Sharing a row costs neither figure its unit. `0.000318 · $0.0196` would be
+    // two numbers in one units-free blur, which is the bug this suite is about.
+    const gv = rowOf(t, "gammaVega") as TicketRow;
+    expect(gv.label).toBe("GAMMA · VEGA");
+    expect(gv.value).toContain("Γ ");
+    expect(gv.value).toContain("/pt");
   });
 
   test("theta prints the duel window beside the day, at its true scale", () => {
@@ -2168,12 +2301,12 @@ describe("a long box on its own flat top is short gamma, short vega and long the
     // Most people learn "time decay always hurts" first. On this instrument, in
     // this band, it is the opposite, and that is the sentence worth the space.
     const t = ethTicket(STRADDLE);
-    expect(rowOf(t, "theta")?.note).toContain("waiting pays you");
+    expect(rowOf(t, "theta")?.note).toContain("Waiting pays you");
     expect(rowOf(t, "theta")?.value.startsWith(MINUS)).toBe(false);
-    expect(rowOf(t, "gamma")?.note).toContain("movement hurts you");
-    expect(rowOf(t, "vega")?.note).toContain("worth less");
+    expect(rowOf(t, "gammaVega")?.note).toContain("Movement hurts, stillness helps");
+    expect(rowOf(t, "gammaVega")?.note).toContain("calmer vol");
     // Delta near zero inside the band: the box cares where the price *ends up*.
-    expect(rowOf(t, "delta")?.note).toContain("what matters is where it lands");
+    expect(rowOf(t, "delta")?.note).toContain("where it lands is what matters");
   });
 
   test("a box drawn away from spot gets the textbook signs and the other clause", () => {
@@ -2182,8 +2315,8 @@ describe("a long box on its own flat top is short gamma, short vega and long the
     const t = ethTicket(BELOW);
     expect(rowOf(t, "theta")?.value.startsWith(MINUS)).toBe(true);
     expect(rowOf(t, "theta")?.note).toContain("Waiting costs you");
-    expect(rowOf(t, "gamma")?.note).toContain("How fast the delta moves");
-    expect(rowOf(t, "vega")?.note).toContain("implied volatility is worth");
+    expect(rowOf(t, "gammaVega")?.note).toContain("How fast the delta moves");
+    expect(rowOf(t, "gammaVega")?.note).toContain("IV point is worth");
     expect(rowOf(t, "delta")?.note).toContain("net of four legs");
   });
 });
@@ -2195,7 +2328,7 @@ describe("provenance, per figure, and never the venue's", () => {
     // honestly wear the venue's tag, and a reader has to be able to see that
     // without being told.
     const t = ethTicket(STRADDLE);
-    for (const key of ["delta", "gamma", "theta", "vega"] as const) {
+    for (const key of ["chance", "delta", "gammaVega", "theta"] as const) {
       expect(rowOf(t, key)?.source).toBe("model");
     }
     expect(rowOf(t, "iv")?.source).toBe("derived");
@@ -2207,7 +2340,10 @@ describe("provenance, per figure, and never the venue's", () => {
     // built against. The sentence is on the ticket only when there is something
     // to attribute; a refusal carries its reason on the row instead.
     expect(ethTicket(STRADDLE).footer).toContain(MODEL_GREEKS_COPY);
-    expect(MODEL_GREEKS_COPY).toContain("not the venue's");
+    // "ours", not "the venue's" — and the chance is one of them, so the
+    // sentence names it rather than listing four greeks and leaving the fifth
+    // model figure on the panel unattributed.
+    expect(MODEL_GREEKS_COPY).toContain("The chance and the risk figures are ours");
     expect(MODEL_GREEKS_COPY).toContain("Nothing fills at them");
     expect(btcZoneTicket().footer).not.toContain(MODEL_GREEKS_COPY);
   });
@@ -2241,7 +2377,10 @@ describe("a smile that does not reach the box is a dash with the reason", () => 
     const row = rowOf(t, "greeks") as TicketRow;
     expect(row.value).toBe(DASH);
     expect(row.source).toBeNull();
-    expect(row.label).toBe("DELTA · GAMMA · THETA · VEGA · IV");
+    // The chance is refused by the same missing input the greeks are, so it
+    // dashes on the same row rather than adding a seventh line of nothing to
+    // the far expiries — which is exactly the screenshot the owner sent.
+    expect(row.label).toBe("CHANCE · DELTA · GAMMA · THETA · VEGA · IV");
     // The reason names both ends of the gap, so a reader can check it.
     expect(row.note).toContain("$79,500");
     expect(row.note).toContain("$80,000");
@@ -2285,19 +2424,26 @@ describe("five figures went in and the panel got shorter", () => {
     const t = ethTicket(STRADDLE);
     expect(t.rows.map((r) => r.key)).toEqual([
       "strikes",
-      "band",
       "expiry",
       "spot",
+      "chance",
       "delta",
-      "gamma",
       "theta",
-      "vega",
+      "gammaVega",
       "iv",
       "maxLoss",
       "maxPayout",
     ]);
-    // Eleven with the greeks, against twelve without them before this change.
-    expect(t.rows.length).toBeLessThanOrEqual(11);
+    // Ten now, against eleven before. The chance a condor trader reads first
+    // came in, a payoff sketch came in, and both were paid for: the title of
+    // this very ticket is
+    // `ETH $2,420–$2,480 · by Sep 5`, so a row whose value was `$2,420 – $2,480`
+    // was the title again in a smaller font. Its clause did not go —
+    // `SETTLEMENT_COPY` moved to the SPOT row, which is the price that has to
+    // do the landing.
+    expect(t.rows.length).toBeLessThanOrEqual(10);
+    expect(rowOf(t, "band")).toBeUndefined();
+    expect(rowOf(t, "spot")?.note).toBe(SETTLEMENT_COPY);
     // One clause each. A definition that runs to three lines has failed, and
     // 150 characters is about two lines at this panel's width.
     for (const row of t.rows) expect(row.note.length).toBeLessThanOrEqual(150);
@@ -2346,5 +2492,357 @@ describe("the greeks reach the screen, not just the module", () => {
     expect(tags).toContain("model");
     expect(panel.textContent).toContain("THETA · PER CALENDAR DAY");
     expect(panel.textContent).toContain(MODEL_GREEKS_COPY);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────
+// What a condor trader actually reads
+// ───────────────────────────────────────────────────────────────────────────────────
+
+describe("both breakevens, because a condor has two", () => {
+  test("they are the outer strikes moved in by the premium, and both are stated", () => {
+    // A long call condor pays `S − K1` across the lower wing and `K4 − S` across
+    // the upper, so net of a premium `P` the profile crosses zero twice. A
+    // panel that printed one printed half a position.
+    const be = boxBreakevens([2350, 2420, 2480, 2550], 12.5);
+    expect(be).toEqual({ lower: 2362.5, upper: 2537.5 });
+  });
+
+  test("no premium is no breakeven — not a zero, and not the strikes", () => {
+    // A breakeven is defined by what was paid. With nothing paid there is no
+    // boundary, and the absence is the premium row's, said once.
+    expect(boxBreakevens([2350, 2420, 2480, 2550], null)).toBeNull();
+    expect(boxBreakevens([2350, 2420, 2480, 2550], 0)).toBeNull();
+  });
+
+  test("a premium wider than the wings is refused rather than printed backwards", () => {
+    // `K1 + P > K4 − P` is a quote that costs more than the structure can ever
+    // pay. It is not a position anybody holds, so it is not drawn as one.
+    expect(boxBreakevens([2350, 2420, 2480, 2550], 200)).toBeNull();
+  });
+
+  test("the row names them as two and says how far each is from spot", () => {
+    const t = btcZoneTicket();
+    const row = rowOf(t, "breakeven") as TicketRow;
+    expect(row.label).toBe("BREAKEVENS · LOWER – UPPER");
+    expect(row.value).toContain("–");
+    expect(row.source).toBe("derived");
+    // Both boundaries, and the distance the price has to cover to reach each.
+    expect(row.note).toContain("from spot");
+    expect(row.note).toContain(BREAKEVEN_NOTE);
+  });
+});
+
+describe("the chance it lands in the band — the number a condor is about", () => {
+  const strikes = { floor: 2400, ceiling: 2600, spot: 2500, vol: 0.6, years: 0.25 };
+
+  test("it is N(d2 floor) − N(d2 ceiling) and nothing else", () => {
+    // Under the same lognormal the greeks are priced with, N(d2(K)) is the
+    // risk-neutral probability of finishing above K. Recomputed here from the
+    // engine's own primitives rather than from a number typed into this file.
+    const lo = d1d2(strikes.spot, strikes.floor, strikes.vol, strikes.years);
+    const hi = d1d2(strikes.spot, strikes.ceiling, strikes.vol, strikes.years);
+    const want = normCdf((lo as { d2: number }).d2) - normCdf((hi as { d2: number }).d2);
+    expect(bandChance(strikes)).toBeCloseTo(want, 12);
+    // And it is a probability, so it lives in [0, 1].
+    const p = bandChance(strikes) as number;
+    expect(p).toBeGreaterThan(0);
+    expect(p).toBeLessThan(1);
+  });
+
+  test("a wider band is likelier, and a longer wait is not — the arithmetic behaves", () => {
+    const narrow = bandChance(strikes) as number;
+    const wide = bandChance({ ...strikes, floor: 2200, ceiling: 2800 }) as number;
+    expect(wide).toBeGreaterThan(narrow);
+    // More time is more room to leave a fixed band, so the chance falls.
+    expect(bandChance({ ...strikes, years: 2 }) as number).toBeLessThan(narrow);
+  });
+
+  test("every missing input is a null, never a guess", () => {
+    expect(bandChance({ ...strikes, spot: null })).toBeNull();
+    expect(bandChance({ ...strikes, vol: 0 })).toBeNull();
+    expect(bandChance({ ...strikes, years: 0 })).toBeNull();
+    expect(bandChance({ ...strikes, floor: 2600, ceiling: 2400 })).toBeNull();
+  });
+
+  test("on the ticket it is tagged `model`, and never the venue's", () => {
+    // `docs/greeks.md` §7. Nothing on this book publishes it, and a figure that
+    // could be read as a quote is the failure this whole panel exists against.
+    const t = ethTicket(STRADDLE);
+    const row = rowOf(t, "chance") as TicketRow;
+    expect(row.source).toBe("model");
+    expect(row.source).not.toBe("venue");
+    expect(row.label).toBe("CHANCE IT LANDS IN THE BAND");
+    expect(row.value).toMatch(/%$/);
+  });
+
+  test("it never reads as a promise, and never as the whole of the upside", () => {
+    const row = rowOf(ethTicket(STRADDLE), "chance") as TicketRow;
+    // Not a guarantee, and said so in the clause rather than left to the tag.
+    expect(row.note).toContain("not a promise");
+    // And not the chance of making money: the wings pay on the way in, which
+    // is what the two breakevens are for.
+    expect(row.note).toContain("wings still pay");
+    expect(row.note).not.toMatch(/guarantee|certain|will land/i);
+  });
+
+  test("no vol means one dashed row, not a seventh line of nothing", () => {
+    // The owner's ETH 25 Sep screenshot: the venue published no IV anywhere on
+    // that expiry, so five greeks correctly dashed. The chance needs the same
+    // input, so it dashes on the same row rather than repeating the sentence.
+    const rows = boxGreekRows(
+      { ok: false, why: "no vol" },
+      { underlying: "ETH", spot: 2500, floor: 2400, ceiling: 2600 },
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.label).toContain("CHANCE");
+    expect(rows[0]?.value).toBe(DASH);
+    expect(rows[0]?.source).toBeNull();
+  });
+});
+
+describe("distance from spot, and the risk against the reward", () => {
+  test("the strikes row carries how far the price has to travel to each", () => {
+    // Dollars mean something against one underlying at one moment; per cent
+    // means something across the whole board, which is the form a trader
+    // compares boxes in.
+    expect(strikeDistances([2400, 2500], 2500)).toBe("−4.0% · 0.00%");
+    expect(strikeDistances([2400], null)).toBe("");
+    const row = rowOf(ethTicket(STRADDLE), "strikes") as TicketRow;
+    expect(row.note).toContain("from spot");
+    expect(row.note).toMatch(/%/);
+  });
+
+  test("with no spot it falls back to prose rather than a distance from nothing", () => {
+    const row = rowOf(ethTicket(STRADDLE, { spot: null }), "strikes") as TicketRow;
+    expect(row.note).toBe(STRIKE_SHAPE_NOTE);
+  });
+
+  test("the multiple names its own denominator, so it reads as a decision", () => {
+    // `c97c600` folded it into the max payout value to save a row and it
+    // stopped reading as a ratio. It keeps the row it shares and now says what
+    // it is a multiple *of*.
+    const row = rowOf(btcZoneTicket(), "maxPayout") as TicketRow;
+    expect(row.label).toBe("MAX PAYOUT · RISK / REWARD");
+    expect(row.value).toContain("× max loss");
+  });
+});
+
+describe("the payoff sketch — for a condor the shape is the instrument", () => {
+  const strikes = [2350, 2420, 2480, 2550] as const;
+
+  test("five vertices, at the strikes, and nothing sampled", () => {
+    // A condor's expiry payoff is piecewise linear with its breaks *at* the
+    // strikes, so the polyline is those points exactly. Nothing is
+    // approximated and `buildPayoffChart`'s frozen 81-sample fixture is
+    // untouched.
+    const s = condorSketch({ strikes: [...strikes] as never, spot: 2450, premiumPerContract: 12.5 });
+    expect(s).not.toBeNull();
+    expect((s as { path: string }).path.split("L").length).toBe(6);
+    expect((s as { priced: boolean }).priced).toBe(true);
+    // Four strike ticks, ascending across the window.
+    const xs = (s as { strikeX: readonly number[] }).strikeX;
+    expect(xs.length).toBe(4);
+    expect([...xs]).toEqual([...xs].sort((a, b) => a - b));
+  });
+
+  test("unpriced, no zero line is claimed and no breakeven is marked", () => {
+    // The gross payoff is arithmetic on the strikes and is honest to draw. A
+    // zero line on it would be asserting a premium nobody has quoted.
+    const s = condorSketch({ strikes: [...strikes] as never, spot: 2450, premiumPerContract: null });
+    expect((s as { priced: boolean }).priced).toBe(false);
+    expect((s as { breakevenX: unknown }).breakevenX).toBeNull();
+  });
+
+  test("spot off the window becomes an arrow, never a line parked on the edge", () => {
+    // The lesson `spotOnScale` in `src/desk/payoff.ts` learned expensively: a
+    // clamped line reads as a price, and the edge is not where the price is.
+    const near = condorSketch({ strikes: [...strikes] as never, spot: 2450, premiumPerContract: 5 });
+    expect((near as { spotX: number | null }).spotX).not.toBeNull();
+    expect((near as { spotOff: unknown }).spotOff).toBeNull();
+
+    const far = condorSketch({ strikes: [...strikes] as never, spot: 100, premiumPerContract: 5 });
+    expect((far as { spotX: number | null }).spotX).toBeNull();
+    expect((far as { spotOff: unknown }).spotOff).toBe("left");
+    expect(
+      (condorSketch({ strikes: [...strikes] as never, spot: 99999, premiumPerContract: 5 }) as {
+        spotOff: unknown;
+      }).spotOff,
+    ).toBe("right");
+  });
+
+  test("a shape that is not a box is refused rather than drawn wrong", () => {
+    expect(condorSketch({ strikes: [2420, 2420, 2480, 2550] as never, spot: 1, premiumPerContract: null })).toBeNull();
+    expect(condorSketch({ strikes: [0, 1, 2, 3] as never, spot: 1, premiumPerContract: null })).toBeNull();
+  });
+
+  test("it reaches the screen, drawn, with a key under it", () => {
+    mount(<BoxBuilder {...BASE} spot={() => FIXTURE.prices.ETH as number} />);
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[3] as Element);
+    act(() => {
+      hover(info("box") as HTMLButtonElement, "touch");
+    });
+    const panel = tip() as HTMLElement;
+    expect(panel.querySelector("[data-ticket-sketch]")).not.toBeNull();
+    // Unpriced here, so it says so rather than implying a breakeven.
+    expect(panel.querySelector("[data-ticket-sketch]")?.getAttribute("data-ticket-sketch")).toBe(
+      "gross",
+    );
+    const key = panel.querySelector("[data-ticket-sketch-key]")?.textContent ?? "";
+    expect(key).toContain("payoff at expiry");
+    expect(words(key)).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("the panel says each fact once, in few words", () => {
+  test("no visible note on the parameters panel runs past eight words", () => {
+    // The owner's metric, asserted rather than eyeballed. `SETTLEMENT_COPY` is
+    // the one exemption and it is named here rather than waived silently: it is
+    // the sentence that decides how wide a player draws their box, and "lands
+    // in", never "stays within", is the whole difference between this
+    // instrument and the one they imagine.
+    drawEthBox();
+    const panel = container.querySelector('[data-role="params"]') as HTMLElement;
+    // Leaves only. A `[data-role]` that wraps other `[data-role]`s is a row of
+    // chips, and its length is the sum of theirs rather than one note's.
+    const leaves = [...panel.querySelectorAll("[data-role]")].filter(
+      (el) => el.querySelector("[data-role]") === null,
+    );
+    expect(leaves.length).toBeGreaterThan(6);
+    const over: string[] = [];
+    for (const el of leaves) {
+      const said = el.textContent ?? "";
+      if (!/[a-z]{3}/.test(said)) continue;
+      if (said.includes(SETTLEMENT_COPY)) continue;
+      if (words(said) > 9) over.push(said);
+    }
+    expect(over).toEqual([]);
+  });
+
+  test("SIZE carries one line, not three", () => {
+    // It had three stacked paragraphs under one input. All three facts are
+    // still visible with no interaction; they are one row now.
+    drawEthBox();
+    const limits = container.querySelector('[data-role="size-limits"]') as HTMLElement;
+    expect(limits).not.toBeNull();
+    expect(words(limits.textContent ?? "")).toBeLessThanOrEqual(12);
+    for (const role of ["size-cost", "fill-cap", "no-depth"]) {
+      expect(limits.querySelector(`[data-role="${role}"]`)).not.toBeNull();
+    }
+  });
+
+  test("the dates say they are the book's, and that another one is askable", () => {
+    // The owner: *"date should be more consistent or customisable other than
+    // fixed options like that."* Both readings answered in eight words.
+    mount(<BoxBuilder {...BASE} />);
+    const chip = container.querySelector('[data-role="expiry-source"]')?.textContent ?? "";
+    expect(chip).toBe(EXPIRY_SOURCE_CHIP);
+    expect(chip).toContain("quote request");
+    expect(words(chip)).toBeLessThanOrEqual(8);
+    // §7 — and the word itself is still nowhere on the screen.
+    expect(text()).not.toMatch(/\bRFQ\b/);
+  });
+
+  test("the drawing guidance is one line before a box and one line after", () => {
+    mount(<BoxBuilder {...BASE} />);
+    expect(container.querySelector('[data-role="edit-hint"]')?.textContent).toBe(DRAW_HINT_CHIP);
+    const rungs = all("[data-rung]");
+    click(rungs[0] as Element);
+    click(rungs[3] as Element);
+    expect(container.querySelector('[data-role="edit-hint"]')?.textContent).toBe(EDIT_HINT_CHIP);
+    expect(words(EDIT_HINT_CHIP)).toBeLessThanOrEqual(9);
+  });
+
+  test("the smallest-box line stopped restating the discreteness note", () => {
+    drawEthBox();
+    const said = container.querySelector('[data-role="min-box"]')?.textContent ?? "";
+    expect(said).toBe(minBoxChip(2420, 20));
+    expect(said).not.toContain("not a rule of ours");
+    expect(words(said)).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("the terminal step leads somewhere", () => {
+  const room = { ...LOCKED_ROOM, id: "review-lock" };
+
+  test("in a duel, the confirm step's primary action is the lock", () => {
+    // The owner's fourth note: he was stuck on a panel whose only green button
+    // could never enable. The action that *can* succeed is the duel commit, so
+    // that is the one the step offers.
+    mount(<BoxBuilder {...BASE} room={room} seat="host" onLock={() => {}} />);
+    drawBox();
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    const lock = container.querySelector('[data-role="review-lock"]') as HTMLButtonElement;
+    expect(lock).not.toBeNull();
+    expect(lock.disabled).toBe(false);
+  });
+
+  test("locking from the confirm step leaves it, rather than sitting on it", () => {
+    // "im stuck at this step unable to do anything after locking?" — locking
+    // used to leave the player on the same panel with the same dead button.
+    const picks: string[] = [];
+    mount(<BoxBuilder {...BASE} room={room} seat="host" onLock={(p) => picks.push(p)} />);
+    drawBox();
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    click(container.querySelector('[data-role="review-lock"]') as Element);
+
+    expect(picks.length).toBe(1);
+    // Back on the board, where the duel strip says what state the duel is in.
+    expect(text()).not.toContain("CONFIRM");
+    expect(container.querySelector('[data-role="duel-state"]')?.textContent).toBe(
+      "LOCKED · WAITING",
+    );
+    // And the board says what happens next, rather than leaving a frozen
+    // rectangle and a chip. `useRoom` polls until the reveal, so this is a
+    // description of what the screen does and not a promise.
+    expect(container.querySelector('[data-role="locked-next"]')?.textContent).toBe(
+      LOCKED_NEXT_CHIP,
+    );
+    expect(words(LOCKED_NEXT_CHIP)).toBeLessThanOrEqual(9);
+  });
+
+  test("the lock is one implementation, whichever button fires it", () => {
+    // It was inline on the duel strip and the confirm step now offers the same
+    // action; two copies would be two chances to encode the pick differently.
+    const fromStrip: string[] = [];
+    mount(<BoxBuilder {...BASE} room={room} seat="host" onLock={(p) => fromStrip.push(p)} />);
+    drawBox();
+    click(all("button").find((b) => b.textContent === "Lock this box") as Element);
+
+    const fromReview: string[] = [];
+    mount(<BoxBuilder {...BASE} room={room} seat="host" onLock={(p) => fromReview.push(p)} />);
+    drawBox();
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    click(container.querySelector('[data-role="review-lock"]') as Element);
+
+    expect(fromReview).toEqual(fromStrip);
+  });
+
+  test("solo, there is no duel action and no dead one either", () => {
+    // No room means no lock — and the step still ends somewhere, because `Back
+    // to the board` is an action that works.
+    mount(<BoxBuilder {...BASE} premium={5} />);
+    drawBox();
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    expect(container.querySelector('[data-role="review-lock"]')).toBeNull();
+    expect(all("button").find((b) => b.textContent === "Buy this box")).toBeUndefined();
+    const live = all("button").filter((b) => !(b as HTMLButtonElement).disabled);
+    expect(live.length).toBeGreaterThan(0);
+  });
+
+  test("nothing about this makes signing easier", () => {
+    // The guard is unchanged: the button still carries both its conditions, it
+    // is simply not drawn when they cannot be met.
+    const signed: unknown[] = [];
+    mountOnBtc({ premium: 20, tradeEnabled: true, onConfirm: () => signed.push(1) });
+    click(all("[data-zone]")[0] as Element);
+    click(all("button").find((b) => b.textContent === "Review this box") as Element);
+    const buy = all("button").find((b) => b.textContent === "Buy this box") as HTMLButtonElement;
+    expect(buy).toBeDefined();
+    expect(buy.disabled).toBe(false);
+    click(buy);
+    expect(signed.length).toBe(1);
   });
 });

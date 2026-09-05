@@ -36,10 +36,19 @@ import {
   ticketGreeks,
   timeLeft,
   type CardTicketInput,
+  type Ticket,
 } from "../src/desk/ticket.ts";
 import { DUEL_WINDOW } from "../src/desk/optionize.ts";
 import { decayOver } from "../src/data/greeks.ts";
-import { TICKET_ACCENT, TICKET_DELAY_MS, useTradeTicket } from "../src/ui/TradeTicket.tsx";
+import {
+  SOURCE_LEGEND,
+  SOURCE_TAG,
+  TICKET_ACCENT,
+  TradeTicketPanel,
+  TICKET_DELAY_MS,
+  TicketLegend,
+  useTradeTicket,
+} from "../src/ui/TradeTicket.tsx";
 import {
   buildLeg,
   tierProb,
@@ -694,3 +703,95 @@ describe("a field note is a definition, and never a quote", () => {
     expect(TICKET_ACCENT.note).not.toBe(TICKET_ACCENT["not-dealt"]);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────────────
+// "What are these venue and derived things?"
+// ───────────────────────────────────────────────────────────────────────────────────
+
+describe("the provenance tags explain themselves in place", () => {
+  test("`derived` is now a word a first-time reader owns", () => {
+    // The owner read the chip and asked what it was. `derived` is vocabulary
+    // this repo taught itself; `arithmetic` is what it has always meant.
+    expect(SOURCE_TAG.derived.label).toBe("arithmetic");
+    expect(SOURCE_TAG.venue.label).toBe("venue");
+    expect(SOURCE_TAG.model.label).toBe("model");
+    // No label is an abbreviation a reader has to expand.
+    for (const tag of Object.values(SOURCE_TAG)) {
+      expect(tag.label).toMatch(/^[a-z]+$/);
+    }
+  });
+
+  test("the colour carries the two-way split: the book, or us", () => {
+    // The split that decides anything is *who said it*. `model` and
+    // `arithmetic` are both ours and wear one colour; the venue wears its own.
+    expect(SOURCE_TAG.model.color).toBe(SOURCE_TAG.derived.color);
+    expect(SOURCE_TAG.venue.color).not.toBe(SOURCE_TAG.model.color);
+    expect(SOURCE_TAG.game.color).not.toBe(SOURCE_TAG.venue.color);
+  });
+
+  test("the legend is on the panel, in the real chips, and only for the ones used", () => {
+    const p = mountLegend(["venue", "model", "derived"]);
+    const legend = p.querySelector("[data-ticket-legend]") as HTMLElement;
+    expect(legend).not.toBeNull();
+    const shown = [...legend.querySelectorAll("[data-ticket-legend-tag]")].map((el) =>
+      el.getAttribute("data-ticket-legend-tag"),
+    );
+    // Real chips rather than a description of them, so the mapping is visual.
+    expect(shown).toEqual(["venue", "model", "derived"]);
+    // And `game` is absent, because no row on this ticket claimed it.
+    expect(shown).not.toContain("game");
+    const said = legend.textContent ?? "";
+    expect(said).toContain("the book\u2019s own figure");
+    expect(said).toContain("worked out here, never quoted");
+  });
+
+  test("it is a key and not a lesson \u2014 ten words for the whole thing", () => {
+    // The owner's other complaint was word count. A legend that explained what
+    // a greek *is* would be the same clutter in a smaller font; what it
+    // explains is what the chip beside a number *asserts*.
+    const total = SOURCE_LEGEND.map((e) => e.says).join(" ");
+    expect(total.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length).toBeLessThanOrEqual(16);
+    for (const entry of SOURCE_LEGEND) {
+      expect(entry.says.split(/\s+/).length).toBeLessThanOrEqual(6);
+    }
+  });
+
+  test("a ticket with no tagged figure renders no legend at all", () => {
+    // A field note has no figures and therefore no provenance. Explaining
+    // vocabulary the panel never used is clutter, not disclosure.
+    expect(mountLegend([]).querySelector("[data-ticket-legend]")).toBeNull();
+  });
+
+  test("the four-way distinction survives underneath, where the tests read it", () => {
+    // Collapsing the *words* to two speakers is a labelling change. "Arithmetic
+    // on the venue\u2019s own numbers" and "Black\u2013Scholes on the venue\u2019s smile"
+    // are still not the same claim, and `data-ticket-source` still says which.
+    const p = mountLegend(["venue", "model", "derived"]);
+    const tags = [...p.querySelectorAll("[data-ticket-row] [data-ticket-source]")].map((el) =>
+      el.getAttribute("data-ticket-source"),
+    );
+    expect(tags).toEqual(["venue", "model", "derived"]);
+  });
+});
+
+/** One panel carrying one row per source named, so the legend can be read off
+ *  the DOM rather than off the module. */
+function mountLegend(sources: readonly ("venue" | "model" | "derived" | "game")[]): HTMLElement {
+  const t: Ticket = {
+    id: "legend",
+    state: "live",
+    title: "T",
+    subtitle: "S",
+    banner: "B",
+    rows: sources.map((source) => ({
+      key: source,
+      label: source.toUpperCase(),
+      value: "1",
+      note: "n",
+      source,
+    })),
+    footer: [],
+  };
+  mount(<TradeTicketPanel at={{ ticket: t, left: 0, top: 0, maxH: 900, pinned: false }} />);
+  return container.querySelector("[data-trade-ticket]") as HTMLElement;
+}

@@ -69,10 +69,13 @@ import { MAX_FILL_USDC } from "../desk/fill.ts";
 import { usdc, winnerTakesUsdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import {
+  boxBreakevens,
   boxGreekRows,
   boxGreeks,
+  condorSketch,
   expiryStamp,
   fieldNote,
+  strikeDistances,
   timeLeft,
   type SmilePoint,
   type Ticket,
@@ -203,6 +206,27 @@ export const REPLACES_COPY =
  */
 export const SETTLEMENT_COPY = "Pays the most if the price lands in your box at expiry.";
 
+/**
+ * The three clauses the box ticket’s rows fall back to.
+ *
+ * Gathered here with the rest of the panel’s copy rather than typed into the
+ * row that uses them, for the reason {@link FIELD_NOTES} gives: a sentence
+ * written in place is a sentence nobody audits. Each is a few words, because
+ * the owner’s second complaint was that this surface is *"too many words — its
+ * crowding that section with info that could be few words"*, and a clause that
+ * needs a comma usually belongs behind an ⓘ.
+ */
+
+/** What the STRIKES row says when there is no spot to measure the strikes
+ *  against. It says the one thing the subtitle does not. */
+export const STRIKE_SHAPE_NOTE = "Four legs. The wings are the ceiling.";
+
+/** Said wherever a figure needed spot and there was none. */
+export const NO_SPOT_NOTE = "The venue publishes no spot for this underlying right now.";
+
+/** The two breakevens, in six words. */
+export const BREAKEVEN_NOTE = "Between them you are ahead at expiry.";
+
 /** §2.3 — why the left edge is not a handle, said where the divider is drawn. */
 export const NOW_COPY =
   "Only the right edge is real. The box is a prediction about the future, so it starts at now and ends on an expiry the book quotes.";
@@ -238,6 +262,203 @@ export const MAX_PANEL_CONTRACTS = 100;
 /** `MAX_FILL_USDC` in dollars — the build's own spend cap per press, checked in
  *  `runFill` before a single dependency is touched, not merely in a view. */
 export const FILL_CAP_USD = Number(MAX_FILL_USDC) / 1_000_000;
+
+// ── Few words on the panel, the sentence behind the ⓘ ──────────────────
+//
+// The owner's second note: *"and too many words, its crowding that section with
+// info that could be few words."* He is right, and the fix is **compress, never
+// hide**. The earlier split still stands — a material constraint has to be
+// readable without a gesture — but it has to be readable *and short*, and every
+// line below is a fact that was costing thirty words to say in five.
+//
+// The rule this pass held itself to: no visible note longer than about eight
+// words, one note per field, and each fact said once on the panel. Where a line
+// needed a comma it went behind the ⓘ the field already had.
+
+/**
+ * The build's spend cap, on the panel, in four words.
+ *
+ * This line was the worst offender at 38 words for one number and one
+ * preposition. The cap itself is unchanged and is still exact and still
+ * visible — it is checked in `runFill` above the network and a UI that hid it
+ * would be promising a press that cannot happen. What moved behind the ⓘ is
+ * the *explanation* of where the check lives, which changes nobody's decision.
+ * {@link fillCapCopy} still states the whole of it for the note that carries it.
+ */
+export function fillCapChip(premiumPerContractUsd: number | null): string {
+  const cap = `capped ${usd(FILL_CAP_USD, true)} / press`;
+  if (premiumPerContractUsd === null || !(premiumPerContractUsd > 0)) return cap;
+  const affordable = Math.floor(FILL_CAP_USD / premiumPerContractUsd);
+  return affordable >= 1
+    ? `${cap} · ${affordable} contract${affordable === 1 ? "" : "s"}`
+    : `${cap} · none affordable`;
+}
+
+/**
+ * The depth that is deliberately **not** claimed, in four words.
+ *
+ * A previous agent refused to convert `ListedZone.availableAmount` and said so
+ * rather than inventing a cap. That refusal is right and is untouched: the
+ * figure is published in the collateral token's own decimals — 6 for USDC, 18
+ * for aBasWETH, 8 for cbBTC — and this screen holds no collateral map to
+ * convert it with, because `src/data/qualify.ts` needs the spot index and the
+ * `rawApiData.collateral` address and both are stripped before the ladder
+ * arrives. A depth limit invented from a number in unknown units is the exact
+ * class of mistake `docs/reality-check.md` keeps a file of.
+ *
+ * So the claim does not change; only its length does. The fact a player needs
+ * is that **no depth limit is claimed**, and that is four words. Why it is not
+ * claimed is a paragraph, and it is behind the ⓘ.
+ */
+export const NO_DEPTH_CHIP = "no depth limit claimed";
+
+/** The paragraph {@link NO_DEPTH_CHIP} is the short form of. */
+export const NO_DEPTH_COPY =
+  "The maker's remaining size is published in the collateral token's own units, and this " +
+  "screen does not convert it — so no depth limit is claimed here. The cap above is this " +
+  "build's own and is checked before anything signs.";
+
+/**
+ * The answer to the owner's third note — *"date should be more consistent or
+ * customisable other than fixed options like that"* — said with the strikes
+ * rather than beside them.
+ *
+ * Both readings of the complaint are true and both land in the same place:
+ *
+ *  - **The cadence is irregular** — two dailies, then weeklies, then a monthly
+ *    — because that is the venue's own listing schedule (§2.2). Not a rhythm
+ *    this screen picked, and not one it can smooth.
+ *  - **A custom date is genuinely possible**, on the same path a custom strike
+ *    is: `expiryTimestamp` is a caller-supplied parameter on the quote request,
+ *    validated only as being in the future and before the offer deadline
+ *    (`docs/plan7-measurements.md`).
+ *
+ * So it shares {@link RFQ_PRECISION_COPY}'s note instead of opening a second
+ * explanation, and it says the load-bearing part: the dates are the **book's**,
+ * not a rule of ours, and another one is a quote request rather than an
+ * impossibility — on a path this build does not wire, said in the same breath
+ * so nobody reads it as an offer.
+ */
+export const RFQ_EXPIRY_COPY =
+  "The dates are the book's own listing schedule — two dailies, then weeklies, then a " +
+  "monthly — rather than a cadence this screen chose. Any other expiry can be asked for on " +
+  "the same quote-request path a custom strike takes, and that path is not wired into this " +
+  "build either.";
+
+/** The chip under the expiry columns. Eight words; the paragraph is on the ⓘ
+ *  beside them. */
+export const EXPIRY_SOURCE_CHIP = "the book's dates — another is a quote request";
+
+/**
+ * {@link RFQ_PRECISION_COPY} on the ticket, where the height budget is hard.
+ *
+ * The full paragraph is on the panel's `box:book` note, one ⓘ away on the same
+ * screen, and printing it here as well cost five lines of a panel capped at
+ * 900px — the cap `c97c600` fought to get under and that a fully-priced box
+ * with all six risk figures, both breakevens and a payoff sketch had pushed
+ * back over. Both halves of the claim survive: any strikes or any date can be
+ * asked for, and that path is not wired here.
+ */
+export const RFQ_PRECISION_CHIP =
+  "Any strikes or any date can be quoted on request — a path this build does not wire.";
+
+/**
+ * The panel's versions of {@link LISTED_COPY}, {@link LISTED_WING_COPY} and
+ * {@link UNLISTED_COPY} — the same facts in six words instead of thirty-eight.
+ *
+ * The long forms are neither deleted nor hidden: they are the **banner** of the
+ * box's own trade ticket, which the ⓘ beside PRICE BAND opens, so a reader who
+ * wants the sentence is one hover from it. What stays on the panel is the half
+ * that changes a decision — whether this fills instantly or has to be asked
+ * for, and whose wings it comes with.
+ */
+export const LISTED_CHIP = "on the book · the maker's wings";
+export const UNLISTED_CHIP = "not on the book · priced on request";
+
+/** The smallest box this column can express, in five words. The clause that
+ *  used to follow it — "that is the next rung the book quotes, not a rule of
+ *  ours" — is the same claim {@link DISCRETE_STRIKES_COPY} makes at length on
+ *  the ⓘ, and saying it twice on one panel was the repetition this pass is
+ *  for. */
+export function minBoxChip(fromUsd: number, tallUsd: number): string {
+  return `smallest here: ${usd(tallUsd)} tall, from ${usd(fromUsd)}`;
+}
+
+/** First-run guidance, and one line of it. The keyboard and zoom gestures moved
+ *  to the ⓘ: a player who has not drawn a box yet needs to know how to start,
+ *  not how to pan. */
+export const DRAW_HINT_CHIP = "Drag on the chart, or click a floor then a ceiling.";
+
+/** The full version, behind the ⓘ. */
+export const DRAW_HINT_COPY =
+  "Drag on the chart, or click a floor strike and then a ceiling strike. The box snaps to " +
+  "strikes the book is quoting, so the tighter you can draw it, the more the market is " +
+  "quoting near there. Scroll to zoom the board, shift-scroll to pan; the arrow keys and 0 " +
+  "do the same from the keyboard.";
+
+/** What can still be moved, in eight words. */
+export const EDIT_HINT_CHIP = "Drag to move · edges resize · right edge sets expiry";
+
+/** The full version, behind the ⓘ. */
+export const EDIT_HINT_COPY =
+  "Drag the box to move it, its top or bottom edge to resize it, and its right edge to " +
+  "change the expiry. Edges land on strikes the book quotes and the expiry lands on a date " +
+  "it lists — there is nothing in between to land on.";
+
+/** And when it cannot be moved at all. */
+export const FROZEN_HINT_CHIP = "Committed to the duel — no longer editable.";
+
+// ── The terminal step, and the dead end that was at the end of it ─────────
+//
+// The owner: *"and im stuck at this step unable to do anything after locking?"*
+// He was on the confirm panel looking at `Back` and a disabled `Buy this box`,
+// and he was right that it is a dead end — but it is one by construction rather
+// than by accident, which is why the button was the wrong thing to fix.
+//
+// `src/App.tsx` has never passed `onConfirm`; its only mention of it is a
+// comment saying the duel commit deliberately does not fire from it. So
+// `canSign` is false in every build there is, `features.trade` is off on top of
+// that, and the copy underneath — *"nothing here can sign until an operator
+// turns trading on"* — read as "come back later" when the honest answer is
+// "not from this screen".
+//
+// **So the flow moved rather than the button.** An action that cannot succeed
+// is not offered: the buy button renders only where it could actually fire, and
+// where it could not, the primary action is the one that works — lock the box
+// into the duel, or go back to the board. A disabled green button as the last
+// step of a flow is the dead end, and removing it is the fix.
+
+/** The line where the buy button used to be. Eight words, and the ⓘ beside it
+ *  carries the rest. */
+export const BUYING_OFF_CHIP = "Not buyable here — the duel is the product.";
+
+/** The house voice for a switched-off capability: name what is off, say what
+ *  *is* real, say what would have to change. */
+export const BUYING_OFF_COPY =
+  "Buying is switched off in this build. The position above is real and priced; nothing on " +
+  "this screen can sign for it.";
+
+/**
+ * And why that is a shape rather than a setting.
+ *
+ * Checkable, which is the only kind of claim this file makes: `src/App.tsx`
+ * mounts this screen with `room`, `seat`, `locking` and `onLock` and with no
+ * `onConfirm` at all, so the confirm action has never been wired on any path.
+ * The arena's product is the duel — draw a box, lock it, be scored against
+ * another player — and `LOCK_COPY` has always said that locking is not a
+ * purchase. Execution is a different path with a different screen.
+ */
+export const BUYING_OFF_WHY =
+  "It is not a switch waiting to be flipped: this screen has never been handed a confirm " +
+  "action on any path. The arena's product is the duel — you draw a box, lock it, and it is " +
+  "scored against another player's. Execution is a separate path with its own screen.";
+
+/** What happens next once a box is locked, said where a player would otherwise
+ *  wonder whether the screen had stopped. `useRoom` polls until `revealed`, so
+ *  this is a description of what the screen does rather than a promise. */
+export const LOCKED_NEXT_CHIP = "Waiting for the other box — both appear here.";
+
+
 
 export const SIZE_COPY =
   "How many contracts this position is. Max loss, max payout and the multiple below are all for the whole position, not for one contract.";
@@ -327,26 +548,6 @@ export const FIELD_NOTES = {
   ],
 } as const;
 
-/**
- * The four notes, built once at module scope.
- *
- * They are static because a definition is static — none of them reads the box,
- * the book, the premium or the clock, and if one ever did it would belong in
- * the other pile. Building them here rather than in a `useMemo` is not an
- * optimisation; it is the property being enforced by construction, since a
- * constant cannot close over state it does not have.
- */
-const FIELD_NOTE_TICKETS = {
-  wing: fieldNote({ id: "box:wing", label: "WING WIDTH", lines: FIELD_NOTES.wing }),
-  size: fieldNote({ id: "box:size", label: "SIZE", lines: FIELD_NOTES.size }),
-  maxLoss: fieldNote({ id: "box:maxLoss", label: "MAX LOSS", lines: FIELD_NOTES.maxLoss }),
-  maxPayout: fieldNote({
-    id: "box:maxPayout",
-    label: "MAX PAYOUT",
-    lines: FIELD_NOTES.maxPayout,
-  }),
-} as const;
-
 // ── Precision: what is genuinely discrete, and what is simply missing ───────
 
 /**
@@ -392,6 +593,72 @@ export function rungGapCopy(ladder: StrikeLadder | null): string | null {
 // are the three ways that instrument differs from the one §3.1 imagined,
 // surfaced rather than smoothed over.
 
+/**
+ * The **long form of a constraint whose short form is already on the panel**.
+ *
+ * A second table rather than more entries in {@link FIELD_NOTES}, because the
+ * two are audited by different tests. A `FIELD_NOTES` line has to pass the
+ * timeless test — would it still be true on another venue, on another day,
+ * about another box — and not one of these would: they name a cap, a build, a
+ * refusal to convert a number, and a path that is not wired. Sliding one of
+ * those into the definitions table is exactly the move that would let a real
+ * disclosure end up behind a gesture with nothing visible in its place.
+ *
+ * The rule that governs this table instead: **every entry has a short form
+ * rendered on the panel with no interaction at all.** The ⓘ elaborates a fact
+ * the player has already read; it never carries the only copy of one. That is
+ * `docs/reality-check.md`'s requirement kept and the owner's word budget
+ * honoured at the same time — compress, never hide.
+ */
+export const FIELD_DISCLOSURES = {
+  /** Short forms on the panel: the cost line, {@link fillCapChip} and
+   *  {@link NO_DEPTH_CHIP}, all three on one line under the stepper. */
+  size: [fillCapCopy(null), NO_DEPTH_COPY],
+  /** Short forms on the panel: the discrete-strikes chip under the Review
+   *  button, and {@link EXPIRY_SOURCE_CHIP} under the expiry columns. */
+  book: [DISCRETE_STRIKES_COPY, RFQ_EXPIRY_COPY, RFQ_PRECISION_COPY],
+  /** Short forms on the panel: {@link DRAW_HINT_CHIP} before a box exists and
+   *  {@link EDIT_HINT_CHIP} after. Guidance rather than disclosure, and it is
+   *  here because it is about this board rather than about options. */
+  draw: [DRAW_HINT_COPY, EDIT_HINT_COPY],
+  /** Short form on the panel: the line where the confirm step's buy button
+   *  used to be. */
+  buy: [BUYING_OFF_COPY, BUYING_OFF_WHY],
+} as const;
+
+/**
+ * The notes, built once at module scope.
+ *
+ * Static because every line in both tables is: none of them reads the box, the
+ * book, the premium or the clock. Building them here rather than in a `useMemo`
+ * is not an optimisation, it is the property enforced by construction — a
+ * module constant cannot close over state it does not have.
+ */
+const FIELD_NOTE_TICKETS = {
+  wing: fieldNote({ id: "box:wing", label: "WING WIDTH", lines: FIELD_NOTES.wing }),
+  size: fieldNote({
+    id: "box:size",
+    label: "SIZE",
+    lines: [...FIELD_NOTES.size, ...FIELD_DISCLOSURES.size],
+  }),
+  maxLoss: fieldNote({ id: "box:maxLoss", label: "MAX LOSS", lines: FIELD_NOTES.maxLoss }),
+  maxPayout: fieldNote({
+    id: "box:maxPayout",
+    label: "MAX PAYOUT",
+    lines: FIELD_NOTES.maxPayout,
+  }),
+  /** One note for the two questions that have one answer: why the strikes are
+   *  the ones they are, and why the dates are. The owner asked them separately
+   *  and they are the same fact about the same book. */
+  book: fieldNote({
+    id: "box:book",
+    label: "THE BOOK'S STRIKES AND DATES",
+    lines: FIELD_DISCLOSURES.book,
+  }),
+  draw: fieldNote({ id: "box:draw", label: "DRAWING A BOX", lines: FIELD_DISCLOSURES.draw }),
+  buy: fieldNote({ id: "box:buy", label: "BUYING", lines: FIELD_DISCLOSURES.buy }),
+} as const;
+
 /** A box that landed on something a maker has already created. */
 export const LISTED_COPY =
   "This lands on a zone the market maker has already listed, so it fills straight off the book — no waiting on anyone.";
@@ -428,14 +695,14 @@ export const LISTED_NO_GREEKS_COPY =
  * that would look tidier without the sentence.
  */
 export const MODEL_GREEKS_COPY =
-  "Delta, gamma, theta and vega are ours, not the venue's — Black–Scholes over the box's four legs, off its published smile. Nothing fills at them.";
+  "The chance and the risk figures are ours — Black–Scholes on the venue's published smile. Nothing fills at them.";
 
 /** The common case, and not a failure. */
 export const UNLISTED_COPY =
   "No listed zone matches this box, so a maker would have to price it on demand.";
 
 /** The coarse ladder, said as a count rather than implied by an empty list. */
-export const NO_ZONES_COPY = "The book lists no zone at all on this expiry.";
+export const NO_ZONES_COPY = "no zones listed on this expiry";
 
 /**
  * On the live book, ETH's two nearest expiries each list exactly one zone and
@@ -1372,6 +1639,16 @@ export function zoneTicket(input: {
   const wing = floor - a;
   const priced = premium !== null && premium > 0;
   const multiple = econ && econ.payoutMultiple !== null ? econ.payoutMultiple : null;
+  /** The four strikes as distances from spot. Empty with no spot, and then the
+   *  STRIKES row falls back to prose rather than printing a distance from
+   *  nothing. */
+  const distances = strikeDistances(strikes, spot);
+  const be = boxBreakevens(strikes, priced ? premium : null);
+  /** The two breakevens as distances too, on the same rule. */
+  const beFromSpot =
+    be === null || spot === null
+      ? ""
+      : strikeDistances([be.lower, be.upper], spot).replace(" · ", " / ") + " from spot";
 
   /**
    * The greeks for the instrument that will actually fill — `ranger` on a
@@ -1401,16 +1678,12 @@ export function zoneTicket(input: {
       key: "strikes",
       label: "INSTRUMENT · STRIKES",
       value: strikes.map((k, i) => (i === 0 ? usd(k) : usd(k).slice(1))).join(" · "),
-      note: match
-        ? `A listed zone — four legs, the maker's ${usd(wing)} wings its ceiling.`
-        : `A long call condor: four legs, and the ${usd(wing)} wings are its ceiling.`,
-      source: match ? "venue" : "derived",
-    },
-    {
-      key: "band",
-      label: "BAND",
-      value: `${usd(floor)} – ${usd(ceiling)}`,
-      note: SETTLEMENT_COPY,
+      // How far the price has to travel to reach each of them, which is the
+      // form a trader compares boxes in — dollars mean something against one
+      // underlying at one moment and per cent means something across the board.
+      // The subtitle already names the product and the wing, so the clause that
+      // used to restate them is gone rather than shortened.
+      note: distances === "" ? STRIKE_SHAPE_NOTE : `${distances} from spot.`,
       source: match ? "venue" : "derived",
     },
     {
@@ -1430,10 +1703,12 @@ export function zoneTicket(input: {
         spot === null
           ? "—"
           : `${usd(spot, true)} · ${spot >= floor && spot <= ceiling ? "inside the band" : spot < floor ? `${usd(floor - spot)} below the floor` : `${usd(spot - ceiling)} above the ceiling`}`,
-      note:
-        spot === null
-          ? "The venue publishes no spot for this underlying right now."
-          : "Where it is now. Only where it lands at expiry counts.",
+      // The BAND row above used to carry {@link SETTLEMENT_COPY} and used to
+      // restate the band already in this ticket’s own title. The row went; the
+      // sentence did not — "lands in your box at expiry" is the difference
+      // between this instrument and the one a player imagines, and it belongs
+      // beside the price that has to do the landing.
+      note: spot === null ? NO_SPOT_NOTE : SETTLEMENT_COPY,
       source: spot === null ? null : "venue",
     },
     ...boxGreekRows(greeks, { underlying, spot, floor, ceiling }),
@@ -1454,10 +1729,17 @@ export function zoneTicket(input: {
             source: "venue" as const,
           },
           {
+            // Two of them, said as two. A condor has a lower and an upper and
+            // they are the real boundary between profit and loss — wider than
+            // the band, because the wings pay on the way in. A panel that
+            // printed one printed half a position.
             key: "breakeven",
-            label: "BREAKEVEN",
-            value: `${usd(a + premium)} – ${usd(d - premium)}`,
-            note: "Between these you are ahead at expiry; outside them you are not.",
+            label: "BREAKEVENS · LOWER – UPPER",
+            value:
+              be === null
+                ? `${usd(a + premium)} – ${usd(d - premium)}`
+                : `${usd(be.lower)} – ${usd(be.upper)}`,
+            note: beFromSpot === "" ? BREAKEVEN_NOTE : `${beFromSpot} · ${BREAKEVEN_NOTE}`,
             source: "derived" as const,
           },
         ]
@@ -1475,17 +1757,19 @@ export function zoneTicket(input: {
     {
       // The multiple was its own row and its own two sentences. It is one
       // number derived from the two figures beside it, so it rides with them.
+      // The multiple is the risk/reward, and it is the number a trader decides
+      // on — `c97c600` folded it into this value to save a row and it stopped
+      // reading as a decision input. It keeps the row it shares, and it now
+      // names its own denominator in the value, where it cannot be mistaken for
+      // part of the payout.
       key: "maxPayout",
-      label: "MAX PAYOUT",
+      label: "MAX PAYOUT · RISK / REWARD",
       value: econ
         ? multiple === null
           ? usd(econ.maxPayout, true)
-          : `${usd(econ.maxPayout, true)} · ${multiple.toFixed(2)}×`
+          : `${usd(econ.maxPayout, true)} · ${multiple.toFixed(2)}× max loss`
         : "—",
-      note:
-        multiple === null
-          ? "Paid in full inside the band at expiry, tapering across each wing."
-          : "Paid in full inside the band. The × is that over the premium.",
+      note: "Paid in full inside the band, tapering across each wing.",
       source: match ? "venue" : "derived",
     },
   ];
@@ -1493,6 +1777,9 @@ export function zoneTicket(input: {
   return {
     id: input.id,
     state: match ? "live" : "not-dealt",
+    // Four strikes and a premium, drawn. It is the cheapest row on this panel
+    // in words — it says what "tapering across each wing" means by showing it.
+    sketch: condorSketch({ strikes, spot, premiumPerContract: priced ? premium : null }) ?? undefined,
     title: `${underlying} ${usd(floor)}–${usd(ceiling)} · by ${expiryLabel(expiry)}`,
     subtitle: match
       ? `RANGER · resting on the OptionBook · ${usd(wing)} wings`
@@ -1506,8 +1793,12 @@ export function zoneTicket(input: {
       // carries the reason, and a footer repeating it would be one more line
       // on a panel that already has too many.
       ...(greeks.ok ? [MODEL_GREEKS_COPY] : []),
-      match ? LISTED_WING_COPY : RFQ_PRECISION_COPY,
-      fillCapCopy(priced ? premium : null),
+      match ? LISTED_WING_COPY : RFQ_PRECISION_CHIP,
+      // The chip, not the sentence. The cap is a fact this ticket owes the
+      // reader; the paragraph explaining where the check lives is on the
+      // panel's SIZE note, and printing it here as well was the same fact
+      // twice on one screen.
+      fillCapChip(priced ? premium : null),
     ],
     rows,
   };
@@ -2326,6 +2617,7 @@ export function BoxBuilder({
    *  being editable, or it would stop being the box that was committed. */
   const frozen = locked !== null || revealed;
 
+
   /** Their box, drawn on this chart. `null` before the reveal by construction:
    *  `theirPick` is null, so there is nothing to decode. */
   const theirBox = useMemo(() => decodeBoxPick(theirPick), [theirPick]);
@@ -2835,6 +3127,35 @@ export function BoxBuilder({
   }, [box, ladder]);
 
   /**
+   * Commit the drawing to the duel — one implementation, two buttons.
+   *
+   * It was inline on the duel strip's button, and the confirm step now offers
+   * the same action as its primary, so a second copy would be a second chance
+   * to encode the pick differently. The guard is the same one it always was:
+   * nothing fires without a spec, a box, an unlocked seat and a handler.
+   *
+   * The `Box` is what travels, not the `CondorSpec` — the spec is derived from
+   * the box by `boxToCondor` and re-derived on the other side from the same
+   * four fields, so sending it too would be sending a second copy of one fact
+   * that could disagree with the first.
+   *
+   * The one behaviour that is new is the last line, and it is the owner's
+   * complaint answered directly: **a lock leaves the confirm step.** Locking
+   * from the review panel used to leave the player looking at the same panel
+   * with the same disabled button, which is exactly "stuck after locking". Now
+   * it drops back to the board, where the duel strip says LOCKED · WAITING and
+   * the reveal will draw both boxes on the chart the moment the other seat is
+   * in.
+   */
+  const lockBox = useCallback(() => {
+    if (!spec || !box || locked !== null || locking || !onLock) return;
+    const pick = encodeBoxPick(box);
+    setLocked(pick);
+    onLock(pick);
+    setStage("draw");
+  }, [spec, box, locked, locking, onLock]);
+
+  /**
    * Which instrument this box actually is — asked BEFORE the economics, and
    * that ordering is the fix rather than a tidy-up.
    *
@@ -3211,17 +3532,7 @@ export function BoxBuilder({
             ) : (
               <button
                 data-role="lock"
-                onClick={() => {
-                  if (!spec || !box || locked !== null || locking) return;
-                  // The `Box` is what travels, not the `CondorSpec`: the spec is
-                  // derived from the box by `boxToCondor` and re-derived on the
-                  // other side from the same four fields, so sending it too
-                  // would be sending a second copy of one fact that could
-                  // disagree with the first.
-                  const pick = encodeBoxPick(box);
-                  setLocked(pick);
-                  onLock?.(pick);
-                }}
+                onClick={lockBox}
                 disabled={!spec || locking || !onLock}
                 style={sx(BTN(C.accent, true, !spec || locking || !onLock))}
               >
@@ -3250,8 +3561,23 @@ export function BoxBuilder({
             </span>
           )}
 
+          {/* Locked, the strip used to say only that neither box is readable
+              yet. True, and not an answer to "what now?" — which is the
+              question the owner was actually asking when he said he was stuck
+              after locking. `useRoom` polls until `revealed`, so both boxes
+              really do appear here without anybody pressing anything, and
+              saying so is a description of what this screen does rather than a
+              promise. `BLIND_COPY` stays underneath it: it is the §6 claim
+              about the *server*, and it is not the same sentence. */}
           {seatIndex !== null && !revealed && (
-            <span style={sx(NOTE)}>{locked !== null ? BLIND_COPY : LOCK_COPY}</span>
+            <div style={sx("display:grid;gap:5px")}>
+              {locked !== null && (
+                <span data-role="locked-next" style={sx(`${NOTE};color:${C.green}`)}>
+                  {LOCKED_NEXT_CHIP}
+                </span>
+              )}
+              <span style={sx(NOTE)}>{locked !== null ? BLIND_COPY : LOCK_COPY}</span>
+            </div>
           )}
 
           {seatIndex !== null && revealed && (
@@ -4330,6 +4656,20 @@ export function BoxBuilder({
               style={sx("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}
             >
               <span style={sx(LABEL)}>EXPIRIES</span>
+              {/* The owner asked whether the dates could be "more consistent or
+                  customisable other than fixed options like that". They are the
+                  book's own listing schedule and the irregular cadence is the
+                  venue's, but a custom date really is possible on the
+                  quote-request path — the same path a custom strike takes, and
+                  the same path this build does not wire. That is one story, so
+                  it is one note, shared with the strikes: `FIELD_NOTES` would
+                  otherwise have grown a second explanation of one fact. The row
+                  itself stays bare apart from eight words. */}
+              <FieldInfo
+                host={ticket}
+                note={FIELD_NOTE_TICKETS.book}
+                label="THE BOOK'S STRIKES AND DATES"
+              />
               {columns.map((e) => (
                 <button
                   key={e}
@@ -4352,8 +4692,15 @@ export function BoxBuilder({
                   {expiryLabel(e)}
                 </button>
               ))}
-              <span style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}>
-                the book's own dates — tomorrow, the day after, then weeklies
+              {/* This already said the dates were the book's. What it did not
+                  say — and what the owner read as a limitation of ours — is
+                  that another one is *askable*. Same length, one more fact, and
+                  the paragraph is on the ⓘ at the head of the row. */}
+              <span
+                data-role="expiry-source"
+                style={sx(`font:400 10px/1 ${MONO};color:${C.faint}`)}
+              >
+                {EXPIRY_SOURCE_CHIP}
               </span>
             </div>
 
@@ -4540,7 +4887,13 @@ export function BoxBuilder({
           </div>
 
           {/* ── The parameters panel ──────────────────────────────────── */}
-          <div style={sx(`${CARD};padding:16px 18px;display:grid;gap:14px;align-content:start`)}>
+          {/* Named so the panel's own height and word count can be measured
+              rather than eyeballed - the owner's complaint was that this column
+              is crowded, and "crowded" is a number before it is a judgement. */}
+          <div
+            data-role="params"
+            style={sx(`${CARD};padding:16px 18px;display:grid;gap:14px;align-content:start`)}
+          >
             {stage === "review" && spec ? (
               <Review
                 spec={spec}
@@ -4550,6 +4903,22 @@ export function BoxBuilder({
                 contracts={size}
                 trade={trade}
                 canSign={Boolean(onConfirm)}
+                // The duel action, where there is a duel. `null` on the solo
+                // builder, and then the step's only action is `Back to the
+                // board` — which is honest, and is not a dead end, because
+                // there genuinely is nothing else this build can do with a box
+                // that no room is waiting on.
+                lock={
+                  room && seatIndex !== null && onLock
+                    ? {
+                        canLock: Boolean(spec) && Boolean(box),
+                        locking,
+                        locked: locked !== null,
+                        onLock: lockBox,
+                      }
+                    : null
+                }
+                info={ticket}
                 onBack={() => setStage("draw")}
                 onConfirm={() => onConfirm?.(spec, condorStrikeNumbers(spec), match)}
               />
@@ -4656,12 +5025,17 @@ export function BoxBuilder({
                       panel rather than a sentence behind a hover. The full
                       version of the sentence it was carved out of is on the
                       `ⓘ` above. */}
+                  {/* Compressed to the fact, and the fact only. The version
+                      before this said the same thing in twenty-four words and
+                      spent most of them restating what the ⓘ above already
+                      defines: that a wing is a gap the book quotes. What is
+                      left is why the steppers are live or dead. */}
                   <span data-role="wing-state" style={sx(CHIP_NOTE)}>
                     {match
-                      ? "Fixed here: this box fills a zone the maker already listed, and its wings came with it."
+                      ? "the maker's, fixed"
                       : wings.length > 1
-                        ? `The ladder offers ${wings.length} widths at this band — every one of them a gap the book is quoting, and nothing in between.`
-                        : "The ladder offers one width at this band, so there is nothing to step to."}
+                        ? `${wings.length} widths here`
+                        : "one width here"}
                   </span>
                 </div>
 
@@ -4727,34 +5101,35 @@ export function BoxBuilder({
                       +
                     </button>
                   </div>
-                  {/* Everything below this line is disclosure, and none of it
-                      moved behind the `ⓘ` above. What the position costs at
-                      today's premium, or that nothing has priced it and that is
-                      why there is no cost to scale; the cap this build will
-                      actually sign; and the depth limit that is deliberately
-                      NOT claimed. `SIZE_COPY` — the definition of what a
-                      contract count *is* — is the only line that left, because
-                      it is the only one that would still be true about a
-                      different box on a different book. */}
-                  <span data-role="size-cost" style={sx(CHIP_NOTE)}>
-                    {quoted && premium !== null
-                      ? `At ${usd(premium, true)} a contract, ${size} ${size === 1 ? "costs" : "cost"} ${usd(premium * size, true)}.`
-                      : "Nothing has priced this box yet, so there is no cost to scale."}
-                  </span>
-                  {/* The bound that is real, named where it bites — and the one
-                      that is NOT claimed, said too. The maker's remaining depth
-                      is published in the collateral token's own decimals and
-                      this screen holds no map to convert it, so it is not
-                      converted; a limit invented from a number in unknown units
-                      is how this repo's money bugs start. */}
-                  <span data-role="fill-cap" style={sx(CHIP_NOTE)}>
-                    {fillCapCopy(quoted ? premium : null)}
-                  </span>
-                  <span style={sx(CHIP_NOTE)}>
-                    The maker's remaining size is published in the collateral token's own units, and
-                    this screen does not convert it — so no depth limit is claimed here. The cap
-                    above is this build's own and is checked before anything signs.
-                  </span>
+                  {/* Three facts, one line, and every one of them still
+                      visible without a gesture: what the position costs at
+                      today's premium (or that nothing has priced it), the cap
+                      this build will actually sign, and the depth limit that is
+                      deliberately NOT claimed.
+
+                      They were three stacked paragraphs running to eighty
+                      words. Not one of them is gone — each is now a chip, and
+                      the sentence each was carved out of is on the `ⓘ` above,
+                      in `FIELD_DISCLOSURES.size`. That is the whole shape of
+                      this pass: compress, never hide. */}
+                  <div
+                    data-role="size-limits"
+                    style={sx("display:flex;align-items:center;gap:7px;flex-wrap:wrap")}
+                  >
+                    <span data-role="size-cost" style={sx(CHIP_NOTE)}>
+                      {quoted && premium !== null
+                        ? `${usd(premium, true)} × ${size} = ${usd(premium * size, true)}`
+                        : "unpriced"}
+                    </span>
+                    <span style={sx(`${CHIP_NOTE};color:${C.faint}`)}>·</span>
+                    <span data-role="fill-cap" style={sx(CHIP_NOTE)}>
+                      {fillCapChip(quoted ? premium : null)}
+                    </span>
+                    <span style={sx(`${CHIP_NOTE};color:${C.faint}`)}>·</span>
+                    <span data-role="no-depth" style={sx(CHIP_NOTE)}>
+                      {NO_DEPTH_CHIP}
+                    </span>
+                  </div>
                 </div>
 
                 <div style={sx(`height:1px;background:${C.line}`)} />
@@ -4780,9 +5155,12 @@ export function BoxBuilder({
                   <span data-role="max-loss" style={sx(`${VALUE};color:${C.red}`)}>
                     {quoted && econ ? usd(econ.maxLoss, true) : "—"}
                   </span>
+                  {/* The dash's own reason, folded into the dash. It was a
+                      sentence saying in twelve words what the em-dash above it
+                      had already said. */}
                   {!quoted && (
                     <span data-role="max-loss-absent" style={sx(CHIP_NOTE)}>
-                      Nothing has priced this box yet, so there is no figure to print.
+                      not priced yet
                     </span>
                   )}
                 </div>
@@ -4827,11 +5205,15 @@ export function BoxBuilder({
 
                 <div style={sx(`height:1px;background:${C.line}`)} />
 
-                {/* The ladder's own constraint, said in dollars. */}
+                {/* The ladder's own constraint, said in dollars. The clause
+                    that used to follow — "that is the next rung the book
+                    quotes, not a rule of ours" — is the same claim
+                    `DISCRETE_STRIKES_COPY` makes at length on the ⓘ below, and
+                    saying it twice on one panel is the repetition this pass
+                    exists to remove. */}
                 {minHere !== null && minFrom !== null && (
-                  <span style={sx(NOTE)}>
-                    Smallest box from {usd(minFrom)} here is {usd(minHere)} tall — that is the next
-                    rung the book quotes, not a rule of ours.
+                  <span data-role="min-box" style={sx(CHIP_NOTE)}>
+                    {minBoxChip(minFrom, minHere)}
                   </span>
                 )}
 
@@ -4841,18 +5223,36 @@ export function BoxBuilder({
                   </span>
                 )}
 
+                {/* Three paragraphs became one chip.
+
+                    `LISTED_COPY`, `LISTED_WING_COPY` and `UNLISTED_COPY` are
+                    not gone and are not hidden: they are the **banner** of the
+                    box's own trade ticket, which the ⓘ beside PRICE BAND opens,
+                    so the sentence is one hover away. What stays here is the
+                    half that changes a decision — does this fill instantly, and
+                    whose wings does it come with.
+
+                    `LISTED_NO_GREEKS_COPY` stopped being rendered altogether,
+                    and that is a cut rather than a move. It explained why the
+                    strike axis is not shaded by delta — but nothing on this
+                    screen ever promised delta shading, so it was answering a
+                    question no player asks, and its own last clause ("the
+                    ticket computes its own from the venue's published smile")
+                    is now something the ticket demonstrably does, five rows at
+                    a time, with `MODEL_GREEKS_COPY` in its footer saying whose
+                    they are. The constant and its argument stay in this file
+                    for the reader; the panel no longer spends forty-four words
+                    on it. */}
+                {/* One line, because these were two facts with one meaning.
+                    "Not on the book" and "the book lists no zone at all on this
+                    expiry" overlap almost completely — the second is the
+                    stronger and more useful of the two, so where it applies it
+                    replaces the first rather than following it. Say each fact
+                    once. */}
                 {box && !problem && (
-                  <div data-role="listed" style={sx("display:grid;gap:5px")}>
-                    <span style={sx(NOTE)}>{match ? LISTED_COPY : UNLISTED_COPY}</span>
-                    {match && <span style={sx(NOTE)}>{LISTED_WING_COPY}</span>}
-                    {/* §2.4's delta shading cannot reach a listed zone, and the
-                        reason is worth one sentence rather than a blank space
-                        where a figure would be. */}
-                    {match && <span style={sx(NOTE)}>{LISTED_NO_GREEKS_COPY}</span>}
-                    {!match && zones.length === 0 && (
-                      <span style={sx(NOTE)}>{NO_ZONES_COPY}</span>
-                    )}
-                  </div>
+                  <span data-role="listed" style={sx(CHIP_NOTE)}>
+                    {match ? LISTED_CHIP : zones.length === 0 ? NO_ZONES_COPY : UNLISTED_CHIP}
+                  </span>
                 )}
 
                 <button
@@ -4863,43 +5263,56 @@ export function BoxBuilder({
                   {spec ? "Review this box" : "Draw a box to continue"}
                 </button>
 
-                {!box && (
-                  <span style={sx(NOTE)}>
-                    Drag on the chart, or click a floor strike and then a ceiling strike. The box
-                    snaps to strikes the book is quoting, so the tighter you can draw it, the more
-                    the market is quoting near there. Scroll to zoom the board, shift-scroll to pan;
-                    the arrow keys and 0 do the same from the keyboard.
-                  </span>
-                )}
+                {/* Four paragraphs of prose in the primary column became two
+                    lines and one ⓘ.
 
-                {/* What can still be changed, said once the box exists — the
-                    handles are small and a player should not have to find them
-                    by hovering. The last clause is the limit, and it is the
-                    ladder's rather than ours. */}
-                {/* The answer to "I cannot size the box to the cent", said
-                    where the snapping happens rather than left to be inferred
-                    from a rectangle that moves on release. Both halves: the
-                    instrument really is discrete, and the precise path really
-                    does exist and is not wired here. */}
-                <div data-role="precision" style={sx("display:grid;gap:5px")}>
-                  <span style={sx(NOTE)}>{DISCRETE_STRIKES_COPY}</span>
-                  {rungGapCopy(ladder) && <span style={sx(NOTE)}>{rungGapCopy(ladder)}</span>}
-                  <span style={sx(NOTE)}>{RFQ_PRECISION_COPY}</span>
+                    They divide cleanly once the question is asked of each one:
+                    is this **first-run guidance** a player needs the first time
+                    they touch the board, or is it **reference** they will want
+                    once and never again?
+
+                     - Guidance: how to start a box, and what can still be moved
+                       once one exists. Both are one line, both stay visible,
+                       and the keyboard and zoom gestures moved to the note —
+                       somebody who has not drawn a box yet does not need to
+                       know how to pan.
+                     - Reference: that strikes are discrete, how far apart they
+                       are here, that the dates are the book's too, and that a
+                       custom strike or a custom date is a quote request on a
+                       path this build does not wire. Those are one story about
+                       one book, so they are one note behind one ⓘ, with the
+                       spacing — the only part that changes with the column —
+                       left visible as a figure. */}
+                <div
+                  data-role="precision"
+                  style={sx("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}
+                >
+                  <span style={sx(CHIP_NOTE)}>
+                    {ladderStep(ladder) > 0
+                      ? `strikes are discrete — ${usd(ladderStep(ladder))} apart here`
+                      : "strikes are discrete"}
+                  </span>
+                  <FieldInfo
+                    host={ticket}
+                    note={FIELD_NOTE_TICKETS.book}
+                    label="THE BOOK'S STRIKES AND DATES"
+                    style={INFO_NUDGE}
+                  />
                 </div>
 
-                {box && !frozen && !problem && (
-                  <span data-role="edit-hint" style={sx(NOTE)}>
-                    Drag the box to move it, its top or bottom edge to resize it, and its right edge
-                    to change the expiry. Edges land on strikes the book quotes and the expiry lands
-                    on a date it lists — there is nothing in between to land on.
+                <div style={sx("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
+                  <span data-role="edit-hint" style={sx(CHIP_NOTE)}>
+                    {!box ? DRAW_HINT_CHIP : frozen ? FROZEN_HINT_CHIP : EDIT_HINT_CHIP}
                   </span>
-                )}
-                {box && frozen && (
-                  <span data-role="edit-hint" style={sx(NOTE)}>
-                    This box is committed to the duel, so it can no longer be moved or resized — the
-                    rectangle on screen is the one the opponent is playing against.
-                  </span>
-                )}
+                  {!frozen && (
+                    <FieldInfo
+                      host={ticket}
+                      note={FIELD_NOTE_TICKETS.draw}
+                      label="DRAWING A BOX"
+                      style={INFO_NUDGE}
+                    />
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -4917,6 +5330,23 @@ export function BoxBuilder({
 // The confirm step — readable, and inert without the flag
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The duel action, as this step can see it.
+ *
+ * A prop rather than a second `useRoom`, for the reason every other seam on
+ * this screen is a prop: the confirm step is not allowed to know about a room
+ * store, and the one thing it needs is whether locking is possible and what to
+ * call to do it. `null` is the solo builder, and then the step offers no duel
+ * action at all rather than a disabled one — which is the whole point of the
+ * change it is part of.
+ */
+export interface ReviewLock {
+  canLock: boolean;
+  locking: boolean;
+  locked: boolean;
+  onLock: () => void;
+}
+
 function Review({
   spec,
   match,
@@ -4925,6 +5355,8 @@ function Review({
   contracts,
   trade,
   canSign,
+  lock,
+  info,
   onBack,
   onConfirm,
 }: {
@@ -4936,6 +5368,11 @@ function Review({
   contracts: number;
   trade: boolean;
   canSign: boolean;
+  /** The duel action, or `null` on the solo builder. */
+  lock: ReviewLock | null;
+  /** The panel host, so the one ⓘ on this step opens through the same
+   *  interaction every other ⓘ on the screen does. */
+  info: ReturnType<typeof useTradeTicket> | null;
   onBack: () => void;
   onConfirm: () => void;
 }) {
@@ -4994,26 +5431,68 @@ function Review({
         <span style={sx(NOTE)}>{SETTLEMENT_COPY}</span>
       </div>
 
-      <div style={sx("display:flex;gap:8px")}>
-        <button onClick={onBack} style={sx(BTN(C.borderMid, false))}>
-          Back
+      {/*
+        The terminal step, and the dead end that used to be at the end of it.
+
+        The owner reached this panel and found `Back` beside a permanently
+        disabled `Buy this box`. That button can never enable in any build there
+        is — `src/App.tsx` has never passed `onConfirm`, so `canSign` is false
+        before `features.trade` is even consulted — and a disabled primary
+        action as the last step of a flow is a dead end whatever its tooltip
+        says.
+
+        So the flow moved rather than the button. **An action that cannot
+        succeed is not offered.** `Buy this box` renders only where it could
+        actually fire, which keeps `test/boxbuilder.test.tsx`'s signing path
+        exactly as it was and weakens no guard: the button still carries both
+        its original conditions, it simply is not drawn when they cannot be met.
+        Where it is not drawn, the primary action is the one that works — lock
+        the box into the duel where there is a duel, and go back to the board
+        where there is not.
+      */}
+      <div style={sx("display:flex;gap:8px;flex-wrap:wrap")}>
+        <button data-role="review-back" onClick={onBack} style={sx(BTN(C.borderMid, false))}>
+          Back to the board
         </button>
-        <button
-          onClick={onConfirm}
-          disabled={!trade || !canSign || !quoted}
-          style={sx(BTN(C.accent, true, !trade || !canSign || !quoted))}
-        >
-          Buy this box
-        </button>
+        {lock && !lock.locked && (
+          <button
+            data-role="review-lock"
+            onClick={lock.onLock}
+            disabled={!lock.canLock || lock.locking}
+            style={sx(BTN(C.accent, true, !lock.canLock || lock.locking))}
+          >
+            {lock.locking ? "Locking…" : "Lock this box for the duel"}
+          </button>
+        )}
+        {trade && canSign && (
+          <button
+            onClick={onConfirm}
+            disabled={!trade || !canSign || !quoted}
+            style={sx(BTN(C.accent, true, !trade || !canSign || !quoted))}
+          >
+            Buy this box
+          </button>
+        )}
       </div>
+      {/* Eight words where the disabled button was, and the rest on the ⓘ.
+          The old sentence ended "until an operator turns trading on", which
+          reads as "come back later" — and the honest answer is that this screen
+          has no confirm action to turn on. */}
       {(!trade || !canSign) && (
-        <span style={sx(NOTE)}>
-          Buying is switched off in this build. The position above is real and priced; nothing here
-          can sign until an operator turns trading on.
+        <div style={sx("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
+          <span data-role="buying-off" style={sx(CHIP_NOTE)}>
+            {BUYING_OFF_CHIP}
+          </span>
+          {info && <FieldInfo host={info} note={FIELD_NOTE_TICKETS.buy} label="BUYING" />}
+        </div>
+      )}
+      {lock?.locked && (
+        <span data-role="review-locked" style={sx(CHIP_NOTE)}>
+          {LOCKED_NEXT_CHIP}
         </span>
       )}
       {trade && canSign && !quoted && (
-        <span style={sx(NOTE)}>Waiting on a price for this box.</span>
+        <span style={sx(CHIP_NOTE)}>Waiting on a price for this box.</span>
       )}
     </>
   );

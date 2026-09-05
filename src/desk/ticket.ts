@@ -1,6 +1,8 @@
 import {
   SECONDS_PER_YEAR,
+  d1d2,
   decayOver,
+  normCdf,
   structureGreeks,
   yearsBetweenMs,
   type Greeks,
@@ -90,6 +92,16 @@ import { DUEL_WINDOW, SETTLEMENT_NOTE } from "./optionize.ts";
  * would delete every box's greeks rather than check them. The guard is
  * re-derived instead, clause by clause, on {@link boxGreeks}.
  *
+ * Three more figures a condor trader reads before any greek live here too, and
+ * for the same reason: each is a claim about what may honestly be said rather
+ * than about a screen. {@link boxBreakevens} states **both** of them, because a
+ * condor has two and a panel that prints one prints half a position.
+ * {@link bandChance} is the risk-neutral chance of landing inside the flat top
+ * — *the* number on this instrument, computable from the strikes and the smile,
+ * and a `model` figure that must never read as the venue's or as a promise.
+ * {@link condorSketch} is the payoff drawn, which for four strikes says more
+ * than any row and costs fewer words than one.
+ *
  * The module is pure — no clock, no DOM, no network. `now` is an argument.
  */
 
@@ -112,6 +124,16 @@ import { DUEL_WINDOW, SETTLEMENT_NOTE } from "./optionize.ts";
  *    own payout function over the ask.
  *  - `game` — this build's own fixture. A seeded strike, a tier's band
  *    midpoint. Never a price anyone quoted.
+ *
+ * Four values, and on screen they collapse to the **two** a reader needs:
+ * `venue` is the book speaking, and `model` and `derived` are both us. That
+ * split is what `SOURCE_TAG` and the legend under the rows in
+ * `src/ui/TradeTicket.tsx` render — the owner looked at a `derived` chip and
+ * asked what it was, which is the label failing rather than the reader. The
+ * four-way distinction survives underneath, in `data-ticket-source`, because
+ * "arithmetic on the venue’s own numbers" and "Black–Scholes on the venue’s
+ * smile" are not the same claim and a future reader has to be able to tell
+ * which one a row made.
  */
 export type TicketSource = "venue" | "model" | "derived" | "game";
 
@@ -165,6 +187,16 @@ export interface Ticket {
    */
   body?: readonly string[];
   rows: readonly TicketRow[];
+  /**
+   * The position’s payoff at expiry, drawn.
+   *
+   * Optional and absent on every ticket but a box’s. A vanilla’s payoff is a
+   * hockey stick everybody already pictures; a four-strike box is a shape most
+   * people have never seen, and for that instrument the shape *is* the
+   * instrument — which is why one small drawing replaces more prose than it
+   * costs in pixels.
+   */
+  sketch?: PayoffSketch;
   /** Closing sentences: provenance, then settlement. */
   footer: readonly string[];
 }
@@ -573,8 +605,19 @@ export function boxGreeks(input: BoxGreeksInput): BoxGreeksResult {
 }
 
 /**
- * The five rows a box's risk gets — delta, gamma, theta, vega, implied vol, in
- * the order a trader reads them.
+ * The six rows a box’s risk gets — the chance it lands in the band, then delta,
+ * gamma, theta, vega and implied vol, in the order a trader reads them.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * WHY THE CHANCE IS HERE AND NOT WITH THE MONEY
+ * ──────────────────────────────────────────────────────────────────────────────
+ * {@link bandChance} takes the same four inputs the greeks take — the strikes,
+ * spot, the smile’s vol and the time left — and it fails on exactly the inputs
+ * they fail on. Putting it here rather than beside the premium buys the one
+ * property this panel needs most on a far expiry: **a refusal is still one
+ * dashed row.** A chance row that lived with the money would dash separately,
+ * with its own copy of the same sentence, and the owner’s 25 Sep screenshot
+ * would have gained a seventh line of nothing.
  *
  * ────────────────────────────────────────────────────────────────────────────
  * WHAT EACH CLAUSE IS FOR
@@ -616,7 +659,7 @@ export function boxGreekRows(
     return [
       {
         key: "greeks",
-        label: "DELTA · GAMMA · THETA · VEGA · IV",
+        label: "CHANCE · DELTA · GAMMA · THETA · VEGA · IV",
         value: DASH,
         note: res.why,
         source: null,
@@ -624,32 +667,38 @@ export function boxGreekRows(
     ];
   }
 
-  const { g, vol, span } = res;
+  const { g, vol, span, years } = res;
   const { underlying, spot, floor, ceiling } = ctx;
   const inside = spot !== null && spot >= floor && spot <= ceiling;
   const perTape = decayOver(g, DUEL_WINDOW.tape);
   const sign = (n: number) => (n < 0 ? MINUS : "");
+  const chance = bandChance({ floor, ceiling, spot, vol, years });
 
   return [
+    {
+      // The number a condor is actually about, and the one the panel had no
+      // row for. Tagged `model` and labelled with what it is the chance *of*,
+      // because "68%" beside a listed strike is the single most misreadable
+      // figure this app can print.
+      key: "chance",
+      label: "CHANCE IT LANDS IN THE BAND",
+      value: chance === null ? DASH : pct(chance),
+      note:
+        chance === null
+          ? "It needs the same vol the four figures below need, and none was usable."
+          : "Model, not a promise. The wings still pay outside it.",
+      source: chance === null ? null : "model",
+    },
     {
       key: "delta",
       label: "DELTA",
       value: `Δ ${sign(g.delta)}${fine(Math.abs(g.delta))} per $1`,
       note: inside
-        ? "Near zero inside your box — what matters is where it lands."
-        : `About ${money(Math.abs(g.delta))} per $1 ${underlying} moves, net of four legs.`,
+        ? "Near zero inside your box — where it lands is what matters."
+        : `${money(Math.abs(g.delta))} per $1 of ${underlying}, net of four legs.`,
       source: "model",
     },
-    {
-      key: "gamma",
-      label: "GAMMA",
-      value: `Γ ${sign(g.gamma)}${fine(Math.abs(g.gamma))} per $1`,
-      note:
-        g.gamma < 0
-          ? "Negative inside your box: movement hurts you, stillness helps."
-          : `How fast the delta moves — $1 shifts it by ${fine(g.gamma)}.`,
-      source: "model",
-    },
+
     {
       // The window is in the label, not left to the note, because this is the
       // number `docs/greeks.md` §1 calls the most dangerous on the screen: the
@@ -659,28 +708,287 @@ export function boxGreekRows(
       value: money(g.thetaPerDay),
       note:
         g.thetaPerDay > 0
-          ? `Positive — waiting pays you while the price sits in your box. Over the duel's ${DUEL_WINDOW.tape}s tape, ${money(perTape)}.`
-          : `Waiting costs you: ${money(perTape)} over the duel's ${DUEL_WINDOW.tape}s tape.`,
+          ? `Waiting pays you. Over the duel's ${DUEL_WINDOW.tape}s tape, ${money(perTape)}.`
+          : `Waiting costs you. Over the duel's ${DUEL_WINDOW.tape}s tape, ${money(perTape)}.`,
       source: "model",
     },
     {
-      key: "vega",
-      label: "VEGA · PER IV POINT",
-      value: money(g.vegaPerPoint),
+      // One row, two figures, and the same reason `PREMIUM · MAX LOSS` is one
+      // row: they answer one question between them — what the *market*
+      // changing does to this position, as against what the *price* does. It
+      // is also what pays for the chance and the payoff sketch above without
+      // pushing this panel back over the 900px cap `c97c600` fought to get
+      // under. Both keep their own unit in the value, because a bare
+      // `0.000318 · $0.0196` would be two numbers in one units-free blur.
+      key: "gammaVega",
+      label: "GAMMA · VEGA",
+      value: `Γ ${sign(g.gamma)}${fine(Math.abs(g.gamma))} · Ν ${money(g.vegaPerPoint)}/pt`,
       note:
-        g.vegaPerPoint < 0
-          ? "Negative: more expected movement makes your box worth less."
-          : "What one point of implied volatility is worth, either way.",
+        g.gamma < 0
+          ? "Movement hurts, stillness helps — and so does calmer vol."
+          : "How fast the delta moves, and what an IV point is worth.",
       source: "model",
     },
     {
       key: "iv",
       label: "IMPLIED VOL",
       value: `${pct(vol)} · 4-leg mean`,
-      note: `The venue's smile here runs ${money(span[0])}–${money(span[1])}; each leg took its nearest listed strike. It is the input the four above need.`,
+      // Three lines became one. "It is the input the four above need" was a
+      // restatement of what the `model` tags already say, and the smile's
+      // extent is the fact worth the pixels — it is what decides whether this
+      // box gets figures at all.
+      note: `Nearest listed strike per leg, across ${money(span[0])}–${money(span[1])}.`,
       source: "derived",
     },
   ];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The two figures a condor trader reads first
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The two prices either side of which a long box stops being worth what it
+ * cost — the outer strikes moved **in** by the premium.
+ *
+ * The arithmetic is one line and it is the whole of it. A long call condor pays
+ * `S − K1` across the lower wing, `K2 − K1` flat across the band, `K4 − S`
+ * across the upper wing and nothing outside; net of a premium `P` paid up
+ * front, the profile crosses zero at `K1 + P` and at `K4 − P`. Both crossings
+ * are real, and a screen that prints one of them prints half a position: below
+ * the lower and above the upper the box lost money, and *between* them it made
+ * some — a wider region than the band the player drew, and the one they are
+ * actually betting on.
+ *
+ * `null` without a premium, and that is not a shortcoming to apologise for: a
+ * breakeven is defined by what was paid, so with nothing paid there is no
+ * boundary to state. It is the same absence the premium row carries, said once.
+ *
+ * The strikes are the **position's** — the maker's four on a matched zone, the
+ * player's four on a drawn box — for the reason `positionEconomics` gives at
+ * length in `src/views/BoxBuilder.tsx`: the numerator and the denominator of
+ * any figure on this panel have to be two facts about one contract.
+ */
+export function boxBreakevens(
+  strikes: readonly [number, number, number, number],
+  premiumPerContract: number | null,
+): { readonly lower: number; readonly upper: number } | null {
+  if (premiumPerContract === null || !(premiumPerContract > 0)) return null;
+  const lower = strikes[0] + premiumPerContract;
+  const upper = strikes[3] - premiumPerContract;
+  if (!Number.isFinite(lower) || !Number.isFinite(upper)) return null;
+  // A premium wider than the wings would cross the two breakevens over each
+  // other, which is not a position anybody holds — it is a quote that costs
+  // more than the structure can ever pay. Refused rather than printed
+  // backwards.
+  if (!(upper > lower)) return null;
+  return { lower, upper };
+}
+
+/**
+ * The risk-neutral chance the price finishes **between the inner strikes** —
+ * inside the flat top, where the box pays in full.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IT IS, AND THE THREE THINGS IT IS NOT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Under the same lognormal every other figure here is priced with, `N(d2(K))`
+ * is the risk-neutral probability of finishing **above** `K`. So the chance of
+ * landing between the two inner strikes is `N(d2(floor)) − N(d2(ceiling))`, and
+ * every input is one already on the panel: the two inner strikes, the live
+ * spot, the mean of the four legs\' published vols, and the time left.
+ *
+ *  1. **It is not the venue\'s.** Nothing on this book publishes it. It is
+ *     Black–Scholes on the venue\'s smile and it is tagged `model` for the same
+ *     reason the greeks are (`docs/greeks.md` §7).
+ *  2. **It is not a forecast, and it is not "your odds".** A risk-neutral
+ *     probability is the market\'s *pricing* measure, not anybody\'s belief about
+ *     where the price will go. It is the right number to hold against the
+ *     premium and the wrong number to read as a promise.
+ *  3. **It is not the chance of making money.** It is the chance of the *full*
+ *     payout region only. The wings pay something on the way in, so the chance
+ *     of finishing merely **ahead** is wider — that is what the two breakevens
+ *     are for, and they sit on the row below.
+ *
+ * `null` on any missing input, which is the ordinary reading on an expiry the
+ * venue quoted no vol for. The row then dashes with the same reason the greeks
+ * dash with, because it is the same missing input.
+ *
+ * The vol is the **4-leg mean**, deliberately the identical figure the IV row
+ * prints. A smile-aware version — the floor\'s own vol on the floor term, the
+ * ceiling\'s on the ceiling term — is arguably better arithmetic and is
+ * certainly worse disclosure: two numbers on one panel that are both called
+ * "the vol" and are not the same vol is how a reader stops being able to check
+ * anything.
+ */
+export function bandChance(input: {
+  /** `strikes[1]` — the bottom of the flat top. */
+  floor: number;
+  /** `strikes[2]` — the top of it. */
+  ceiling: number;
+  spot: number | null;
+  /** The 4-leg mean the IV row prints, as a fraction. */
+  vol: number;
+  years: number;
+}): number | null {
+  const { floor, ceiling, spot, vol, years } = input;
+  if (spot === null || !(spot > 0)) return null;
+  if (!(floor > 0) || !(ceiling > floor)) return null;
+  const lo = d1d2(spot, floor, vol, years);
+  const hi = d1d2(spot, ceiling, vol, years);
+  if (lo === null || hi === null) return null;
+  const p = normCdf(lo.d2) - normCdf(hi.d2);
+  return Number.isFinite(p) && p >= 0 && p <= 1 ? p : null;
+}
+
+/**
+ * How far the price has to travel to reach one strike, as a signed fraction of
+ * spot. `null` without a spot, because a distance from nothing is nothing.
+ */
+export function fromSpot(strike: number, spot: number | null): number | null {
+  if (spot === null || !(spot > 0) || !Number.isFinite(strike)) return null;
+  return (strike - spot) / spot;
+}
+
+/**
+ * `−40.5% · −12.8% · +15.0% · +42.7%` — the four strikes as distances the
+ * price has to cover before the position changes character.
+ *
+ * The form a trader compares boxes in: dollars are only meaningful against one
+ * underlying at one moment, and per cent is meaningful across both and across
+ * the whole board. Empty string with no spot, and the caller falls back to
+ * prose rather than printing a distance from nothing.
+ */
+export function strikeDistances(strikes: readonly number[], spot: number | null): string {
+  if (spot === null || !(spot > 0)) return "";
+  return strikes
+    .map((k) => {
+      const f = fromSpot(k, spot);
+      if (f === null) return DASH;
+      return `${f > 0 ? "+" : f < 0 ? MINUS : ""}${pct(Math.abs(f))}`;
+    })
+    .join(" · ");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The shape, drawn — because for a condor the shape IS the instrument
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The sketch\'s own coordinate box. Small on purpose: it is a *sketch*, and a
+ *  chart big enough to read a price off would be claiming a precision four
+ *  strikes and one premium do not have. */
+export const SKETCH_W = 300;
+export const SKETCH_H = 40;
+
+/**
+ * The geometry of one box\'s expiry payoff, in {@link SKETCH_W}×{@link SKETCH_H}
+ * viewBox units.
+ *
+ * `src/desk/payoff.ts` was read first, as instructed, and its `payoff()` really
+ * is general over legs. What is **not** reusable is `buildPayoffChart`: it is a
+ * frozen fixture of one hardcoded ETH structure on a hardcoded 3,200–5,200
+ * axis, with 81 samples, a stats strip and grid labels, and
+ * `test/engine.test.ts` pins it byte for byte. Sampling 81 points to rediscover
+ * five vertices whose positions are already known exactly would also be the
+ * wrong arithmetic: a condor\'s expiry payoff is piecewise linear with its
+ * breaks **at the strikes**, so the polyline *is* those points and nothing here
+ * is approximated.
+ */
+export interface PayoffSketch {
+  /** The payoff polyline, `M…L…`. */
+  path: string;
+  /** The same line closed down to the baseline, for a soft fill. */
+  fill: string;
+  /** Where zero sits. On an unpriced box that is the baseline itself. */
+  zeroY: number;
+  /** The four strikes\' x positions, ascending. */
+  strikeX: readonly [number, number, number, number];
+  /** Spot\'s x, or `null` when there is no spot or it is off this window. */
+  spotX: number | null;
+  /** Which way spot ran off, when it did — so the view can point out of the
+   *  frame rather than park a line on the edge and call it a price. The same
+   *  rule, and the same reason, as `spotOnScale` in `src/desk/payoff.ts`. */
+  spotOff: "left" | "right" | null;
+  /** The two breakevens\' x positions, or `null` when nothing has priced it. */
+  breakevenX: readonly [number, number] | null;
+  /** `true` once a premium has shifted the profile down — i.e. once the zero
+   *  line means something. */
+  priced: boolean;
+}
+
+/**
+ * The sketch for four strikes and, when one exists, a premium.
+ *
+ * The window runs one wing beyond each outer strike, so both flat tails are
+ * visible and the thing reads as a box rather than as a triangle running off
+ * the edge. Spot is drawn only when it falls inside that window; outside it the
+ * view is told which way it went and draws an edge marker, because a line
+ * clamped to the frame is a price claim nobody made.
+ *
+ * **Unpriced, the profile is the gross payoff and the baseline is zero.** That
+ * is arithmetic on the strikes and nothing else — no premium is assumed and no
+ * breakeven is drawn — and the shape the player just drew is still shown, which
+ * is the whole reason a sketch earns its place on a panel whose money rows are
+ * usually dashes.
+ */
+export function condorSketch(input: {
+  strikes: readonly [number, number, number, number];
+  spot: number | null;
+  premiumPerContract: number | null;
+}): PayoffSketch | null {
+  const [k1, k2, k3, k4] = input.strikes;
+  if (![k1, k2, k3, k4].every((k) => Number.isFinite(k) && k > 0)) return null;
+  if (!(k2 > k1) || !(k3 >= k2) || !(k4 > k3)) return null;
+
+  const premium =
+    input.premiumPerContract !== null && input.premiumPerContract > 0
+      ? input.premiumPerContract
+      : 0;
+  const priced = premium > 0;
+
+  // One wing of air either side. `k2 - k1` and `k4 - k3` are equal on a
+  // well-formed box and are not assumed to be: each side takes its own wing, so
+  // a lopsided structure still frames itself.
+  const lo = k1 - (k2 - k1);
+  const hi = k4 + (k4 - k3);
+  const span = hi - lo;
+  if (!(span > 0)) return null;
+
+  const top = k2 - k1 - premium; // the flat top, net of what was paid
+  const bottom = -premium; // both tails
+  const range = top - bottom;
+  if (!(range > 0)) return null;
+
+  const X = (s: number) => ((s - lo) / span) * SKETCH_W;
+  // A pixel of room top and bottom, so a flat tail is not drawn on the viewBox
+  // edge where half its stroke would be clipped away.
+  const Y = (v: number) => SKETCH_H - 1 - ((v - bottom) / range) * (SKETCH_H - 2);
+  const r = (n: number) => Number(n.toFixed(1));
+
+  const pts: [number, number][] = [
+    [X(lo), Y(bottom)],
+    [X(k1), Y(bottom)],
+    [X(k2), Y(top)],
+    [X(k3), Y(top)],
+    [X(k4), Y(bottom)],
+    [X(hi), Y(bottom)],
+  ];
+  const path = "M" + pts.map(([x, y]) => `${r(x)},${r(y)}`).join("L");
+
+  const spot = input.spot;
+  const onScale = spot !== null && spot > 0 && spot >= lo && spot <= hi;
+  const be = boxBreakevens(input.strikes, priced ? premium : null);
+
+  return {
+    path,
+    fill: `${path}L${r(X(hi))},${r(Y(bottom))}L${r(X(lo))},${r(Y(bottom))}Z`,
+    zeroY: r(Y(0)),
+    strikeX: [r(X(k1)), r(X(k2)), r(X(k3)), r(X(k4))],
+    spotX: onScale ? r(X(spot as number)) : null,
+    spotOff: spot === null || !(spot > 0) || onScale ? null : (spot as number) < lo ? "left" : "right",
+    breakevenX: be === null ? null : [r(X(be.lower)), r(X(be.upper))],
+    priced,
+  };
 }
 
 /** `"58.2%"` → `0.582`; anything not written in percent → `null`. The `%` is

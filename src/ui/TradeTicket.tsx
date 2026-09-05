@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { sx, sxWith } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
-import { DASH, type Ticket, type TicketSource } from "../desk/ticket.ts";
+import {
+  DASH,
+  SKETCH_H,
+  SKETCH_W,
+  type PayoffSketch,
+  type Ticket,
+  type TicketSource,
+} from "../desk/ticket.ts";
 
 /**
  * The trade ticket, as a surface — one panel, and the three ways to open it.
@@ -20,6 +27,24 @@ import { DASH, type Ticket, type TicketSource } from "../desk/ticket.ts";
  * than a help bubble: the contract first, the money second, the greeks third,
  * one clause of explanation each. `src/desk/ticket.ts` builds the content and
  * decides what may honestly be said; this file only puts it on screen.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * TWO THINGS THAT ARE NOT ROWS
+ * ────────────────────────────────────────────────────────────────────────────
+ * {@link PayoffSketchSvg} draws the position’s expiry payoff, and it is on a
+ * box’s ticket only. A vanilla’s payoff is a hockey stick everybody already
+ * pictures; a four-strike box is a shape most people have never seen, and for
+ * that instrument the shape *is* the instrument. It is also the cheapest thing
+ * here in words — it shows what "tapering across each wing" means instead of
+ * saying it.
+ *
+ * {@link TicketLegend} is the key to the provenance chips, under the rows they
+ * explain. The owner looked at a `venue` chip and a `derived` chip and asked
+ * what they were, which is the label failing rather than the reader — and a
+ * chip on this panel has nowhere to put its own hover, because the panel takes
+ * no pointer unless it is pinned. So the key sits in place, it shows the real
+ * chips rather than describing them, and it lists only the speakers this
+ * particular ticket used.
  *
  * ────────────────────────────────────────────────────────────────────────────
  * THE INTERACTION, AND WHY EACH PART
@@ -97,12 +122,18 @@ const FLIP_MARGIN = TICKET_W + GAP + 8;
 /**
  * The tallest a ticket may be, in pixels.
  *
- * A full live ticket is thirteen rows with a clause each, which lands around
- * 830px. This is the ceiling for the window that has room; a shorter window
- * gets `vh - 16` instead and the panel scrolls. It is computed rather than left
- * to CSS because the *placement* has to know it: a panel top-aligned with a
- * card two thirds down the page and then clipped at the fold would put the
- * greeks off screen with no way to reach them.
+ * The tallest ticket there is, measured rather than guessed, is a fully priced
+ * box whose four legs all fall inside the venue's published smile: banner,
+ * payoff sketch, eleven rows, the provenance legend and three footer lines. It
+ * lands just under this. A live parlay card is a good deal shorter.
+ *
+ * The budget is real and it bites — the chance, both breakevens and the sketch
+ * were paid for by cutting words and by merging `GAMMA · VEGA` onto one row,
+ * not by raising it. This is the ceiling for a window that has room; a shorter
+ * window gets `vh - 16` instead and the panel scrolls. It is computed rather
+ * than left to CSS because the *placement* has to know it: a panel top-aligned
+ * with a card two thirds down the page and then clipped at the fold would put
+ * the greeks off screen with no way to reach them.
  */
 const TICKET_MAX_H = 900;
 
@@ -154,15 +185,224 @@ export const TICKET_ACCENT: Record<Ticket["state"], string> = {
   note: C.muted,
 };
 
-/** What a provenance tag says and what colour it says it in. The words are
- *  short because they ride beside a number, and they are never abbreviations a
- *  reader has to expand: "venue" and "model" are the two facts. */
+/**
+ * What a provenance tag says, and what colour it says it in.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * "WHAT ARE THESE VENUE AND DERIVED THINGS?"
+ * ──────────────────────────────────────────────────────────────────────────────
+ * The owner’s own question, and it is the label failing rather than the reader.
+ * `derived` is a word this repo taught itself; nobody arrives knowing that it
+ * means "arithmetic on the venue’s numbers, no model" while `model` means
+ * "Black–Scholes on the venue’s published vol".
+ *
+ * Two changes, and the provenance is not one of them — the whole reason these
+ * exist is `docs/reality-check.md`’s eight money bugs, every one of them a
+ * number that meant something other than what it claimed:
+ *
+ *  1. **`derived` is now `arithmetic`**, which is what it has always been, in a
+ *     word a first-time reader already owns. And it wears the same blue
+ *     `model` does, because the split that decides anything is *who said it*:
+ *     one of these is the book’s and the other two are ours.
+ *  2. **{@link TicketLegend} says so under the rows**, in ten words, with the
+ *     real chips in it rather than a description of them. A tag on this panel
+ *     cannot carry its own hover — the panel is `pointer-events:none` unless
+ *     it is pinned — so the explanation has to sit in place, and in place it
+ *     has to be short.
+ *
+ * The four-way distinction survives underneath in `data-ticket-source`, which
+ * is what the honesty tests read: `arithmetic` and `model` are still not the
+ * same claim, and a reader who wants to know which is which can see it in the
+ * word.
+ */
 export const SOURCE_TAG: Record<TicketSource, { label: string; color: string }> = {
   venue: { label: "venue", color: C.green },
   model: { label: "model", color: C.blue },
-  derived: { label: "derived", color: C.muted },
+  derived: { label: "arithmetic", color: C.blue },
   game: { label: "game", color: C.amber },
 };
+
+/** The legend’s own words, one per speaker. Short enough to ride under a
+ *  column of figures, and each one is a sentence about *who*, never about what
+ *  a greek is. */
+export const SOURCE_LEGEND: readonly {
+  readonly sources: readonly TicketSource[];
+  readonly says: string;
+}[] = [
+  { sources: ["venue"], says: "the book’s own figure" },
+  { sources: ["model", "derived"], says: "worked out here, never quoted" },
+  { sources: ["game"], says: "this build’s own fixture" },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The shape, and the key to it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The box's payoff at expiry, drawn — four strikes, the flat top, two wings,
+ * spot marked.
+ *
+ * Every serious option screen has one, and on a four-strike structure it is not
+ * decoration: a player who has read `INSTRUMENT · STRIKES $2,410 · 2,480 ·
+ * 2,550 · 2,620` has four numbers, and a player who has seen this has the
+ * instrument. It is also the cheapest thing on the panel in words — it replaces
+ * a sentence about tapering wings with a picture of one.
+ *
+ * The geometry is {@link PayoffSketch}, computed in `src/desk/ticket.ts`, and
+ * this file draws it and nothing else. Two rules it inherits from there and
+ * must not soften:
+ *
+ *  - **Unpriced, the zero line is not drawn and no breakeven is marked.** The
+ *    profile is then the gross payoff — arithmetic on the strikes — and a zero
+ *    line on it would be asserting a premium nobody has quoted.
+ *  - **Spot is drawn only where spot is.** Off the window, it becomes an arrow
+ *    at the edge pointing out of the frame rather than a line parked on it.
+ *    `spotOnScale` in `src/desk/payoff.ts` learned this the expensive way.
+ *
+ * `preserveAspectRatio="none"` stretches the 300-unit box to whatever width the
+ * panel gives it, and every stroke carries `vector-effect="non-scaling-stroke"`
+ * so the horizontal stretch cannot thin the lines.
+ */
+export function PayoffSketchSvg({ s, accent }: { s: PayoffSketch; accent: string }) {
+  return (
+    <svg
+      data-ticket-sketch={s.priced ? "priced" : "gross"}
+      viewBox={`0 0 ${SKETCH_W} ${SKETCH_H}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height={SKETCH_H}
+      role="img"
+      aria-label="Payoff at expiry"
+      style={sx("display:block;overflow:visible")}
+    >
+      <path d={s.fill} fill={`${accent}1f`} stroke="none" />
+      {/* Only where a premium has put it somewhere meaningful. */}
+      {s.priced && (
+        <line
+          x1="0"
+          x2={SKETCH_W}
+          y1={s.zeroY}
+          y2={s.zeroY}
+          stroke={C.faint}
+          strokeWidth="1"
+          strokeDasharray="2 3"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      {s.strikeX.map((x, i) => (
+        <line
+          key={`k${i}`}
+          x1={x}
+          x2={x}
+          y1="0"
+          y2={SKETCH_H}
+          stroke={C.line}
+          strokeWidth="1"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      <path
+        d={s.path}
+        fill="none"
+        stroke={accent}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+      {(s.breakevenX ?? []).map((x, i) => (
+        <line
+          key={`b${i}`}
+          data-ticket-breakeven-mark=""
+          x1={x}
+          x2={x}
+          y1={s.zeroY - 4}
+          y2={s.zeroY + 4}
+          stroke={C.amber}
+          strokeWidth="1.5"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {s.spotX !== null && (
+        <line
+          data-ticket-spot-mark="on"
+          x1={s.spotX}
+          x2={s.spotX}
+          y1="0"
+          y2={SKETCH_H}
+          stroke={C.text}
+          strokeWidth="1"
+          strokeDasharray="3 2"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      {/* Off the window: an arrow out of the frame, never a line clamped to
+          the edge — the edge is not where the price is. */}
+      {s.spotOff !== null && (
+        <path
+          data-ticket-spot-mark={s.spotOff}
+          d={
+            s.spotOff === "left"
+              ? `M6,${SKETCH_H / 2}L13,${SKETCH_H / 2 - 4}L13,${SKETCH_H / 2 + 4}Z`
+              : `M${SKETCH_W - 6},${SKETCH_H / 2}L${SKETCH_W - 13},${SKETCH_H / 2 - 4}L${SKETCH_W - 13},${SKETCH_H / 2 + 4}Z`
+          }
+          fill={C.text}
+        />
+      )}
+    </svg>
+  );
+}
+
+/**
+ * What the tags mean, in place, in ten words.
+ *
+ * The owner read a `venue` chip and an `arithmetic` chip and could not tell
+ * what either claimed — and a tag on this panel has nowhere to put its own
+ * hover, because the panel takes no pointer unless it is pinned. So the key
+ * sits under the figures it explains, it shows the **real chips** rather than
+ * describing them, and it lists only the speakers this particular ticket
+ * actually used: a ticket with no game figure on it does not explain `game`.
+ *
+ * It is a key, not a lesson. What a `model` figure *is* belongs in the row's
+ * own clause and in `docs/greeks.md`; what the chip beside it *asserts* belongs
+ * here, and is five words per speaker.
+ */
+export function TicketLegend({ sources }: { sources: readonly TicketSource[] }) {
+  const present = new Set(sources);
+  const lines = SOURCE_LEGEND.map((entry) => ({
+    ...entry,
+    shown: entry.sources.filter((s) => present.has(s)),
+  })).filter((entry) => entry.shown.length > 0);
+  if (lines.length === 0) return null;
+  return (
+    <div
+      data-ticket-legend=""
+      style={sx(
+        `margin-top:9px;padding-top:8px;border-top:1px solid ${C.line};display:grid;gap:4px`,
+      )}
+    >
+      {lines.map((entry) => (
+        <div
+          key={entry.says}
+          style={sx("display:flex;align-items:center;gap:5px;flex-wrap:wrap")}
+        >
+          {entry.shown.map((src) => (
+            <span
+              key={src}
+              data-ticket-legend-tag={src}
+              style={sx(
+                `font:500 8px/1 ${MONO};letter-spacing:.1em;color:${SOURCE_TAG[src].color};` +
+                  `border:1px solid ${SOURCE_TAG[src].color}44;border-radius:4px;padding:2px 4px`,
+              )}
+            >
+              {SOURCE_TAG[src].label}
+            </span>
+          ))}
+          <span style={sx(`font:400 9.5px/1.35 ${SANS};color:${C.muted}`)}>{entry.says}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The panel
@@ -224,8 +464,26 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
         </div>
       ))}
 
+      {/* The shape, above the figures that describe it. A condor is the one
+          instrument on this app whose payoff nobody can picture from its
+          strikes, and the drawing costs 46 pixels against the sentence about
+          tapering wings it lets the rows drop. */}
+      {t.sketch && (
+        <div style={sx("margin-top:9px")}>
+          <PayoffSketchSvg s={t.sketch} accent={accent} />
+          <div
+            data-ticket-sketch-key=""
+            style={sx(`margin-top:3px;font:400 9px/1.3 ${MONO};color:${C.faint}`)}
+          >
+            {t.sketch.priced
+              ? "payoff at expiry · dashed spot · amber breakevens"
+              : "payoff at expiry · dashed spot · before premium"}
+          </div>
+        </div>
+      )}
+
       {t.rows.length > 0 && (
-      <div style={sx("margin-top:8px;display:flex;flex-direction:column;gap:7px")}>
+      <div style={sx("margin-top:8px;display:flex;flex-direction:column;gap:5px")}>
         {t.rows.map((row) => {
           const tag = row.source === null ? null : SOURCE_TAG[row.source];
           const absent = row.value === DASH;
@@ -262,7 +520,7 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
               >
                 {row.value}
               </div>
-              <div style={sx(`font:400 9.5px/1.4 ${SANS};color:${C.muted};text-wrap:pretty`)}>
+              <div style={sx(`font:400 9.5px/1.35 ${SANS};color:${C.muted};text-wrap:pretty`)}>
                 {row.note}
               </div>
             </div>
@@ -270,6 +528,16 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
         })}
       </div>
       )}
+
+      {/* The key to the chips above, and only for the chips that are up
+          there. A field note has no figures and therefore no tags, so it
+          renders nothing here — a legend explaining vocabulary the panel never
+          used is the same clutter in a smaller font. */}
+      <TicketLegend
+        sources={t.rows
+          .map((row) => row.source)
+          .filter((src): src is TicketSource => src !== null)}
+      />
 
       {/* Both blocks are guarded rather than left to render empty: a field note
           has neither rows nor footer, and an unguarded footer would draw its
