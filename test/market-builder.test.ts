@@ -1474,6 +1474,71 @@ describe("the quote line", () => {
   });
 });
 
+// ─── the row's own settlement date ───────────────────────────────────────────
+
+/**
+ * `PricingRow.expirySec` — the last year-shaped hole in the chain table's key.
+ *
+ * `rowKey` (`src/views/Parlay.tsx`) was `` `${type}-${strike}-${expiry}` `` and
+ * merged two real BTC contracts in the frozen capture; the fix keyed the exact
+ * half off `order.order.expiry`, the settlement date in unix seconds that rides
+ * on the resting ask. A **display-only** row — built from bids or MM pricing
+ * alone, with no `order` — has no such field, so its key still ends in the
+ * printed `"5 SEP"`, which carries no year.
+ *
+ * It cannot cost a fill: `slipRows` drops rows with no `order` and no `+ SLIP`
+ * is rendered for them. It can collide two React keys, and it is one `preview`
+ * field away from mattering — which is a fact held in the wrong place, not a
+ * risk worth carrying. The date is now on the row itself, for every row.
+ */
+describe("every row carries its own settlement date, in seconds", () => {
+  const rows = (): PricingRow[] => Object.values(snap.pricing).flat();
+
+  test("the fixture really does have display-only rows, or this says nothing", () => {
+    const orphans = rows().filter((r) => r.order === undefined);
+    expect(orphans.length).toBeGreaterThan(0);
+    // The printed label is the thing that cannot tell two years apart, and the
+    // fixture's rows really do print it without one.
+    for (const r of orphans) expect(r.expiry).not.toMatch(/\d{4}/);
+  });
+
+  test("a display-only row carries the year its label drops", () => {
+    for (const row of rows().filter((r) => r.order === undefined)) {
+      expect(typeof row.expirySec).toBe("number");
+      expect(new Date(row.expirySec! * 1000).getUTCFullYear()).toBeGreaterThan(2000);
+    }
+  });
+
+  test("where there is a resting ask, the two readings of the date agree", () => {
+    // Two sources for one fact is how they start disagreeing. The row's field
+    // and the order's are the same number by construction — the level holds one
+    // `optionExpiry` and both are read off it — and this is what says so.
+    const fillable = rows().filter((r) => r.order !== undefined);
+    expect(fillable.length).toBeGreaterThan(0);
+    for (const row of fillable) {
+      expect(row.expirySec).toBe(Number(row.order!.order.expiry));
+    }
+  });
+
+  test("the seconds separate what the label merges", () => {
+    // Same printed `expiry` string, more than one settlement date behind it —
+    // the collision the key would make, if the capture ever holds one. Asserted
+    // as an implication rather than as a found pair, so it keeps meaning
+    // something when the fixture is recaptured.
+    const byLabel = new Map<string, Set<number | undefined>>();
+    for (const row of rows()) {
+      const seen = byLabel.get(row.expiry) ?? new Set();
+      seen.add(row.expirySec);
+      byLabel.set(row.expiry, seen);
+    }
+    for (const [label, seconds] of byLabel) {
+      // Never `0`, and never absent-in-a-crowd: a row with no date at all would
+      // key as one, and two of them under one label would merge again.
+      for (const sec of seconds) expect(sec, label).toBeGreaterThan(0);
+    }
+  });
+});
+
 // ─── the arena's premium ─────────────────────────────────────────────────────
 
 describe("the ladder's zone quote", () => {

@@ -532,7 +532,18 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     // ordinary BTC level. It used to read `4_300_000_000_000_000n` and be
     // called 18dp; the rendered figure below is unchanged, the input is now the
     // number the SDK would have produced.
-    const fake = withBook(() => ({ numContracts: 4_300n, totalCollateral: 999_999n }));
+    //
+    // `pricePerContract` is that $232.56 at 8dp, and it is here because the
+    // preview's `collateral` is now computed from it rather than read off
+    // `totalCollateral`. `totalCollateral` is deliberately left at a value that
+    // is NOT the answer — 999_999n, i.e. $1.00 — so this test would still fail
+    // if the field were read back. 4_300 × 23_256_000_000 / 1e8 = 1_000_008
+    // micro-USDC, which renders "1.00": the same figure, off the right number.
+    const fake = withBook(() => ({
+      numContracts: 4_300n,
+      totalCollateral: 999_999n,
+      pricePerContract: 23_256_000_000n,
+    }));
     const env = await createMarketService({ client: fake.client }).snapshot();
 
     expect(env.ok).toBe(true);
@@ -542,11 +553,12 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     // curried `zoneQuote`, and only for the orders the registry names RANGER.
     // Two of those in the frozen capture.
     expect(fake.seen).toHaveLength(env.orders.length + 2);
-    // ...and this fake answers only the two fields the desk reads, so the arena
-    // gets no premium from it. Absence, not a derived one: `totalCollateral /
-    // numContracts` off rendered strings is the rounding trap `ZoneQuote` was
-    // added to avoid.
-    expect(env.ladder.orders.filter((o) => o.quote !== undefined)).toHaveLength(0);
+    // The same `pricePerContract` reaches the arena, verbatim, off the same
+    // call — one price, two shapes, and neither derived from the other. This
+    // fake used to answer only the two fields the desk read and the zones came
+    // back unquoted; the desk now needs the price too, so the two surfaces
+    // agree here by construction rather than by coincidence.
+    expect(env.ladder.orders.filter((o) => o.quote !== undefined)).toHaveLength(2);
     // $1.00 in USDC 6dp, and our referrer on every one — the same attribution
     // string P3's fill will carry.
     for (const call of fake.seen) expect(call).toEqual({ usdc: 1_000000n, referrer: "0xReferrer" });
@@ -555,6 +567,65 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
       collateral: "1.00", //  6dp
       fillable: true,
     });
+  });
+
+  test("no price, no cost — the preview is absent rather than a dollar we cannot back", async () => {
+    // `totalCollateral` is the notional we asked for, echoed back: the SDK caps
+    // `numContracts` at the maker's remaining collateral and then returns
+    // `usdcAmount ?? numContracts * price / 1e8`, so with a notional named — and
+    // we always name one — the cost field answers our $1.00 whatever the cap
+    // did. `pricePerContract` is the only thing either surface can compute a
+    // real cost from.
+    //
+    // This fake is the one that used to ship a quote line reading `$1.00 buys
+    // 0.0043 contracts` with no price behind either half of it. Both surfaces
+    // now answer by absence, which is the same "not quoted" every other miss in
+    // this file collapses to — not a zero, which reads as free, and not the
+    // echo, which reads as a price.
+    const fake = withBook(() => ({ numContracts: 4_300n, totalCollateral: 999_999n }));
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    // Non-vacuity: the call was made for every row, and every row declined it.
+    expect(fake.seen.length).toBeGreaterThan(0);
+    for (const row of env.orders) expect(row.preview).toBeUndefined();
+    expect(env.ladder.orders.filter((o) => o.quote !== undefined)).toHaveLength(0);
+  });
+
+  test("the cost is the capped fill's, not the notional the request named", async () => {
+    // The bug, in its own test, at the one input that separates the two
+    // readings: a maker whose remaining collateral will sell only a tenth of
+    // what a dollar would buy. `numContracts` comes back capped at 430 — 0.0004
+    // contracts — while `totalCollateral` still answers the whole $1.00 we
+    // asked for, because that is the argument we passed and the SDK hands it
+    // straight back.
+    //
+    // 430 × 23_256_000_000 / 1e8 = 100_000 micro-USDC, so the honest line is
+    // `$0.10 buys 0.0004 contracts`. Printing `1.00` beside `0.0004` claims a
+    // price ten times the one the order rests at.
+    const fake = withBook(() => ({
+      numContracts: 430n,
+      totalCollateral: 1_000000n,
+      pricePerContract: 23_256_000_000n,
+    }));
+    const env = await createMarketService({ client: fake.client }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.orders[0]?.preview).toEqual({
+      contracts: "0.0004",
+      collateral: "0.10",
+      fillable: true,
+    });
+    // Spelled out, so the assertion above cannot be read as trivially true:
+    // the rendered cost is NOT the notional we asked for, which is what the
+    // field used to be. (The price is deliberately not recovered from the two
+    // printed figures — `0.10 / 0.0004` is $250, not $232.56. That division is
+    // the rounding trap `zoneQuoter`'s docstring exists to warn about, and it
+    // is why the premium a player is quoted comes off `pricePerContract` and
+    // never off this pair.)
+    expect(env.orders[0]?.preview?.collateral).not.toBe("1.00");
   });
 
   test("a listed zone carries pricePerContract, verbatim, as its premium", async () => {
@@ -589,7 +660,11 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
     // Depth on Base swung from 426 resting orders to 130 inside a day. "This
     // order will not absorb a dollar" is an ordinary reading; the row greys out
     // and says so.
-    const fake = withBook(() => ({ numContracts: 0n, totalCollateral: 0n }));
+    const fake = withBook(() => ({
+      numContracts: 0n,
+      totalCollateral: 0n,
+      pricePerContract: 23_256_000_000n,
+    }));
     const env = await createMarketService({ client: fake.client }).snapshot();
 
     expect(env.ok).toBe(true);
@@ -609,7 +684,7 @@ describe("previewFillOrder is called server-side, at $1.00, with the referrer", 
         first = false;
         throw new Error("ORDER_EXPIRED");
       }
-      return { numContracts: 2n, totalCollateral: 2n };
+      return { numContracts: 2n, totalCollateral: 2n, pricePerContract: 23_256_000_000n };
     });
     const env = await createMarketService({ client: fake.client }).snapshot();
 

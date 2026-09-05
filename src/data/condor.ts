@@ -382,9 +382,12 @@ export function condorEconomics(
  * The two callers to check when reading this. `zoneEconomics`
  * (`src/data/ranger.ts`) passes `zoneQuote`, which is `previewFillOrder`'s
  * `pricePerContract` — per contract, correct. `boxEconomics`
- * (`src/desk/boxauction.ts`) passes `offerPremiumUsd`, which is a decrypted
+ * (`src/desk/boxauction.ts`) holds `offerPremiumUsd`, which is a decrypted
  * offer's whole `offerAmount` in dollars — a **position total**, and the same
- * number as the per-contract one only while the position is one contract.
+ * number as the per-contract one only while the position is one contract. It
+ * used to hand that straight over, which double-counted the size on any request
+ * bigger than one; it now divides by its own `numContracts` first, and says at
+ * its own definition why the division lives there and not in `offerPremiumUsd`.
  *
  * @param wing        Wing width in dollars. The maximum per contract.
  * @param zone        The inner band, in dollars, for the `$2,600 – $2,750` line.

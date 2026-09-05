@@ -131,11 +131,13 @@ export function Result(p: ResultProps) {
                 <span style={sx(`font:500 12px/1 ${MONO};color:${C.muted}`)}>{v.scoreLine}</span>
               </div>
               {/* The largest number on this screen, and the one nobody is paid.
-                  `prizeLabel` is `state/match.ts`'s `"4.80 ETH"` off a seeded
+                  `prizeLabel` is `state/match.ts`'s `"4.80 Ξ"` off a seeded
                   `LobbyDef.prize`; what actually moved is the PTS figure two
                   rows down, which is counted out and banked. A visitor with no
                   wallet and every flag off reached here reading that someone
-                  "takes the pool — 4.80 ETH", so the clause the box arena says
+                  "takes the pool — 4.80 ETH" — the unit was spelled out as a
+                  word then, and is now the same `Ξ` the board card prints for
+                  the same number — so the clause the box arena says
                   about its own stake is said here too, next to the figure it is
                   about. `NOTIONAL_POOL_LINE` is the board card's and the room's
                   line: one statement about the pool, from the lobby list to the

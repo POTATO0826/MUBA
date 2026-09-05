@@ -578,12 +578,20 @@ export interface MarketClient {
       totalCollateral: bigint;
       /**
        * `order.price`, 8dp — the third of the ten fields the shipped
-       * `previewFillOrder` returns, and the arena's premium (`ZoneQuote`).
+       * `previewFillOrder` returns, the arena's premium (`ZoneQuote`), **and
+       * now the desk's cost too**.
        *
        * Optional here rather than required, because the fakes in
-       * `test/market-route.test.ts` predate the arena and answer the two fields
-       * the desk reads. A quoter that cannot see it says so by absence, which
-       * is the same "not quoted" every other miss collapses to.
+       * `test/market-route.test.ts` predate the arena and answered the two
+       * fields the desk read. A quoter that cannot see it says so by absence,
+       * which is the same "not quoted" every other miss collapses to.
+       *
+       * That absence used to cost only the arena's `zoneQuote`. It now costs
+       * the desk's `FillPreview` as well: `totalCollateral` is the notional we
+       * asked for rather than what the capped fill charges, so this is the only
+       * field either surface can compute a cost from, and a preview without it
+       * is `null` rather than a wrong dollar. The real SDK always returns it —
+       * it is `orderWithSig.order.price`, copied, unconditionally.
        */
       pricePerContract?: bigint;
     };
@@ -2081,6 +2089,19 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
           ? `${money(level.strikes[0]!)}–${money(level.strikes[level.strikes.length - 1]!)}`
           : money(level.strikes[0]!),
       expiry: expiryLabel(level.expiry),
+      // The same date the label above is rendered from, unrounded and with its
+      // year — `level.optionExpiry`, the settlement date, never the signature
+      // deadline. `expiryLabel` drops the year, so the printed string cannot
+      // tell two Septembers apart and anything keyed on it merges them; this is
+      // what `rowKey` reaches for on a display-only row, where there is no
+      // resting ask carrying `order.expiry` to key on instead.
+      //
+      // `undefined`, not `0`, when the level's orders named no option expiry:
+      // `Level.expiry` collapses that to `0` because it has a label to print
+      // and must print something, and a zero here would read as midnight on
+      // 1 January 1970 — a date, and a wrong one. Absence is the honest form of
+      // "this row has no settlement date", and it keys as absence.
+      expirySec: level.optionExpiry ?? undefined,
       bid: level.bestBid === null ? "—" : level.bestBid.toFixed(4),
       ask: level.bestAsk === null ? "—" : level.bestAsk.toFixed(4),
       iv: level.iv === null ? "—" : `${(level.iv * 100).toFixed(1)}%`,
@@ -2285,6 +2306,38 @@ async function readMmPricing(
  *
  * `undefined` when the client has no `optionBook` — rows then ship with no
  * quote line at all, which the view renders as silence rather than as a zero.
+ *
+ * ## `totalCollateral` is not what the fill costs
+ *
+ * The SDK computes the count and the cost from two different places, and only
+ * one of them is capped (`dist/index.js`, `previewFillOrder`, verbatim):
+ *
+ * ```js
+ * if (numContracts > maxContracts) numContracts = maxContracts;
+ * const totalPremium = usdcAmount ?? numContracts * order.price / 100000000n;
+ * ```
+ *
+ * We always pass `usdcAmount` — {@link QUOTE_USDC}, a fixed $1.00 — so the
+ * `??` never falls through and `totalCollateral` is **our own request handed
+ * back**. `numContracts`, one line above, has been clamped to whatever the
+ * maker's remaining collateral will actually sell. Render the two side by side
+ * and the blotter says *"$1.00 buys 0.0030 contracts"* on a row where $1.00
+ * buys less than that, and the field the docstring calls *"the number P3
+ * approves exactly"* is a dollar the fill would not spend.
+ *
+ * It is the capped-collateral bug on the other path: one number capped, its
+ * partner not, and the pair printed as though they described one trade. So the
+ * cost is recomputed from the capped count and the order's own price — the
+ * SDK's own `numContracts * price / 1e8`, i.e. the branch it would have taken
+ * had we not named a notional — and the two fields describe the same fill
+ * again.
+ *
+ * `null` when the price is missing, following {@link zoneQuoter} twenty lines
+ * down: `pricePerContract` is optional on this interface because a test fake
+ * may answer only the fields the desk reads, and a preview whose cost cannot be
+ * computed has no cost we are entitled to print. Not `totalCollateral` as a
+ * fallback — that is the wrong number this exists to delete — and not a zero,
+ * which reads as "free".
  */
 function previewer(client: MarketClient): RawMarket["preview"] {
   const book = client.optionBook;
@@ -2294,9 +2347,16 @@ function previewer(client: MarketClient): RawMarket["preview"] {
   return (entry: RawOrderEntry): FillPreview | null => {
     try {
       const preview = book.previewFillOrder(entry, QUOTE_USDC, referrer);
+      const price = preview.pricePerContract;
+      if (price === undefined) return null;
+      // `numContracts` is collateral-scaled 6dp and `price` is 8dp, so the
+      // product is 14dp and the shift back to USDC's own six is a division by
+      // 1e8 — the SDK's own expression, kept in integers the whole way so the
+      // rendered cents cannot pick up a float's error.
+      const collateral = (preview.numContracts * price) / 100_000_000n;
       return {
         contracts: fromUnits(preview.numContracts, CONTRACT_DECIMALS).toFixed(4),
-        collateral: fromUnits(preview.totalCollateral, COLLATERAL_DECIMALS).toFixed(2),
+        collateral: fromUnits(collateral, COLLATERAL_DECIMALS).toFixed(2),
         // The book-depth guard the plan names. Depth on Base swung from 426
         // resting orders to 130 inside a day, so "this order will not absorb a
         // dollar" is an ordinary reading, not a failure.

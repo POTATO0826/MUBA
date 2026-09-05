@@ -1471,6 +1471,66 @@ describe("the box auction — four strikes, a player-set max bid", () => {
     expect(boxEconomics(spec, null, BOX_CONTRACTS).payoutMultiple).toBeNull();
   });
 
+  test("an offer is a position total, and `boxEconomics` scales it back to one contract", () => {
+    // The unit mismatch, at the one input that separates the two readings.
+    //
+    // `offerPremiumUsd` divides `offerAmount` by `BOX_CONTRACTS`, which is a
+    // **decimal conversion** — micro-USDC to dollars — that happens to share
+    // its numeral with "one contract in 6dp units". What comes out is the
+    // maker's bid for the whole position. `economics` takes a
+    // `premiumPerContractUsd` and multiplies it by the count itself, so handing
+    // the total straight over counted the size twice.
+    //
+    // Invisible at one contract, where the two readings are the same number —
+    // which is every request this build makes, and is exactly why it needed a
+    // test at a size nothing sends yet rather than a comment.
+    const spec = SPEC();
+    const TWO = BOX_CONTRACTS * 2n;
+
+    // $0.01 bid for a two-contract position: $0.005 a contract, against a $50
+    // wing on each.
+    const offer: RfqOffer = {
+      quotationId: "43",
+      offeror: MAKER,
+      signingKey: "0x03",
+      offerAmount: 10_000n,
+      nonce: 7n,
+      createdAt: 0,
+      status: "revealed",
+    };
+    const premium = offerPremiumUsd(offer);
+    // The whole position, in dollars — NOT the price of one contract. The
+    // docstring says so and this is the assertion that holds it to it.
+    expect(premium).toBe(0.01);
+
+    const econ = boxEconomics(spec, premium, TWO);
+    expect(econ.contracts).toBe(2);
+    // Two totals over one position. Max loss is the whole premium the player
+    // paid — the same figure `RfqPanel` prints as MAX LOSS off `offerPremiumUsd`
+    // directly, so the round trip is a unit change and not an arithmetic one.
+    expect(econ.maxLoss).toBe(0.01);
+    expect(econ.maxPayout).toBe(100);
+    expect(econ.payoutMultiple).toBe(100 / 0.01);
+
+    // Spelled out, because the bug was quiet: passing the total through as a
+    // per-contract price reported twice the loss and half the multiple, and
+    // both of those are numbers a player would act on.
+    expect(econ.maxLoss).not.toBe(0.02);
+    expect(econ.payoutMultiple).not.toBe(100 / 0.02);
+
+    // And the multiple is size-free, which is the property that says the units
+    // agree: doubling the position doubles both totals and moves nothing a
+    // player reads as an edge.
+    expect(boxEconomics(spec, 0.005, BOX_CONTRACTS).payoutMultiple).toBe(econ.payoutMultiple);
+
+    // A count of zero is no position: nothing to divide by, and nothing to
+    // divide. Not a NaN, and not an Infinity.
+    const none = boxEconomics(spec, premium, 0n);
+    expect(none.contracts).toBe(0);
+    expect(none.maxLoss).toBe(0);
+    expect(none.payoutMultiple).toBeNull();
+  });
+
   test("no hardcoded rate hides in the seam", async () => {
     // The same tripwire `test/box.test.ts` holds over condor.ts, extended to the
     // file that carries the box onto the auction. plan7 §4.4: difficulty shading

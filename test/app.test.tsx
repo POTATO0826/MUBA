@@ -343,10 +343,15 @@ describe("the board", () => {
 
   test("the prize steppers move the pool and the entry with it", () => {
     mount("/create");
-    expect(text()).toContain("2.50 ETH"); // half of the default 5.00 pool
+    // `Ξ`, not `ETH`. Nothing on this path is staked and only PTS moves, so the
+    // unit word was the whole of the claim; the glyph is the one the board card
+    // already prints for this same `LobbyDef.prize`, beside the same
+    // `NOTIONAL_POOL_LINE`. See `state/match.ts`'s `prizeLabel`.
+    expect(text()).toContain("2.50 Ξ"); // half of the default 5.00 pool
+    expect(text()).not.toContain("2.50 ETH");
     const plus = buttons().filter((b) => (b.textContent ?? "").trim() === "+");
     act(() => plus[1]!.click()); // the second "+" is the prize
-    expect(text()).toContain("2.75 ETH");
+    expect(text()).toContain("2.75 Ξ");
     expect(container.querySelector<HTMLInputElement>('input[inputmode="decimal"]')?.value).toBe("5.50");
   });
 });
@@ -615,7 +620,7 @@ describe("the room", () => {
     expect(container.querySelector('[data-seat="You"]')).not.toBeNull();
     expect(container.querySelector('[data-seat="kazuo.eth"]')).not.toBeNull();
     expect(text()).toContain("0/2 READY");
-    expect(text()).toContain("Ready up · 2.40 ETH entry");
+    expect(text()).toContain("Ready up · 2.40 Ξ entry");
     const begin = buttons().find((b) => (b.textContent ?? "").includes("Waiting for both players"));
     expect(begin?.disabled).toBe(true);
   });
@@ -868,7 +873,11 @@ describe("the case study", () => {
     expect(text()).toContain("Case study");
     expect(text()).toContain("STUDY PHASE · BOTH PLAYERS READING");
     expect(text()).toContain("NEWS WIRE · DESK CHATTER");
-    expect(text()).toContain("kazuo.eth is reading this too");
+    // The opponent is named in the header. It used to be the title of the third
+    // note in an "AI Coach reads the tape" panel — three hardcoded sentences
+    // behind an AI avatar, with no AI and no coach — which is gone. The fact
+    // survives; the persona that claimed to have authored it does not.
+    expect(text()).toContain("kazuo.eth");
 
     const news = wireRows("news");
     const desk = container.querySelectorAll('[data-brief="desk"]');
@@ -1086,6 +1095,163 @@ describe("the case study", () => {
     expect(wireRows()).toHaveLength(1);
   });
 
+  // ── the chart's window label ──────────────────────────────────────────────
+
+  /**
+   * The label under each ticker used to be `windowLabel(sym, salt)`: a hash of
+   * the symbol and the salt into a month and a year in 2017–2024, printed as
+   * `OCT 2013 · JAN 2014` over a seeded forward walk. It named a historical
+   * period for data that is not any asset's price in any period, and it did it
+   * often enough to be caught on screen — `AVAX · JUN 2017 · SEP 2017`, a year
+   * and a half before Avalanche launched, and `docs/reality-check.md` §5.10 for
+   * the matching anachronism on the wire beside it.
+   *
+   * These two are the regression guard. The first names the exact shape that
+   * must never come back; the second pins what replaced it.
+   */
+  test("no chart card claims a calendar period, on any seed", () => {
+    const monthYear = /\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(·\s*)?\d{4}\b/;
+    for (const seed of [424242, 918273, 100001, 7, 999983]) {
+      remount(`/match/kz-semis/study?seed=${seed}`);
+      const cards = Array.from(container.querySelectorAll<HTMLElement>("[data-case]"));
+      expect(cards.length).toBeGreaterThan(0);
+      for (const card of cards) expect(card.textContent ?? "").not.toMatch(monthYear);
+    }
+    // And the duel screen, which wore the same label on its mode badge.
+    remount("/match/kz-semis/duel?seed=424242");
+    expect(text()).not.toMatch(monthYear);
+  });
+
+  test("a card says which prints of the tape it is drawing, and nothing more", () => {
+    mount(STUDY);
+    // kz-semis is NORMAL: the duel window is the whole 200-print tape.
+    for (const sym of dealt) {
+      expect(caseCard(sym).textContent).toContain("PRINTS 1–200 OF 200");
+    }
+    expect(pane("zoom-readout")).toContain("200 OF 200 PRINTS");
+    // The mode's simulated duration is a declared rule of the game and is true;
+    // it stays on the readout, where it is stated as a window and not as a date.
+    expect(pane("zoom-readout")).toContain("24 HOURS SIMULATED");
+  });
+
+  // ── the zoom ──────────────────────────────────────────────────────────────
+
+  const zoomBtn = (z: number) => container.querySelector<HTMLElement>(`[data-zoom="${z}"]`)!;
+
+  test("zoom draws less of the same tape, says so on every card, and touches nothing else", () => {
+    mount(STUDY);
+    const before = dealt.map((s) => caseCard(s).textContent);
+    expect(zoomBtn(1).getAttribute("aria-pressed")).toBe("true");
+
+    act(() => zoomBtn(4).click());
+
+    expect(zoomBtn(4).getAttribute("aria-pressed")).toBe("true");
+    expect(zoomBtn(1).getAttribute("aria-pressed")).toBe("false");
+    // The last quarter of a 200-print window: prints 151–200.
+    for (const sym of dealt) {
+      expect(caseCard(sym).textContent).toContain("PRINTS 151–200 OF 200");
+    }
+    expect(dealt.map((s) => caseCard(s).textContent)).not.toEqual(before);
+    expect(pane("zoom-readout")).toContain("50 OF 200 PRINTS");
+
+    // A camera, and only a camera. The arena is the same three names, the route
+    // has not moved, and the board underneath has not been re-dealt — a zoom
+    // that could reach any of those could reach the pick.
+    for (const s of dealt) expect(text()).toContain(s);
+    expect(window.location.pathname).toBe("/match/kz-semis/study");
+    expect(container.querySelectorAll("[data-case]")).toHaveLength(dealt.length);
+
+    act(() => zoomBtn(1).click());
+    expect(dealt.map((s) => caseCard(s).textContent)).toEqual(before);
+  });
+
+  test("a zoom coarse enough to have fewer prints than pixels says that out loud", () => {
+    mount(STUDY);
+    expect(pane("zoom-readout")).not.toContain("FEWER PRINTS THAN PIXELS");
+    act(() => zoomBtn(8).click());
+    // 25 prints across a card several hundred pixels wide. The line joins real
+    // prints and adds none, and the reader is told rather than left to assume
+    // the series is as dense as it looks.
+    expect(pane("zoom-readout")).toContain("25 OF 200 PRINTS");
+    expect(pane("zoom-readout")).toContain("FEWER PRINTS THAN PIXELS");
+  });
+
+  // ── price talk ────────────────────────────────────────────────────────────
+
+  const pricedBtn = () => container.querySelector<HTMLElement>('[data-testid="wire-priced"]')!;
+  const signalOf = (r: HTMLElement) => r.dataset.wireSignal;
+
+  test("the wire counts the rows that talk about price without hiding any of them", () => {
+    mount(STUDY);
+    const all = wireRows();
+    const marked = all.filter((r) => signalOf(r) === "1").length;
+    // Off by default: the marker measures what a story's own words say, not
+    // whether it moved a price, and nothing here may delete a real row on a
+    // marker that imprecise.
+    expect(pricedBtn().getAttribute("aria-pressed")).toBe("false");
+    expect(pane("wire-census")).toContain(`${all.length} OF ${all.length} ROWS`);
+    expect(pane("wire-census")).toContain(`${marked} QUOTE A MOVE, A LEVEL OR AN EVENT`);
+  });
+
+  test("price talk hides only the unmarked rows, states the count, and hands them back", async () => {
+    // A live feed with exactly one row of each kind, so the split is decided by
+    // the classifier rather than by whatever the seeded templates happen to say.
+    const live = heldWire([
+      {
+        id: "live-moved",
+        kind: "news",
+        sym: dealt[0]!,
+        ts: 1_700_000_100_000,
+        time: "09:28:00",
+        headline: `${dealt[0]} Surges 7.4% After ETF Inflows`,
+        publisher: "REUTERS",
+        body: "A row whose own words quote a move, a level and an event.",
+        bodyKind: "wire",
+        link: null,
+        dateline: `9/1/26 09:28:00: ${dealt[0]}: ${dealt[0]} Surges 7.4% After ETF Inflows`,
+        signature: "(END) REUTERS / 09-01-26 0928ET / Copyright (c) 2026 Thomson Reuters.",
+        signal: ["quotes a move of 7.4%"],
+      },
+      {
+        id: "live-quiet",
+        kind: "news",
+        sym: dealt[0]!,
+        ts: 1_700_000_000_000,
+        time: "09:26:40",
+        headline: `${dealt[0]} Logo Debuts On A Stadium Scoreboard`,
+        publisher: "YAHOO FINANCE",
+        body: "A real row that says nothing about price. It is never deleted.",
+        bodyKind: "wire",
+        link: null,
+        dateline: `9/1/26 09:26:40: ${dealt[0]}: ${dealt[0]} Logo Debuts On A Stadium Scoreboard`,
+        signature: "(END) YAHOO FINANCE / 09-01-26 0926ET / Copyright (c) 2026 Yahoo.",
+        signal: [],
+      },
+    ]);
+
+    mount(STUDY, live.source);
+    await act(async () => live.release());
+    expect(wireRows()).toHaveLength(2);
+    const whole = terminal();
+
+    act(() => pricedBtn().click());
+
+    expect(pricedBtn().getAttribute("aria-pressed")).toBe("true");
+    expect(wireRows()).toHaveLength(1);
+    expect(wireRows()[0]!.dataset.wireId).toBe("live-moved");
+    // The terminal reports what it is hiding at the moment it hides it.
+    expect(pane("wire-census")).toContain("1 OF 2 ROWS");
+    expect(pane("wire-census")).toContain("1 HIDDEN");
+    // …and the evidence, in the words that matched, rather than a score.
+    expect(pane("wire-signal")).toContain("quotes a move of 7.4%");
+
+    act(() => pricedBtn().click());
+
+    expect(wireRows()).toHaveLength(2);
+    expect(text()).toContain("Logo Debuts On A Stadium Scoreboard");
+    expect(terminal()).toBe(whole);
+  });
+
   test("clearing the filter puts the terminal back node for node", () => {
     mount(STUDY);
     const before = terminal();
@@ -1192,7 +1358,7 @@ describe("the result", () => {
   test("names the winner and summarises what each player chose", () => {
     mount("/match/kz-semis/result?seed=424242");
     expect(text()).toMatch(/takes? the pool/);
-    expect(text()).toContain("4.80 ETH");
+    expect(text()).toContain("4.80 Ξ");
     expect(text()).toContain("Coach · match summary");
     expect(text()).toContain("WHAT EACH PLAYER CHOSE");
     expect(container.querySelector('[data-summary="You"]')).not.toBeNull();
@@ -2051,8 +2217,8 @@ describe("the lobby builder's live book grades only what was graded", () => {
       root.render(
         <CreateLobby
           form={FORM}
-          entryLabel="2.50 ETH"
-          prizeLabel="5.00 ETH"
+          entryLabel="2.50 Ξ"
+          prizeLabel="5.00 Ξ"
           onName={noop}
           onMarket={noop}
           onToggleSector={noop}
@@ -2283,12 +2449,17 @@ describe("a surface that cannot verify its claim says so", () => {
 
   // ── the pool nobody is paid ───────────────────────────────────────────────
 
-  test("every screen that prints the ETH pool says what the ETH pool is", () => {
-    // `state/match.ts` renders a seeded `LobbyDef.prize` as `"4.80 ETH"`, and
+  test("every screen that prints the notional pool says what the pool is", () => {
+    // `state/match.ts` renders a seeded `LobbyDef.prize` as `"4.80 Ξ"`, and
     // nothing on this path stakes, escrows or pays ether — the code calls it
     // "the PTS pool's own ETH-denominated fiction" itself. The figure stays;
     // what it gains is the clause the box arena already says about its own
     // stake, `stakeBasisLine(…, null)` → "notional · nothing is held".
+    //
+    // It read `"4.80 ETH"` when this test was written. The disclosure is what
+    // carries the truth here and it is unchanged; the unit word is no longer
+    // quietly arguing with it, and is now the same `Ξ` the board card two
+    // mounts down has always printed for the very same number.
     const held = (): string[] =>
       [...container.querySelectorAll("[data-notional-pool]")].map((el) => el.textContent ?? "");
 
@@ -2299,7 +2470,11 @@ describe("a surface that cannot verify its claim says so", () => {
 
     // The room, beside PRIZE POOL and YOUR ENTRY.
     remount("/match/kz-semis/room");
-    expect(text()).toContain("4.80 ETH");
+    expect(text()).toContain("4.80 Ξ");
+    // The room and the board card render one number, and now render it one
+    // way. A screen still spelling the unit out as a word is a second reading
+    // of the same figure, which is where six of the seven money bugs began.
+    expect(text()).not.toContain("4.80 ETH");
     expect(held()).toHaveLength(1);
     expect(held()[0]).toContain("nothing is held");
 

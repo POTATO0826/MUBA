@@ -458,6 +458,31 @@ export interface PricingRow {
   type: "CALL" | "PUT" | "RANGER";
   strike: string;
   expiry: string;
+  /**
+   * The same expiry as the line above, in **unix seconds** — the option's
+   * settlement date, never the order's signature deadline.
+   *
+   * `expiry` is a label: `"5 SEP"`, day and month, no year. It is what the desk
+   * prints and it was, for a while, part of what `rowKey` (`src/views/Parlay.tsx`)
+   * keyed a row on — which meant two Septembers a year apart shared a React key
+   * and, worse, a slip entry. That was closed for **fillable** rows by keying
+   * off `order.order.expiry`, the settlement date in seconds that rides on the
+   * resting ask. A **display-only** row — one built from bids or MM pricing
+   * alone, with no `order` — has no such field to reach for and still keys on
+   * the printed label.
+   *
+   * It cannot cost a fill today: `cardsForSlice` and `slipRows` drop rows with
+   * no `order`, and no `+ SLIP` is rendered for them. So this closes a React
+   * key collision rather than a money bug — but the distance between the two is
+   * one `preview` field, and a key that is only safe because of what the *other*
+   * side of the screen filters out is a fact held in the wrong place.
+   *
+   * Optional because the seeded chain in `src/data/market.ts` has no wire
+   * behind it and no seconds to give; absent means "this row named no
+   * settlement date", which is the same state `Level.expiry: 0` records. Set by
+   * `buildSnapshot` for every live row, `order` or no `order`.
+   */
+  expirySec?: number;
   bid: string;
   ask: string;
   iv: string;
@@ -734,8 +759,19 @@ export interface FillPreview {
    *  token-scaled — the SDK divides a USDC 6dp notional by an 8dp price. See
    *  `CONTRACT_DECIMALS` in `src/server/thetanuts.ts` for the measurement. */
   contracts: string;
-  /** `totalCollateral` — the USDC (6dp) actually spent, rendered to 2. This is
-   *  the number P3 approves *exactly*, never `MaxUint256`. */
+  /**
+   * The USDC (6dp) this fill would actually spend, rendered to 2 — the number
+   * P3 approves *exactly*, never `MaxUint256`.
+   *
+   * **Computed, not read off `totalCollateral`.** That field is the notional we
+   * asked for, echoed back: `previewFillOrder` caps `numContracts` at the
+   * maker's remaining collateral and then returns `usdcAmount ?? …`, so with a
+   * notional named — and we always name one — it answers our $1.00 whatever the
+   * cap did. This is `numContracts × pricePerContract` over the *capped* count,
+   * which is the SDK's own expression for the same figure, so the count and the
+   * cost on a row describe one trade. See `previewer` in
+   * `src/server/thetanuts.ts` for the SDK source and the bug.
+   */
   collateral: string;
   /**
    * The book-depth guard, and the only field the view branches on.

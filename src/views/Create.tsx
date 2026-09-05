@@ -105,7 +105,20 @@ function Invite({ url, onOpenLobby }: { url: string; onOpenLobby: () => void }) 
 interface CreateProps {
   state: BattleState;
   entryLabel: string;
-  prizeLabel: string;
+  /**
+   * Both stakes, gross — `usdc(potOf(stake))`. The figure under **TWICE THE
+   * STAKE**, and the one the custody subtitle names as what goes in.
+   */
+  potLabel: string;
+  /**
+   * The pot less the escrow's 4% rake — `usdc(winnerTakesUsdc(stake))`. The
+   * figure under **WINNER TAKES**, and nowhere else.
+   *
+   * Two props rather than one `prizeLabel`, because this panel prints one
+   * number under two labels that make two different claims. See
+   * `state/battle.ts`'s `derived` for the money bug that split them.
+   */
+  payoutLabel: string;
   /** The invite link, once the arena exists. `null` before that. */
   inviteUrl: string | null;
   creating: boolean;
@@ -201,15 +214,32 @@ export function Create(p: CreateProps) {
             $10.00 from each player. Settled in USDC." Nothing settles: the
             arena is not routed through `useDuelStake`, and `DuelEscrow` is
             written and reviewed but not deployed. TWICE THE STAKE is the same
-            number with only the arithmetic asserted. */}
+            number with only the arithmetic asserted.
+
+            **Two labels, two figures.** The number was the same under both for
+            one more commit than it should have been. `TWICE THE STAKE` is a
+            claim about multiplication and `potLabel` is that multiplication;
+            `WINNER TAKES` is a claim about a transfer, and the transfer
+            `DuelEscrow.settle` makes is the pot less its 4% rake — 1.92× the
+            stake, which is `payoutLabel`. Printing the pot under WINNER TAKES
+            overstated the payout by 4%; printing the payout under TWICE THE
+            STAKE would understate the arithmetic by the same 4%. Neither figure
+            is wrong, and neither is right under the other's label. */}
         <div style={sx("padding:20px")}>
           <div style={sx(LABEL)}>{custody ? "WINNER TAKES" : "TWICE THE STAKE"}</div>
           <div style={sx(`margin-top:14px;font:700 30px/1 ${MONO};letter-spacing:-.02em`)}>
-            {p.prizeLabel}
+            {custody ? p.payoutLabel : p.potLabel}
           </div>
+          {/* "Both stakes" is a sentence about the **pot**, so the pot is the
+              figure it names — and once the headline above is the payout, the
+              gap between the two is on screen and has to be accounted for in
+              the same breath rather than left as an unexplained 80 cents. The
+              rake is named here and only here on this screen; `Room.tsx` says
+              it the same way over the on-chain side bet. */}
           <div style={sx(`margin-top:12px;font:400 11.5px/1.55 ${SANS};color:${C.muted}`)}>
             {custody
-              ? `Both stakes — ${p.entryLabel} from each player. Settled in USDC.`
+              ? `Both stakes — ${p.entryLabel} from each player, ${p.potLabel} in the pot. ` +
+                `The winner takes that less the escrow's 4% rake. Settled in USDC.`
               : stakeBasisLine(state.stakeUsdc, null)}
           </div>
           {custody === null && (
