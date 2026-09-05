@@ -481,6 +481,35 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
     setBoxPremium(match ? zoneQuote(match.zone) : null);
   }, []);
 
+  /**
+   * The app's ONE connect. Every surface calls this and no surface calls
+   * `active.connect()` itself.
+   *
+   * There were two call sites — the header's and the arena hub's — and while
+   * both happened to invoke the same `WalletSource.connect`, having two of them
+   * meant there was no single place to state the two conditions under which
+   * connecting is the wrong thing to do. Both are stated here now:
+   *
+   *  1. **Already connected → do nothing.** Opening a wallet chooser at someone
+   *     who is holding a connected session is the whole of the "it keeps asking
+   *     me to connect" complaint.
+   *  2. **Restore still in flight → do nothing.** `identity.settled` is `false`
+   *     from first paint until the wallet tier has finished looking for a saved
+   *     session (`src/wallet/injected.ts` restores silently over
+   *     `eth_accounts`; AppKit reports `reconnecting`). A connect fired inside
+   *     that window pops a prompt for a session that was already coming back —
+   *     indistinguishable, from the user's side, from having been logged out.
+   *
+   * Disconnecting stays deliberate and stays reachable: the header's account
+   * button and the hub's "Log out" both call `active.disconnect()` directly,
+   * which also forgets the stored wallet so the next load does not restore it.
+   * "Never ask again" must not become "cannot get out".
+   */
+  const connectOnce = useCallback(() => {
+    if (identity.connected || !identity.settled) return;
+    void active.connect();
+  }, [active, identity.connected, identity.settled]);
+
   return (
     <div style={sx(PAGE)}>
       <Header
@@ -495,9 +524,9 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           }
           actions.go(tab)();
         }}
-        onConnect={() => void active.connect()}
+        onConnect={connectOnce}
         onManage={() => void active.openAccount()}
-        onSwitchNetwork={() => void active.switchToBase()}
+        onSwitchNetwork={() => void active.switchToSigningChain()}
       />
 
       {showArenaRoom && roomState.room && (
@@ -519,7 +548,7 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
             setRoomLobbyOpen(true);
             void roomState.open(id);
           }}
-          onConnect={() => void active.connect()}
+          onConnect={connectOnce}
           onDisconnect={() => void active.disconnect()}
           onRefresh={refreshRooms}
         />

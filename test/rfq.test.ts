@@ -26,6 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { DATA_CHAIN_ID, SIGNING_CHAIN_ID } from "../src/data/wallet.ts";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { calculateReservePrice, validateCondor } from "@thetanuts-finance/thetanuts-client";
@@ -80,6 +81,19 @@ import {
 import { boxToCondor, type CondorSpec } from "../src/data/condor.ts";
 import { priceToStrike } from "../src/data/box.ts";
 import { RfqPanel, type RfqPanelProps } from "../src/ui/RfqPanel.tsx";
+
+/**
+ * The chain half of a wallet identity, on the signing chain.
+ *
+ * Every wallet double in this file uses it, so a double is on the chain the
+ * guards accept unless a test deliberately says otherwise. That asymmetry is the
+ * point: proving a refusal has to be explicit (`{ chainId: DATA_CHAIN_ID }`),
+ * and no test gets a refusal — or an acceptance — by forgetting a field.
+ */
+const SEPOLIA = {
+  address: "0x71cB05fD1eA1B3d4a7C9e8F2b6D0a3C85e9d4Af2",
+  chainId: SIGNING_CHAIN_ID,
+} as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -224,6 +238,8 @@ function spy(over: Partial<RfqDeps> = {}): Spy {
 
   const base: RfqDeps = {
     walletId: "injected",
+    // The signing chain — see the note on `fill.test.ts`'s `base`.
+    chainId: SIGNING_CHAIN_ID,
     storage,
     now: () => clock,
     sleep: async (ms: number) => {
@@ -1056,7 +1072,7 @@ describe("the panel is inert without a wallet", () => {
       return new Response(JSON.stringify({ features: { trade: true } }));
     }) as unknown as typeof globalThis.fetch;
 
-    const html = await panelHtml({ wallet: { id: "mock", getSigner: async () => null } });
+    const html = await panelHtml({ wallet: { id: "mock", identity: SEPOLIA, getSigner: async () => null } });
     globalThis.fetch = realFetch;
 
     expect(html).toMatch(/Mock wallet/);
@@ -1067,7 +1083,7 @@ describe("the panel is inert without a wallet", () => {
   test("a real wallet with the flag off is inert too", async () => {
     const html = await panelHtml({
       enabled: false,
-      wallet: { id: "injected", getSigner: async () => SIGNER },
+      wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
     });
     expect(html).toMatch(/THETADUEL_TRADE is off/);
     expect(html).not.toContain("Open request");
@@ -1076,7 +1092,7 @@ describe("the panel is inert without a wallet", () => {
   test("flag on plus a real wallet arms it — and only then", async () => {
     const html = await panelHtml({
       enabled: true,
-      wallet: { id: "injected", getSigner: async () => SIGNER },
+      wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
     });
     expect(html).toContain("Open request");
     expect(html).not.toContain("Read-only preview");
@@ -1084,7 +1100,7 @@ describe("the panel is inert without a wallet", () => {
 
   test("mounting the panel writes nothing to browser storage", async () => {
     const before = globalThis.localStorage?.length ?? 0;
-    await panelHtml({ enabled: true, wallet: { id: "injected", getSigner: async () => SIGNER } });
+    await panelHtml({ enabled: true, wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER } });
     expect(globalThis.localStorage?.length ?? 0).toBe(before);
   });
 });
@@ -1552,7 +1568,7 @@ describe("the box auction — four strikes, a player-set max bid", () => {
     await panelHtml({
       box: SPEC(),
       enabled: true,
-      wallet: { id: "injected", getSigner: async () => SIGNER },
+      wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
       makeDeps: () => s.deps,
       onOutcome: (r) => seen.push({ status: r.status, premiumUsd: r.premiumUsd }),
     });

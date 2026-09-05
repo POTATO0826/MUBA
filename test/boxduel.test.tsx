@@ -61,6 +61,7 @@ import { Hub } from "../src/views/Hub.tsx";
 import { RoomLobby } from "../src/views/RoomLobby.tsx";
 import { INITIAL_STATE } from "../src/state/battle.ts";
 import type { Room } from "../src/state/room.ts";
+import { SIGNING_CHAIN_ID } from "../src/data/wallet.ts";
 import type { WalletIdentity } from "../src/data/wallet.ts";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
@@ -611,13 +612,17 @@ describe("custody is claimed only when something holds the stake", () => {
     walletName: null,
     connected: false,
     connecting: false,
+    // Settled, not pending: these fixtures stand for a decided state, and an
+    // unsettled identity would put the hub in its "Restoring…" branch, which is
+    // a third screen neither of these two is meant to describe.
+    settled: true,
     wrongNetwork: false,
   };
 
   const CONNECTED: WalletIdentity = {
     ...DISCONNECTED,
     address: HOST,
-    chainId: 8453,
+    chainId: SIGNING_CHAIN_ID,
     walletName: "MetaMask",
     connected: true,
   };

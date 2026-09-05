@@ -22,6 +22,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { MIN_STAKE_USDC } from "../src/desk/escrow.ts";
 import { readFileSync } from "node:fs";
 import {
   AbiCoder,
@@ -231,9 +232,19 @@ describe("the money constants are what the owner decided", () => {
     expect(Number(build.constants["RAKE_BPS"]) / Number(build.constants["BPS"])).toBeCloseTo(0.04, 12);
   });
 
-  test("MIN_STAKE is 100000 base units = $0.10 of 6-decimal USDC", () => {
-    expect(build.constants["MIN_STAKE"]).toBe(100_000n);
-    expect(Number(build.constants["MIN_STAKE"]) / 1e6).toBeCloseTo(0.1, 12);
+  test("MIN_STAKE is 1000 base units = $0.001 of 6-decimal USDC", () => {
+    // It was 100_000 ($0.10). The floor is anti-grief and that argument was
+    // written for a mainnet deployment; this contract now deploys to Base
+    // Sepolia, where the stake token is a free test token and the griefing the
+    // floor prevented costs nothing to suffer. See the natspec on MIN_STAKE for
+    // why this is the last moment the value could change — it is a `constant`
+    // with no setter, so it is immutable from the deploy transaction onward.
+    expect(build.constants["MIN_STAKE"]).toBe(1_000n);
+    expect(Number(build.constants["MIN_STAKE"]) / 1e6).toBeCloseTo(0.001, 12);
+    // And it is a mirror of the client's copy, which refuses below it so a
+    // player does not spend gas being refused on chain. If these disagree, one
+    // of the two is lying about what the escrow will take.
+    expect(build.constants["MIN_STAKE"]).toBe(MIN_STAKE_USDC);
   });
 
   test("TIMEOUT is six hours", () => {
@@ -242,13 +253,19 @@ describe("the money constants are what the owner decided", () => {
 
   test("the constants are literally compiled into the runtime, not just declared", () => {
     // Belt and braces on the AST read: the getters push these exact values.
-    // 400 -> PUSH2 0x0190, 10000 -> PUSH2 0x2710, 100000 -> PUSH3 0x0186a0,
+    // 400 -> PUSH2 0x0190, 10000 -> PUSH2 0x2710, 1000 -> PUSH2 0x03e8,
     // 21600 -> PUSH2 0x5460.
+    //
+    // MIN_STAKE's push narrowed from PUSH3 0x0186a0 to PUSH2 0x03e8 when the
+    // floor dropped to 1_000 — the opcode is part of what is being pinned, so
+    // it changes with the value rather than beside it.
     const runtime = build.deployedBytecode.toLowerCase();
     expect(runtime).toContain("610190");
     expect(runtime).toContain("612710");
-    expect(runtime).toContain("620186a0");
+    expect(runtime).toContain("6103e8");
     expect(runtime).toContain("615460");
+    // And the old floor is gone from the runtime, not merely unreferenced.
+    expect(runtime).not.toContain("620186a0");
   });
 
   test("there is no maximum stake — the owner's explicit, documented decision", () => {

@@ -68,7 +68,7 @@ import {
   type UsdPerContract,
 } from "../src/engine/score.ts";
 import {
-  BASE_CHAIN_ID,
+  SIGNING_CHAIN_ID,
   DEADLINE_SECONDS,
   FILLS_MESSAGE_PREFIX,
   MARK_MAX_LAG_MS,
@@ -342,7 +342,7 @@ const contractDomain = (verifyingContract: string) => ({
   // The contract uses `block.chainid`, which no source read can produce. Base
   // mainnet is the only chain it is ever deployed to (plan 5: "no testnet
   // exists"), and the assertion that this constant IS 8453 is its own test.
-  chainId: BigInt(BASE_CHAIN_ID),
+  chainId: BigInt(SIGNING_CHAIN_ID),
   verifyingContract,
 });
 
@@ -799,9 +799,12 @@ describe("the digest the server signs is the digest the escrow checks", () => {
       CONTRACT_TYPES,
     );
     expect(TypedDataEncoder.from(CONTRACT_TYPES).encodeType("Verdict")).toBe(VERDICT_TYPE_STRING);
-    // Base mainnet. The contract reads `block.chainid`, so this is the one
-    // domain field no source read can confirm — it is pinned here instead.
-    expect(BASE_CHAIN_ID).toBe(8453);
+    // Base Sepolia — the SIGNING chain, and the chain `contracts/deploy.ts`
+    // will deploy the escrow to. The contract reads `block.chainid`, so this is
+    // the one domain field no source read can confirm; it is pinned here
+    // instead. It read 8453 while the app signed on mainnet, and this
+    // assertion is the thing that would have caught it staying there.
+    expect(SIGNING_CHAIN_ID).toBe(84532);
   });
 
   /**
@@ -826,7 +829,7 @@ describe("the digest the server signs is the digest the escrow checks", () => {
           keccak256(toUtf8Bytes(DOMAIN_TYPE_STRING!)),
           keccak256(toUtf8Bytes(CONTRACT_DOMAIN_NAME!)),
           keccak256(toUtf8Bytes(CONTRACT_DOMAIN_VERSION!)),
-          BigInt(BASE_CHAIN_ID),
+          BigInt(SIGNING_CHAIN_ID),
           ESCROW,
         ],
       ),
@@ -924,10 +927,12 @@ describe("the digest the server signs is the digest the escrow checks", () => {
     expect(h.signed[0]!.domain).toEqual({
       name: CONTRACT_DOMAIN_NAME!,
       version: CONTRACT_DOMAIN_VERSION!,
-      // The literal, not `BASE_CHAIN_ID` — the constant is the thing being
-      // pinned. The contract binds its domain to `block.chainid`, so a verdict
-      // signed for any chain but Base mainnet recovers to a stranger on chain.
-      chainId: 8453,
+      // The literal, not `SIGNING_CHAIN_ID` — the constant is the thing being
+      // pinned, so a test that read it back would agree with itself no matter
+      // what it held. The contract binds its domain to `block.chainid`, so a
+      // verdict signed for any chain but the one the escrow is deployed to
+      // recovers to a stranger on chain. 84532 is Base Sepolia.
+      chainId: 84532,
       verifyingContract: ESCROW,
     });
     expect(h.signed[0]!.types).toEqual(CONTRACT_TYPES);

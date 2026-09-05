@@ -6,6 +6,7 @@ import {
   REFUND_TIMEOUT_HOURS,
   STAKE_OFF,
   ZERO_ADDRESS,
+  assertSigningChain,
   commitLock,
   createLiveEscrowDeps,
   createLiveRefereeDeps,
@@ -85,14 +86,23 @@ export function useStakeConfig(walletId: string | undefined): StakeConfig {
         const res = await fetch("/api/config");
         const body = (await res.json()) as {
           escrow?: string;
-          chainId?: number;
+          signingChainId?: number;
           features?: { stake?: boolean };
         };
         if (!live) return;
         setConfig({
           enabled: body.features?.stake === true,
           escrow: typeof body.escrow === "string" ? body.escrow : "",
-          chainId: typeof body.chainId === "number" ? body.chainId : STAKE_OFF.chainId,
+          // `signingChainId`, never `dataChainId`. `/api/config` used to emit a
+          // single `chainId` and it meant both; now the two genuinely differ,
+          // and reading the wrong one here would arm staking against the chain
+          // the app refuses to sign on. The old key is deliberately NOT accepted
+          // as a fallback: a server still emitting `chainId` is a server that
+          // predates the split, and inheriting its number would be inheriting
+          // the ambiguity. Absent means `STAKE_OFF.chainId`, which is the
+          // signing chain, which fails closed.
+          chainId:
+            typeof body.signingChainId === "number" ? body.signingChainId : STAKE_OFF.chainId,
         });
       } catch {
         // Fail closed, silently: a static build has no server to ask and is not
@@ -317,6 +327,17 @@ export function useDuelStake(
     if (!available || !wallet) return null;
     if (options.referee) return options.referee();
     return createLiveRefereeDeps(async (message: string) => {
+      // THE CHAIN GUARD, on the referee path too.
+      //
+      // This is the one signing call in the app that does NOT go through an
+      // `EscrowDeps`/`FillDeps` adapter — it reaches `wallet.getSigner()`
+      // directly — so it would have been the single hole in an otherwise
+      // complete net. `signMessage` costs no gas and sends no transaction, but
+      // it is still the user's key endorsing a string, and an EIP-191 signature
+      // produced by a mainnet-connected wallet is a signature that could be
+      // replayed anywhere that address has funds. The guard is cheap; reasoning
+      // about which signatures are "safe" is not.
+      assertSigningChain(wallet.identity.chainId, "a referee signature");
       const signer = (await wallet.getSigner()) as {
         signMessage(m: string): Promise<string>;
       } | null;

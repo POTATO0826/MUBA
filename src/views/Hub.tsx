@@ -1,4 +1,5 @@
 import { PlayerMark } from "../components/PlayerMark.tsx";
+import { SIGNING_CHAIN_ID, SIGNING_CHAIN_NAME } from "../data/wallet.ts";
 import type { RoomView } from "../data/room.ts";
 import { addressInitials, shortAddress, type WalletIdentity } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
@@ -190,15 +191,33 @@ export function Hub({
           </span>
           <span style={sx(`font:400 10.5px/1 ${MONO};color:${C.dim}`)}>
             {identity.wrongNetwork
-              ? "wrong network · switch to Base"
+              ? `wrong network · switch to ${SIGNING_CHAIN_NAME.toLowerCase()}`
               : connected
-                ? `base 8453 · ${identity.walletName ?? "wallet"}`
-                : "connect a wallet to play"}
+                ? // The SIGNING chain, because this line sits under the address
+                  // and an address is a thing that signs. It read `base 8453`
+                  // when the app had one chain; leaving it would name the chain
+                  // this wallet is specifically forbidden to operate on, right
+                  // beside the wallet that is forbidden to.
+                  `${SIGNING_CHAIN_NAME.toLowerCase()} ${SIGNING_CHAIN_ID} · ${identity.walletName ?? "wallet"}`
+                : !identity.settled
+                  ? "checking for a saved wallet…"
+                  : "connect a wallet to play"}
           </span>
         </div>
         <div style={sx("flex:1")} />
-        <button onClick={connected ? onDisconnect : onConnect} style={sx(BTN)}>
-          {connected ? "Log out" : "Connect"}
+        {/* While the restore is in flight there is no honest button to draw:
+            "Connect" would prompt for a session that is already coming back,
+            and "Log out" would claim one that has not arrived. So the button is
+            disabled and says what is actually happening. This is the arena's
+            half of the same fix as `Header`'s `settled` check — the arena gates
+            its mode cards on `identity.address`, so a late identity did not
+            merely show a button here, it made the whole arena look empty. */}
+        <button
+          onClick={connected ? onDisconnect : onConnect}
+          disabled={!identity.settled}
+          style={sx(`${BTN}${identity.settled ? "" : ";opacity:.5;cursor:default"}`)}
+        >
+          {!identity.settled ? "Restoring…" : connected ? "Log out" : "Connect"}
         </button>
       </div>
 

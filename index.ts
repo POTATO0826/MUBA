@@ -4,6 +4,7 @@
 import { install as installResolver } from "./src/server/resolver.ts";
 import index from "./src/index.html";
 import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
+import { DATA_CHAIN_ID, SIGNING_CHAIN_ID } from "./src/data/wallet.ts";
 import { createAttestService } from "./src/server/attest.ts";
 import { createNewsService } from "./src/server/news.ts";
 import { captureOpen } from "./src/server/openspot.ts";
@@ -300,9 +301,17 @@ const server = Bun.serve({
      *
      *     `useOptionBook` still requires `=== true` and fails closed on anything
      *     else, so this key must be emitted for the flag to exist at all.
-     *   - `stake` and `trade` are OPT-IN (`=on` exactly): both move real money
-     *     on Base mainnet. Anything that can spend USDC is off until an
-     *     operator says otherwise, in this process, on purpose.
+     *   - `stake` and `trade` are OPT-IN (`=on` exactly). They stay opt-in even
+     *     though the wallet is now pinned to a testnet and neither can spend
+     *     real money any more: a flag that guards a signature should not be
+     *     loosened because a *second*, independent control was added. Removing
+     *     one of two locks because the other one holds is how both end up open.
+     *
+     *     What did change is what turning them on can achieve. `trade` arms a
+     *     fill against the mainnet OptionBook, and the signing wallet is on
+     *     Base Sepolia — so an armed fill now refuses at the chain guard
+     *     instead of transacting. The screens say so rather than leaving a
+     *     button that can only ever fail; see `CHAIN_SPLIT_NOTE`.
      *
      * **Every key a client reads must appear here.** A flag the server never
      * emits is not "off", it is unreachable: `THETADUEL_OPTIONS` read nothing
@@ -317,7 +326,33 @@ const server = Bun.serve({
       Response.json(
         {
           projectId: Bun.env.WALLETCONNECT_PROJECT_ID ?? "",
-          chainId: 8453,
+          // ── Two chains, two fields, and never one number for both ──────────
+          //
+          // This was a single `chainId: 8453` until the wallet was pinned to a
+          // testnet. It cannot be one field any more, because the two halves of
+          // the app genuinely run on different chains and a single number would
+          // have to lie about one of them. `docs/reality-check.md` is eight
+          // findings long and every one of them is a value that meant something
+          // other than its name; a chain id collapsed across a signing boundary
+          // would have been the ninth, and the most expensive.
+          //
+          // `signingChainId` — Base Sepolia. The ONLY chain a wallet may
+          // connect to, approve on, or send from. `DuelEscrow` is deployed
+          // here, staking settles here, and every guard in `src/desk/` refuses
+          // anything else (`assertSigningChain`, `src/data/wallet.ts`). This is
+          // the field to read before arming anything that can spend.
+          //
+          // `dataChainId` — Base mainnet. Where the options book is READ from,
+          // and nothing else. The Thetanuts SDK supports `8453 | 1` and has no
+          // testnet deployment at all, so real strikes, premiums and the vol
+          // smile exist on mainnet or they do not exist. Reading signs nothing.
+          //
+          // Any client reading one of these must never render it as the other.
+          // `useStakeConfig` takes `signingChainId` and deliberately does not
+          // fall back to a legacy `chainId`, so a stale server fails closed
+          // rather than arming staking against the chain we refuse to sign on.
+          signingChainId: SIGNING_CHAIN_ID,
+          dataChainId: DATA_CHAIN_ID,
           referrer: Bun.env.THETADUEL_REFERRER ?? "",
           escrow: Bun.env.THETADUEL_ESCROW ?? "",
           features: {

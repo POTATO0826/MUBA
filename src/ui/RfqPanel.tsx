@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SIGNING_CHAIN_NAME } from "../data/wallet.ts";
 import {
   DEFAULT_OFFER_WINDOW_MIN,
   MAX_RFQ_USDC,
@@ -108,18 +109,26 @@ import { C, MONO, SANS, pill, tag } from "../theme.ts";
 /** The wallet, as this panel needs it — the signer seam plus two recovery verbs. */
 export interface RfqPanelWallet extends RfqWallet {
   connect?(): Promise<void>;
-  switchToBase?(): Promise<void>;
+  switchToSigningChain?(): Promise<void>;
   /**
-   * The connected address, if the wallet publishes one.
+   * The connected address and chain.
    *
-   * Structurally satisfied by `WalletSource.identity`, and optional so the
-   * read-only render still needs no wallet at all. It is **not** cosmetic: the
-   * request names its own requester and the factory pulls collateral from that
-   * address at settlement, so a request opened without it is one nobody can
-   * settle. `openRequest` refuses such a request before it becomes a
-   * transaction.
+   * Structurally satisfied by `WalletSource.identity`. It is **not** cosmetic on
+   * either field:
+   *
+   *  - `address` — the request names its own requester and the factory pulls
+   *    collateral from that address at settlement, so a request opened without
+   *    it is one nobody can settle. `openRequest` refuses such a request before
+   *    it becomes a transaction.
+   *  - `chainId` — the input to `assertSigningChain`. It is **required**, and no
+   *    longer optional as the whole of `identity` once was: a panel that could
+   *    hand `RfqDeps` an absent chain would be a panel that could route around
+   *    the one guard standing between this app and a mainnet signature. The
+   *    read-only render needs no wallet at all, which is expressed by
+   *    `wallet` itself being optional — not by letting a present wallet omit
+   *    the field that decides whether it may sign.
    */
-  readonly identity?: { readonly address: string | null };
+  readonly identity: { readonly address: string | null; readonly chainId: number | null };
 }
 
 export interface RfqPanelProps {
@@ -483,7 +492,7 @@ export function RfqPanel({
           error: {
             code: "SIGNER_REQUIRED",
             message: "No wallet can sign this request.",
-            recovery: "Connect a wallet on Base, then open the request again.",
+            recovery: `Connect a wallet on ${SIGNING_CHAIN_NAME}, then open the request again.`,
             action: "connect",
             step: "key",
             detail: error instanceof Error ? error.message : String(error),
@@ -1024,7 +1033,7 @@ export function RfqPanel({
               onClick={() => {
                 const action = state.error.action;
                 if (action === "connect") void wallet?.connect?.();
-                else if (action === "switch") void wallet?.switchToBase?.();
+                else if (action === "switch") void wallet?.switchToSigningChain?.();
                 else if (action === "retry") void start();
                 else setState({ kind: "idle" });
               }}
@@ -1037,7 +1046,7 @@ export function RfqPanel({
               {state.error.action === "connect"
                 ? "Connect wallet"
                 : state.error.action === "switch"
-                  ? "Switch to Base"
+                  ? `Switch to ${SIGNING_CHAIN_NAME}`
                   : state.error.action === "retry"
                     ? "Try again"
                     : "Dismiss"}

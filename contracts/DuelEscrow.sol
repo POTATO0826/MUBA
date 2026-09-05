@@ -56,10 +56,20 @@ interface IERC20 {
  *            hard-wired destination.
  *
  * @dev    UNCAPPED STAKE - THE OWNER'S EXPLICIT DECISION, AND ITS RISK.
- *         There is a MINIMUM stake ($0.10, anti-grief) and deliberately NO
- *         MAXIMUM. This contract is unaudited. Uncapped plus unaudited means a
- *         bug here risks the entire amount players choose to stake, and there is
- *         no admin able to rescue anything if one is found. The compensating
+ *         There is a MINIMUM stake (0.001 USDC, anti-grief - see MIN_STAKE for
+ *         why it is that low and why only a testnet deployment may have it) and
+ *         deliberately NO MAXIMUM. This contract is unaudited. Uncapped plus
+ *         unaudited means a bug here risks the entire amount players choose to
+ *         stake, and there is no admin able to rescue anything if one is found.
+ *
+ *         This deployment targets Base Sepolia and its stake token is Circle's
+ *         TEST USDC, which has no market value - so the amount at risk today is
+ *         worthless. That is a fact about the DENOMINATION and not about this
+ *         bytecode. Nothing above is retired by it: the same code on mainnet,
+ *         with the same absence of a cap and the same absence of an audit,
+ *         carries exactly the risk this paragraph describes. Do not read the
+ *         lowered floor or the worthless token as evidence that either would be
+ *         safe there. The compensating
  *         controls are: minimality (no imports, no libraries, no proxies, no
  *         owner, one storage struct); a dedicated adversarial review pass before
  *         deployment; the accounting separation in note 3 above; and the
@@ -148,10 +158,27 @@ contract DuelEscrow {
     /// @notice Basis-point denominator.
     uint16 public constant BPS = 10_000;
 
-    /// @notice Minimum per-player stake: 100000 base units = $0.10 of USDC.
-    /// @dev Anti-grief only. There is deliberately NO maximum - see the risk
-    ///      note in the contract-level documentation.
-    uint128 public constant MIN_STAKE = 100_000;
+    /// @notice Minimum per-player stake: 1000 base units = 0.001 USDC at 6dp.
+    /// @dev Anti-grief only, and the anti-grief argument is why this number
+    ///      moved. It was 100_000 ($0.10) while this contract was bound for
+    ///      Base mainnet: below some amount, opening duels nobody will join is
+    ///      cheap enough to be worth doing to someone, and the floor made that
+    ///      cost real. This contract now deploys to Base Sepolia (84532, see
+    ///      contracts/deploy.ts), where the stake token is Circle's test USDC
+    ///      and has no market value - so the griefing the floor prevented costs
+    ///      nothing to suffer, while the floor itself put the owner's stated
+    ///      0.001 out of reach. On a testnet that trade is the wrong way round.
+    ///
+    ///      MIN_STAKE is a `constant` with no setter, so it is fixed at
+    ///      deployment and immutable forever after. This contract has never
+    ///      been deployed, which is the only reason the value can change at
+    ///      all; on a mainnet deployment the anti-grief argument returns in
+    ///      full and 100_000 should be argued again from scratch rather than
+    ///      inherited from this line.
+    ///
+    ///      There is still deliberately NO maximum - see the risk note in the
+    ///      contract-level documentation. Lowering a floor does not touch it.
+    uint128 public constant MIN_STAKE = 1_000;
 
     /// @notice How long after a duel fills before either player may
     ///         unilaterally refund. Six hours.
@@ -168,7 +195,8 @@ contract DuelEscrow {
 
     // ----------------------------------------------------------- immutables --
 
-    /// @notice The stake token. USDC on Base, 6 decimals.
+    /// @notice The stake token. USDC, 6 decimals - Circle's TEST USDC on Base
+    ///         Sepolia for this deployment (contracts/deploy.ts pins the address).
     IERC20 public immutable usdc;
 
     /// @notice The game server's referee key; the sole signer of verdicts.
@@ -250,12 +278,16 @@ contract DuelEscrow {
      *      Known, accepted griefing vector: because ids are first-come and never
      *      recycled, anyone who can PREDICT a duel id can squat it by opening it
      *      first at the minimum stake, permanently denying that id to the real
-     *      room. The cost to the griefer is gas plus a locked $0.10 (recoverable
-     *      via `cancel`), and the defence is off-chain: derive `matchKey` from
+     *      room. The cost to the griefer is gas plus a locked 0.001 USDC
+     *      (recoverable via `cancel`) - which on this testnet deployment is
+     *      effectively only the gas, since the token is free. The floor was
+     *      never the real defence and is even less of one now; the defence is
+     *      off-chain, and it is unchanged: derive `matchKey` from
      *      something an outsider cannot guess ahead of the players. A squatted
      *      id is a denial of service on one room, never a path to anyone's money.
      * @param duelId  Opaque id, `keccak256(utf8Bytes(matchKey))` by convention.
-     * @param stake   Per-player stake in USDC base units; must be >= MIN_STAKE.
+     * @param stake   Per-player stake in USDC base units; must be >= MIN_STAKE
+     *                (1_000 = 0.001 USDC at 6dp).
      *                There is no maximum - see the contract-level risk note.
      * @param invited If non-zero, only this address may join. Zero = open to all.
      */

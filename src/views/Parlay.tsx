@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CHAIN_SPLIT_NOTE, SIGNING_CHAIN_NAME } from "../data/wallet.ts";
 import { ASK_CHIPS, SLIP_LEGS, SLIP_NOTES, SLIP_ROWS } from "../data/fixtures.ts";
 import type { MarketSource } from "../data/market.ts";
 import { REFRESH_MS } from "../data/thetanuts.tsx";
@@ -65,7 +66,7 @@ const STATUS_COLOR = {
  */
 export interface DeskWallet extends FillWallet {
   connect?(): Promise<void>;
-  switchToBase?(): Promise<void>;
+  switchToSigningChain?(): Promise<void>;
 }
 
 /** What `/api/config` says about trading. Both fields default to "off"/"none",
@@ -1046,7 +1047,7 @@ const STEP_LABEL: Record<FillStep, string> = {
  *  copy above them says what the user does instead. */
 const ACTION_LABEL = {
   connect: "Connect wallet",
-  switch: "Switch to Base",
+  switch: `Switch to ${SIGNING_CHAIN_NAME}`,
   retry: "Try again",
   refresh: "Dismiss",
   fund: "Dismiss",
@@ -1125,7 +1126,7 @@ function FillFlow({
 
   function recover(action: keyof typeof ACTION_LABEL) {
     if (action === "connect") void wallet.connect?.();
-    else if (action === "switch") void wallet.switchToBase?.();
+    else if (action === "switch") void wallet.switchToSigningChain?.();
     else if (action === "retry") void start();
     else setOutcome(null);
   }
@@ -1167,6 +1168,28 @@ function FillFlow({
           cap ${usdText(MAX_FILL_USDC)} — enforced in code, not only here
         </span>
       </div>
+
+      {/* THE HONEST LINE ABOUT THIS BUTTON.
+
+          The strike, the premium and the greeks above are read from the live
+          Thetanuts book on Base mainnet. The wallet signs on Base Sepolia, and
+          `assertSigningChain` refuses anything else. Those two facts together
+          mean this button cannot complete a fill — there is no Thetanuts
+          deployment on any testnet to fill against, and the mainnet OptionBook
+          will not take a testnet signature.
+
+          The button is left in place, and it is left honest. Removing it would
+          hide that the pricing path above is real and working; leaving it
+          unlabelled would be a button that can only ever fail, which is the
+          exact species of quiet untruth `docs/reality-check.md` catalogues.
+          So it says what will happen before it is pressed. */}
+      <p
+        data-role="chain-split"
+        style={sx(`margin:0;font:400 10px/1.5 ${MONO};color:${C.amber}`)}
+      >
+        {CHAIN_SPLIT_NOTE} A fill would have to be signed against the mainnet
+        book, so it will stop at the chain guard rather than transact.
+      </p>
 
       {!running && !outcome && (
         <button

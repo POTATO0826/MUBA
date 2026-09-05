@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CHAIN_SPLIT_NOTE,
+  DATA_CHAIN_ID,
+  DATA_CHAIN_NAME,
+  SIGNING_CHAIN_ID,
+  SIGNING_CHAIN_NAME,
+} from "../data/wallet.ts";
 import { CatMascot } from "../components/CatMascot.tsx";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
@@ -1011,8 +1018,17 @@ export function WalletPicker({
           <p style={sx(`margin:14px 0 0;font:500 11px/1.5 ${SANS};color:${C.red}`)}>{error}</p>
         )}
 
+        {/* Both chains, named, because this modal is the last screen before a
+            wallet is handed to the app and it used to print `BASE MAINNET ·
+            8453` alone — which is now the chain we specifically refuse to sign
+            on. One line would have to lie about one half. */}
         <p style={sx(`margin:16px 0 0;font:500 10px/1.5 ${MONO};color:${C.faint}`)}>
-          BASE MAINNET · 8453
+          SIGNS ON {SIGNING_CHAIN_NAME.toUpperCase()} · {SIGNING_CHAIN_ID}
+          <br />
+          READS PRICES FROM {DATA_CHAIN_NAME.toUpperCase()} · {DATA_CHAIN_ID} — READ ONLY
+        </p>
+        <p style={sx(`margin:8px 0 0;font:400 10px/1.5 ${SANS};color:${C.dim}`)}>
+          {CHAIN_SPLIT_NOTE}
         </p>
       </div>
     </div>

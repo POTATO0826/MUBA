@@ -35,6 +35,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../src/App.tsx";
 import { mockMarketSource } from "../src/data/market.ts";
+import { DATA_CHAIN_ID, SIGNING_CHAIN_ID } from "../src/data/wallet.ts";
 import type { WalletSource } from "../src/data/wallet.ts";
 import {
   BPS,
@@ -127,6 +128,8 @@ function fake(over: Partial<EscrowDeps> & { allowance?: bigint; balance?: bigint
 
   const base: EscrowDeps = {
     walletId: "injected",
+    // The signing chain — see the note on `fill.test.ts`'s `base`.
+    chainId: SIGNING_CHAIN_ID,
     escrow: ESCROW,
     now: () => NOW,
     getSigner: rec("getSigner", async () => SIGNER) as EscrowDeps["getSigner"],
@@ -197,7 +200,11 @@ describe("the numbers agree with the contract", () => {
   test("the constants are the contract's", () => {
     expect(RAKE_BPS).toBe(400n);
     expect(BPS).toBe(10_000n);
-    expect(MIN_STAKE_USDC).toBe(100_000n);
+    // $0.001. It was $0.10 while the escrow was bound for Base mainnet; the
+    // floor is anti-grief and griefing costs nothing to suffer when the stake
+    // token is free. `test/escrow.test.ts` pins this against the compiled
+    // contract, which is the copy that actually enforces it.
+    expect(MIN_STAKE_USDC).toBe(1_000n);
     expect(REFUND_TIMEOUT_HOURS).toBe(6);
     // Uncapped, by the owner's explicit decision. $20 is a warning line, and a
     // warning line must not be reachable as a limit.
@@ -290,7 +297,7 @@ describe("openDuel walks the sequence in the fixed order", () => {
     ]);
     if (out.status !== "ok") throw new Error("unreachable");
     expect(out.hash).toBe(HASH);
-    expect(out.explorer).toBe(`https://basescan.org/tx/${HASH}`);
+    expect(out.explorer).toBe(`https://sepolia.basescan.org/tx/${HASH}`);
     expect(out.approvalSkipped).toBe(false);
   });
 
@@ -775,7 +782,7 @@ async function drive(
   options: StakeOptions,
 ): Promise<{ read: () => DuelStake; flush: () => Promise<void> }> {
   const box: { current: DuelStake | null } = { current: null };
-  const wallet = { id: walletId, getSigner: async () => SIGNER };
+  const wallet = { id: walletId, identity: { chainId: SIGNING_CHAIN_ID }, getSigner: async () => SIGNER };
   const Probe = () => {
     box.current = useDuelStake(wallet, options);
     return null;
@@ -1214,16 +1221,17 @@ const WALLET: WalletSource = {
   id: "injected",
   identity: {
     address: ME,
-    chainId: 8453,
+    chainId: SIGNING_CHAIN_ID,
     walletName: "Test wallet",
     connected: true,
     connecting: false,
+    settled: true,
     wrongNetwork: false,
   },
   connect: async () => {},
   disconnect: async () => {},
   openAccount: async () => {},
-  switchToBase: async () => {},
+  switchToSigningChain: async () => {},
   getSigner: async () => SIGNER as never,
 };
 

@@ -1,4 +1,5 @@
 import { StarfieldButton } from "../components/StarfieldButton.tsx";
+import { SIGNING_CHAIN_NAME } from "../data/wallet.ts";
 import { shortAddress, type WalletIdentity } from "../data/wallet.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
@@ -36,13 +37,26 @@ interface HeaderProps {
 /**
  * The four states the one button carries, in the order they're checked.
  *
- * Wrong-network outranks the address on purpose: someone connected on Ethereum
- * can draft a whole duel and only discover at signing that Base isn't where
- * they are, so the header says so first and the accent goes amber to match.
+ * Wrong-network outranks the address on purpose: someone connected on the wrong
+ * chain can draft a whole duel and only discover at signing that Base Sepolia
+ * isn't where they are, so the header says so first and the accent goes amber
+ * to match.
+ *
+ * **`settled` outranks everything**, and it is the fix for "it keeps asking me
+ * to connect". A wallet that connected on a previous visit comes back silently,
+ * but not instantly; until the restore resolves, `connected` is `false` and
+ * `address` is `null`, and a header that trusted those would offer to connect a
+ * wallet already on its way back — every reload, to someone who never
+ * disconnected. So the unsettled state gets its own label and, crucially, its
+ * own *click behaviour*: `onWalletClick` does nothing while it holds, because a
+ * connect fired mid-restore is the wallet popup this whole change exists to
+ * stop.
  */
 function walletButton(wallet: WalletIdentity) {
   if (wallet.connecting) return { label: "Connecting…", mono: false, tone: C.accent };
-  if (wallet.wrongNetwork) return { label: "Switch to Base", mono: false, tone: C.amber };
+  if (!wallet.settled) return { label: "Restoring…", mono: false, tone: C.dim };
+  if (wallet.wrongNetwork)
+    return { label: `Switch to ${SIGNING_CHAIN_NAME}`, mono: false, tone: C.amber };
   if (wallet.address) return { label: shortAddress(wallet.address), mono: true, tone: C.accent };
   return { label: "Connect wallet", mono: false, tone: C.accent };
 }
@@ -68,6 +82,8 @@ export function Header({
    * both played a connect chime.
    */
   const onWalletClick = () => {
+    // Nothing at all until the restore has answered. See `walletButton`.
+    if (!wallet.settled) return;
     if (wallet.wrongNetwork) return onSwitchNetwork();
     if (wallet.address) return onManage();
     sfx("wallet.connect");

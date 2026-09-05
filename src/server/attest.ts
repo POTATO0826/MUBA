@@ -242,15 +242,41 @@ import type { LobbyDef } from "../types.ts";
  * (contracts/DuelEscrow.sol:231-239): the literal `"THETADUEL"`, the literal
  * `"1"`, `block.chainid` and `address(this)`.
  *
- * `chainId` is hard-coded to Base mainnet because the escrow is only ever
- * deployed there (plan 5: "no testnet exists"), and a wrong chain id produces a
- * signature that recovers to a stranger — money lost, silently. It is a
- * constant here so that it can only be wrong in one place, and
+ * `chainId` is hard-coded to the chain `DuelEscrow` is deployed on, because a
+ * wrong chain id produces a signature that recovers to a stranger — money lost,
+ * silently. It is a constant here so that it can only be wrong in one place, and
  * `test/attest.test.ts` recomputes the digest against these exact values.
+ *
+ * **It was `8453` (Base mainnet), and the reason it was is now false in both
+ * halves.** The old note read: *"hard-coded to Base mainnet because the escrow
+ * is only ever deployed there (plan 5: 'no testnet exists')."* Neither clause
+ * survives:
+ *
+ *  - The escrow is no longer deployed there. The wallet is pinned to Base
+ *    Sepolia (`SIGNING_CHAIN_ID`, `src/data/wallet.ts`) so that nothing a user
+ *    signs can spend real money, and `contracts/deploy.ts` now refuses any
+ *    chain but 84532.
+ *  - "No testnet exists" was about **Thetanuts**, never about Base. The options
+ *    protocol genuinely has no testnet deployment — its SDK supports `8453 | 1`
+ *    and nothing else — which is why the options book is still a mainnet
+ *    *read*. Base itself has had a public testnet the whole time. The sentence
+ *    quietly generalised one venue's limitation into a claim about the chain,
+ *    and that is how it came to justify a mainnet-only escrow.
+ *
+ * The contract reads `block.chainid`, so this value must equal the chain the
+ * escrow is deployed to or every verdict is rejected with both stakes already
+ * locked. `contracts/deploy.ts` reads this declaration out of this file as text
+ * before it will broadcast, and refuses on a mismatch rather than trusting a
+ * transcription — see `attestorDomainChainId()` there.
  */
 export const VERDICT_DOMAIN_NAME = "THETADUEL";
 export const VERDICT_DOMAIN_VERSION = "1";
-export const BASE_CHAIN_ID = 8453;
+// Renamed from `BASE_CHAIN_ID` along with the value. Keeping the old name over
+// a Sepolia id would have been the exact defect this whole change is about: a
+// label meaning something other than what it says. `src/data/wallet.ts` deleted
+// its own `BASE_CHAIN_ID` rather than re-value it, for this reason; "Base" now
+// names two chains in this repo and is not a safe word on a chain id.
+export const SIGNING_CHAIN_ID = 84532;
 
 /**
  * The struct `settle` checks: contracts/DuelEscrow.sol:161-162,
@@ -1843,7 +1869,7 @@ export function createAttestService(deps: AttestDeps = {}): AttestService {
         {
           name: VERDICT_DOMAIN_NAME,
           version: VERDICT_DOMAIN_VERSION,
-          chainId: BASE_CHAIN_ID,
+          chainId: SIGNING_CHAIN_ID,
           verifyingContract,
         },
         VERDICT_TYPES as unknown as Record<string, readonly { name: string; type: string }[]>,

@@ -1,4 +1,12 @@
 import type { FilledLeg, Usd, UsdPerContract } from "../engine/score.ts";
+import {
+  DATA_CHAIN_ID,
+  DATA_CHAIN_NAME,
+  SIGNING_CHAIN_ID,
+  SIGNING_CHAIN_NAME,
+  SIGNING_EXPLORER_TX,
+  assertSigningChain,
+} from "../data/wallet.ts";
 import type { FillableOrder, OrderRow } from "../types.ts";
 
 /**
@@ -83,15 +91,46 @@ import type { FillableOrder, OrderRow } from "../types.ts";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The hard notional cap: $2.00, USDC 6dp.
+ * The hard notional cap on a chain where a fill spends real money: $2.00, USDC
+ * 6dp.
  *
- * Owner's number, and it is a *code* cap rather than a UI cap on purpose. There
- * is no Thetanuts testnet — the protocol is deployed on Base mainnet and an
- * Ethereum vaults-only deployment, nothing else — so every rehearsal of this
- * path spends real money. Two dollars is the most any bug in this file can cost
- * per press.
+ * Owner's number, and it is a *code* cap rather than a UI cap on purpose. On
+ * Base mainnet every rehearsal of this path spends real money, and two dollars
+ * is the most any bug in this file can cost per press.
+ *
+ * **It is kept, not deleted, and that is the whole design of this pair.** The
+ * signing chain is now Base Sepolia, where the tokens are free and a fat finger
+ * costs nothing, so the cap has no work to do there and the owner asked for it
+ * gone. But a constant that is deleted is a trap for whoever re-enables
+ * mainnet: they inherit an uncapped fill path and nothing in the diff says they
+ * did. A constant that reads *"testnet: no cap; mainnet: $2"* is honest, and
+ * `maxFillFor` is where that sentence lives.
+ *
+ * This name still means the mainnet bound, so the FILL_LADDER's top rung and
+ * the "cap $2" copy below continue to describe it correctly.
  */
 export const MAX_FILL_USDC = 2_000000n;
+
+/**
+ * The cap that actually applies, given the chain a fill would be signed on.
+ * `null` means **no cap**.
+ *
+ * The relaxation is deliberately scoped to the signing chain rather than
+ * applied globally, and the ordering matters: this reads `deps.chainId`, a
+ * plain field, so `runFill`'s cap step still touches no dep *function* and the
+ * "cap-before-network" property is unchanged. What it must never become is a
+ * reason the chain guard is reached later — the guard is the load-bearing
+ * safety property here and the cap was only ever a second line of defence for
+ * a mainnet path that `assertSigningChain` now makes unreachable.
+ *
+ * An unknown or absent chain gets the **mainnet** cap, not the testnet one.
+ * Failing closed on a missing value is the same rule `assertSigningChain`
+ * applies to the same field, for the same reason: a cap that relaxes when it
+ * cannot tell where it is would relax exactly when it is needed most.
+ */
+export function maxFillFor(chainId: number | null | undefined): bigint | null {
+  return chainId === SIGNING_CHAIN_ID ? null : MAX_FILL_USDC;
+}
 
 /**
  * What a fill actually asks for: one cent.
@@ -147,18 +186,54 @@ export const EXPIRY_BUFFER_MS = 60_000;
  */
 export const CONTRACT_DECIMALS = 6;
 
-/** Receipts get a link, because a hash nobody can open is not evidence. */
-export const BASESCAN_TX = "https://basescan.org/tx/";
+/**
+ * Receipts get a link, because a hash nobody can open is not evidence — and the
+ * link points at the **signing** chain's explorer, because that is the only
+ * chain a transaction of ours can ever land on. It was `basescan.org` while the
+ * two chains were one number; a receipt link that resolves to the wrong
+ * explorer is a 404 dressed as evidence, which is worse than no link.
+ */
+export const BASESCAN_TX = SIGNING_EXPLORER_TX;
 
-/** Base mainnet. The book is deployed here and nowhere the app can reach. */
-export const BASE_CHAIN_ID = 8453 as const;
+/**
+ * Base mainnet, 8453 — the chain the OptionBook is deployed on and the chain
+ * every price in this file is **read** from. Re-exported from
+ * `src/data/wallet.ts` rather than redeclared, so there is one definition of
+ * each of the two chains in the app.
+ *
+ * **Nothing signs here.** It is passed to `ThetanutsClient` so the SDK resolves
+ * the right contracts and token addresses for a read; `assertSigningChain` runs
+ * before the client is ever constructed, so on a correctly-configured wallet
+ * the construction below is only ever reached by a Base Sepolia signer — which
+ * is precisely why a fill can no longer succeed. See the FILL IMPOSSIBILITY
+ * note on `runFill`.
+ */
+export { DATA_CHAIN_ID, DATA_CHAIN_NAME, SIGNING_CHAIN_ID, SIGNING_CHAIN_NAME };
+export { assertSigningChain };
 
-/** Public fallback. `RPC_URL` is server-only and secret; the browser gets the
- *  public endpoint, which throttles — hence `RATE_LIMIT` in the error map. */
+/** Public fallback for the mainnet **read**. `RPC_URL` is server-only and
+ *  secret; the browser gets the public endpoint, which throttles — hence
+ *  `RATE_LIMIT` in the error map. Mainnet, deliberately: this endpoint backs
+ *  price reads, never a transaction. */
 export const PUBLIC_BASE_RPC = "https://mainnet.base.org";
 
 /** `2^256 - 1`. Named only so a test can assert we never pass it. */
 export const MAX_UINT256 = (1n << 256n) - 1n;
+
+/**
+ * What to tell someone whose wallet is on the wrong chain — one sentence, used
+ * by every refusal in this file and re-exported to `escrow.ts` and `rfq.ts`.
+ *
+ * It says *which* chain is required and *why*, because "switch networks" on its
+ * own reads as a technicality rather than as the safety property it is. The
+ * older copy said "Switch the wallet to Base mainnet (8453)", which is now
+ * precisely backwards: mainnet is the chain we refuse.
+ */
+export const WRONG_CHAIN_RECOVERY =
+  `Switch the wallet to ${SIGNING_CHAIN_NAME} (${SIGNING_CHAIN_ID}) and try again. ` +
+  "This build signs on the testnet only, so nothing you approve here can spend real money. " +
+  `Prices and strikes are still read from ${DATA_CHAIN_NAME} (${DATA_CHAIN_ID}) — reading a ` +
+  "book is not signing against it.";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shapes
@@ -429,6 +504,22 @@ export interface FillDeps {
    * `getSigner` is even called — see `runFill`.
    */
   walletId?: string;
+  /**
+   * The chain the connected wallet reports, and the input to the one guard that
+   * stands between this file and a transaction that spends real money.
+   *
+   * **Required, and deliberately not optional.** An optional field would let a
+   * dep object — a future helper, a hand-rolled adapter, a test double that
+   * copied five of the six fields — reach `getSigner` having never named a
+   * chain, and `assertSigningChain` would then be refusing `undefined` rather
+   * than doing its job. Making it required means `bunx tsc --noEmit` asks every
+   * construction site the question, which is the difference between a guard and
+   * a suggestion.
+   *
+   * `null` is the honest value for "no wallet connected" and is refused exactly
+   * like a wrong chain is, because neither can sign.
+   */
+  chainId: number | null;
   /**
    * The first-ever call site of `WalletSource.getSigner()` (`src/data/wallet.ts`
    * built it in wave 7 with zero callers).
@@ -1003,21 +1094,52 @@ export async function runFill(
   // "cap-before-network" pins, and it is the reason the cap is here rather than
   // in the panel: a UI clamp is a suggestion to a caller, this is a bound.
   onStep("cap");
+  // Still a bound, not a form rule: any positive amount is allowed, zero and
+  // negatives are not, and "positive" is about correctness rather than size —
+  // a fill of nothing is not a small fill, it is a malformed one.
   if (typeof usdcAmount !== "bigint" || usdcAmount <= 0n) {
     return raise("SIZE", "cap", { message: "A fill needs a positive amount." });
   }
-  if (usdcAmount > MAX_FILL_USDC) {
+  const cap = maxFillFor(deps.chainId);
+  if (cap !== null && usdcAmount > cap) {
     return raise("SIZE", "cap", {
-      message: `This build will not fill more than $${usdText(MAX_FILL_USDC)}.`,
+      message: `This build will not fill more than $${usdText(cap)} on this chain.`,
       recovery:
-        "MAX_FILL_USDC is a code cap, not a form validation — Thetanuts has no testnet, so " +
-        "every rehearsal spends real money and the bound lives above the network call.",
+        "The cap is a code bound, not a form validation, and it applies to chains where a fill " +
+        `spends real money. On ${SIGNING_CHAIN_NAME} there is no cap — the tokens are free, so ` +
+        "a fat finger costs nothing and a limit would only be in the way.",
       action: "none",
     });
   }
 
   // ── 2. signer ─────────────────────────────────────────────────────────────
   onStep("signer");
+
+  // ── THE CHAIN GUARD ────────────────────────────────────────────────────────
+  // Above `getSigner`, above the mock check, above every dep. This is the
+  // owner's instruction expressed as code: nothing signed here may spend real
+  // money, so a wallet on anything but Base Sepolia is refused before a signer
+  // exists to refuse it with.
+  //
+  // It is `assertLongOnly`'s shape for `assertLongOnly`'s reason — a refusal
+  // that cannot be skipped rather than a warning that can be ignored — and it
+  // is checked here as well as inside `createLiveFillDeps.getSigner` because
+  // this function accepts any `FillDeps`, including one a test or a future
+  // caller assembled by hand.
+  try {
+    assertSigningChain(deps.chainId, "a fill");
+  } catch (error) {
+    return {
+      status: "failed",
+      error: {
+        ...classifyFillError(error, "signer"),
+        code: "SIGNER_REQUIRED",
+        message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+        recovery: WRONG_CHAIN_RECOVERY,
+        action: "switch",
+      },
+    };
+  }
 
   // The mock wallet is inert, and is refused BEFORE `getSigner` is called.
   // Its `getSigner` throws when connected (`src/wallet/mock.ts`) — deliberately,
@@ -1042,14 +1164,16 @@ export async function runFill(
   } catch (error) {
     // Connected, wrong chain. `WalletSource.getSigner` throws rather than
     // returning `null` for exactly this case, so the two recoveries stay
-    // distinguishable (`src/data/wallet.ts`).
+    // distinguishable (`src/data/wallet.ts`). Reached when the wallet's own
+    // chain moved between the guard above and this line, or when a dep object
+    // reported one chain and its wallet held another.
     return {
       status: "failed",
       error: {
         ...classifyFillError(error, "signer"),
         code: "SIGNER_REQUIRED",
-        message: "The wallet is not on Base.",
-        recovery: "Switch the wallet to Base mainnet (8453) and press the amount again.",
+        message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+        recovery: WRONG_CHAIN_RECOVERY,
         action: "switch",
       },
     };
@@ -1763,7 +1887,8 @@ export async function runParlayFill(
         action: "none",
       });
     }
-    if (leg.usdcAmount > MAX_FILL_USDC) {
+    const legCap = maxFillFor(deps.chainId);
+    if (legCap !== null && leg.usdcAmount > legCap) {
       return refuse("SIZE", "cap", {
         message: `No leg may ask for more than $${usdText(MAX_FILL_USDC)}.`,
         recovery:
@@ -1787,6 +1912,20 @@ export async function runParlayFill(
 
   // ── 2. signer ──────────────────────────────────────────────────────────────
   emit("signer");
+  // The chain guard, above every dep — see `runFill` step 2. A slip is several
+  // fills, so it is several chances to spend real money, and it gets the same
+  // refusal in the same position.
+  try {
+    assertSigningChain(deps.chainId, "a slip");
+  } catch (error) {
+    return refuse("SIGNER_REQUIRED", "signer", {
+      ...classifyFillError(error, "signer"),
+      code: "SIGNER_REQUIRED",
+      message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+      recovery: WRONG_CHAIN_RECOVERY,
+      action: "switch",
+    });
+  }
   if (deps.walletId === "mock") {
     return refuse("SIGNER_REQUIRED", "signer", {
       message: "The mock wallet cannot sign — and must not.",
@@ -1803,8 +1942,8 @@ export async function runParlayFill(
     return refuse("SIGNER_REQUIRED", "signer", {
       ...classifyFillError(error, "signer"),
       code: "SIGNER_REQUIRED",
-      message: "The wallet is not on Base.",
-      recovery: "Switch the wallet to Base mainnet (8453) and confirm the slip again.",
+      message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+      recovery: WRONG_CHAIN_RECOVERY,
       action: "switch",
     });
   }
@@ -2173,6 +2312,16 @@ export function splitLabel(bps: bigint | null): string {
  *  whole `WalletSource` surface (and so a test can pass two functions). */
 export interface FillWallet {
   readonly id: string;
+  /**
+   * The connected wallet's identity, narrowed to the one field that decides
+   * whether anything here may sign.
+   *
+   * Shaped as `identity.chainId` rather than a flat `chainId` so that a real
+   * `WalletSource` (`src/data/wallet.ts`) satisfies this seam structurally, with
+   * no adapter and no second copy of the number to keep in step. There is one
+   * chain id in the app and this is a view onto it.
+   */
+  readonly identity: { readonly chainId: number | null };
   getSigner(): Promise<unknown | null>;
 }
 
@@ -2210,6 +2359,7 @@ export function createLiveFillDeps(
 
   return {
     walletId: wallet.id,
+    chainId: wallet.identity.chainId,
     referrer: options.referrer,
     // A getter, not a value: the address is read off `chainConfig`, the client
     // is not built until the signer lands at step 2, and the guard that reads it
@@ -2223,6 +2373,11 @@ export function createLiveFillDeps(
     },
 
     async getSigner() {
+      // The second layer, on the wallet's live answer rather than on the value
+      // this adapter captured at construction. `wallet.chainId` is read fresh
+      // here because the object is a React-rendered `WalletSource` whose chain
+      // can change under a user who switches networks mid-flow.
+      assertSigningChain(wallet.identity.chainId, "a fill");
       const signer = await wallet.getSigner();
       if (!signer) return null;
 
@@ -2236,7 +2391,12 @@ export function createLiveFillDeps(
       const provider =
         (signer as { provider?: unknown }).provider ?? new JsonRpcProvider(PUBLIC_BASE_RPC);
       const client = new ThetanutsClient({
-        chainId: BASE_CHAIN_ID,
+        // The DATA chain. The SDK's `SupportedChainId` is the literal union
+        // `8453 | 1` and its `CHAIN_CONFIGS_BY_ID` has exactly those two keys,
+        // so there is no testnet value that could go here — see
+        // `src/data/wallet.ts`. Reached only by a Base Sepolia signer, which is
+        // why the fill this client would perform cannot succeed.
+        chainId: DATA_CHAIN_ID,
         // The SDK's ethers types and ours are the same package at the same
         // major; the cast is here because `signer` crosses the wallet seam as
         // `unknown` on purpose — `src/data/wallet.ts` must not drag ethers into
@@ -2298,7 +2458,7 @@ export function createLiveFillDeps(
       // asking the signing client to do it would put a wallet in the path of a
       // plain GET.
       const reader = new ThetanutsClient({
-        chainId: BASE_CHAIN_ID,
+        chainId: DATA_CHAIN_ID,
         provider: new JsonRpcProvider(PUBLIC_BASE_RPC) as never,
         // Required in a browser even with no signer: `rfqKeys` is built in the
         // constructor and its default provider throws under `window`
@@ -2357,7 +2517,7 @@ export async function readReferrerSplit(referrer: string): Promise<bigint | null
     );
     const { JsonRpcProvider } = await import("ethers");
     const client = new ThetanutsClient({
-      chainId: BASE_CHAIN_ID,
+      chainId: DATA_CHAIN_ID,
       provider: new JsonRpcProvider(PUBLIC_BASE_RPC) as never,
       // Without this the constructor throws under `window` and the `catch`
       // below swallows it, so the footer chip read `SPLIT — unread` forever
@@ -2407,7 +2567,7 @@ export async function claimReferrerFees(
     const provider =
       (signer as { provider?: unknown }).provider ?? new JsonRpcProvider(PUBLIC_BASE_RPC);
     const client = new ThetanutsClient({
-      chainId: BASE_CHAIN_ID,
+      chainId: DATA_CHAIN_ID,
       provider: provider as never,
       signer: signer as never,
       // Fourth and last browser construction. Same reason as the other three

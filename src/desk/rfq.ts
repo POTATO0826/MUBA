@@ -1,8 +1,11 @@
 import {
   ALCHEMY_HINT,
   BASESCAN_TX,
-  BASE_CHAIN_ID,
+  DATA_CHAIN_ID,
   PUBLIC_BASE_RPC,
+  SIGNING_CHAIN_NAME,
+  WRONG_CHAIN_RECOVERY,
+  assertSigningChain,
   looksThrottled,
   usdText,
   type FillAction,
@@ -300,8 +303,20 @@ export const RFQ_POLL_MS = 15_000;
  */
 export const RFQ_PATIENCE_MS = DEFAULT_OFFER_WINDOW_MIN * 60_000 + 60_000;
 
-/** Base mainnet. The OptionFactory is deployed here and nowhere the app reaches. */
-export const RFQ_CHAIN_ID = BASE_CHAIN_ID;
+/**
+ * Base mainnet — where the OptionFactory is deployed, and therefore the chain
+ * this file **reads** quotation state from.
+ *
+ * It is the DATA chain, not the signing chain, and the difference is now the
+ * most important fact about this module. `requestForQuotation` and
+ * `settleQuotationEarly` are transactions against a mainnet factory; a Base
+ * Sepolia wallet cannot send them. So, exactly as with `fill.ts`, **an RFQ can
+ * no longer be opened or settled** — the guard refuses before the client is
+ * built, and that refusal is the owner's requirement working rather than a
+ * regression. The read-only polling half (`awaitOffers`, `ensureReader`) is
+ * untouched: it signs nothing, so it stays real.
+ */
+export const RFQ_CHAIN_ID = DATA_CHAIN_ID;
 
 /** `2^256 - 1`. Named only so a test can assert we never approve it. */
 export const RFQ_MAX_UINT256 = (1n << 256n) - 1n;
@@ -657,7 +672,7 @@ export interface RfqError {
 export const RFQ_COPY: Record<RfqCode, { message: string; recovery: string; action: FillAction }> = {
   SIGNER_REQUIRED: {
     message: "No wallet can sign this request.",
-    recovery: "Connect a wallet on Base, then open the request again.",
+    recovery: `Connect a wallet on ${SIGNING_CHAIN_NAME}, then open the request again.`,
     action: "connect",
   },
   COLLATERAL_NOT_ZERO: {
@@ -713,7 +728,7 @@ export const RFQ_COPY: Record<RfqCode, { message: string; recovery: string; acti
   },
   INSUFFICIENT_BALANCE: {
     message: "The wallet does not hold enough collateral to settle.",
-    recovery: "Fund it with a few dollars of USDC on Base. The request stays open until its window ends.",
+    recovery: `Fund it with test USDC on ${SIGNING_CHAIN_NAME}. The request stays open until its window ends.`,
     action: "fund",
   },
   INSUFFICIENT_ALLOWANCE: {
@@ -1083,6 +1098,11 @@ export function rememberRequest(
 export interface RfqDeps {
   /** `"mock"` is refused before `getSigner` is even called. */
   walletId?: string;
+  /**
+   * The chain the connected wallet reports. **Required, not optional** — see
+   * `FillDeps.chainId` in `./fill.ts`.
+   */
+  chainId: number | null;
   /** `null` = not connected; a **throw** = connected on the wrong chain. */
   getSigner(): Promise<unknown | null>;
   /** A fresh ECDH keypair. Generated into memory; never stored by us. */
@@ -1241,6 +1261,27 @@ export async function openRequest(
 
   // ── signer ──────────────────────────────────────────────────────────────────
   onStep("signer");
+
+  // ── THE CHAIN GUARD ────────────────────────────────────────────────────────
+  // Above `getSigner` and above the mock check, exactly as in `runFill`. An RFQ
+  // is two transactions and an approval against a MAINNET factory, so this is
+  // the guard that makes the whole sequence unreachable on the testnet wallet
+  // this build requires — see `RFQ_CHAIN_ID`.
+  try {
+    assertSigningChain(deps.chainId, "a quote request");
+  } catch (error) {
+    return {
+      status: "failed",
+      error: {
+        ...classifyRfqError(error, "signer"),
+        code: "SIGNER_REQUIRED",
+        message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+        recovery: WRONG_CHAIN_RECOVERY,
+        action: "switch",
+      },
+    };
+  }
+
   // The mock wallet is inert and is refused BEFORE `getSigner` is called. Its
   // `getSigner` throws when connected, and a throw is this sequence's signal for
   // "wrong network" — left to the generic path a mock-tier demo would be told to
@@ -1263,8 +1304,8 @@ export async function openRequest(
       error: {
         ...classifyRfqError(error, "signer"),
         code: "SIGNER_REQUIRED",
-        message: "The wallet is not on Base.",
-        recovery: "Switch the wallet to Base mainnet (8453) and open the request again.",
+        message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+        recovery: WRONG_CHAIN_RECOVERY,
         action: "switch",
       },
     };
@@ -1548,7 +1589,7 @@ export async function acceptOffer(
   if (deps.walletId === "mock") {
     return raise("SIGNER_REQUIRED", "choose", {
       message: "The mock wallet cannot settle — and must not.",
-      recovery: "Connect a real wallet on Base. The mock never approves and never transacts.",
+      recovery: `Connect a real wallet on ${SIGNING_CHAIN_NAME}. The mock never approves and never transacts.`,
       action: "connect",
     });
   }
@@ -1654,7 +1695,7 @@ export async function cancelRequest(
   if (deps.walletId === "mock") {
     return raise("SIGNER_REQUIRED", "submit", {
       message: "The mock wallet cannot cancel — and must not.",
-      recovery: "Connect a real wallet on Base.",
+      recovery: `Connect a real wallet on ${SIGNING_CHAIN_NAME}.`,
       action: "connect",
     });
   }
@@ -1853,6 +1894,9 @@ export function rfqBuilderParams(
 /** Just the wallet seam the RFQ needs. Structurally satisfied by `WalletSource`. */
 export interface RfqWallet {
   readonly id: string;
+  /** The connected wallet's chain, shaped so `WalletSource` satisfies this
+   *  seam structurally — see `FillWallet.identity`. */
+  readonly identity: { readonly chainId: number | null };
   getSigner(): Promise<unknown | null>;
 }
 
@@ -1937,10 +1981,14 @@ export function createLiveRfqDeps(
 
   return {
     walletId: wallet.id,
+    chainId: wallet.identity.chainId,
     storage: options.storage,
     referralId: options.referralId,
 
     async getSigner() {
+      // The second layer, on the wallet's live answer — see
+      // `createLiveFillDeps.getSigner`.
+      assertSigningChain(wallet.identity.chainId, "a quote request");
       const signer = await wallet.getSigner();
       if (!signer) return null;
 

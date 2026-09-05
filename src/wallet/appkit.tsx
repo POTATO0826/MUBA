@@ -6,11 +6,12 @@ import {
   useDisconnect,
   useWalletInfo,
 } from "@reown/appkit/react";
-import { base } from "@reown/appkit/networks";
+import { baseSepolia } from "@reown/appkit/networks";
 import { BrowserProvider, type Eip1193Provider } from "ethers";
 import { useMemo } from "react";
 import {
-  BASE_CHAIN_ID,
+  SIGNING_CHAIN_ID,
+  SIGNING_CHAIN_NAME,
   type WalletIdentity,
   type WalletSource,
 } from "../data/wallet.ts";
@@ -33,7 +34,7 @@ export function useAppKitWallet(): WalletSource {
   const { walletProvider } = useAppKitProvider<Eip1193Provider>("eip155");
 
   // `chainId` is `number | string | undefined` — WalletConnect carries CAIP ids
-  // as strings, so normalise before comparing to 8453.
+  // as strings, so normalise before comparing to the signing chain.
   const numericChainId = useMemo(() => {
     if (chainId === undefined) return null;
     const n = typeof chainId === "number" ? chainId : Number.parseInt(chainId, 10);
@@ -50,7 +51,16 @@ export function useAppKitWallet(): WalletSource {
       // reports as false — without it the header flashes "Connect wallet" at
       // someone who is already connected.
       connecting: status === "connecting" || status === "reconnecting",
-      wrongNetwork: isConnected && numericChainId !== null && numericChainId !== BASE_CHAIN_ID,
+      // AppKit persists the session itself (WalletConnect keeps it in
+      // localStorage, and an injected connector re-authorises silently), so
+      // "stay connected across a reload" is already true at this layer. What was
+      // NOT true is that the UI waited for it: `status` is `undefined` on the
+      // very first render and `"reconnecting"` for the round trip after, and a
+      // screen that decided what to draw in either window offered to connect a
+      // wallet that was already coming back. `settled` is that window, named, so
+      // no surface has to infer it from a status string it should not know about.
+      settled: status !== undefined && status !== "connecting" && status !== "reconnecting",
+      wrongNetwork: isConnected && numericChainId !== null && numericChainId !== SIGNING_CHAIN_ID,
     }),
     [address, numericChainId, walletInfo?.name, isConnected, status],
   );
@@ -62,19 +72,24 @@ export function useAppKitWallet(): WalletSource {
       connect: () => open({ view: "Connect" }).then(() => undefined),
       disconnect: () => disconnect(),
       openAccount: () => open({ view: "Account" }).then(() => undefined),
-      switchToBase: async () => {
-        await switchNetwork(base);
+      switchToSigningChain: async () => {
+        await switchNetwork(baseSepolia);
       },
       getSigner: async () => {
         if (!walletProvider || !identity.address) return null;
+        // A RESTORED session gets no pass here. "Stay connected" means we do
+        // not re-ask for a connection; it has never meant skipping the chain
+        // check, and a silently-restored mainnet session that could sign would
+        // be strictly worse than prompting every time.
         if (identity.wrongNetwork) {
           throw new Error(
-            `wallet is on chain ${identity.chainId}, but THETADUEL settles on Base (${BASE_CHAIN_ID}) — switch network first`,
+            `WRONG_CHAIN: wallet is on chain ${identity.chainId}, but THETADUEL signs only on ` +
+              `${SIGNING_CHAIN_NAME} (${SIGNING_CHAIN_ID}) — switch network first`,
           );
         }
         // Pinning the network skips a round-trip to `eth_chainId` on every call
         // and is safe because the wrong-network case is already out.
-        const provider = new BrowserProvider(walletProvider, BASE_CHAIN_ID);
+        const provider = new BrowserProvider(walletProvider, SIGNING_CHAIN_ID);
         return provider.getSigner(identity.address);
       },
     }),

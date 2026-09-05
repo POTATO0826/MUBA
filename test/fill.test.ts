@@ -20,6 +20,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { DATA_CHAIN_ID, SIGNING_CHAIN_ID } from "../src/data/wallet.ts";
 import { join } from "node:path";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -74,6 +75,16 @@ import {
 } from "../src/desk/fill.ts";
 import { Parlay, ParlayLegChip, rowKey } from "../src/views/Parlay.tsx";
 import type { OrderRow, PricingRow } from "../src/types.ts";
+
+/**
+ * The chain half of a wallet identity, on the signing chain.
+ *
+ * Every wallet double in this file uses it, so a double is on the chain the
+ * guards accept unless a test deliberately says otherwise. That asymmetry is the
+ * point: proving a refusal has to be explicit (`{ chainId: DATA_CHAIN_ID }`),
+ * and no test gets a refusal — or an acceptance — by forgetting a field.
+ */
+const SEPOLIA = { chainId: SIGNING_CHAIN_ID } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -197,6 +208,11 @@ function spy(over: Partial<FillDeps> = {}): Spy {
 
   const base: FillDeps = {
     walletId: "injected",
+    // The signing chain. Every double in this file starts on the chain the
+    // guard accepts, so that a test which wants to prove a REFUSAL has to say
+    // so explicitly — `spy({ chainId: DATA_CHAIN_ID })` — rather than getting
+    // one by forgetting a field.
+    chainId: SIGNING_CHAIN_ID,
     referrer: REFERRER,
     usdc: USDC,
     // The chain-configured OptionBook — the approval spender, and the anchor
@@ -334,7 +350,7 @@ describe("runFill — the sequence", () => {
     const { outcome } = await run(spy());
     if (outcome.status !== "filled") throw new Error("expected a fill");
     expect(outcome.hash).toBe(HASH);
-    expect(outcome.explorer).toBe(`https://basescan.org/tx/${HASH}`);
+    expect(outcome.explorer).toBe(`https://sepolia.basescan.org/tx/${HASH}`);
     expect(outcome.nonce).toBe("4242");
     expect(outcome.quote.usdcAmount).toBe(TARGET_FILL_USDC);
   });
@@ -350,7 +366,13 @@ describe("runFill — the sequence", () => {
 
 describe("runFill — the cap runs before the network", () => {
   test("an over-cap amount never touches a single dep", async () => {
-    const s = spy();
+    // ON A CHAIN THAT HAS A CAP. `MAX_FILL_USDC` is now the MAINNET bound and
+    // `maxFillFor` returns `null` on the signing chain, where the tokens are
+    // free — so this test has to name the chain it is about, or it would be
+    // asserting that an uncapped path caps. The property being pinned is
+    // unchanged and is about ORDERING: wherever a cap applies, it applies
+    // above the network.
+    const s = spy({ chainId: DATA_CHAIN_ID });
     const { outcome, steps } = await run(s, MAX_FILL_USDC + 1n);
 
     expect(failure(outcome).code).toBe("SIZE");
@@ -360,6 +382,22 @@ describe("runFill — the cap runs before the network", () => {
     // can.
     expect(s.calls).toEqual([]);
     expect(steps).toEqual(["cap"]);
+  });
+
+  test("the same amount is allowed on the signing chain, where it costs nothing", async () => {
+    // The other half, and the reason the test above had to name a chain. On
+    // Base Sepolia there is no cap at all, so an amount that mainnet refuses
+    // walks straight past `cap` and stops at the signer instead.
+    const s = spy();
+    const { outcome, steps } = await run(s, MAX_FILL_USDC + 1n);
+
+    // It gets PAST `cap`. Where it stops afterwards is the ordinary business of
+    // the later steps — this order's own depth, in this fixture — and is not
+    // what this test is about. What matters is that the bound did not stop it.
+    expect(failure(outcome).step).not.toBe("cap");
+    expect(steps[0]).toBe("cap");
+    expect(steps).toContain("signer");
+    expect(s.calls).toContain("getSigner");
   });
 
   test("a zero or negative notional is refused the same way", async () => {
@@ -694,7 +732,7 @@ describe("createLiveFillDeps constructs a browser client that actually construct
   });
 
   test("getSigner builds the client instead of throwing INVALID_KEY", async () => {
-    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => SIGNER });
+    const deps = createLiveFillDeps({ id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER });
     // Before the fix this rejected with `InvalidKeyError` — and `runFill` step 2
     // reads a throw from `getSigner` as "connected, wrong chain", so the panel
     // told a user already on Base to switch to Base, forever.
@@ -703,7 +741,7 @@ describe("createLiveFillDeps constructs a browser client that actually construct
   });
 
   test("and it fills in both chain-config anchors the later steps depend on", async () => {
-    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => SIGNER });
+    const deps = createLiveFillDeps({ id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER });
     await deps.getSigner();
     // Base mainnet USDC and the chain-configured OptionBook, straight off
     // `client.chainConfig`. The second is the BUG-3 approval spender.
@@ -712,7 +750,7 @@ describe("createLiveFillDeps constructs a browser client that actually construct
   });
 
   test("a wallet that cannot produce a signer builds no client at all", async () => {
-    const deps = createLiveFillDeps({ id: "injected", getSigner: async () => null });
+    const deps = createLiveFillDeps({ id: "injected", identity: SEPOLIA, getSigner: async () => null });
     expect(await deps.getSigner()).toBeNull();
     expect(deps.usdc).toBeUndefined();
     expect(deps.optionBook).toBeUndefined();
@@ -861,7 +899,7 @@ describe("runParlayFill — the sequence", () => {
       expect(leg.status).toBe("filled");
       expect(leg.hash).toBe(HASH);
       // A hash nobody can open is not evidence. This is the artifact.
-      expect(leg.explorer).toBe(`https://basescan.org/tx/${HASH}`);
+      expect(leg.explorer).toBe(`https://sepolia.basescan.org/tx/${HASH}`);
       expect(leg.nonce).toBe("4242");
     }
     expect(result.spent).toBe(9_900n * 2n);
@@ -2105,7 +2143,11 @@ const slipSource: MarketSource = {
 /** Mount `Parlay` and return its HTML, with all effects settled. */
 async function deskHtml(props: {
   source?: MarketSource;
-  wallet?: { id: string; getSigner: () => Promise<unknown | null> };
+  wallet?: {
+    id: string;
+    identity: { chainId: number | null };
+    getSigner: () => Promise<unknown | null>;
+  };
   expandRow?: boolean;
 }): Promise<string> {
   const container = document.createElement("div");
@@ -2160,14 +2202,14 @@ describe("/desk with trading off renders today's DOM", () => {
     // A real wallet, but `THETADUEL_TRADE` unset. Opt-IN means the absence of
     // the flag is the same as the absence of the feature.
     serveConfig({ referrer: REFERRER, features: { trade: false } });
-    const flagOff = await deskHtml({ wallet: { id: "injected", getSigner: async () => SIGNER } });
+    const flagOff = await deskHtml({ wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER } });
     expect(flagOff).toBe(baseline);
 
     // A config route that does not exist at all — a static build. Fail closed.
     globalThis.fetch = (async () => {
       throw new Error("no server");
     }) as unknown as typeof globalThis.fetch;
-    const noServer = await deskHtml({ wallet: { id: "injected", getSigner: async () => SIGNER } });
+    const noServer = await deskHtml({ wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER } });
     expect(noServer).toBe(baseline);
 
     globalThis.fetch = realFetch;
@@ -2180,7 +2222,7 @@ describe("/desk with trading off renders today's DOM", () => {
     // The mock cannot sign and must never approve or fill, so the flag has
     // nothing to enable — and the config is never even asked for.
     serveConfig({ referrer: REFERRER, features: { trade: true } });
-    const onMock = await deskHtml({ wallet: { id: "mock", getSigner: async () => null } });
+    const onMock = await deskHtml({ wallet: { id: "mock", identity: SEPOLIA, getSigner: async () => null } });
     expect(onMock).toBe(baseline);
 
     globalThis.fetch = realFetch;
@@ -2193,7 +2235,7 @@ describe("/desk with trading off renders today's DOM", () => {
     // No referrer configured, so the footer strip reads nothing off chain and
     // this test opens no socket.
     serveConfig({ referrer: "", features: { trade: true } });
-    const flagOn = await deskHtml({ wallet: { id: "injected", getSigner: async () => SIGNER } });
+    const flagOn = await deskHtml({ wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER } });
 
     expect(flagOn).not.toBe(baseline);
     expect(flagOn).toContain("Referrer attribution");
@@ -2207,7 +2249,7 @@ describe("/desk with trading off renders today's DOM", () => {
     serveConfig({ referrer: "", features: { trade: true } });
     const html = await deskHtml({
       source: liveSource,
-      wallet: { id: "injected", getSigner: async () => SIGNER },
+      wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
       expandRow: true,
     });
 
@@ -2230,7 +2272,7 @@ describe("/desk with trading off renders today's DOM", () => {
     serveConfig({ referrer: "", features: { trade: false } });
     const flagOff = await deskHtml({
       source: slipSource,
-      wallet: { id: "injected", getSigner: async () => SIGNER },
+      wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
     });
     expect(flagOff).toBe(baseline);
 
@@ -2253,7 +2295,7 @@ async function mountDesk(source: MarketSource) {
         source,
         asset: "ETH",
         onAsset: () => {},
-        wallet: { id: "injected", getSigner: async () => SIGNER },
+        wallet: { id: "injected", identity: SEPOLIA, getSigner: async () => SIGNER },
       }),
     );
   });
@@ -2391,13 +2433,13 @@ describe("the parlay slip, on screen", () => {
           status: "filled",
           quote,
           hash: HASH,
-          explorer: `https://basescan.org/tx/${HASH}`,
+          explorer: `https://sepolia.basescan.org/tx/${HASH}`,
           approvalSkipped: true,
         },
         (h) => {
           expect(h).toContain("FILLED");
           // The link, openable, on the leg itself.
-          expect(h).toContain(`href="https://basescan.org/tx/${HASH}"`);
+          expect(h).toContain(`href="https://sepolia.basescan.org/tx/${HASH}"`);
           expect(h).toContain("on BaseScan");
           expect(h).toContain("1 tx (allowance sufficient)");
         },

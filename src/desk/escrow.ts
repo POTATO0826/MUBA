@@ -1,9 +1,12 @@
 import {
   ALCHEMY_HINT,
   BASESCAN_TX,
-  BASE_CHAIN_ID,
   MAX_UINT256,
   PUBLIC_BASE_RPC,
+  SIGNING_CHAIN_ID,
+  SIGNING_CHAIN_NAME,
+  WRONG_CHAIN_RECOVERY,
+  assertSigningChain,
   looksThrottled,
   usdText,
   type FillAction,
@@ -96,10 +99,12 @@ import {
  * `contracts/DuelEscrow.sol` and cross-checked against the executed adversarial
  * review. The five that shape this sequence:
  *
- *  - `MIN_STAKE = 100_000` ($0.10) and **no maximum** — the owner's explicit,
+ *  - `MIN_STAKE = 1_000` ($0.001) and **no maximum** — the owner's explicit,
  *    documented decision (contract natspec, "UNCAPPED STAKE"). The UI warns
  *    above $20; it does not refuse, because refusing would be a cap the owner
- *    said not to have.
+ *    said not to have. The floor was `100_000` ($0.10) while the escrow was
+ *    bound for mainnet; see `MIN_STAKE_USDC` for why it moved and why this was
+ *    the only moment it could.
  *  - `RAKE_BPS = 400`, and `payout + rake == 2 × stake` **exactly** for every
  *    stake — verified on chain for 14 values and swept over 250 000 (review §3).
  *    So `payoutOf` here can be integer arithmetic with no dust term.
@@ -120,8 +125,32 @@ import {
 // The bounds
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `contracts/DuelEscrow.sol:154` — `MIN_STAKE`, $0.10 of USDC at 6dp. */
-export const MIN_STAKE_USDC = 100_000n;
+/**
+ * `contracts/DuelEscrow.sol:154` — `MIN_STAKE`, **$0.001** of USDC at 6dp, i.e.
+ * 1,000 base units.
+ *
+ * **This is a mirror, not a rule.** The floor is enforced on chain by
+ * `require(stake >= MIN_STAKE, "stake too small")` at `DuelEscrow.sol:265`, and
+ * no client change can lower it — this constant exists so the panel can refuse
+ * before spending gas to be refused, and it must equal the contract's value or
+ * it is worse than useless.
+ *
+ * It was `100_000` ($0.10). The contract's own natspec calls that floor
+ * anti-grief: below some amount, opening duels nobody will join is free enough
+ * to be worth doing to someone. That reasoning was written for a mainnet
+ * deployment and does not survive the move to Base Sepolia — the griefing it
+ * prevents costs nothing to suffer when the tokens themselves cost nothing, and
+ * the only thing the floor actually bought on a testnet was making the owner's
+ * $0.001 unreachable.
+ *
+ * **The timing is the entire reason this is possible.** `MIN_STAKE` is a
+ * `constant` with no setter, so it is fixed at deployment and immutable
+ * afterwards. `DuelEscrow` has never been deployed — `THETADUEL_ESCROW` is
+ * unset — so this is the last moment it can change at all. On a mainnet
+ * deployment the anti-grief argument returns in full, and lowering it there
+ * would be a decision to re-argue rather than a value to inherit.
+ */
+export const MIN_STAKE_USDC = 1_000n;
 
 /**
  * There is no maximum. This is the line above which the create form says so out
@@ -147,11 +176,26 @@ export const REFUND_TIMEOUT_HOURS = 6;
 /** How often the room asks the chain whether the second seat has filled. */
 export const JOIN_POLL_MS = 4_000;
 
-export { BASESCAN_TX, BASE_CHAIN_ID, MAX_UINT256, PUBLIC_BASE_RPC, usdText };
+export {
+  BASESCAN_TX,
+  MAX_UINT256,
+  PUBLIC_BASE_RPC,
+  SIGNING_CHAIN_ID,
+  SIGNING_CHAIN_NAME,
+  assertSigningChain,
+  usdText,
+};
 
-/** BaseScan for an address — the escrow's own page, linked so a player can read
- *  the contract holding their money before they send it. */
-export const BASESCAN_ADDRESS = "https://basescan.org/address/";
+/**
+ * BaseScan for an address — the escrow's own page, linked so a player can read
+ * the contract holding their money before they send it.
+ *
+ * **Sepolia's explorer**, matching `BASESCAN_TX`: `DuelEscrow` is deployed to
+ * Base Sepolia (`contracts/deploy.ts`) and an address link pointing at the
+ * mainnet explorer would resolve to nothing, or — worse — to an unrelated
+ * contract that happens to share the address.
+ */
+export const BASESCAN_ADDRESS = "https://sepolia.basescan.org/address/";
 
 /**
  * What the winner is actually paid: the pot, less 4%.
@@ -210,11 +254,24 @@ export interface StakeConfig {
   enabled: boolean;
   /** `THETADUEL_ESCROW`. Empty means nothing is deployed. */
   escrow: string;
+  /**
+   * `signingChainId` from `/api/config` — the chain `DuelEscrow` is deployed on
+   * and the only chain a stake may be signed on.
+   *
+   * Named `chainId` here for the same reason `/api/config` no longer is: this
+   * struct is read only by the staking path, which has exactly one chain, so
+   * there is nothing to disambiguate against locally. The ambiguity lives at
+   * the config boundary, and that is where it is spelled out.
+   */
   chainId: number;
 }
 
 /** Opt-IN means the absence of an answer is the absence of the feature. */
-export const STAKE_OFF: StakeConfig = { enabled: false, escrow: "", chainId: BASE_CHAIN_ID };
+export const STAKE_OFF: StakeConfig = {
+  enabled: false,
+  escrow: "",
+  chainId: SIGNING_CHAIN_ID,
+};
 
 /**
  * The one question the UI asks before it will offer a side bet.
@@ -263,7 +320,7 @@ export function stakeUnavailableReason(
   if (walletId === "mock")
     return (
       "Side bet unavailable: the mock wallet cannot sign, and must not. Connect a real " +
-      "wallet on Base to stake. The duel plays either way."
+      `wallet on ${SIGNING_CHAIN_NAME} to stake. The duel plays either way.`
     );
   if (!walletId) return null;
   return null;
@@ -377,6 +434,12 @@ export type EscrowOutcome =
 export interface EscrowDeps {
   /** `"mock"` is refused before `getSigner` is called. */
   walletId?: string;
+  /**
+   * The chain the connected wallet reports. **Required, not optional** — see
+   * `FillDeps.chainId` in `./fill.ts` for why a guard whose input can be
+   * `undefined` by omission is not a guard.
+   */
+  chainId: number | null;
   /** The deployed `DuelEscrow`. Checked for shape before anything is sent. */
   escrow: string;
   /**
@@ -450,7 +513,7 @@ export const ESCROW_COPY: Record<
 > = {
   SIGNER_REQUIRED: {
     message: "No wallet can sign the stake.",
-    recovery: `Connect a wallet on Base to back the duel with USDC. ${PTS_FALLBACK}`,
+    recovery: `Connect a wallet on ${SIGNING_CHAIN_NAME} to back the duel with USDC. ${PTS_FALLBACK}`,
     action: "connect",
   },
   ESCROW_UNCONFIGURED: {
@@ -466,7 +529,7 @@ export const ESCROW_COPY: Record<
     action: "none",
   },
   INSUFFICIENT_BALANCE: {
-    message: "The wallet does not hold enough USDC on Base.",
+    message: `The wallet does not hold enough test USDC on ${SIGNING_CHAIN_NAME}.`,
     recovery: `Fund it and open the next duel with a side bet. Nothing was spent. ${PTS_FALLBACK}`,
     action: "fund",
   },
@@ -648,6 +711,32 @@ export type OnEscrowStep = (step: EscrowStep, info?: { hash?: string; amount?: b
  * facts the caller needs: the connected address and whether an approval
  * transaction had to be sent.
  */
+/**
+ * `assertSigningChain` as an `EscrowOutcome`, because three of the four
+ * sequences in this file need the identical refusal and a copy in each is three
+ * places for the copy to drift.
+ *
+ * Returns `null` when the chain is fine — so the call site reads as a guard
+ * clause rather than as a branch.
+ */
+function wrongChainFailure(deps: EscrowDeps, what: string): EscrowOutcome | null {
+  try {
+    assertSigningChain(deps.chainId, what);
+    return null;
+  } catch (error) {
+    return {
+      status: "failed",
+      error: {
+        ...classifyEscrowError(error, "signer"),
+        code: "SIGNER_REQUIRED",
+        message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+        recovery: `${WRONG_CHAIN_RECOVERY} ${PTS_FALLBACK}`,
+        action: "switch",
+      },
+    };
+  }
+}
+
 async function stakePreamble(
   stake: bigint,
   deps: EscrowDeps,
@@ -664,6 +753,29 @@ async function stakePreamble(
 
   // ── signer ─────────────────────────────────────────────────────────────────
   onStep("signer");
+
+  // ── THE CHAIN GUARD ────────────────────────────────────────────────────────
+  // Above `getSigner` and above the mock check, exactly as in `runFill`. A
+  // stake is the one path in this app that pulls the user's own USDC, so it is
+  // the path where a mainnet signature would cost the most; the refusal is
+  // therefore unconditional and has no override.
+  try {
+    assertSigningChain(deps.chainId, "a stake");
+  } catch (error) {
+    return {
+      failed: {
+        status: "failed",
+        error: {
+          ...classifyEscrowError(error, "signer"),
+          code: "SIGNER_REQUIRED",
+          message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+          recovery: `${WRONG_CHAIN_RECOVERY} ${PTS_FALLBACK}`,
+          action: "switch",
+        },
+      },
+    };
+  }
+
   if (deps.walletId === "mock") {
     return {
       failed: raise("SIGNER_REQUIRED", "signer", {
@@ -688,8 +800,8 @@ async function stakePreamble(
         error: {
           ...classifyEscrowError(error, "signer"),
           code: "SIGNER_REQUIRED",
-          message: "The wallet is not on Base.",
-          recovery: `Switch the wallet to Base mainnet (${BASE_CHAIN_ID}) and try again. ${PTS_FALLBACK}`,
+          message: `The wallet is not on ${SIGNING_CHAIN_NAME}.`,
+          recovery: `${WRONG_CHAIN_RECOVERY} ${PTS_FALLBACK}`,
           action: "switch",
         },
       },
@@ -837,6 +949,11 @@ export async function settleDuel(
   if (verdict.deadline * 1000 <= now()) return raise("VERDICT_EXPIRED", "guard");
 
   onStep("signer");
+  // The chain guard. Settling relays an attestor-signed verdict and moves the
+  // whole pot, so it sends money even though it approves none — see
+  // `stakePreamble`.
+  const settleChain = wrongChainFailure(deps, "a settlement");
+  if (settleChain) return settleChain;
   if (deps.walletId === "mock") return raise("SIGNER_REQUIRED", "signer");
   let signer: unknown | null;
   try {
@@ -895,6 +1012,12 @@ async function sendSimple(
   if (!BYTES32_RE.test(duelId)) return raise("ESCROW_UNCONFIGURED", "guard");
 
   onStep("signer");
+  // The chain guard. `refund` and `cancel` move money OUT rather than in, but
+  // they are still transactions this app asks a user to sign, and a refund
+  // signed against a mainnet address that holds no duel is gas spent on a
+  // revert. Same refusal, same position.
+  const simpleChain = wrongChainFailure(deps, "a withdrawal");
+  if (simpleChain) return simpleChain;
   if (deps.walletId === "mock") return raise("SIGNER_REQUIRED", "signer");
   let signer: unknown | null;
   try {
@@ -1135,6 +1258,9 @@ export const ERC20_ABI = [
  *  `WalletSource` surface (and so a test can pass two functions). */
 export interface StakeWallet {
   readonly id: string;
+  /** The connected wallet's chain, shaped so `WalletSource` satisfies this
+   *  seam structurally — see `FillWallet.identity`. */
+  readonly identity: { readonly chainId: number | null };
   getSigner(): Promise<unknown | null>;
 }
 
@@ -1190,9 +1316,14 @@ export function createLiveEscrowDeps(wallet: StakeWallet, escrow: string): Escro
 
   return {
     walletId: wallet.id,
+    chainId: wallet.identity.chainId,
     escrow,
 
     async getSigner() {
+      // The second layer, on the wallet's live answer rather than the value
+      // captured when this adapter was built — a user can switch networks
+      // between pressing the button and the wallet prompt appearing.
+      assertSigningChain(wallet.identity.chainId, "a stake");
       const signer = await wallet.getSigner();
       if (!signer) return null;
       const { Contract } = await import("ethers");

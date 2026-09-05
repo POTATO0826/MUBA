@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  BASE_CHAIN_ID,
+  SIGNING_CHAIN_ID,
   DISCONNECTED,
   type WalletIdentity,
   type WalletSource,
@@ -46,10 +46,20 @@ function mockAddress(): string {
 function connectedIdentity(address: string): WalletIdentity {
   return {
     address,
-    chainId: BASE_CHAIN_ID,
+    // The signing chain, so the mock is never the tier that reports a mainnet
+    // chain id. It cannot sign at all — `getSigner` refuses below — so this
+    // number decides nothing; it is here so that no screen reading
+    // `identity.chainId` has to special-case the mock to print a truthful
+    // network, and so a test double copied from this shape starts on the
+    // chain the guards accept rather than the one they refuse.
+    chainId: SIGNING_CHAIN_ID,
     walletName: "Mock wallet",
     connected: true,
     connecting: false,
+    // Nothing to restore and nothing to wait for. The mock must NOT pretend to
+    // persist a real session — it reports `true` immediately because it
+    // genuinely knows the answer on the first render, not because it found one.
+    settled: true,
     wrongNetwork: false,
   };
 }
@@ -80,13 +90,18 @@ export function useMockWallet(): WalletSource {
   return useMemo(
     () => ({
       id: "mock",
-      identity: connected ? connectedIdentity(address) : DISCONNECTED,
+      // `settled: true` on the disconnected branch too: a mock that has not been
+      // connected is a *known* absence of a session, not a pending restore, and a
+      // screen waiting on `settled` would otherwise never draw its connect button
+      // on the no-wallet tier — which is the only tier that fresh clone has.
+      identity: connected ? connectedIdentity(address) : { ...DISCONNECTED, settled: true },
       connect,
       disconnect,
       // No modal to open, so the panel's only real action stands in for it.
       openAccount: disconnect,
-      // Already on Base by construction.
-      switchToBase: async () => {},
+      // Already on the signing chain by construction, and unable to sign in any
+      // case.
+      switchToSigningChain: async () => {},
       // A signer would need a private key. Disconnected follows the interface
       // and returns `null`; connected refuses loudly, because handing back
       // something that looks signable and reverts on the first

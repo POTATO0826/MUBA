@@ -108,11 +108,23 @@ export type SeatStatus = (typeof SEAT_STATUSES)[number];
  * someone else's duel — and that must fail closed, not resolve.
  *
  * Deliberately a local constant and not an import of `attest.ts`'s
- * `BASE_CHAIN_ID`: `attest.ts` imports this module, and a cycle between the two
+ * `SIGNING_CHAIN_ID`: `attest.ts` imports this module, and a cycle between the two
  * would buy nothing. The value is not money-critical here (a wrong one refuses
  * reads; it cannot mis-sign anything).
+ *
+ * **Base Sepolia**, following the escrow. It was `8453` while the app had one
+ * chain, and leaving it there would have been the quietest possible breakage:
+ * not a wrong answer but a refusal, on every seat read, for every duel, with
+ * `/api/lock` failing closed and nothing on screen explaining why. Not
+ * money-critical is not the same as harmless — being right for the wrong reason
+ * is how a constant survives a migration that invalidated it.
+ *
+ * The duplication with `attest.ts` is now load-bearing rather than incidental:
+ * two copies of one number that must agree, in a file that cannot import the
+ * other. `contracts/deploy.ts` names both in its mismatch banner for that
+ * reason.
  */
-const BASE_CHAIN_ID = 8453;
+const SIGNING_CHAIN_ID = 84532;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tuning
@@ -355,7 +367,7 @@ export function createSeatReader(deps: SeatReaderDeps = {}): SeatReader {
     if (deps.provider) return deps.provider;
     if (cachedProvider !== undefined) return cachedProvider;
     try {
-      cachedProvider = rpcUrl ? new JsonRpcProvider(rpcUrl, BASE_CHAIN_ID) : null;
+      cachedProvider = rpcUrl ? new JsonRpcProvider(rpcUrl, SIGNING_CHAIN_ID) : null;
     } catch {
       cachedProvider = null;
     }
