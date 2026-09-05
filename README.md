@@ -666,9 +666,9 @@ Four sentences, and each one is checkable in the tree:
 | Asset gate (`src/data/qualify.ts`) + `scripts/probe-assets.ts` | PURE and fixture-tested; the committed live run passes (`docs/asset-gate.md`). Wired into the lobby: `qualifiedAssets()` reaches `CreateLobby` (the greyed-sector reason and the DEEP/THIN grade) and the lobby board's own grade tag (`grades={...}` on `<LobbyCard>` at both its call sites) | — |
 | Market-priced parlay cards on the pick screen — real strikes, the option's own delta as the probability, a premium-derived payout | LIVE, read-only. Reshapes the snapshot `/api/market` already served (`src/state/options.ts` → `src/desk/optionize.ts`) into a frozen value the match holds; a ticker with no live spot or no chain deals its seeded card instead | `THETADUEL_OPTIONS` opt-out |
 | Parlay fill — N sequential vanilla fills, one tx per leg, $2 cap on the leg **and** the slip sum | CODE COMPLETE, **never executed on Base**. Preview-all-first, exact approvals, stale legs dropped before the first signature, keep-what-landed on a failure, and the policy on screen before you sign | `THETADUEL_TRADE=on` opt-IN, default off |
-| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed** | owner |
+| Duel escrow (`contracts/DuelEscrow.sol`) | compiled + adversarially reviewed (`docs/reviews/`), **NOT deployed**; targets Base Sepolia when it is — the signing chain, not the mainnet chain the book above is read from | owner |
 | Attest referee (`/api/lock` + `/api/attest`) | live code; the lock takes seat `a`'s EIP-191 signature **and** checks both seats against the escrow's own storage (`src/server/seats.ts`); the verdict is re-derived from committed picks and one snapshot the server reads itself, frozen onto the lock so a re-attest cannot re-roll it | `ATTESTOR_PRIVATE_KEY` |
-| USDC staking UI — the side bet, its six states, the claim | BUILT (`src/state/stake.ts`, `src/desk/escrow.ts`); inert until an escrow is deployed, and never on the mock wallet | `THETADUEL_STAKE=on` opt-IN + `THETADUEL_ESCROW` |
+| USDC staking UI — the side bet, its six states, the claim | BUILT (`src/state/stake.ts`, `src/desk/escrow.ts`); inert until an escrow is deployed on Base Sepolia, and never on the mock wallet | `THETADUEL_STAKE=on` opt-IN + `THETADUEL_ESCROW` |
 | Card detail levels (SIMPLE / STANDARD / FULL) | LIVE on the pick screen. Rank picks the opening default and **never gates** — the toggle is a visible three-way switch, reversible in both directions, and the choice persists | — |
 | The seeded board, tape, duel and PTS ledger | SEEDED, permanently and by design — settlement never reads a live number | — |
 
@@ -717,9 +717,11 @@ byte-for-byte the offline build. **Residual trust, stated plainly:** the attest
 server re-derives the winner from committed picks and never signs a claimed
 one, but it can see picks in the clear and holds the only verdict key — a
 dishonest operator could collude. The counterparty-locks-seat-`a` attack that
-X-1 named is closed **once an escrow is deployed and named**: `src/server/seats.ts`
-reads `a` and `b` out of the contract's `duels` getter, so a lock would be
-compared against who actually paid a stake rather than against who says so.
+X-1 named is closed **once an escrow is deployed and named** — on Base Sepolia,
+the chain everything that signs lives on, not the Base mainnet chain the book
+above is read from: `src/server/seats.ts` reads `a` and `b` out of the
+contract's `duels` getter, so a lock would be compared against who actually
+paid a stake rather than against who says so.
 Today `THETADUEL_ESCROW` is unset, so that reader reports itself unconfigured
 and the server falls back to the signature-only trust this paragraph opened
 with — the fix is real and tested, not yet load-bearing. Commit-reveal is the

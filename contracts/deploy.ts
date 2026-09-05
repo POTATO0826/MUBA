@@ -125,7 +125,7 @@
  * imported by the test that pins it, and changing it from inside a deploy
  * script is how a chain id gets changed by someone who was thinking about
  * something else. Route it to the owner, as the last one was. Nothing is
- * deployed today (`THETADUEL_ESCROW` is unset, `.env.example`:54), so refusing
+ * deployed today (`THETADUEL_ESCROW` is unset, `.env.example`), so refusing
  * costs nothing and shipping a silently-unsettleable escrow costs everything.
  *
  * Neither the token nor the chain refusal has an override flag, deliberately.

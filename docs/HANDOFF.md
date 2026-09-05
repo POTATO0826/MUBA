@@ -793,6 +793,10 @@ rather than merely *incomplete*.
 - README.md — rewritten 2026-09-05 for plan 6. Its "Thetanuts — what is actually
   live" section now carries an explicit **"Not true yet"** block; keep that block
   honest, it is the thing a reviewer will check first.
+- **`docs/CONVENTIONS.md`** — not dated, unlike everything else in this list:
+  durable rules rather than a pass's findings. Currently one entry, cite
+  symbols across files, never `file:line` — a line number is a citation that
+  goes silently wrong the next time anyone edits a comment near it.
 
 ## Hard invariants (breaking these = broken replays or burned money)
 

@@ -1,6 +1,7 @@
 import { sx } from "../lib/sx.ts";
 import { C, FEED_STATE, MONO, feedState, meansOf, stateAge, stateChip } from "../theme.ts";
 import type { MarketSource } from "../data/market.ts";
+import { DATA_CHAIN_ID, DATA_CHAIN_NAME, SIGNING_CHAIN_ID, SIGNING_CHAIN_NAME } from "../data/wallet.ts";
 
 /**
  * Provenance strip. `source.meta` says plainly whether the numbers are live,
@@ -56,7 +57,13 @@ export function Footer({
       <span>·</span>
       <span>@thetanuts-finance/thetanuts-client 0.3.0</span>
       <span>·</span>
-      <span>Base mainnet 8453</span>
+      <span>
+        {DATA_CHAIN_NAME} {DATA_CHAIN_ID} · prices, read-only
+      </span>
+      <span>·</span>
+      <span>
+        {SIGNING_CHAIN_NAME} {SIGNING_CHAIN_ID} · signing
+      </span>
       <div style={sx("flex:1")} />
       {/* Prose, not a chip: the reason the state is what it is. It keeps the
           plain warning amber rather than borrowing STALE's, because a
