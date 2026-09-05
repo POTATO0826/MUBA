@@ -8,6 +8,7 @@ import {
   deriveLadders,
   isPlayable,
   ladderBounds,
+  liveExpiryOf,
   ladderIndex,
   ladderStep,
   liveExpiries,
@@ -20,6 +21,7 @@ import {
   strikeUsd,
   wingCandidates,
   type Box,
+  type LadderOrder,
   type LadderSnapshot,
   type PriceWindow,
   type StrikeLadder,
@@ -62,10 +64,20 @@ import {
   type RoomSeat,
   type RoomView,
 } from "../data/room.ts";
+import { feedIndex } from "../data/qualify.ts";
 import { MAX_FILL_USDC } from "../desk/fill.ts";
 import { usdc, winnerTakesUsdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
-import { expiryStamp, fieldNote, timeLeft, type Ticket, type TicketRow } from "../desk/ticket.ts";
+import {
+  boxGreekRows,
+  boxGreeks,
+  expiryStamp,
+  fieldNote,
+  timeLeft,
+  type SmilePoint,
+  type Ticket,
+  type TicketRow,
+} from "../desk/ticket.ts";
 import { sx } from "../lib/sx.ts";
 import { C, FEED_STATE, MONO, SANS, meansOf, stateAge, type FeedState } from "../theme.ts";
 import { FieldInfo, useTradeTicket } from "../ui/TradeTicket.tsx";
@@ -393,9 +405,30 @@ export const LISTED_WING_COPY =
  * bracket. Not one of the 38 listed zones on the live book published a delta,
  * so there is nothing to shade a listed zone with — and inventing one to fill
  * the gap would be a number this repo made up about a real position.
+ *
+ * The box ticket now *computes* a delta (`boxGreeks`), and that does **not**
+ * unblock the shading: `TIER_BANDS` is a bracket on a **vanilla's** |delta|,
+ * which reads as the market's chance of finishing in the money. A condor's is
+ * the net of four such numbers and means "cents on the dollar", so shading a
+ * tier band with one would be the 88%-on-a-10-delta card drawn as a colour.
+ * The axis stays unshaded; the ticket says the number and says what it is.
  */
 export const LISTED_NO_GREEKS_COPY =
-  "The book publishes no greeks for a listed zone, so this box is not shaded by delta. That figure is not hidden — it does not exist for this instrument.";
+  "The book publishes no greeks for a listed zone, so the strike axis is not shaded by delta. The ticket computes its own from the venue's published smile where that smile reaches this box, and says why where it does not.";
+
+/**
+ * The footer line under a ticket whose greeks were computed.
+ *
+ * Three claims, and every one of them is the reason the line exists rather than
+ * decoration: the figures are **ours** and not the venue's; the model and the
+ * input are named, so a reader can check them; and they are **not a price**, so
+ * nobody reads a model value as something the book would fill at.
+ *
+ * `docs/greeks.md` §7 is the standing rule and it does not bend for a screen
+ * that would look tidier without the sentence.
+ */
+export const MODEL_GREEKS_COPY =
+  "Delta, gamma, theta and vega are ours, not the venue's — Black–Scholes over the box's four legs, off its published smile. Nothing fills at them.";
 
 /** The common case, and not a failure. */
 export const UNLISTED_COPY =
@@ -1162,6 +1195,107 @@ export function positionWingUsd(box: Box | null, match: ListedFill | null): numb
   return strikeUsd(box.wing);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The smile this screen already had, and had never read
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `rawApiData.greeks.iv`, read totally and non-throwingly off one order.
+ *
+ * ## Why the cast
+ *
+ * `LadderOrder` (`src/data/box.ts`) narrows `rawApiData` to the six fields the
+ * *ladder* reads, and a published IV is not one of them — an axis has no
+ * volatility. The field is nonetheless there on every capture and on the frozen
+ * fixture: `{"greeks":{"delta":0.0805,"iv":0.6879,...}}`, and
+ * `venueGreeksOf` in `src/server/thetanuts.ts` reads it the same way on the
+ * server side. So this widens the one order at the one call site rather than
+ * widening the ladder's type for a field the ladder must never use.
+ *
+ * Every hostile shape an API has actually shipped is answered with `null`: a
+ * missing object, a string where a number belongs, `NaN` from a bad divide, and
+ * a zero-filled greeks block. A zero IV is *not* a very low volatility, it is
+ * the absence of one, and `boxGreeks` would take it at face value.
+ */
+function publishedIv(entry: LadderOrder | null | undefined): number | null {
+  const greeks = (entry?.rawApiData as { greeks?: unknown } | null | undefined)?.greeks;
+  if (!greeks || typeof greeks !== "object") return null;
+  const raw = (greeks as { iv?: unknown }).iv;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/**
+ * Every published volatility smile on one capture, keyed `underlying|expiry`.
+ *
+ * ## The screen was already holding this
+ *
+ * The arena's own docblock used to say the greeks *"are not available, and the
+ * reason is real … `src/data/greeks.ts` can only compose one from four per-leg
+ * volatilities, which the ladder this screen reads does not carry."* The first
+ * half is still true — the venue publishes no greeks for a zone, and 0 of 38
+ * listed zones carried a set over 32 reads of the live book. The second half
+ * was wrong about this snapshot: the **ladder** does not carry a vol, but the
+ * `snapshot` the ladder is derived *from* carries one per listed vanilla, and
+ * that is the same smile `src/server/thetanuts.ts` composes every spread, fly
+ * and ranger on the chain from.
+ *
+ * ## The three rules, and they are `smileIndex`'s
+ *
+ *  - **Single-strike orders only.** A spread publishes no IV, and a spread's
+ *    strikes are not points on a vanilla smile — attributing one to the other
+ *    is how a two-strike row gets read as a vanilla.
+ *  - **Calls and puts share one curve**, under put–call parity. See
+ *    {@link SmilePoint}.
+ *  - **Live orders only**, through {@link liveExpiryOf} — the same liveness rule
+ *    the ladder and the zone list apply, so a strike whose vol came off a dead
+ *    order cannot outlive the rung it was quoted at.
+ *
+ * A later listing at a strike already on the curve wins, which is arbitrary and
+ * harmless: the capture is one moment and the venue does not publish two
+ * different vols for one strike at one expiry.
+ *
+ * Deliberately **not** a copy of `smileIndex`: that one runs on the server over
+ * `Level`s that this screen never sees, and this view's standing rule is that
+ * the only market data it reads is its own `snapshot` prop. The discipline is
+ * identical and the inputs are not.
+ */
+export function boxSmiles(
+  snap: LadderSnapshot | null | undefined,
+  at?: number,
+): Map<string, SmilePoint[]> {
+  const out = new Map<string, SmilePoint[]>();
+  const feeds = feedIndex(snap?.chainConfig?.priceFeeds);
+  if (feeds.size === 0) return out;
+
+  for (const entry of Array.isArray(snap?.orders) ? snap.orders : []) {
+    const api = entry?.rawApiData;
+    if (!api) continue;
+    if (!Array.isArray(api.strikes) || api.strikes.length !== 1) continue;
+
+    const iv = publishedIv(entry);
+    if (iv === null) continue;
+
+    const underlying = feeds.get(String(api.priceFeed ?? "").toLowerCase());
+    if (!underlying) continue;
+
+    const expiry = liveExpiryOf(entry, at);
+    if (expiry === null) continue;
+
+    const strike = strikeUsd(api.strikes[0]);
+    if (strike === null || !(strike > 0)) continue;
+
+    const key = `${underlying}|${expiry}`;
+    const smile = out.get(key) ?? [];
+    const held = smile.findIndex((p) => p.strike === strike);
+    if (held >= 0) smile[held] = { strike, iv };
+    else smile.push({ strike, iv });
+    out.set(key, smile);
+  }
+
+  for (const smile of out.values()) smile.sort((a, b) => a.strike - b.strike);
+  return out;
+}
+
 /**
  * The arena's trade ticket — a zone or a drawn box, written as the position it
  * is rather than as a rectangle.
@@ -1181,12 +1315,30 @@ export function positionWingUsd(box: Box | null, match: ListedFill | null): numb
  *    not priced at all until a maker answers an RFQ, which this build does not
  *    ask. So max loss, the breakevens and the multiple render as dashes with
  *    the reason rather than as estimates.
- *  - **The greeks are not available, and the reason is real.** Not one of the
- *    38 listed zones on the live book published a set (`src/data/ranger.ts`),
- *    and `src/data/greeks.ts` can only compose one from four per-leg
- *    volatilities, which the ladder this screen reads does not carry. So the
- *    row says what `LISTED_NO_GREEKS_COPY` says: the figure is not hidden, it
- *    does not exist for this instrument.
+ *  - **The greeks are ours, computed, and say so.** The venue publishes none
+ *    for a zone — 0 of 38 over 32 reads (`src/data/ranger.ts`) — so every one
+ *    of them is Black–Scholes over the box's own four legs, off the venue's
+ *    published smile on this expiry, tagged `model` and never `venue`. A box
+ *    whose legs run off the end of that smile gets one dashed row with the
+ *    reason, because extending a curve past its last quote is our guess.
+ *    {@link boxGreeks} carries that argument in full.
+ *
+ * ## The order of the rows, and why the greeks are above the money
+ *
+ * `liveTicket` puts the money above the greeks and says why: *"a player decides
+ * on the money"*. This ticket inverts that pair, on purpose, for two reasons
+ * that are properties of *this* instrument rather than preferences:
+ *
+ *  1. **The money here is usually three dashes.** Nothing prices an unlisted
+ *     box in this build, which is the ordinary case on a ladder this coarse.
+ *     Burying the only risk numbers the panel can state underneath a block of
+ *     absences is how the previous version read.
+ *  2. **The greeks describe the shape the player just drew**, and the player
+ *     draws before they price. Delta near zero and theta positive are facts
+ *     about the rectangle, available the instant it exists.
+ *
+ * plan6 §A7's rule is untouched: `PREMIUM · MAX LOSS` is still above every
+ * upside figure on this ticket and on the panel.
  *
  * Terminal settlement is stated in the app's own words — *lands in your box at
  * expiry*, never "stays within". The instrument is European and the price has
@@ -1207,26 +1359,51 @@ export function zoneTicket(input: {
   /** Live spot, or `null`. */
   spot: number | null;
   now: number;
+  /**
+   * The venue's published smile on **this** (underlying, expiry), from
+   * {@link boxSmiles}. Required rather than defaulted: a caller who forgets it
+   * would get five dashes and a true sentence about a book they never read,
+   * which is the one kind of honest-looking wrong this panel cannot afford.
+   */
+  smile: readonly SmilePoint[];
 }): Ticket {
-  const { underlying, strikes, expiry, premium, contracts, econ, match, spot, now } = input;
+  const { underlying, strikes, expiry, premium, contracts, econ, match, spot, now, smile } = input;
   const [a, floor, ceiling, d] = strikes;
   const wing = floor - a;
   const priced = premium !== null && premium > 0;
+  const multiple = econ && econ.payoutMultiple !== null ? econ.payoutMultiple : null;
+
+  /**
+   * The greeks for the instrument that will actually fill — `ranger` on a
+   * match, `call_condor` on a box nobody has listed. The same correction
+   * {@link positionEconomics} makes to the money, applied to the risk: a
+   * ranger's legs and a condor's are the same four calls here, but the payout
+   * name is what the model validates against and it is never guessed from the
+   * strike shape.
+   */
+  const greeks = boxGreeks({
+    strikes,
+    payout: match ? "ranger" : "call_condor",
+    spot,
+    expiry,
+    now,
+    smile,
+    underlying,
+  });
+
   const rows: TicketRow[] = [
     {
-      key: "instrument",
-      label: "INSTRUMENT",
-      value: `${underlying} · ${match ? "listed zone (RANGER)" : "long call condor"}`,
-      note: match
-        ? "A zone a maker has already created and signed. You buy it as it is."
-        : "Four legs at four strikes, held long. Nobody has created this one — a maker would have to price it on demand.",
-      source: match ? "venue" : "derived",
-    },
-    {
+      // Was three rows — INSTRUMENT, STRIKES and WING — over the same four
+      // numbers. The product is already the subtitle (`RANGER · resting on the
+      // OptionBook · $500 wings`) and the band is already the title, so what
+      // was left that nothing else says is the strike list; the wing rides in
+      // the clause beside it, where it can say what it is *for*.
       key: "strikes",
-      label: "STRIKES",
-      value: strikes.map((k) => usd(k)).join(" · "),
-      note: "The four lines the payoff turns on: it climbs from the first, is flat between the middle two, and falls to the fourth.",
+      label: "INSTRUMENT · STRIKES",
+      value: strikes.map((k, i) => (i === 0 ? usd(k) : usd(k).slice(1))).join(" · "),
+      note: match
+        ? `A listed zone — four legs, the maker's ${usd(wing)} wings its ceiling.`
+        : `A long call condor: four legs, and the ${usd(wing)} wings are its ceiling.`,
       source: match ? "venue" : "derived",
     },
     {
@@ -1237,19 +1414,13 @@ export function zoneTicket(input: {
       source: match ? "venue" : "derived",
     },
     {
-      key: "wing",
-      label: "WING",
-      value: usd(wing),
-      note: match
-        ? "The maker's, not yours — and it is the most this can pay per contract."
-        : "The distance beyond each edge, and the most this can pay per contract.",
-      source: match ? "venue" : "derived",
-    },
-    {
       key: "expiry",
       label: "EXPIRY",
       value: `${expiryStamp(expiry)} · ${timeLeft(expiry * 1000 - now)} left`,
-      note: "European and cash-settled: the price has to land in the band at that instant, not stay there.",
+      // The band row above already carries "lands in your box at expiry", so
+      // this one no longer repeats the terminal-settlement clause — it says the
+      // half the band row does not: one price, European, cash.
+      note: "European and cash-settled: one price at that instant decides it.",
       source: "venue",
     },
     {
@@ -1262,61 +1433,60 @@ export function zoneTicket(input: {
       note:
         spot === null
           ? "The venue publishes no spot for this underlying right now."
-          : "Where the price is today. It has to be in the band on the expiry date, and nowhere in particular before it.",
+          : "Where it is now. Only where it lands at expiry counts.",
       source: spot === null ? null : "venue",
     },
+    ...boxGreekRows(greeks, { underlying, spot, floor, ceiling }),
+    // The money. Unpriced, the premium and the breakeven are the *same*
+    // absence for the *same* reason — the breakeven is the outer strikes moved
+    // in by a premium that does not exist — so they collapse to one dashed row
+    // rather than printing one sentence twice. Priced, they are two figures and
+    // get two rows. plan6 §A7 is untouched either way: max loss is above every
+    // upside figure on this panel.
+    ...(priced && econ && premium !== null
+      ? [
+          {
+            key: "maxLoss",
+            label: "PREMIUM · MAX LOSS",
+            value: usd(econ.maxLoss, true),
+            note:
+              contracts === 1 ? MAX_LOSS_COPY : `${MAX_LOSS_COPY} For all ${contracts} contracts.`,
+            source: "venue" as const,
+          },
+          {
+            key: "breakeven",
+            label: "BREAKEVEN",
+            value: `${usd(a + premium)} – ${usd(d - premium)}`,
+            note: "Between these you are ahead at expiry; outside them you are not.",
+            source: "derived" as const,
+          },
+        ]
+      : [
+          {
+            key: "maxLoss",
+            label: "PREMIUM · MAX LOSS · BREAKEVEN",
+            value: "—",
+            note: match
+              ? "Pick this zone to price it against the maker's order; both follow."
+              : "Nothing has priced this box and this build asks no maker, so there is no premium — and a breakeven is the strikes moved in by one.",
+            source: null,
+          },
+        ]),
     {
-      key: "size",
-      label: "SIZE",
-      value: `${contracts} ${contracts === 1 ? "contract" : "contracts"}`,
-      note: "Both dollar figures below are for the whole position; the multiple between them is not affected by size.",
-      source: "derived",
-    },
-    {
-      key: "maxLoss",
-      label: "PREMIUM · MAX LOSS",
-      value: priced && econ ? usd(econ.maxLoss, true) : "—",
-      note: priced
-        ? MAX_LOSS_COPY
-        : match
-          ? "Pick this zone to have it priced against the maker's own order — nothing here estimates it."
-          : "Nothing has priced this box, and this build asks no maker for a quote, so there is no premium to state.",
-      source: priced ? "venue" : null,
-    },
-    {
+      // The multiple was its own row and its own two sentences. It is one
+      // number derived from the two figures beside it, so it rides with them.
       key: "maxPayout",
       label: "MAX PAYOUT",
-      value: econ ? usd(econ.maxPayout, true) : "—",
-      note: "Paid in full anywhere inside the band at expiry, and tapering to nothing across each wing.",
+      value: econ
+        ? multiple === null
+          ? usd(econ.maxPayout, true)
+          : `${usd(econ.maxPayout, true)} · ${multiple.toFixed(2)}×`
+        : "—",
+      note:
+        multiple === null
+          ? "Paid in full inside the band at expiry, tapering across each wing."
+          : "Paid in full inside the band. The × is that over the premium.",
       source: match ? "venue" : "derived",
-    },
-    {
-      key: "breakeven",
-      label: "BREAKEVEN",
-      value:
-        priced && premium !== null ? `${usd(a + premium)} – ${usd(d - premium)}` : "—",
-      note:
-        priced && premium !== null
-          ? "Between these two the position is ahead at expiry; outside them the premium is not recovered."
-          : "The outer strikes moved in by the premium paid. Without a premium there is nothing to move them by.",
-      source: priced ? "derived" : null,
-    },
-    {
-      key: "multiple",
-      label: "PAYOUT MULTIPLE",
-      value: econ && econ.payoutMultiple !== null ? `${econ.payoutMultiple.toFixed(2)}×` : "—",
-      note:
-        econ && econ.payoutMultiple !== null
-          ? "The ceiling divided by the premium — what the position returns if the price lands in your box at expiry."
-          : "The ceiling divided by the premium. It is absent rather than placeheld until a real premium exists.",
-      source: econ && econ.payoutMultiple !== null ? "derived" : null,
-    },
-    {
-      key: "greeks",
-      label: "DELTA · GAMMA · THETA · VEGA",
-      value: "—",
-      note: LISTED_NO_GREEKS_COPY,
-      source: null,
     },
   ];
 
@@ -1329,6 +1499,13 @@ export function zoneTicket(input: {
       : `CALL_CONDOR · not listed · ${usd(wing)} wings`,
     banner: match ? LISTED_COPY : UNLISTED_COPY,
     footer: [
+      // First, and not optional, whenever there is anything to attribute: the
+      // five rows above are the only figures on this panel that could be
+      // mistaken for the venue's, because they are the ones the venue would
+      // publish if it published any. When they are a dash the row itself
+      // carries the reason, and a footer repeating it would be one more line
+      // on a panel that already has too many.
+      ...(greeks.ok ? [MODEL_GREEKS_COPY] : []),
       match ? LISTED_WING_COPY : RFQ_PRECISION_COPY,
       fillCapCopy(priced ? premium : null),
     ],
@@ -2881,25 +3058,43 @@ export function BoxBuilder({
    */
   const ticket = useTradeTicket();
 
+  /**
+   * Every published smile on this capture, built once.
+   *
+   * Off `snapshot` — this screen's only market input — and off `nowMs`, because
+   * {@link boxSmiles} applies the ladder's own liveness rule and a vol quoted
+   * by a dead order is not a vol anybody is standing behind.
+   */
+  const smiles = useMemo(() => boxSmiles(snapshot, nowMs), [snapshot, nowMs]);
+
+  /** The curve for one (underlying, expiry), or none. Empty is an ordinary
+   *  reading, and `boxGreeks` answers it with a sentence rather than a guess. */
+  const smileFor = useCallback(
+    (sym: string, at: number): readonly SmilePoint[] => smiles.get(`${sym}|${at}`) ?? [],
+    [smiles],
+  );
+
   /** The drawn box's ticket, or `null` when nothing is drawn. */
   const boxTicket = useMemo(() => {
     if (!spec) return null;
     const strikes = match
       ? rangerStrikeNumbers(match.spec)
       : condorStrikeNumbers(spec);
+    const at = match ? match.zone.expiry : spec.expiry;
     return zoneTicket({
       id: "box",
       underlying,
       strikes,
-      expiry: match ? match.zone.expiry : spec.expiry,
+      expiry: at,
       premium: quoted ? premium : null,
       contracts: size,
       econ,
       match,
       spot: spotPrice,
       now: nowMs,
+      smile: smileFor(underlying, at),
     });
-  }, [spec, match, underlying, quoted, premium, size, econ, spotPrice, nowMs]);
+  }, [spec, match, underlying, quoted, premium, size, econ, spotPrice, nowMs, smileFor]);
 
   /**
    * One listed zone's ticket, built on demand from the chip's own order.
@@ -2924,9 +3119,10 @@ export function BoxBuilder({
         match: { zone: z, spec: zSpec },
         spot: spotPrice,
         now: nowMs,
+        smile: smileFor(z.underlying, z.expiry),
       });
     },
-    [match, quoted, premium, size, econ, spotPrice, nowMs],
+    [match, quoted, premium, size, econ, spotPrice, nowMs, smileFor],
   );
 
   return (

@@ -27,6 +27,7 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   deriveLadder,
   liveExpiries,
+  priceToStrike,
   snapBox,
   strikeUsd,
   wingCandidates,
@@ -42,7 +43,10 @@ import {
 import { emptyHistory, type PriceHistory } from "../src/data/history.ts";
 import {
   listedZones,
+  rangerStrikeNumbers,
   zoneBox,
+  zoneEconomics,
+  zoneToRanger,
   zoneWingUsd,
   type ListedZone,
 } from "../src/data/ranger.ts";
@@ -53,6 +57,16 @@ import {
   type RoomView,
 } from "../src/data/room.ts";
 import { stateAge } from "../src/theme.ts";
+import { decayOver } from "../src/data/greeks.ts";
+import { DUEL_WINDOW } from "../src/desk/optionize.ts";
+import {
+  DASH,
+  boxGreekRows,
+  boxGreeks,
+  money,
+  type Ticket,
+  type TicketRow,
+} from "../src/desk/ticket.ts";
 import { MAX_FILL_USDC } from "../src/desk/fill.ts";
 import {
   BoxBuilder,
@@ -61,6 +75,7 @@ import {
   HISTORY_PCT,
   MAX_LOSS_COPY,
   MAX_PANEL_CONTRACTS,
+  MODEL_GREEKS_COPY,
   NO_HISTORY_PCT,
   SETTLEMENT_COPY,
   SIZE_COPY,
@@ -68,6 +83,7 @@ import {
   WING_COPY,
   axisScaleCopy,
   boardAxis,
+  boxSmiles,
   decodeBoxPick,
   encodeBoxPick,
   expiryLabel,
@@ -79,6 +95,7 @@ import {
   rungGapCopy,
   segments,
   shortAge,
+  zoneTicket,
   type ListedFill,
 } from "../src/views/BoxBuilder.tsx";
 import { FIELD_INFO_HIT, TICKET_DELAY_MS } from "../src/ui/TradeTicket.tsx";
@@ -1936,5 +1953,398 @@ describe("labelledRungPrices", () => {
     // which is this same gap by another route, so they are never this
     // function's business.
     expect(labelledRungPrices([1000, 2200, 9999], band)).toEqual([2200]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The greeks the arena was throwing away
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The box ticket had no greeks at all — one dashed row saying the venue
+ * publishes none for this instrument, which was true and was not the whole
+ * truth. The venue publishes an IV per **listed vanilla strike** on the same
+ * capture the ladder is derived from, a box is a long call condor at four of
+ * those strikes, and `structureGreeks` composes exactly that. So the numbers a
+ * trader reads are computable on a box no maker has quoted, and this suite is
+ * what keeps them honest while they are on screen.
+ *
+ * Four properties, and none of them is about arithmetic — `test/greeks.test.ts`
+ * owns the arithmetic:
+ *
+ *  1. **Every figure is labelled with its window and its provenance.** Theta
+ *     names the calendar day it is quoted against *and* the duel's tape, which
+ *     differ by 10,800×. No greek is ever tagged `venue`.
+ *  2. **The smile is never extrapolated.** A leg beyond the last strike the
+ *     venue quoted is a dash with the reason, never a flat extension.
+ *  3. **A composed delta is never rendered as odds.** It is the net of four
+ *     vanilla deltas; a percentage beside it is the 88%-on-a-10-delta card.
+ *  4. **The panel got shorter, not longer.** Five figures were added and three
+ *     rows of restatement came out.
+ */
+
+/** The published smiles on the frozen capture, at the pinned clock. */
+const SMILES = boxSmiles(BOOKED, NOW);
+const smileFor = (sym: string, at: number) => SMILES.get(`${sym}|${at}`) ?? [];
+
+/** ETH 5 Sep — the one column with a six-point smile, `2420 … 2650`. */
+const ETH_5SEP = ETH_EXPIRIES[0] as number;
+
+/**
+ * A box **straddling spot**: ETH sits at 2,522.13 and the band is 2,480–2,550.
+ * This is the case the teaching is about — a long condor on its own flat top is
+ * short gamma, short vega and *long* theta.
+ */
+const STRADDLE = [2460, 2480, 2550, 2570] as [number, number, number, number];
+
+/** The same box drawn below spot, so every sign is the textbook one. */
+const BELOW = [2420, 2440, 2460, 2480] as [number, number, number, number];
+
+function ethTicket(strikes: [number, number, number, number]): Ticket {
+  return zoneTicket({
+    id: "box",
+    underlying: "ETH",
+    strikes,
+    expiry: ETH_5SEP,
+    premium: null,
+    contracts: 1,
+    econ: null,
+    match: null,
+    spot: FIXTURE.prices.ETH as number,
+    now: NOW,
+    smile: smileFor("ETH", ETH_5SEP),
+  });
+}
+
+/** The BTC zone a maker really has listed — 79,500/80,000/81,000/81,500 — whose
+ *  three-point smile stops at 79,500 and therefore reaches none of it. */
+function btcZoneTicket(): Ticket {
+  const zone = listedZones(BOOKED, NOW).find((z) => z.underlying === "BTC") as ListedZone;
+  const spec = zoneToRanger(zone);
+  return zoneTicket({
+    id: "zone",
+    underlying: "BTC",
+    strikes: rangerStrikeNumbers(spec),
+    expiry: zone.expiry,
+    premium: 120,
+    contracts: 1,
+    econ: zoneEconomics(zone, 120, 1),
+    match: { zone, spec },
+    spot: FIXTURE.prices.BTC as number,
+    now: NOW,
+    smile: smileFor("BTC", zone.expiry),
+  });
+}
+
+const rowOf = (t: Ticket, key: string) => t.rows.find((r) => r.key === key);
+/** The typographic minus `money()` prints, so a sign assertion cannot pass on a
+ *  hyphen the formatter never emits. */
+const MINUS = "−";
+const GREEK_KEYS = ["delta", "gamma", "theta", "vega", "iv"] as const;
+
+describe("the smile the screen was already holding", () => {
+  test("it is built from single-strike orders on this capture, and nothing else", () => {
+    // The old docblock said the ladder "does not carry" per-leg volatilities.
+    // The ladder does not; the snapshot the ladder is derived from does, in
+    // `rawApiData.greeks.iv`, which is the same field `src/server/thetanuts.ts`
+    // builds the chain's smiles from.
+    const eth = smileFor("ETH", ETH_5SEP);
+    expect(eth.map((p) => p.strike)).toEqual([2420, 2440, 2460, 2480, 2550, 2650]);
+    for (const p of eth) expect(p.iv).toBeGreaterThan(0);
+    // Ascending, always — `boxGreeks` reads the ends of the array as the span.
+    for (const smile of SMILES.values()) {
+      const strikes = smile.map((p) => p.strike);
+      expect([...strikes].sort((a, b) => a - b)).toEqual(strikes);
+    }
+  });
+
+  test("a spread's strikes are not points on a vanilla smile", () => {
+    // BTC 5 Sep carries a four-strike ranger and two multi-leg orders as well
+    // as three vanillas. Only the vanillas may contribute: a structure
+    // publishes no IV, and attributing one to its strikes is how a multi-leg
+    // row gets read as a vanilla.
+    expect(smileFor("BTC", ETH_5SEP).map((p) => p.strike)).toEqual([78500, 79000, 79500]);
+  });
+
+  test("no registry and no book still yield a curve, and an empty snapshot yields none", () => {
+    // The smile comes off the orders and their price feeds, which is a strictly
+    // smaller dependency than the zone list's: it needs no implementation
+    // registry, so a build that cannot name a product can still price a box the
+    // player drew.
+    expect(boxSmiles(FIXTURE, NOW).get(`ETH|${ETH_5SEP}`)?.length).toBe(6);
+    expect(boxSmiles(null, NOW).size).toBe(0);
+    expect(boxSmiles({ orders: [], chainConfig: null }, NOW).size).toBe(0);
+  });
+
+  test("a vol quoted by a dead order dies with it", () => {
+    // The same liveness rule the ladder and the zone list apply. A strike whose
+    // vol outlived the rung it was quoted at would be a curve nobody is
+    // standing behind.
+    expect(boxSmiles(BOOKED, Date.UTC(2030, 0, 1)).size).toBe(0);
+  });
+});
+
+describe("a box the smile reaches carries all five, labelled", () => {
+  test("delta, gamma, theta, vega and implied vol, in that order", () => {
+    const t = ethTicket(STRADDLE);
+    const keys = t.rows.map((r) => r.key);
+    expect(keys.filter((k) => (GREEK_KEYS as readonly string[]).includes(k))).toEqual([
+      ...GREEK_KEYS,
+    ]);
+    for (const key of GREEK_KEYS) expect(rowOf(t, key)?.value).not.toBe(DASH);
+    // The greeks sit after the position and above the money — the money on this
+    // ticket is usually a dash, and burying the only risk figures the panel can
+    // state underneath a block of absences is how the old one read.
+    expect(keys.indexOf("delta")).toBeGreaterThan(keys.indexOf("spot"));
+    expect(keys.indexOf("iv")).toBeLessThan(keys.indexOf("maxLoss"));
+    // plan6 §A7 all the same: max loss above every upside figure.
+    expect(keys.indexOf("maxLoss")).toBeLessThan(keys.indexOf("maxPayout"));
+  });
+
+  test("every one of them names its own scale on its own row", () => {
+    // `docs/greeks.md` §2: there is no field called `theta` and none called
+    // `vega`. A number printed without its window or its per-unit is the class
+    // of bug that shipped twice in this repo.
+    const t = ethTicket(STRADDLE);
+    expect(rowOf(t, "delta")?.value).toContain("per $1");
+    expect(rowOf(t, "gamma")?.value).toContain("per $1");
+    expect(rowOf(t, "theta")?.label).toBe("THETA · PER CALENDAR DAY");
+    expect(rowOf(t, "vega")?.label).toBe("VEGA · PER IV POINT");
+    expect(rowOf(t, "iv")?.value).toContain("4-leg mean");
+  });
+
+  test("theta prints the duel window beside the day, at its true scale", () => {
+    // The single most dangerous number on the screen. The duel clock is 8 s and
+    // the expiry clock is a calendar day; the two differ by 10,800×, and a
+    // per-day figure read as a per-duel loss is a bug this repo has fixed once
+    // already.
+    const res = boxGreeks({
+      strikes: STRADDLE,
+      payout: "call_condor",
+      spot: FIXTURE.prices.ETH as number,
+      expiry: ETH_5SEP,
+      now: NOW,
+      smile: smileFor("ETH", ETH_5SEP),
+      underlying: "ETH",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const perTape = decayOver(res.g, DUEL_WINDOW.tape);
+    expect(Math.abs(res.g.thetaPerDay / perTape)).toBeCloseTo(86400 / DUEL_WINDOW.tape, 6);
+
+    const row = rowOf(ethTicket(STRADDLE), "theta");
+    expect(row?.value).toBe(money(res.g.thetaPerDay));
+    expect(row?.note).toContain(`${DUEL_WINDOW.tape}s tape`);
+    expect(row?.note).toContain(money(perTape));
+    // And the two are never the same string, which is the whole point.
+    expect(row?.note).not.toContain(`${money(res.g.thetaPerDay)} over`);
+  });
+});
+
+describe("a long box on its own flat top is short gamma, short vega and long theta", () => {
+  const res = boxGreeks({
+    strikes: STRADDLE,
+    payout: "call_condor",
+    spot: FIXTURE.prices.ETH as number,
+    expiry: ETH_5SEP,
+    now: NOW,
+    smile: smileFor("ETH", ETH_5SEP),
+    underlying: "ETH",
+  });
+
+  test("the signs flip, and they are the model's rather than the copy's", () => {
+    // `docs/greeks.md` §5 calls this the strongest evidence the composition is
+    // maths rather than a sum of magnitudes. ETH sits at 2,522.13 and the band
+    // is 2,480–2,550, so the position is on its flat top.
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.g.thetaPerDay).toBeGreaterThan(0);
+    expect(res.g.gamma).toBeLessThan(0);
+    expect(res.g.vegaPerPoint).toBeLessThan(0);
+    expect(Math.abs(res.g.delta)).toBeLessThan(0.05);
+  });
+
+  test("and the clause on each row says so, in the words a beginner needs", () => {
+    // Most people learn "time decay always hurts" first. On this instrument, in
+    // this band, it is the opposite, and that is the sentence worth the space.
+    const t = ethTicket(STRADDLE);
+    expect(rowOf(t, "theta")?.note).toContain("waiting pays you");
+    expect(rowOf(t, "theta")?.value.startsWith(MINUS)).toBe(false);
+    expect(rowOf(t, "gamma")?.note).toContain("movement hurts you");
+    expect(rowOf(t, "vega")?.note).toContain("worth less");
+    // Delta near zero inside the band: the box cares where the price *ends up*.
+    expect(rowOf(t, "delta")?.note).toContain("what matters is where it lands");
+  });
+
+  test("a box drawn away from spot gets the textbook signs and the other clause", () => {
+    // The clauses branch on the sign the model returned rather than asserting a
+    // sign, so the same code tells the truth about a box nowhere near spot.
+    const t = ethTicket(BELOW);
+    expect(rowOf(t, "theta")?.value.startsWith(MINUS)).toBe(true);
+    expect(rowOf(t, "theta")?.note).toContain("Waiting costs you");
+    expect(rowOf(t, "gamma")?.note).toContain("How fast the delta moves");
+    expect(rowOf(t, "vega")?.note).toContain("implied volatility is worth");
+    expect(rowOf(t, "delta")?.note).toContain("net of four legs");
+  });
+});
+
+describe("provenance, per figure, and never the venue's", () => {
+  test("the four model numbers are tagged model and the vol is tagged derived", () => {
+    // `docs/greeks.md` §7. The venue publishes no greeks for any structure —
+    // 0 of 38 listed zones over 32 reads — so nothing on these five rows can
+    // honestly wear the venue's tag, and a reader has to be able to see that
+    // without being told.
+    const t = ethTicket(STRADDLE);
+    for (const key of ["delta", "gamma", "theta", "vega"] as const) {
+      expect(rowOf(t, key)?.source).toBe("model");
+    }
+    expect(rowOf(t, "iv")?.source).toBe("derived");
+    for (const key of GREEK_KEYS) expect(rowOf(t, key)?.source).not.toBe("venue");
+  });
+
+  test("the footer says whose they are, and that nothing fills at them", () => {
+    // A model number that reads as a quote is the failure this whole panel is
+    // built against. The sentence is on the ticket only when there is something
+    // to attribute; a refusal carries its reason on the row instead.
+    expect(ethTicket(STRADDLE).footer).toContain(MODEL_GREEKS_COPY);
+    expect(MODEL_GREEKS_COPY).toContain("not the venue's");
+    expect(MODEL_GREEKS_COPY).toContain("Nothing fills at them");
+    expect(btcZoneTicket().footer).not.toContain(MODEL_GREEKS_COPY);
+  });
+
+  test("the composed delta is never dressed as odds", () => {
+    // A vanilla's |delta| reads as the market's chance of finishing in the
+    // money and the whole parlay screen turns on that. A condor's is the *net*
+    // of four such numbers and means "cents on the dollar" — a percentage
+    // beside it is the card that promised 88% on a 10-delta instrument.
+    for (const t of [ethTicket(STRADDLE), ethTicket(BELOW)]) {
+      const row = rowOf(t, "delta") as TicketRow;
+      const said = `${row.value} ${row.note}`;
+      expect(said).not.toContain("%");
+      expect(said.toLowerCase()).not.toContain("chance");
+      expect(said.toLowerCase()).not.toContain("odds");
+      expect(said.toLowerCase()).not.toContain("probab");
+    }
+  });
+});
+
+describe("a smile that does not reach the box is a dash with the reason", () => {
+  test("the one listed BTC zone runs off the end of its own expiry's smile", () => {
+    // Not a hypothetical. BTC 5 Sep publishes vols at 78,500 / 79,000 / 79,500
+    // and the zone a maker has actually listed reaches 81,500. Nearest-neighbour
+    // *between* two listed strikes is the weakest claim that still produces a
+    // number; nearest-neighbour *beyond* the last one is a flat extrapolation
+    // of a curve the venue stopped drawing, and this repo does not ship those.
+    const t = btcZoneTicket();
+    for (const key of GREEK_KEYS) expect(rowOf(t, key)).toBeUndefined();
+
+    const row = rowOf(t, "greeks") as TicketRow;
+    expect(row.value).toBe(DASH);
+    expect(row.source).toBeNull();
+    expect(row.label).toBe("DELTA · GAMMA · THETA · VEGA · IV");
+    // The reason names both ends of the gap, so a reader can check it.
+    expect(row.note).toContain("$79,500");
+    expect(row.note).toContain("$80,000");
+    expect(row.note).toContain("nothing here is priced off it");
+  });
+
+  test("every other refusal is its own sentence too, never a blank", () => {
+    const base = {
+      strikes: STRADDLE,
+      payout: "call_condor" as const,
+      spot: FIXTURE.prices.ETH as number,
+      expiry: ETH_5SEP,
+      now: NOW,
+      smile: smileFor("ETH", ETH_5SEP),
+      underlying: "ETH",
+    };
+    const why = (over: Partial<Omit<typeof base, "spot">> & { spot?: number | null }) => {
+      const r = boxGreeks({ ...base, ...over });
+      expect(r.ok).toBe(false);
+      return r.ok ? "" : r.why;
+    };
+    expect(why({ spot: null })).toContain("no spot for ETH");
+    expect(why({ smile: [] })).toContain("no implied volatility");
+    // Exactly at expiry, where the textbook answer is a step function and an
+    // unbounded gamma. Both are defensible in a textbook and indefensible here.
+    expect(why({ now: ETH_5SEP * 1000 })).toContain("no time left");
+    // Unequal wings are not a condor the venue would have accepted.
+    expect(why({ strikes: [2420, 2440, 2550, 2650] })).toContain("invariants");
+    // And a refusal is one row, not five identical dashes.
+    expect(boxGreekRows({ ok: false, why: "x" }, { underlying: "ETH", spot: null, floor: 1, ceiling: 2 })).toHaveLength(1);
+  });
+});
+
+describe("five figures went in and the panel got shorter", () => {
+  test("three rows of restatement came out to pay for them", () => {
+    // The owner's instruction was "keep it short and concise", and the panel
+    // was already running off the bottom of the screen. INSTRUMENT restated the
+    // subtitle, BAND restated the title's own band, WING restated the
+    // subtitle's wing and PAYOUT MULTIPLE was one number derived from the two
+    // beside it. What is left is one row per fact.
+    const t = ethTicket(STRADDLE);
+    expect(t.rows.map((r) => r.key)).toEqual([
+      "strikes",
+      "band",
+      "expiry",
+      "spot",
+      "delta",
+      "gamma",
+      "theta",
+      "vega",
+      "iv",
+      "maxLoss",
+      "maxPayout",
+    ]);
+    // Eleven with the greeks, against twelve without them before this change.
+    expect(t.rows.length).toBeLessThanOrEqual(11);
+    // One clause each. A definition that runs to three lines has failed, and
+    // 150 characters is about two lines at this panel's width.
+    for (const row of t.rows) expect(row.note.length).toBeLessThanOrEqual(150);
+  });
+
+  test("an unpriced premium and an unpriced breakeven are one absence, not two", () => {
+    // The breakeven is the outer strikes moved in by the premium. With no
+    // premium they are the same missing figure for the same reason, and saying
+    // it twice was a row of noise.
+    const t = ethTicket(STRADDLE);
+    const row = rowOf(t, "maxLoss") as TicketRow;
+    expect(row.label).toBe("PREMIUM · MAX LOSS · BREAKEVEN");
+    expect(row.value).toBe("—");
+    expect(row.source).toBeNull();
+    expect(rowOf(t, "breakeven")).toBeUndefined();
+    // Priced, they are two figures and they get two rows again.
+    const priced = btcZoneTicket();
+    expect(rowOf(priced, "maxLoss")?.label).toBe("PREMIUM · MAX LOSS");
+    expect(rowOf(priced, "breakeven")?.value).toContain("$79,620");
+  });
+});
+
+describe("the greeks reach the screen, not just the module", () => {
+  test("the box's own ⓘ opens a panel carrying all five rows", () => {
+    // The whole point of the change: a player who draws a box and asks what it
+    // is gets the numbers a trader reads, on the panel that already exists.
+    // With the live spot, because a greek is a rate of change against it and a
+    // screen with no spot correctly refuses to print one.
+    mount(<BoxBuilder {...BASE} spot={() => FIXTURE.prices.ETH as number} />);
+    const rung = (price: number) =>
+      container.querySelector(`[data-rung="${priceToStrike(price)}"]`) as Element;
+    click(rung(2480));
+    click(rung(2550));
+
+    act(() => {
+      hover(info("box") as HTMLButtonElement, "touch");
+    });
+    const panel = tip() as HTMLElement;
+    for (const key of GREEK_KEYS) {
+      expect(panel.querySelector(`[data-ticket-row="${key}"]`)).not.toBeNull();
+    }
+    // Tagged, on screen, and never as the venue's.
+    const tags = [...panel.querySelectorAll("[data-ticket-source]")].map((el) =>
+      el.getAttribute("data-ticket-source"),
+    );
+    expect(tags).toContain("model");
+    expect(panel.textContent).toContain("THETA · PER CALENDAR DAY");
+    expect(panel.textContent).toContain(MODEL_GREEKS_COPY);
   });
 });

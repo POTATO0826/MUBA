@@ -1,7 +1,10 @@
 import {
   SECONDS_PER_YEAR,
   decayOver,
+  structureGreeks,
+  yearsBetweenMs,
   type Greeks,
+  type SourcedGreeks,
 } from "../data/greeks.ts";
 import {
   chancePct,
@@ -70,6 +73,22 @@ import { DUEL_WINDOW, SETTLEMENT_NOTE } from "./optionize.ts";
  * `thetaPerDay`, and there is `decayOver(g, DUEL_WINDOW.tape)`. The ticket
  * prints both, labelled, because a BTC put's `−165.13` is −$165 a *day* and
  * −$0.0153 over an eight-second duel, and the two differ by 10,800×.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE SECOND TICKET ON THIS PANEL: A BOX
+ * ────────────────────────────────────────────────────────────────────────────
+ * `src/views/BoxBuilder.tsx` builds its own ticket for a drawn box and a listed
+ * zone, and it renders through the same {@link Ticket} and the same panel. Two
+ * things it needs live here rather than there, because they are claims about
+ * what may honestly be said rather than about a screen: {@link boxGreeks},
+ * which composes a four-leg structure's risk off the venue's published smile
+ * and refuses to extrapolate one, and {@link boxGreekRows}, which writes those
+ * five figures with their windows, their provenance and one clause each.
+ *
+ * They do **not** go through {@link ticketGreeks}: that guard refuses a composed
+ * set and a borrowed vol, and a box is both by construction, so applying it
+ * would delete every box's greeks rather than check them. The guard is
+ * re-derived instead, clause by clause, on {@link boxGreeks}.
  *
  * The module is pure — no clock, no DOM, no network. `now` is an argument.
  */
@@ -362,6 +381,306 @@ export function asGreeks(g: RowGreeks): Greeks {
     thetaPerDay: g.thetaPerDay,
     rhoPerPoint: g.rhoPerPoint,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A box's greeks — composed, because a box IS a composition
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One published point of a (underlying, expiry) volatility smile: a strike the
+ * venue listed a vanilla at, and the implied vol it printed there.
+ *
+ * Calls and puts share one curve, for the reason `docs/greeks.md` §5 gives at
+ * length: under put–call parity a call and a put at the same strike and expiry
+ * have the same implied vol, so one curve instead of two loses nothing and
+ * roughly doubles the coverage — which is exactly what a four-strike box needs.
+ */
+export interface SmilePoint {
+  readonly strike: number;
+  readonly iv: number;
+}
+
+/** What {@link boxGreeks} needs. `now` is milliseconds and `expiry` is unix
+ *  seconds, matching every other clock argument in this module. */
+export interface BoxGreeksInput {
+  /** The four strikes, ascending, in dollars. */
+  strikes: readonly [number, number, number, number];
+  /**
+   * The venue's own payout name for the instrument that will actually fill —
+   * `ranger` for a listed zone, `call_condor` for a box nobody has listed.
+   * Never guessed from the strike shape: `validateCondor` and `validateRanger`
+   * accept the identical arrays, so the strikes decide nothing
+   * (`docs/greeks.md` §5).
+   */
+  payout: "ranger" | "call_condor";
+  spot: number | null;
+  expiry: number;
+  now: number;
+  /** The published smile on **this** (underlying, expiry). Empty is an ordinary
+   *  reading and is answered with a reason, never with a neighbour's curve. */
+  smile: readonly SmilePoint[];
+  /** Only ever used in the sentence explaining a refusal. */
+  underlying: string;
+}
+
+/**
+ * Either a composed set, or the sentence that says why there is none.
+ *
+ * A discriminated union rather than `null`, because *every* refusal on this
+ * panel has to render as a dash **with its reason** — `docs/reality-check.md`:
+ * the absence is the disclosure, and a blank is not one.
+ */
+export type BoxGreeksResult =
+  | {
+      readonly ok: true;
+      readonly g: SourcedGreeks;
+      /** Mean of the four legs' vols. Named as a mean wherever it is printed. */
+      readonly vol: number;
+      /** The smile's own extent, `[lowest listed strike, highest]`. */
+      readonly span: readonly [number, number];
+      /** How many of the four legs found a vol the venue published at that very
+       *  strike. `4` would mean nothing was borrowed; on this book it is
+       *  usually `0`, and the IV row says the borrowing out loud. */
+      readonly exact: number;
+      readonly years: number;
+    }
+  | { readonly ok: false; readonly why: string };
+
+/**
+ * A drawn box's greeks, composed from its four legs off the published smile.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY {@link ticketGreeks}'S GUARD IS NOT APPLIED HERE, DELIBERATELY
+ * ────────────────────────────────────────────────────────────────────────────
+ * `ticketGreeks` refuses anything whose `source` is not `model` and anything
+ * whose vol was borrowed from a neighbouring strike. Applied to a box it would
+ * refuse **every box there will ever be**: a box is `model-composed` by
+ * construction, and the venue publishes no IV for a structure at all — 0 of 38
+ * listed zones carried one over 32 reads of the live book (`src/data/ranger.ts`).
+ * A guard that always fires is not a guard, it is a deletion, and the row it
+ * leaves behind is the dash this whole change exists to remove.
+ *
+ * So the guard is not inherited; it is *re-derived*, because each of its two
+ * clauses exists for a reason that is about the parlay ticket rather than about
+ * composition:
+ *
+ *  1. **`source !== "model"`** is there because the parlay ticket renders delta
+ *     **as odds** — *"roughly 25% odds of finishing in the money"*. A composed
+ *     delta is the net of four vanilla deltas and is not a probability of
+ *     anything; rendering one as a percentage is the 88%-on-a-10-delta card
+ *     (`docs/greeks.md` §5). **This ticket never renders delta as odds.**
+ *     {@link boxGreekRows} prints no percentage, no "chance" and no "odds" on
+ *     the delta row, by construction and under test — so the failure that
+ *     clause guards against is not spellable on this panel.
+ *  2. **`volSource !== "own"`** is there because the parlay ticket puts a
+ *     computed greek on the same panel as the venue's **published** delta and
+ *     IV, and one strike's published delta beside another strike's borrowed vol
+ *     is a provenance muddle no tag makes readable. **This panel carries no
+ *     venue-published greek at all** — there is nothing here for a borrowed vol
+ *     to be confused with — and the borrowing is stated in words on the IV row
+ *     rather than left to a flag a reader never sees.
+ *
+ * What replaces it is the guard a box actually needs, and it is *stricter* than
+ * the smile lookup `src/server/thetanuts.ts` performs on a chain row:
+ *
+ * **Every leg strike must sit inside the smile's own extent.** Nearest-neighbour
+ * *between* two listed strikes is the weakest claim that still produces a
+ * number — "this is the closest thing the venue actually said". Nearest
+ * neighbour *beyond* the last listed strike is a different animal: it is a flat
+ * extrapolation of a curve the venue stopped drawing. The gap is real rather
+ * than theoretical — the frozen capture's BTC 5 Sep smile ends at $79,500 while
+ * the one listed zone on that column reaches $81,500 — so a box that runs off
+ * the end of the smile gets a dash and the sentence naming which strike ran off
+ * which end, and never a number.
+ *
+ * The rest is `src/data/greeks.ts`'s, unchanged: `structureGreeks` returns
+ * `null` unless all four legs price, and a `null` set is an absence rather than
+ * a partial.
+ */
+export function boxGreeks(input: BoxGreeksInput): BoxGreeksResult {
+  const { strikes, payout, spot, expiry, now, smile, underlying } = input;
+
+  if (spot === null || !(spot > 0)) {
+    return {
+      ok: false,
+      why: `The venue publishes no spot for ${underlying} right now, and every one of these is a rate of change against it.`,
+    };
+  }
+
+  const years = yearsBetweenMs(now, expiry);
+  if (!(years > 0)) {
+    return {
+      ok: false,
+      why: "This expiry has no time left on it. At the last instant a box's risk is a step and a spike rather than four numbers, so none is printed.",
+    };
+  }
+
+  // Ascending, and only points that are actually points: a zero or negative IV
+  // is a zero-filled field rather than a quote, and it would poison a mean.
+  const points = [...smile]
+    .filter((p) => Number.isFinite(p.strike) && p.strike > 0 && Number.isFinite(p.iv) && p.iv > 0)
+    .sort((a, b) => a.strike - b.strike);
+  if (points.length === 0) {
+    return {
+      ok: false,
+      why: `The venue published no implied volatility anywhere on this ${underlying} expiry, and a vol is the one input all four of them need.`,
+    };
+  }
+
+  const lo = points[0]!.strike;
+  const hi = points[points.length - 1]!.strike;
+  const outside = strikes.find((k) => !(k >= lo && k <= hi));
+  if (outside !== undefined) {
+    return {
+      ok: false,
+      why: `The venue's published vol on this expiry runs ${money(lo)}–${money(hi)} and this box has a leg at ${money(outside)}. Reading the smile past its last quote would be our guess rather than the venue's, so nothing here is priced off it.`,
+    };
+  }
+
+  let exact = 0;
+  const vols: number[] = [];
+  /** Nearest listed strike, ties to the lower one — the same rule and the same
+   *  tie-break as `nearestIv` in `src/server/thetanuts.ts`, so the arena and
+   *  the chain cannot disagree about one strike's vol. */
+  const volFor = (strike: number): number | null => {
+    let best = points[0]!;
+    for (const p of points) {
+      if (Math.abs(p.strike - strike) < Math.abs(best.strike - strike)) best = p;
+    }
+    if (best.strike === strike) exact += 1;
+    vols.push(best.iv);
+    return best.iv;
+  };
+
+  const g = structureGreeks({ payout, strikes, spot, years, volFor });
+  if (g === null || vols.length === 0) {
+    return {
+      ok: false,
+      why: "These four strikes do not satisfy the venue's own invariants for this product, so the model refuses to decompose them.",
+    };
+  }
+
+  const vol = vols.reduce((a, b) => a + b, 0) / vols.length;
+  if (!(vol > 0)) {
+    return {
+      ok: false,
+      why: "The vols the smile returned are not usable, so nothing was computed from them.",
+    };
+  }
+
+  return { ok: true, g, vol, span: [lo, hi], exact, years };
+}
+
+/**
+ * The five rows a box's risk gets — delta, gamma, theta, vega, implied vol, in
+ * the order a trader reads them.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHAT EACH CLAUSE IS FOR
+ * ────────────────────────────────────────────────────────────────────────────
+ * One clause per row, never a paragraph, and two of the five are *chosen*
+ * rather than recited because they are the two things about this instrument
+ * that a beginner's intuition gets backwards:
+ *
+ *  - **A long box sitting inside its band is short gamma, short vega and LONG
+ *    theta.** Time passing *helps* you while the price sits in your box, which
+ *    is the opposite of the "an option is a wasting asset" rule everybody
+ *    learns first. It is also not a claim this file makes — it is the sign the
+ *    model returned, so each clause branches on that sign and therefore still
+ *    says the true thing about a box drawn nowhere near spot.
+ *  - **Delta near zero inside the band** means the position barely cares about
+ *    small moves. It cares about where the price *ends up*, which is the whole
+ *    of "lands in your box at expiry" and the whole point of drawing a box.
+ *
+ * **No row here says "odds" or "chance", and none prints a percentage against
+ * delta.** A composed delta is a net of four vanilla deltas and is not a
+ * probability; see the guard note on {@link boxGreeks}.
+ *
+ * A refusal collapses to **one** dashed row rather than five, for the reason
+ * `liveTicket` collapses its three: five identical dashes carrying one
+ * identical sentence is four rows of noise on a panel the owner has already
+ * said runs off the bottom of the screen.
+ */
+export function boxGreekRows(
+  res: BoxGreeksResult,
+  ctx: {
+    underlying: string;
+    spot: number | null;
+    /** The band that pays in full — `strikes[1]` and `strikes[2]`. */
+    floor: number;
+    ceiling: number;
+  },
+): TicketRow[] {
+  if (!res.ok) {
+    return [
+      {
+        key: "greeks",
+        label: "DELTA · GAMMA · THETA · VEGA · IV",
+        value: DASH,
+        note: res.why,
+        source: null,
+      },
+    ];
+  }
+
+  const { g, vol, span } = res;
+  const { underlying, spot, floor, ceiling } = ctx;
+  const inside = spot !== null && spot >= floor && spot <= ceiling;
+  const perTape = decayOver(g, DUEL_WINDOW.tape);
+  const sign = (n: number) => (n < 0 ? MINUS : "");
+
+  return [
+    {
+      key: "delta",
+      label: "DELTA",
+      value: `Δ ${sign(g.delta)}${fine(Math.abs(g.delta))} per $1`,
+      note: inside
+        ? "Near zero inside your box — what matters is where it lands."
+        : `About ${money(Math.abs(g.delta))} per $1 ${underlying} moves, net of four legs.`,
+      source: "model",
+    },
+    {
+      key: "gamma",
+      label: "GAMMA",
+      value: `Γ ${sign(g.gamma)}${fine(Math.abs(g.gamma))} per $1`,
+      note:
+        g.gamma < 0
+          ? "Negative inside your box: movement hurts you, stillness helps."
+          : `How fast the delta moves — $1 shifts it by ${fine(g.gamma)}.`,
+      source: "model",
+    },
+    {
+      // The window is in the label, not left to the note, because this is the
+      // number `docs/greeks.md` §1 calls the most dangerous on the screen: the
+      // duel clock and the expiry clock differ by 10,800×.
+      key: "theta",
+      label: "THETA · PER CALENDAR DAY",
+      value: money(g.thetaPerDay),
+      note:
+        g.thetaPerDay > 0
+          ? `Positive — waiting pays you while the price sits in your box. Over the duel's ${DUEL_WINDOW.tape}s tape, ${money(perTape)}.`
+          : `Waiting costs you: ${money(perTape)} over the duel's ${DUEL_WINDOW.tape}s tape.`,
+      source: "model",
+    },
+    {
+      key: "vega",
+      label: "VEGA · PER IV POINT",
+      value: money(g.vegaPerPoint),
+      note:
+        g.vegaPerPoint < 0
+          ? "Negative: more expected movement makes your box worth less."
+          : "What one point of implied volatility is worth, either way.",
+      source: "model",
+    },
+    {
+      key: "iv",
+      label: "IMPLIED VOL",
+      value: `${pct(vol)} · 4-leg mean`,
+      note: `The venue's smile here runs ${money(span[0])}–${money(span[1])}; each leg took its nearest listed strike. It is the input the four above need.`,
+      source: "derived",
+    },
+  ];
 }
 
 /** `"58.2%"` → `0.582`; anything not written in percent → `null`. The `%` is
