@@ -17,9 +17,17 @@
  * or they drift by a pixel and the box stops lining up with what it snaps to.*
  * So {@link deriveLadder} is the only function here that reads the book, and
  * snapping ({@link snapBox}), the minimum box height ({@link minBoxHeight}),
- * the wing default ({@link defaultWing}) and the chart's y-axis
- * ({@link ladderBounds}) are all pure functions **of a ladder**. A caller that
- * computes any of them some other way has reintroduced the drift.
+ * the wing default ({@link defaultWing}), the ladder's full extent
+ * ({@link ladderBounds}) and the chart's y-axis ({@link chartWindow}) are all
+ * pure functions **of a ladder**. A caller that computes any of them some other
+ * way has reintroduced the drift.
+ *
+ * The y-axis and the extent were the same function until the arena was looked
+ * at on a screen: a day and a half of real price movement is 4.3% wide and some
+ * columns of the ladder are 28%, so the line rendered flat. {@link chartWindow}
+ * is the fix and its docblock carries the measurements. The invariant survives
+ * unchanged — one scale, derived from the ladder, read by everybody — because
+ * what moved was the scale's *input*, not the number of scales.
  *
  * ## Irregular by construction
  *
@@ -445,17 +453,307 @@ export function liveExpiries(
 }
 
 /**
- * The y-axis, in dollars — the ladder's own extent.
+ * The ladder's full extent, in dollars — the widest the chart may ever be.
  *
  * plan7 §2.5: *derive the ladder first, then fit the chart to it.* A chart that
  * computes its scale from the price history instead will not line the rungs up
  * with the strikes the box snaps to.
+ *
+ * This used to be the y-axis outright, and {@link chartWindow} explains at
+ * length why it is now the *ceiling* on the y-axis rather than the y-axis
+ * itself. It is still the only thing that decides how far out the board may
+ * reach, because outside it the venue quotes nothing and there is nothing to
+ * draw.
  */
 export function ladderBounds(ladder: StrikeLadder): { lo: number; hi: number } | null {
   const lo = ladder.prices[0];
   const hi = ladder.prices[ladder.prices.length - 1];
   if (lo === undefined || hi === undefined) return null;
   return { lo, hi };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The viewport — one scale, but not the whole ladder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The window may never hold fewer rungs than this, however deep the player
+ * zooms.
+ *
+ * Two is the arithmetic floor — a box needs a floor and a ceiling — and three
+ * is the *playable* floor, because a board showing exactly the two rungs you
+ * are between offers no alternative to compare against. On a ladder with fewer
+ * than three rungs the whole ladder is the window and this is simply not
+ * reached.
+ */
+export const MIN_WINDOW_RUNGS = 3;
+
+/**
+ * The default half-height of the window, counted in the ladder's **own median
+ * rung gap**.
+ *
+ * Three, and the number was measured rather than picked. Against the frozen
+ * capture's ladders and the live 33-hour Chainlink line (ETH ranged $106.87,
+ * 4.30%, on 2026-09-05), the price line's height as a fraction of the plot goes:
+ *
+ * ```
+ *                     full ladder    steps=2    steps=3    steps=4
+ *   ETH 5 Sep             46%          81%        86%        67%
+ *   BTC 6 Sep             93%          91%        93%        93%
+ *   BTC 5 Sep             40%          86%        57%        43%
+ *   mean over the board   33%          47%        45%        38%
+ * ```
+ *
+ * `steps=2` looks marginally better on that mean and is the wrong answer: it
+ * buys the extra height by throwing prints away. It clips **46% of the last 33
+ * hours** off ETH's near column and 54% off BTC 6 Sep, where `steps=3` keeps
+ * 100% and 92%. A taller line drawn from half the data is not a better chart,
+ * it is the same lie as rescaling, told by omission — so the default is the
+ * widest setting that still makes the line legible, not the tightest one that
+ * fits.
+ */
+export const DEFAULT_ZOOM_STEPS = 3;
+
+/**
+ * The deepest zoom, in the same unit: half-height of one median rung gap, so
+ * the window spans two.
+ *
+ * Below this there is nothing to reveal. The rungs *are* the resolution of this
+ * product — you cannot draw a box between two prices the venue does not quote —
+ * so zooming past a single gap magnifies empty space and takes the neighbouring
+ * rungs off the board. {@link MIN_WINDOW_RUNGS} holds the same line from the
+ * other side.
+ */
+export const MIN_ZOOM_STEPS = 1;
+
+/**
+ * A price window over the ladder — the chart's y-axis, and the only one.
+ *
+ * `below` and `above` are the rungs this window is *not* showing. They exist so
+ * the screen can say so and offer a way back to them: a rung that has silently
+ * left the board is a strike the player can no longer draw on and was never
+ * told about.
+ */
+export interface PriceWindow {
+  lo: number;
+  hi: number;
+  /** Rungs beneath `lo`. */
+  below: number;
+  /** Rungs above `hi`. */
+  above: number;
+}
+
+/**
+ * The ladder's own increment: the **median** gap between consecutive rungs.
+ *
+ * Median rather than mean because real ladders are lopsided by construction —
+ * ETH 5 Sep is `2420 · 2440 · 2460 · 2480 · 2550 · 2650`, whose gaps are
+ * `20 20 20 70 100`. The mean of those is 46 and describes no part of the
+ * ladder; the median is 20 and is exactly the increment the venue is quoting
+ * where it is quoting densely, which is where the player is going to draw.
+ *
+ * `0` for a ladder with fewer than two rungs, which callers read as "there is
+ * no increment here, so there is nothing to zoom into".
+ */
+export function ladderStep(ladder: StrikeLadder): number {
+  const gaps: number[] = [];
+  for (let i = 1; i < ladder.prices.length; i += 1) {
+    const a = ladder.prices[i - 1];
+    const b = ladder.prices[i];
+    if (a === undefined || b === undefined) continue;
+    const gap = b - a;
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap);
+  }
+  if (gaps.length === 0) return 0;
+  gaps.sort((x, y) => x - y);
+  return gaps[Math.floor(gaps.length / 2)] ?? 0;
+}
+
+/**
+ * The longest unbroken run of rungs no further apart than {@link ladderStep} —
+ * the ladder's dense core.
+ *
+ * This is the ladder's own statement about where the market is, and it is the
+ * anchor of last resort when nobody has told us the spot price. A maker lists
+ * strikes tightly where they expect the price to be and sparsely where they do
+ * not, so the tight cluster *is* the venue's opinion of the current level. It
+ * costs no external input, which is the point: the board still opens somewhere
+ * sensible with no spot feed at all.
+ *
+ * `null` on a ladder too short to have a gap.
+ */
+export function ladderCore(ladder: StrikeLadder): { lo: number; hi: number } | null {
+  const step = ladderStep(ladder);
+  const prices = ladder.prices;
+  if (step <= 0 || prices.length < 2) return null;
+
+  let bestStart = 0;
+  let bestEnd = 0;
+  let start = 0;
+  for (let i = 1; i < prices.length; i += 1) {
+    const a = prices[i - 1];
+    const b = prices[i];
+    if (a === undefined || b === undefined) continue;
+    if (b - a > step) {
+      if (i - 1 - start > bestEnd - bestStart) {
+        bestStart = start;
+        bestEnd = i - 1;
+      }
+      start = i;
+    }
+  }
+  if (prices.length - 1 - start > bestEnd - bestStart) {
+    bestStart = start;
+    bestEnd = prices.length - 1;
+  }
+  const lo = prices[bestStart];
+  const hi = prices[bestEnd];
+  return lo === undefined || hi === undefined ? null : { lo, hi };
+}
+
+/**
+ * The one y-axis: a window over the ladder, centred on the market.
+ *
+ * ## Why this replaced `ladderBounds`
+ *
+ * The chart's band used to be the ladder's entire extent, and the docblocks
+ * said so — *"always `ladderBounds`, never anything else"*. That rule was
+ * right about the thing it was defending (one scale, derived from the ladder,
+ * never from the history) and wrong about the scale it picked, and the
+ * difference only shows up on a screenshot.
+ *
+ * Measured on 2026-09-05, live: the whole 33-hour Chainlink window is **$106.87
+ * on ETH and $3,440.89 on BTC — 4.3% of spot for both**. The ladder is not
+ * 4.3% wide. ETH's 11 Sep column quotes three rungs, `2200 · 2650 · 2900`, so
+ * its extent is $700 and a day and a half of real price movement renders as
+ * **15% of the plot height** — the flat squiggle the owner reported. It is not
+ * uniformly bad, which is why it survived review for so long: the same chart is
+ * 46% on ETH's near column, where the rungs are $20 apart.
+ *
+ * So the fix is not a constant. It is to make the window a function of *how
+ * finely the venue is quoting here*, which is {@link ladderStep}.
+ *
+ * ## The rule
+ *
+ * 1. `anchor` is the market: spot when it is finite and inside the ladder,
+ *    otherwise the midpoint of {@link ladderCore}. `centre` overrides both and
+ *    is how a player's pan reaches this function.
+ * 2. Half-height is `steps × ladderStep`, floored at whatever it takes to keep
+ *    {@link MIN_WINDOW_RUNGS} rungs on the board.
+ * 3. The window is then **shifted, not shrunk**, to sit inside the ladder, and
+ *    finally clamped to it. Shifting rather than shrinking is what keeps a box
+ *    near the top of the ladder from being drawn on a two-rung board.
+ * 4. `steps` at or above the ladder's own width in steps returns exactly
+ *    {@link ladderBounds}. `Infinity` is therefore the documented way to ask
+ *    for the old behaviour, and it is what the screen's "Fit ladder" control
+ *    passes.
+ *
+ * ## What is still true of §2.5
+ *
+ * Everything that mattered. There is exactly **one** band, produced here and
+ * nowhere else, and every consumer — grid rows, strike labels, the box, the
+ * opponent's box, the history clip and the pointer arithmetic — reads that one
+ * value. The drift §2.5 forbids is two independently computed scales, and that
+ * is still impossible. What changed is this function's *input*, from "the
+ * ladder's extent" to "a window over the ladder", and the ladder is still
+ * derived first and still decides everything.
+ *
+ * ## What this costs, said plainly
+ *
+ * A narrower window clips more history, and `fitToLadder` clips rather than
+ * rescales, so prints outside it are dropped and counted. At `steps = 3`
+ * nothing on the frozen capture's ETH columns is lost that the full ladder kept
+ * (100% either way); at `steps = 2` almost half the line goes. That asymmetry
+ * is the whole reason {@link DEFAULT_ZOOM_STEPS} is 3, and a player who zooms
+ * deeper is shown the count of what they are no longer seeing.
+ *
+ * ## Determinism between two seats
+ *
+ * The default board is a pure function of the ladder and the anchor, so two
+ * players holding the same snapshot open on the same board. Spot ticks, so the
+ * anchor is **snapped to a rung by the caller** before it arrives here: the
+ * window then moves only when spot crosses a rung midpoint — $20 to $100 of
+ * travel, not a cent — instead of drifting under the cursor. Two seats can
+ * still disagree within one rung of a crossing, and when they do they disagree
+ * about the *viewport only*. The box, its strikes, its wing, its expiry and the
+ * string `encodeBoxPick` produces contain no viewport term at all, which is the
+ * property that actually has to hold.
+ *
+ * Total: never throws, and returns a usable window for a one-rung ladder
+ * (`lo === hi`, which {@link file://../views/BoxBuilder.tsx} `yPct` renders on
+ * the middle line rather than dividing by zero).
+ */
+export function chartWindow(
+  ladder: StrikeLadder,
+  anchor: number | null | undefined,
+  steps: number = DEFAULT_ZOOM_STEPS,
+  centre?: number | null,
+): PriceWindow | null {
+  const full = ladderBounds(ladder);
+  if (!full) return null;
+
+  const prices = ladder.prices;
+  const outside = (lo: number, hi: number): PriceWindow => ({
+    lo,
+    hi,
+    below: prices.filter((p) => p < lo).length,
+    above: prices.filter((p) => p > hi).length,
+  });
+
+  const step = ladderStep(ladder);
+  // No increment means one rung, or a ladder that lost its extremes. Either
+  // way there is no window narrower than the whole of it.
+  if (step <= 0 || !Number.isFinite(steps) || steps <= 0) return outside(full.lo, full.hi);
+
+  const core = ladderCore(ladder);
+  const fallback = core ? (core.lo + core.hi) / 2 : (full.lo + full.hi) / 2;
+  const wanted =
+    typeof centre === "number" && Number.isFinite(centre)
+      ? centre
+      : typeof anchor === "number" && Number.isFinite(anchor) && anchor >= full.lo && anchor <= full.hi
+        ? anchor
+        : fallback;
+
+  // The min-rungs floor is measured from the anchor, so it is the distance to
+  // the MIN_WINDOW_RUNGS-th nearest rung — the smallest window that can still
+  // hold that many.
+  const gaps = prices
+    .map((p) => Math.abs(p - wanted))
+    .sort((x, y) => x - y);
+  const floor = gaps[Math.min(MIN_WINDOW_RUNGS, gaps.length) - 1] ?? 0;
+  const half = Math.max(steps * step, floor);
+  if (!Number.isFinite(half) || half <= 0) return outside(full.lo, full.hi);
+
+  let lo = wanted - half;
+  let hi = wanted + half;
+  // Shift, then clamp. A window pushed off the bottom of the ladder keeps its
+  // height by sliding up, and only gives height back when the ladder itself is
+  // shorter than the window.
+  if (lo < full.lo) {
+    hi = Math.min(full.hi, hi + (full.lo - lo));
+    lo = full.lo;
+  }
+  if (hi > full.hi) {
+    lo = Math.max(full.lo, lo - (hi - full.hi));
+    hi = full.hi;
+  }
+  return outside(lo, hi);
+}
+
+/**
+ * The `steps` at which the window is the whole ladder — the shallowest zoom
+ * worth offering.
+ *
+ * There is nothing above it: the ladder is the extent of what the venue quotes,
+ * so a wider view would be empty space with no rung in it and no box drawable
+ * anywhere. The screen clamps its zoom control to this, which is why zooming
+ * out cannot strand a player in a region where nothing is listed.
+ */
+export function maxZoomSteps(ladder: StrikeLadder): number {
+  const full = ladderBounds(ladder);
+  const step = ladderStep(ladder);
+  if (!full || step <= 0) return MIN_ZOOM_STEPS;
+  return Math.max(MIN_ZOOM_STEPS, (full.hi - full.lo) / (2 * step));
 }
 
 /** The ladder as units, parsed once. Internal to the snapping math. */

@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_ZOOM_STEPS,
+  MIN_ZOOM_STEPS,
   boxProblem,
+  chartWindow,
   deriveLadder,
+  deriveLadders,
   isPlayable,
   ladderBounds,
   ladderIndex,
   liveExpiries,
+  maxZoomSteps,
   minBoxHeight,
   parseStrike,
   priceToStrike,
   snapBox,
+  snapPrice,
   strikeUsd,
+  wingCandidates,
   type Box,
   type LadderSnapshot,
+  type PriceWindow,
+  type StrikeLadder,
 } from "../data/box.ts";
 import {
   boxToCondor,
@@ -69,11 +78,31 @@ import { C, MONO, SANS } from "../theme.ts";
  *    2h or 4h option and there are no evenly spaced daily columns, because the
  *    book quotes tomorrow, the day after, then weeklies (§2.2). A date that is
  *    not in that array cannot be clicked, dragged to, or submitted.
- *  - the **y-axis is `ladderBounds()`**, derived from the ladder *first*, and
- *    the chart, the box, the history line and the drag arithmetic all read the
- *    same two functions, {@link yPct} and {@link priceAtFraction} (§2.5). A
- *    second scale computed anywhere would drift by a pixel and the box would
- *    stop lining up with the strikes it snaps to.
+ *  - the **y-axis is `chartWindow()`**, derived from the ladder *first*, and
+ *    the cell grid, the strike labels, the box, the history line and the drag
+ *    arithmetic all read the same two functions, {@link yPct} and
+ *    {@link priceAtFraction} (§2.5). A second scale computed anywhere would
+ *    drift by a pixel and the box would stop lining up with the strikes it
+ *    snaps to.
+ *
+ *    This was `ladderBounds()` — the ladder's whole extent — until the arena
+ *    was looked at rather than tested. Measured live on 2026-09-05, the entire
+ *    33-hour Chainlink window is **4.3% wide** on both ETH and BTC, while ETH's
+ *    11 Sep column quotes `2200 · 2650 · 2900` and is 28% wide, so a day and a
+ *    half of real price movement rendered as **15% of the plot height**. The
+ *    band is now a window over the ladder, sized in the ladder's own median
+ *    rung gap; `chartWindow`'s docblock in `src/data/box.ts` carries the
+ *    measurements and the reason the default is 3 gaps rather than 2. The
+ *    invariant is untouched: still one band, still computed in one place, still
+ *    read by everyone — only its input changed.
+ *
+ *  - the **viewport is a view concern and never a pick concern.** The player
+ *    drives it with the wheel, the keyboard and the zoom controls, and none of
+ *    that reaches the board: {@link BoxViewport} is component state, it is not
+ *    a field of `Box`, and {@link encodeBoxPick} has no viewport term in it.
+ *    Two seats at different zoom levels draw on the same rungs and post
+ *    byte-identical picks, which is the property that has to hold — not that
+ *    they happen to be looking at the same rectangle of it.
  *  - the **minimum box height** is `minBoxHeight()` — one rung of the local
  *    ladder, which is $20 on the dense part of the ETH ladder and $3,500 on the
  *    sparse part of BTC's, at the same instant. It is a fact about the book,
@@ -486,10 +515,53 @@ export function usd(value: number, cents = false): string {
 // The one scale
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The chart's price band. Always `ladderBounds`, never anything else. */
+/**
+ * The chart's price band. Always `chartWindow`, never anything else.
+ *
+ * The rule this replaces read *"always `ladderBounds`, never anything else"*,
+ * and it is worth saying what survived and what did not, because the sentence
+ * is nearly the same and the code is not.
+ *
+ * **What did not survive: the ladder's full extent as the scale.** It made the
+ * price line unreadable on exactly the columns where the book is coarsest — 15%
+ * of the plot height on a three-rung ETH column, against a live 33-hour range of
+ * 4.3%. See `chartWindow` in `src/data/box.ts` for the measurements.
+ *
+ * **What survived, unchanged: there is one band.** It is produced by one
+ * function, in one `useMemo`, and every consumer reads that one value — the cell
+ * grid, the rung labels, the spot pill, the box, the opponent's box, the
+ * history clip, and `priceAtClientY`'s drag arithmetic. §2.5 forbids *two*
+ * scales drifting apart, and two scales are still impossible here. A band that
+ * the player can zoom is still a single band; it is recomputed for every
+ * consumer together, in the same render, from the same window.
+ *
+ * `Band` stays two numbers rather than becoming `PriceWindow` because `yPct`
+ * and `priceAtFraction` need nothing else, and a `PriceWindow` is assignable to
+ * it. The extra `below`/`above` counts are for the screen to *talk* about the
+ * rungs it is not showing, never for the arithmetic.
+ */
 export interface Band {
   lo: number;
   hi: number;
+}
+
+/**
+ * Where the player has the board scrolled to. **View state, and only that.**
+ *
+ * `steps` is the window's half-height counted in the ladder's own median rung
+ * gap, and `centre` is the price in the middle of the window — `null` meaning
+ * "wherever the market is", which is the default both seats open on.
+ *
+ * Kept deliberately outside `Box`. The whole safety argument for letting the
+ * player zoom is that the viewport cannot reach the position: `snapBox` takes
+ * its strikes from the ladder, `encodeBoxPick` serialises four ladder-derived
+ * fields, and neither has any idea this type exists. A player zoomed to a $60
+ * window and a player looking at the whole $700 ladder click the same rung and
+ * post the same string.
+ */
+export interface BoxViewport {
+  steps: number;
+  centre: number | null;
 }
 
 /**
@@ -835,9 +907,58 @@ const CHIP = (active: boolean, off = false): string =>
       ? `background:${C.accent};color:${C.bg};border:1px solid ${C.accent};cursor:pointer`
       : `background:transparent;color:${C.muted};border:1px solid ${C.border};cursor:pointer`);
 
-/** Chart geometry, in CSS pixels. The plot is what every percentage is of. */
-const CHART_H = 380;
-const PAD = { top: 16, right: 18, bottom: 14, left: 74 };
+/**
+ * Chart geometry, in CSS pixels. The plot is what every percentage is of.
+ *
+ * The price axis moved from the left gutter to the right one, which is where a
+ * trading chart puts it and where the owner's reference has it: the newest
+ * price is at the right edge, so the scale that reads it belongs beside it
+ * rather than a chart's width away. `bottom` grew to hold two lines of
+ * wall-clock label under each expiry column.
+ */
+const CHART_H = 400;
+const PAD = { top: 18, right: 122, bottom: 42, left: 14 };
+
+/** Where an in-window price label sits in the right gutter, and where a rung the
+ *  zoom has parked sits instead — far enough apart that a pinned label never
+ *  lands on top of a real one. */
+const AXIS_LABEL_X = 4;
+const AXIS_PARKED_X = 62;
+
+/** Percentages that address the plot must stay on it — a rung belonging to a
+ *  neighbouring column can sit outside the window, and a cell drawn at -8% would
+ *  escape the rounded corner it is supposed to live inside. */
+const clampPct = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0);
+
+/**
+ * `1788595200000` → `"08:00 UTC"`.
+ *
+ * UTC for the same reason {@link expiryLabel} is: the book's expiries are
+ * 08:00Z and a local-time axis would print two different clocks to the two
+ * players in one duel.
+ */
+export function utcClock(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm} UTC`;
+}
+
+/**
+ * The bottom axis's caption, held here because it is the sentence that stops
+ * the time axis from being read as a resolution it does not have.
+ *
+ * The owner's reference chart columns 10 seconds apart. This venue's columns are
+ * whole days, and drawing anything finer would be inventing dates nobody can
+ * trade (§2.2). Saying so is cheaper than being asked.
+ */
+export const TIME_AXIS_COPY =
+  "Columns are the book's own expiries, daily at 08:00 UTC. There is no intraday expiry in this product, so there is no finer column to draw.";
+
+/** The legend under the board, in one place so the three states cannot drift
+ *  from the three fills that render them. */
+export const CELL_LEGEND_COPY =
+  "Each cell is a band you can draw, by that date. Filled cells are zones a maker has already listed — those fill straight off the book. The rest would have to be priced on demand.";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The screen
@@ -847,6 +968,50 @@ const PAD = { top: 16, right: 18, bottom: 14, left: 74 };
 interface Drag {
   from: number;
   to: number;
+}
+
+/**
+ * Which handle of a committed box is being dragged.
+ *
+ * The set is deliberately short, and the two that are missing are the design
+ * decision rather than an omission:
+ *
+ *  - **there is no left handle.** The box starts at now because it is a
+ *    prediction, and a left edge dragged back over prints that have already
+ *    happened is not a position anyone can hold (§2.3). It is pinned, and the
+ *    copy says so.
+ *  - **there is no free horizontal resize.** `expiry` and the two corners step
+ *    the right edge between *live expiry columns* and nothing in between,
+ *    because the only dates that exist are the ones the book quotes (§2.2).
+ *    Dragging to a Tuesday that is not listed would be a date the player cannot
+ *    buy, drawn as though they could.
+ */
+type EditKind = "move" | "floor" | "ceiling" | "expiry" | "corner-floor" | "corner-ceiling";
+
+/**
+ * A box being edited: where the grab started, what the box was, and the live
+ * preview.
+ *
+ * `base` is frozen at grab time so every frame is computed from the original
+ * rather than from the previous frame — an edit that accumulated its own
+ * rounding would walk the box a rung at a time while the pointer stood still.
+ * The preview is in **rung indices**, not prices, which is what makes the box
+ * land on the ladder by construction rather than by a snap at the end.
+ */
+interface BoxEdit {
+  kind: EditKind;
+  /** The price under the pointer when the handle was grabbed. */
+  fromPrice: number;
+  /** The box as it stood at grab time. */
+  base: Box;
+  /** Live preview, as indices into the ladder that was current at grab time. */
+  floorIndex: number;
+  ceilingIndex: number;
+  /** Live preview of the right edge — always one of `columns`. */
+  expiry: number;
+  /** True once the pointer has actually moved, so a click that happens to land
+   *  on a handle does not count as an edit and re-fire a quote. */
+  moved: boolean;
 }
 
 export function BoxBuilder({
@@ -882,7 +1047,14 @@ export function BoxBuilder({
   /** The floor of a box being built one rung at a time. */
   const [pendingFloor, setPendingFloor] = useState<string | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [edit, setEdit] = useState<BoxEdit | null>(null);
   const [stage, setStage] = useState<"draw" | "review">("draw");
+  /**
+   * The viewport. Opens at the default window and is reset whenever the board
+   * underneath it changes — a pan that survived a switch from ETH to BTC would
+   * be a centre in the wrong currency.
+   */
+  const [view, setView] = useState<BoxViewport>({ steps: DEFAULT_ZOOM_STEPS, centre: null });
   const plotRef = useRef<HTMLDivElement | null>(null);
 
   const trade = useTradeFlag(tradeEnabled);
@@ -931,8 +1103,52 @@ export function BoxBuilder({
     [snapshot, underlying, chosen, nowMs],
   );
 
-  // 3. The y-axis, fitted to the ladder — never the reverse (§2.5).
-  const band: Band | null = useMemo(() => (ladder ? ladderBounds(ladder) : null), [ladder]);
+  const spotPrice = spot?.(underlying) ?? null;
+
+  /**
+   * Where the board opens: **spot, snapped to a rung**.
+   *
+   * The snap is not cosmetic. Spot ticks every few seconds, and an anchor that
+   * followed it exactly would slide the whole axis under the player's cursor
+   * between renders and give the two seats of a duel two subtly different
+   * boards. Snapped, the window moves only when spot crosses a rung midpoint —
+   * $20 to $100 of travel on ETH — and until then the board is a pure function
+   * of the ladder. `null` spot is ordinary: `chartWindow` falls back to the
+   * ladder's own dense core, so the board still opens where the market is even
+   * with no price feed at all.
+   */
+  const anchorPrice = useMemo(() => {
+    if (!ladder || spotPrice === null) return null;
+    return strikeUsd(snapPrice(ladder, spotPrice));
+  }, [ladder, spotPrice]);
+
+  /**
+   * 3. The y-axis — **the one scale** (§2.5).
+   *
+   * A window over the ladder rather than the whole of it, and the player's
+   * `view` is the only thing here that is not derived from the book. Everything
+   * downstream reads this one value; see {@link Band} for what that invariant
+   * did and did not survive.
+   */
+  const band: PriceWindow | null = useMemo(
+    () => (ladder ? chartWindow(ladder, anchorPrice, view.steps, view.centre) : null),
+    [ladder, anchorPrice, view.steps, view.centre],
+  );
+
+  /** The ladder's full extent — no longer the axis, but still the limit on how
+   *  far the axis may be zoomed out, and the band the history is *clipped* to
+   *  before the window hides any more of it. */
+  const extent = useMemo(() => (ladder ? ladderBounds(ladder) : null), [ladder]);
+
+  // A new board means a new default viewport: a centre carried over from ETH's
+  // ladder is a price BTC has never traded at.
+  const boardKey = `${underlying}|${chosen ?? ""}`;
+  const boardRef = useRef(boardKey);
+  useEffect(() => {
+    if (boardRef.current === boardKey) return;
+    boardRef.current = boardKey;
+    setView({ steps: DEFAULT_ZOOM_STEPS, centre: null });
+  }, [boardKey]);
 
   /**
    * The time axis: history on the left, and the future out to **the chosen
@@ -964,22 +1180,62 @@ export function BoxBuilder({
   const drawn = columns.filter((e) => e * 1000 <= target);
 
   /**
-   * 3b. The line, clipped to the band the **ladder** chose — `fitToLadder`, not
-   * a filter written here, and never a rescale. A point moved to fit is a price
-   * that was never printed, so a print outside the ladder's extent is dropped
-   * and counted, and the count is said out loud below the chart.
+   * 3b. The line, clipped **twice**, and the two clips mean different things.
+   *
+   * `fitToLadder` drops points rather than moving them — a point moved to fit is
+   * a price that was never printed — so anything it removes has to be counted
+   * and said out loud. Since the axis became a window there are two separate
+   * reasons a print is not on screen, and collapsing them into one number would
+   * make an honest sentence into a misleading one:
+   *
+   *  - **`clipped`** — outside the *ladder's whole extent*. The venue quotes no
+   *    strike anywhere near it, so no zoom setting will ever show it. This is
+   *    the count the screen has always reported, and it means what it always
+   *    meant.
+   *  - **`hidden`** — inside the ladder but outside the *current window*. That
+   *    is the player's own zoom, it is completely recoverable, and it is
+   *    reported separately with the control that recovers it.
+   *
+   * Reporting only the first would hide the cost of zooming; reporting only the
+   * total would blame the venue for the player's viewport.
    */
   const line = useMemo(() => {
-    if (!history || !band) return { segments: [] as readonly (readonly HistoryPoint[])[], clipped: 0 };
-    const { points, clipped } = fitToLadder(history, band.lo, band.hi);
-    return {
-      segments: segments(
-        points.filter((p) => p.t >= t0),
+    const none = { segments: [] as readonly (readonly HistoryPoint[])[], clipped: 0, hidden: 0 };
+    if (!history || !band || !extent) return none;
+    const inLadder = fitToLadder(history, extent.lo, extent.hi);
+
+    // The line is cut wherever a print left the window, not merely filtered.
+    // Filtering alone joins the last print before an excursion to the first one
+    // after it, which draws a straight chord across a path the price did not
+    // take in a straight line — the same lie {@link segments} refuses to tell
+    // about a gap in time, told about a gap in space instead. Cut, the line
+    // simply stops at the edge and resumes, and the count below the chart says
+    // how much is off the board.
+    const runs: HistoryPoint[][] = [];
+    let run: HistoryPoint[] = [];
+    let hidden = 0;
+    for (const p of inLadder.points) {
+      if (p.px < band.lo || p.px > band.hi) {
+        hidden += 1;
+        if (run.length > 0) runs.push(run);
+        run = [];
+        continue;
+      }
+      run.push(p);
+    }
+    if (run.length > 0) runs.push(run);
+
+    const drawnSegments: (readonly HistoryPoint[])[] = [];
+    for (const r of runs) {
+      for (const s of segments(
+        r.filter((p) => p.t >= t0),
         history.meta.granularity?.medianGapMs,
-      ),
-      clipped,
-    };
-  }, [history, band, t0]);
+      )) {
+        drawnSegments.push(s);
+      }
+    }
+    return { segments: drawnSegments, clipped: inLadder.clipped, hidden };
+  }, [history, band, extent, t0]);
   const hasLine = line.segments.length > 0;
 
   const assets = useMemo(() => {
@@ -1088,21 +1344,148 @@ export function BoxBuilder({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealed, myPick, onUnderlying]);
 
+  // ── The viewport ──────────────────────────────────────────────────────────
+  //
+  // Everything in this block moves the camera and nothing in it touches the
+  // board. That separation is the whole safety argument for letting the player
+  // zoom at all, and it is structural rather than a convention: none of these
+  // functions can reach `setBox`, and `chartWindow` cannot reach a strike.
+
+  const windowFor = useCallback(
+    (steps: number, centre: number | null): PriceWindow | null =>
+      ladder ? chartWindow(ladder, anchorPrice, steps, centre) : null,
+    [ladder, anchorPrice],
+  );
+
+  /**
+   * Move the camera, and report whether it actually moved.
+   *
+   * The boolean is what keeps the wheel from trapping the page. A gesture that
+   * would change nothing — zooming out at the ladder's own extent, panning past
+   * the top rung — returns `false`, the handler declines to `preventDefault`,
+   * and the browser scrolls the page as it normally would. The player is never
+   * stuck inside the chart.
+   */
+  const applyView = useCallback(
+    (steps: number, centre: number | null): boolean => {
+      const next = windowFor(steps, centre);
+      if (!next || !band) return false;
+      if (Math.abs(next.lo - band.lo) < 1e-9 && Math.abs(next.hi - band.hi) < 1e-9) return false;
+      setView({ steps, centre });
+      return true;
+    },
+    [windowFor, band],
+  );
+
+  const zoomLimits = useMemo(
+    () => ({ min: MIN_ZOOM_STEPS, max: ladder ? maxZoomSteps(ladder) : MIN_ZOOM_STEPS }),
+    [ladder],
+  );
+
+  /**
+   * Zoom, keeping one price pinned under the cursor.
+   *
+   * The map convention, and the right one here: the rung you are pointing at is
+   * the rung you care about, so it should not slide away while you look at it.
+   * `focus` of `null` (the buttons, the keyboard) zooms about the middle
+   * instead.
+   *
+   * Two `chartWindow` calls rather than one, because the new window's height is
+   * not known until the min-rungs floor and the ladder clamp have both been
+   * applied — the first call measures, the second places.
+   */
+  const zoomTo = useCallback(
+    (steps: number, focus: number | null): boolean => {
+      const next = Math.max(zoomLimits.min, Math.min(zoomLimits.max, steps));
+      if (focus === null || !band) return applyView(next, view.centre);
+      const span = band.hi - band.lo;
+      const fromTop = span > 0 ? (band.hi - focus) / span : 0.5;
+      const probe = windowFor(next, focus);
+      if (!probe) return false;
+      const height = probe.hi - probe.lo;
+      const wantLo = focus - (1 - fromTop) * height;
+      return applyView(next, wantLo + height / 2);
+    },
+    [zoomLimits, band, applyView, view.centre, windowFor],
+  );
+
+  /** Pan by a fraction of the window's own height, so one notch feels the same
+   *  at every zoom level. */
+  const panBy = useCallback(
+    (fraction: number): boolean => {
+      if (!band) return false;
+      const span = band.hi - band.lo;
+      if (span <= 0) return false;
+      return applyView(view.steps, (band.lo + band.hi) / 2 + span * fraction);
+    },
+    [band, applyView, view.steps],
+  );
+
+  const fitLadder = useCallback(
+    () => applyView(zoomLimits.max, null),
+    [applyView, zoomLimits.max],
+  );
+
+  /** True when the window is already the whole ladder — the zoom-out control's
+   *  disabled state, and the reason the "hidden by zoom" line disappears. */
+  const fitted = band !== null && band.below === 0 && band.above === 0;
+
+  /**
+   * The wheel, attached by hand because React's `onWheel` is passive and a
+   * passive listener cannot call `preventDefault`.
+   *
+   * Three rules, each of them a hazard avoided rather than a preference:
+   *
+   *  - **inert while a gesture is in flight.** A drag captured its start price
+   *    against the band that was current when it began; re-scaling the axis
+   *    underneath it would leave the box anchored to a price the player never
+   *    pointed at.
+   *  - **`preventDefault` only when the view moved.** See {@link applyView} —
+   *    this is the escape hatch out of the chart.
+   *  - **shift pans, plain wheel zooms.** Trackpad pinch arrives as
+   *    `ctrlKey` + wheel in every current browser, so that zooms too, which is
+   *    what a pinch should do.
+   */
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (frozen || drag || edit || !band) return;
+      const rect = el.getBoundingClientRect();
+      if (!rect.height) return;
+      const moved = e.shiftKey
+        ? panBy(Math.sign(e.deltaY) * 0.12)
+        : zoomTo(
+            view.steps * Math.exp(e.deltaY * 0.0016),
+            priceAtFraction(band, Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))),
+          );
+      if (moved) e.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [frozen, drag, edit, band, panBy, zoomTo, view.steps]);
+
   /**
    * A raw pair of prices → a snapped box, one quote, and nothing in between.
    *
-   * The whole of §4.1 lives in this function: it is called on release and on a
-   * completed pair of rung clicks, and never on a move. The order of the calls
-   * is plan 7 §1's — playable, then the instrument, then the strikes the SDK
-   * boundary validates.
+   * The whole of §4.1 lives in this function: it is called on release, on a
+   * completed pair of rung clicks and at the end of an edit, and never on a
+   * move. The order of the calls is plan 7 §1's — playable, then the
+   * instrument, then the strikes the SDK boundary validates.
+   *
+   * `against` exists for one caller: an edit that moved the box's right edge to
+   * a different expiry column has to be judged by *that* column's ladder, and
+   * `ladder` in this closure is still the old one for the render in which the
+   * edit lands. Everything else passes nothing and gets the current board.
    */
   const commitBox = useCallback(
-    (candidate: Box) => {
-      if (!ladder) return;
+    (candidate: Box, against?: StrikeLadder | null) => {
+      const ladderHere = against ?? ladder;
+      if (!ladderHere) return;
       setBox(candidate);
       setStage("draw");
 
-      if (!onQuote || !isPlayable(candidate, ladder)) return;
+      if (!onQuote || !isPlayable(candidate, ladderHere)) return;
       let spec: CondorSpec;
       try {
         spec = boxToCondor(candidate);
@@ -1162,6 +1545,14 @@ export function BoxBuilder({
   // validates and quotes on exactly the same path.
   const onRung = useCallback(
     (price: number) => {
+      // A rung the zoom has pushed off the board is still a strike the venue
+      // quotes, so clicking its label brings the board back to it rather than
+      // refusing. Panning first and then acting normally is what makes "every
+      // rung stays reachable" true rather than aspirational.
+      if (band && (price > band.hi || price < band.lo)) {
+        const span = band.hi - band.lo;
+        applyView(view.steps, price + (price > band.hi ? -span / 3 : span / 3));
+      }
       // A committed box is not a draft. Once it is on the wire the drawing
       // surface stops accepting input, or the rectangle on screen would stop
       // being the rectangle the opponent is playing against.
@@ -1178,10 +1569,164 @@ export function BoxBuilder({
       if (floorUsd === null) return;
       commit(floorUsd, price);
     },
-    [frozen, pendingFloor, commit],
+    [frozen, pendingFloor, commit, band, applyView, view.steps],
   );
 
-  const spotPrice = spot?.(underlying) ?? null;
+  // ── Editing a committed box ───────────────────────────────────────────────
+
+  /** Nearest rung to a price, as an index into `ladder`. The one place a
+   *  pointer position becomes a rung, so every handle lands on the ladder by
+   *  construction rather than by a snap bolted on at the end. */
+  const rungIndexAt = useCallback(
+    (price: number): number => (ladder ? ladderIndex(ladder, snapPrice(ladder, price)) : -1),
+    [ladder],
+  );
+
+  /** Pointer x → the nearest **live expiry column**. Never an instant between
+   *  two of them: the only dates that exist are the ones the book quotes. */
+  const expiryAtClientX = useCallback(
+    (clientX: number): number | null => {
+      const el = plotRef.current;
+      if (!el || columns.length === 0) return null;
+      const rect = el.getBoundingClientRect();
+      if (!rect.width) return null;
+      const at = t0 + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (t1 - t0);
+      let best = columns[0] as number;
+      for (const e of columns) {
+        if (Math.abs(e * 1000 - at) < Math.abs(best * 1000 - at)) best = e;
+      }
+      return best;
+    },
+    [columns, t0, t1],
+  );
+
+  const startEdit = useCallback(
+    (kind: EditKind, e: React.PointerEvent) => {
+      if (frozen || !box || !ladder || chosen === null) return;
+      const price = priceAtClientY(e.clientY);
+      if (price === null) return;
+      const fi = ladderIndex(ladder, box.floor);
+      const ci = ladderIndex(ladder, box.ceiling);
+      if (fi < 0 || ci < 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      setDrag(null);
+      setPendingFloor(null);
+      setEdit({
+        kind,
+        fromPrice: price,
+        base: box,
+        floorIndex: fi,
+        ceilingIndex: ci,
+        expiry: box.expiry,
+        moved: false,
+      });
+    },
+    [frozen, box, ladder, chosen, priceAtClientY],
+  );
+
+  /**
+   * One frame of an edit, in rung indices.
+   *
+   * The clamps here **are** the "up to a point" the owner asked for, and each
+   * one is the ladder's rule rather than ours:
+   *
+   *  - a floor may not reach its own ceiling, and a ceiling may not reach its
+   *    own floor — one rung apart is the minimum box, which `snapBox` enforces
+   *    again on the way out and `minBoxHeight` states in dollars on screen;
+   *  - a move keeps the box's height in *rungs* and slides until an end hits
+   *    the ladder, so the box cannot be walked off the board or silently
+   *    resized by dragging it;
+   *  - both ends stay inside the ladder, because outside it the venue quotes
+   *    nothing.
+   */
+  const moveEdit = useCallback(
+    (current: BoxEdit, clientX: number, clientY: number): BoxEdit | null => {
+      if (!ladder) return null;
+      const top = ladder.prices.length - 1;
+      const baseFloor = ladderIndex(ladder, current.base.floor);
+      const baseCeiling = ladderIndex(ladder, current.base.ceiling);
+      if (baseFloor < 0 || baseCeiling < 0) return null;
+
+      let floorIndex = current.floorIndex;
+      let ceilingIndex = current.ceilingIndex;
+      let expiry = current.expiry;
+
+      const price = priceAtClientY(clientY);
+      if (price !== null) {
+        const pointed = rungIndexAt(price);
+        if (current.kind === "move") {
+          // Translate by the pointer's travel, in price, then land on a rung.
+          // The height is preserved in *rungs*, so a move across an irregular
+          // ladder keeps the same number of cells rather than the same dollars.
+          const height = baseCeiling - baseFloor;
+          const from = strikeUsd(current.base.floor);
+          const wanted =
+            from === null ? baseFloor : rungIndexAt(from + (price - current.fromPrice));
+          floorIndex = Math.max(0, Math.min(top - height, wanted < 0 ? baseFloor : wanted));
+          ceilingIndex = floorIndex + height;
+        } else if (pointed >= 0 && (current.kind === "floor" || current.kind === "corner-floor")) {
+          floorIndex = Math.max(0, Math.min(baseCeiling - 1, pointed));
+          ceilingIndex = baseCeiling;
+        } else if (
+          pointed >= 0 &&
+          (current.kind === "ceiling" || current.kind === "corner-ceiling")
+        ) {
+          ceilingIndex = Math.min(top, Math.max(baseFloor + 1, pointed));
+          floorIndex = baseFloor;
+        }
+      }
+
+      if (
+        current.kind === "expiry" ||
+        current.kind === "corner-floor" ||
+        current.kind === "corner-ceiling"
+      ) {
+        expiry = expiryAtClientX(clientX) ?? current.expiry;
+      }
+
+      const moved =
+        current.moved ||
+        floorIndex !== current.floorIndex ||
+        ceilingIndex !== current.ceilingIndex ||
+        expiry !== current.expiry;
+      return { ...current, floorIndex, ceilingIndex, expiry, moved };
+    },
+    [ladder, priceAtClientY, rungIndexAt, expiryAtClientX],
+  );
+
+  /**
+   * The end of an edit: one `snapBox`, one quote, exactly as a fresh drag gets.
+   *
+   * There is no second way to build a `Box` in this file, which is what keeps
+   * editing from desynchronising the wire format. `encodeBoxPick` serialises
+   * whatever `snapBox` returned, and an edited box and a drawn box come out of
+   * the same function with the same guarantees.
+   */
+  const endEdit = useCallback(
+    (current: BoxEdit) => {
+      setEdit(null);
+      if (!ladder || !current.moved) return;
+      const target =
+        current.expiry === chosen
+          ? ladder
+          : deriveLadder(snapshot, underlying, current.expiry, nowMs);
+      if (!target) return;
+      const floor = ladder.strikes[current.floorIndex];
+      const ceiling = ladder.strikes[current.ceilingIndex];
+      if (floor === undefined || ceiling === undefined) return;
+      if (current.expiry !== chosen) setExpiry(current.expiry);
+      commitBox(
+        snapBox(
+          { underlying, floor, ceiling, wing: current.base.wing, expiry: current.expiry },
+          target,
+        ),
+        target,
+      );
+    },
+    [ladder, chosen, snapshot, underlying, nowMs, commitBox],
+  );
 
   // 5 + 6. The instrument, and then the economics — only ever in this order,
   // and only for a box the ladder accepts.
@@ -1220,6 +1765,85 @@ export function BoxBuilder({
   const match = useMemo(() => listedFill(box, snapshot, nowMs), [box, snapshot, nowMs]);
   const spotListed = zones.some((z) => zoneCoversSpot(z, spotPrice));
 
+  /**
+   * 7b. The board, column by column — **each expiry drawn against its own
+   * ladder**.
+   *
+   * This is the thing that stops the cell grid from being decoration. The book
+   * does not quote the same strikes on every date: the frozen capture's ETH
+   * quotes six rungs $20 apart on 5 Sep and three rungs $450 apart on 11 Sep,
+   * and BTC's 18 Sep column carries a single strike and so cannot hold a box at
+   * all. A grid that ruled one set of rows across every column would be drawing
+   * cells that do not exist on four dates out of five.
+   *
+   * So every column gets its own rows, and the board visibly coarsens to the
+   * right. That is not a rendering artefact — it is what the venue looks like.
+   */
+  const columnLadders = useMemo(() => {
+    const byExpiry = new Map<number, StrikeLadder>();
+    for (const l of deriveLadders(snapshot, nowMs)) {
+      if (l.underlying === underlying) byExpiry.set(l.expiry, l);
+    }
+    return byExpiry;
+  }, [snapshot, underlying, nowMs]);
+
+  /** The listed zones on every drawn column, not just the chosen one — the
+   *  handful of cells that fill straight off the book, wherever they are. */
+  const columnZones = useMemo(() => {
+    const byExpiry = new Map<number, readonly ListedZone[]>();
+    for (const e of drawn) byExpiry.set(e, zonesFor(snapshot, underlying, e, nowMs));
+    return byExpiry;
+  }, [drawn, snapshot, underlying, nowMs]);
+
+  /**
+   * The wing widths this box may take — and this is a **narrow** list on
+   * purpose.
+   *
+   * A wing is a distance the ladder can express, never a number a player types:
+   * `wingCandidates` returns `floor − rung` for every rung below and
+   * `rung − ceiling` for every rung above, and nothing else is a width somebody
+   * is quoting. The `< floor` filter is the same one `snapWing` applies and the
+   * same one `boxProblem` rejects on — a wing wider than the floor puts the
+   * lowest strike at or below zero.
+   *
+   * It matters more than a stepper usually would because **the wing is the
+   * maximum payout**: a long call condor pays exactly the wing width between
+   * its inner strikes, and plan 7 measured the same of a listed `RANGER` (§3.2,
+   * where max payout is 20/40/50 on ETH and 500/1000 on BTC — the wing, every
+   * time). Stepping this control is stepping the upside, which is why the panel
+   * prints the consequence beside it.
+   */
+  const wings = useMemo(() => {
+    if (!ladder || !box) return [] as readonly string[];
+    const floorUnits = parseStrike(box.floor);
+    if (floorUnits === null) return [] as readonly string[];
+    return wingCandidates(ladder, box.floor, box.ceiling).filter((w) => {
+      const u = parseStrike(w);
+      return u !== null && u > 0n && u < floorUnits;
+    });
+  }, [ladder, box]);
+  const wingAt = box ? wings.indexOf(box.wing) : -1;
+
+  /**
+   * Whether the wing is the player's to set.
+   *
+   * It is not, on a listed zone. That box fills against an order a maker has
+   * already created and whose wings are part of it — changing the width would
+   * quietly turn a fill that exists into one that does not, which is exactly
+   * what `LISTED_WING_COPY` tells the player and what this disables to match.
+   */
+  const wingEditable = !frozen && match === null && wings.length > 1 && wingAt >= 0;
+
+  const stepWing = useCallback(
+    (delta: number) => {
+      if (!wingEditable || !box || !ladder) return;
+      const next = wings[wingAt + delta];
+      if (next === undefined) return;
+      commitBox(snapBox({ ...box, wing: next }, ladder), ladder);
+    },
+    [wingEditable, box, ladder, wings, wingAt, commitBox],
+  );
+
   const minHere = ladder
     ? strikeUsd(minBoxHeight(ladder, box?.floor ?? pendingFloor ?? ladder.strikes[0] ?? null))
     : null;
@@ -1229,6 +1853,50 @@ export function BoxBuilder({
     drag && band
       ? { lo: Math.min(drag.from, drag.to), hi: Math.max(drag.from, drag.to) }
       : null;
+
+  /**
+   * The box as it is right now, edit included — what gets *drawn*, as opposed
+   * to what is committed.
+   *
+   * Separate from `box` so a half-finished drag never reaches the quote, the
+   * encoder or the panel. The rectangle follows the pointer; the position does
+   * not move until the pointer is released and `snapBox` has had its say.
+   */
+  const shownBox = useMemo(() => {
+    if (!box) return null;
+    if (!edit || !ladder) return { box, expiry: box.expiry };
+    const floor = ladder.strikes[edit.floorIndex];
+    const ceiling = ladder.strikes[edit.ceilingIndex];
+    if (floor === undefined || ceiling === undefined) return { box, expiry: box.expiry };
+    return { box: { ...box, floor, ceiling }, expiry: edit.expiry };
+  }, [box, edit, ladder]);
+
+  /**
+   * The three pointer handlers every handle shares.
+   *
+   * They live on the handle rather than on the plot because the handle is what
+   * captured the pointer, and `stopPropagation` on each is what stops a grab
+   * from also being read as "start drawing a new box" by the surface
+   * underneath.
+   */
+  const editHandlers = useCallback(
+    (kind: EditKind) => ({
+      onPointerDown: (e: React.PointerEvent) => startEdit(kind, e),
+      onPointerMove: (e: React.PointerEvent) => {
+        if (!edit) return;
+        e.stopPropagation();
+        const next = moveEdit(edit, e.clientX, e.clientY);
+        if (next) setEdit(next);
+      },
+      onPointerUp: (e: React.PointerEvent) => {
+        if (!edit) return;
+        e.stopPropagation();
+        endEdit(edit);
+      },
+      onPointerCancel: () => setEdit(null),
+    }),
+    [startEdit, edit, moveEdit, endEdit],
+  );
 
   return (
     <div style={sx("padding:22px 28px;max-width:1240px;margin:0 auto;display:grid;gap:14px")}>
@@ -1415,12 +2083,52 @@ export function BoxBuilder({
       </div>
 
       {columns.length === 0 || !ladder || !band ? (
-        <div style={sx(`${CARD};padding:26px 20px`)}>
-          <span style={sx(`font:400 12px/1.6 ${SANS};color:${C.faint}`)}>
-            No live expiries on {underlying} right now. The columns are the book's own expiries —
-            tomorrow, the day after, then weeklies — so an empty book means there is nothing here to
-            draw on, rather than a chart with nothing in it.
-          </span>
+        /*
+          The board with no book behind it.
+
+          This is a state the owner is looking at right now, so it is built
+          rather than left as a fallen-through branch: the empty board is drawn
+          at the same size the real one occupies, with the same framing, so the
+          screen reads as *a board waiting for a book* instead of a card where a
+          chart should be. The hatch is the same one a column with no strikes
+          gets — one visual vocabulary for "nothing to draw here", whether the
+          cause is one dead expiry or an empty snapshot.
+
+          It claims nothing about *why*. A screen that guessed at the cause
+          would eventually guess wrong in the direction that blames the venue,
+          which this repo has done once already
+          (`docs/asset-gate.md`, `docs/plan6-audit.md`).
+        */
+        <div
+          data-role="no-board"
+          style={sx(
+            `${CARD};height:${CHART_H}px;display:grid;place-items:center;padding:26px 20px;` +
+              `background:${C.panel} repeating-linear-gradient(135deg,${C.lineSoft} 0 3px,transparent 3px 9px)`,
+          )}
+        >
+          <div style={sx("display:grid;gap:8px;justify-items:center;max-width:56ch")}>
+            <span
+              style={sx(
+                `font:700 10px/1 ${MONO};letter-spacing:.14em;color:${C.muted}`,
+              )}
+            >
+              {underlying} · NO BOARD
+            </span>
+            <span
+              style={sx(`font:400 13px/1.65 ${SANS};color:${C.textSoft};text-align:center`)}
+            >
+              No live expiries on {underlying} right now. The columns are the book's own expiries —
+              tomorrow, the day after, then weeklies — so an empty book means there is nothing here
+              to draw on, rather than a chart with nothing in it.
+            </span>
+            <span
+              style={sx(`font:400 11.5px/1.65 ${SANS};color:${C.dim};text-align:center`)}
+            >
+              Every rung, every column and every price on this screen comes from resting orders. With
+              none to read there is no ladder, and a board drawn without one would be cells nobody
+              can buy.
+            </span>
+          </div>
         </div>
       ) : (
         <div style={sx("display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px")}>
@@ -1428,10 +2136,61 @@ export function BoxBuilder({
           <div style={sx(`${CARD};padding:14px 16px 10px;display:grid;gap:10px`)}>
             <div style={sx("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
               <span style={sx(LABEL)}>{underlying} · LIVE STRIKES</span>
-              <span style={sx(`font:500 10px/1 ${MONO};color:${C.faint}`)}>
-                {ladder.strikes.length} rungs · {usd(band.lo)}–{usd(band.hi)}
+              {/* The ladder's own size first, then the part of it on screen.
+                  Two numbers rather than one because they are two facts: how
+                  much the venue is quoting, and how much the player is looking
+                  at. Collapsing them was what let a 28%-wide axis pass for a
+                  chart. */}
+              <span data-role="ladder-extent" style={sx(`font:500 10px/1 ${MONO};color:${C.faint}`)}>
+                {ladder.strikes.length} rungs · {usd(extent?.lo ?? band.lo)}–
+                {usd(extent?.hi ?? band.hi)}
               </span>
+              {!fitted && (
+                <span data-role="window" style={sx(`font:700 10px/1 ${MONO};color:${C.accent}`)}>
+                  showing {usd(band.lo)}–{usd(band.hi)}
+                </span>
+              )}
               <div style={sx("flex:1")} />
+
+              {/* ── The zoom controls ────────────────────────────────────
+                  The wheel is the fast path and these are the discoverable
+                  one — and the only one on a touch screen, where there is no
+                  wheel and the plot has already claimed the drag for drawing
+                  a box. */}
+              <div
+                data-role="zoom"
+                style={sx("display:flex;align-items:center;gap:4px")}
+              >
+                <button
+                  data-role="zoom-out"
+                  aria-label="Zoom out"
+                  disabled={fitted}
+                  onClick={() => zoomTo(view.steps * 1.6, null)}
+                  style={sx(`${CHIP(false, fitted)};height:26px;padding:0 10px`)}
+                >
+                  −
+                </button>
+                <button
+                  data-role="zoom-in"
+                  aria-label="Zoom in"
+                  disabled={view.steps <= zoomLimits.min}
+                  onClick={() => zoomTo(view.steps / 1.6, null)}
+                  style={sx(
+                    `${CHIP(false, view.steps <= zoomLimits.min)};height:26px;padding:0 10px`,
+                  )}
+                >
+                  +
+                </button>
+                <button
+                  data-role="fit-ladder"
+                  disabled={fitted}
+                  onClick={fitLadder}
+                  style={sx(`${CHIP(false, fitted)};height:26px`)}
+                >
+                  Fit ladder
+                </button>
+              </div>
+
               {box && !frozen && (
                 <button onClick={reset} style={sx(`${CHIP(false)};height:26px`)}>
                   Clear box
@@ -1448,8 +2207,10 @@ export function BoxBuilder({
               <div
                 ref={plotRef}
                 data-role="plot"
+                tabIndex={0}
+                aria-label={`${underlying} strike board. Arrow keys pan, plus and minus zoom, 0 fits the ladder.`}
                 onPointerDown={(e) => {
-                  if (frozen) return;
+                  if (frozen || edit) return;
                   const price = priceAtClientY(e.clientY);
                   if (price === null) return;
                   e.currentTarget.setPointerCapture(e.pointerId);
@@ -1469,11 +2230,196 @@ export function BoxBuilder({
                   commit(drag.from, price);
                 }}
                 onPointerCancel={() => setDrag(null)}
+                /* The keyboard twin of the wheel. It is not an afterthought:
+                   the plot claims `touch-action:none` so it can own the drag
+                   that draws a box, which means a touch device has no pinch to
+                   give — the zoom buttons and these keys are the whole of the
+                   non-wheel path, so they have to actually work. */
+                onKeyDown={(e) => {
+                  const step = () => {
+                    if (e.key === "+" || e.key === "=") return zoomTo(view.steps / 1.6, null);
+                    if (e.key === "-" || e.key === "_") return zoomTo(view.steps * 1.6, null);
+                    if (e.key === "0") return fitLadder();
+                    if (e.key === "ArrowUp") return panBy(0.12);
+                    if (e.key === "ArrowDown") return panBy(-0.12);
+                    return false;
+                  };
+                  if (step()) e.preventDefault();
+                }}
                 style={sx(
                   `position:absolute;top:${PAD.top}px;right:${PAD.right}px;bottom:${PAD.bottom}px;` +
-                    `left:${PAD.left}px;cursor:${frozen ? "default" : "crosshair"};touch-action:none`,
+                    `left:${PAD.left}px;cursor:${frozen ? "default" : "crosshair"};touch-action:none;` +
+                    `outline:none`,
                 )}
               >
+                {/*
+                  ── The board ────────────────────────────────────────────────
+
+                  One cell per (rung band × expiry column), drawn from **that
+                  column's own ladder** — see `columnLadders`. This is the
+                  surface the owner asked to be able to read at a glance, and
+                  the three states it can be in are the three states the venue
+                  has:
+
+                   - **listed** (filled green): a maker has an order resting on
+                     exactly this band and date. It fills off the book, now, at
+                     a price `previewFillOrder` will quote with no signer. There
+                     are one to three of these per column and that is not a
+                     rendering limit — it is the whole of what is listed
+                     (`docs/plan7-measurements.md` §3.2).
+                   - **drawable** (hairline): a band the ladder can express, so
+                     it is a box you may draw, and a maker would have to price
+                     it on demand. Most of the board.
+                   - **not drawable** (hatched): the part of the window this
+                     column has no strike in. The book does not quote the same
+                     range on every date — the frozen capture's BTC lists
+                     $78,500–$87,000 on 5 Sep and only $74,000–$79,000 on
+                     11 Sep — so a band that is drawable on one column is
+                     nothing at all on the next. The board visibly narrows to
+                     the right, and that is the venue rather than the chart.
+                     A column the book quotes fewer than two strikes on is
+                     hatched end to end, for the same reason: there is no floor
+                     and ceiling to be had, so no box exists there at any price.
+
+                  What is deliberately *absent* from every cell is a number.
+                  The reference this was drawn from prints odds in each cell;
+                  doing that here would mean pricing several hundred structures
+                  nobody has quoted, which is either an invented model or an
+                  invented number. A premium appears for the box the player
+                  actually drew, from a real quote, and nowhere else (§4.4).
+                */}
+                <div
+                  data-role="cells"
+                  aria-hidden="true"
+                  style={sx("position:absolute;inset:0;pointer-events:none")}
+                >
+                  {drawn.map((e, ci) => {
+                    const colLadder = columnLadders.get(e);
+                    const leftMs = ci === 0 ? dividerMs : ((drawn[ci - 1] as number) * 1000);
+                    const left = xPct(t0, t1, leftMs);
+                    const right = xPct(t0, t1, e * 1000);
+                    const width = Math.max(0, right - left);
+                    const zonesHere = columnZones.get(e) ?? [];
+                    const playable = (colLadder?.prices.length ?? 0) >= 2;
+
+                    if (!playable) {
+                      return (
+                        <div
+                          key={`col-${e}`}
+                          data-column={e}
+                          data-buyable="none"
+                          title={`The book quotes one strike or fewer on ${expiryLabel(e)}, so no box can be drawn there.`}
+                          style={sx(
+                            `position:absolute;top:0;bottom:0;left:${left}%;width:${width}%;` +
+                              `background:repeating-linear-gradient(135deg,${C.line} 0 3px,transparent 3px 8px);` +
+                              `opacity:.5`,
+                          )}
+                        />
+                      );
+                    }
+
+                    const rows = colLadder?.prices ?? [];
+                    const colLo = rows[0] as number;
+                    const colHi = rows[rows.length - 1] as number;
+                    return (
+                      <div key={`col-${e}`} data-column={e}>
+                        {/* The parts of the window this column quotes nothing
+                            in. Hatched rather than left blank, because blank
+                            reads as "drawable, just empty" and it is not: there
+                            is no strike here on this date, so there is no box.
+                            Two of them at most — above the column's top rung
+                            and below its bottom one. */}
+                        {colHi < band.hi && (
+                          <div
+                            key={`none-hi-${e}`}
+                            data-buyable="none"
+                            title={`The book quotes no strike above ${usd(colHi)} on ${expiryLabel(e)}, so no box reaches up here on that date.`}
+                            style={sx(
+                              `position:absolute;left:${left}%;width:${width}%;top:0;` +
+                                `bottom:${clampPct(100 - yPct(band, colHi))}%;` +
+                                `background:repeating-linear-gradient(135deg,${C.line} 0 3px,transparent 3px 8px);` +
+                                `opacity:.45`,
+                            )}
+                          />
+                        )}
+                        {colLo > band.lo && (
+                          <div
+                            key={`none-lo-${e}`}
+                            data-buyable="none"
+                            title={`The book quotes no strike below ${usd(colLo)} on ${expiryLabel(e)}, so no box reaches down here on that date.`}
+                            style={sx(
+                              `position:absolute;left:${left}%;width:${width}%;bottom:0;` +
+                                `top:${clampPct(yPct(band, colLo))}%;` +
+                                `background:repeating-linear-gradient(135deg,${C.line} 0 3px,transparent 3px 8px);` +
+                                `opacity:.45`,
+                            )}
+                          />
+                        )}
+                        {rows.slice(0, -1).map((lo, ri) => {
+                          const hi = rows[ri + 1];
+                          if (hi === undefined) return null;
+                          // A neighbouring column's rungs can sit outside this
+                          // window; draw the part that is on the board and let
+                          // the rest be off it.
+                          if (hi < band.lo || lo > band.hi) return null;
+                          const top = clampPct(yPct(band, hi));
+                          const bottom = clampPct(100 - yPct(band, lo));
+                          return (
+                            <div
+                              key={`${e}-${lo}`}
+                              data-cell={`${e}-${lo}`}
+                              data-buyable="draw"
+                              style={sx(
+                                `position:absolute;left:${left}%;width:${width}%;` +
+                                  `top:${top}%;bottom:${bottom}%;` +
+                                  `border-top:1px solid ${C.border};` +
+                                  `border-right:1px solid ${C.border};` +
+                                  // Alternating rows, so a tall cell can be
+                                  // told from two short ones at a glance —
+                                  // which is the whole reason to draw cells
+                                  // rather than gridlines.
+                                  `background:${
+                                    e === chosen
+                                      ? ri % 2 === 0
+                                        ? C.cardAlt
+                                        : C.card
+                                      : ri % 2 === 0
+                                        ? C.panelAlt
+                                        : C.panel
+                                  }`,
+                              )}
+                            />
+                          );
+                        })}
+                        {/* The listed zones, drawn at their own edges rather
+                            than snapped to the rows — a maker's zone is often
+                            two or three rungs tall, and drawing it as one cell
+                            would misstate the band that actually fills. */}
+                        {zonesHere.map((z) => {
+                          const zLo = strikeUsd(z.floor);
+                          const zHi = strikeUsd(z.ceiling);
+                          if (zLo === null || zHi === null) return null;
+                          if (zHi < band.lo || zLo > band.hi) return null;
+                          return (
+                            <div
+                              key={`z-${e}-${z.floor}-${z.ceiling}-${z.wing}`}
+                              data-listed-cell={`${e}-${z.floor}-${z.ceiling}`}
+                              data-buyable="book"
+                              style={sx(
+                                `position:absolute;left:${left}%;width:${width}%;` +
+                                  `top:${clampPct(yPct(band, zHi))}%;` +
+                                  `bottom:${clampPct(100 - yPct(band, zLo))}%;` +
+                                  `background:${C.green}26;border:1px solid ${C.green}aa;` +
+                                  `box-shadow:inset 0 0 18px ${C.green}1a`,
+                              )}
+                            />
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+
                 {/* The history line, behind everything, clipped to the ladder's
                     band by `fitToLadder` rather than rescaled — a moved point is
                     a price that was never printed — and cut wherever the oracle
@@ -1502,16 +2448,22 @@ export function BoxBuilder({
                   </svg>
                 )}
 
-                {/* Grid rows — one per rung, on the one scale. */}
-                {ladder.prices.map((price, i) => (
-                  <div
-                    key={ladder.strikes[i] ?? i}
-                    style={sx(
-                      `position:absolute;left:0;right:0;top:${yPct(band, price)}%;height:0;` +
-                        `border-top:1px ${i === 0 || i === ladder.prices.length - 1 ? "solid" : "dashed"} ${C.line};pointer-events:none`,
-                    )}
-                  />
-                ))}
+                {/* Grid rows — one per rung of the *chosen* column, on the one
+                    scale, and unlike the cells they run the full width so the
+                    history behind them can be read against a strike. Rungs the
+                    window has scrolled past are skipped rather than clamped: a
+                    line drawn at the edge would claim a strike sits there. */}
+                {ladder.prices.map((price, i) =>
+                  price < band.lo || price > band.hi ? null : (
+                    <div
+                      key={ladder.strikes[i] ?? i}
+                      style={sx(
+                        `position:absolute;left:0;right:0;top:${clampPct(yPct(band, price))}%;height:0;` +
+                          `border-top:1px ${i === 0 || i === ladder.prices.length - 1 ? "solid" : "dashed"} ${C.line};pointer-events:none`,
+                      )}
+                    />
+                  ),
+                )}
 
                 {/* Spot, when the venue publishes one. */}
                 {spotPrice !== null && spotPrice >= band.lo && spotPrice <= band.hi && (
@@ -1631,24 +2583,60 @@ export function BoxBuilder({
                     );
                   })()}
 
-                {/* The box. Left edge pinned to the divider, right edge on the
-                    chosen expiry column — the only edge that is real. At the
-                    reveal it loses its fill and keeps its outline (§6), so the
-                    opponent's fill underneath stays visible through it. */}
-                {box && !drag && (() => {
-                  const floorUsd = strikeUsd(box.floor);
-                  const ceilingUsd = strikeUsd(box.ceiling);
+                {/*
+                  The box. Left edge pinned to the divider, right edge on an
+                  expiry column — the only edge that is real. At the reveal it
+                  loses its fill and keeps its outline (§6), so the opponent's
+                  fill underneath stays visible through it.
+
+                  ── Editing, and where it stops ──────────────────────────────
+
+                  Five handles, and the shape of the set is the answer to the
+                  owner's "editable up to a point":
+
+                   - **the body** moves the box, keeping its height in *rungs*;
+                   - **top and bottom edges** resize it, each stopping one rung
+                     short of the other, which is the minimum box the ladder
+                     allows;
+                   - **the right edge** steps between live expiry columns, and
+                     only between them;
+                   - **the two right corners** do both at once.
+
+                  There is no left handle and no free horizontal drag, because
+                  the left edge is now and the right edge is an expiry — not a
+                  date, an *expiry*, and the book quotes seven of them. Every
+                  handle is inert once the box is locked or revealed: a
+                  rectangle the opponent is already playing against is not a
+                  draft any more.
+
+                  Nothing here writes a `Box`. The handles move indices; the
+                  release runs `snapBox`, exactly as a fresh drag does, so an
+                  edited box and a drawn box are the same object built by the
+                  same function — which is why editing cannot desynchronise
+                  `encodeBoxPick`.
+                */}
+                {shownBox && !drag && (() => {
+                  const floorUsd = strikeUsd(shownBox.box.floor);
+                  const ceilingUsd = strikeUsd(shownBox.box.ceiling);
                   if (floorUsd === null || ceilingUsd === null) return null;
+                  const editable = !frozen;
+                  const live = edit !== null;
+                  const grip =
+                    `position:absolute;background:${C.accent};border-radius:2px;` +
+                    `pointer-events:auto;touch-action:none`;
                   return (
                     <div
                       data-role="box"
+                      data-editing={live ? "true" : "false"}
                       style={sx(
                         `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
-                          `right:${100 - xPct(t0, t1, (chosen ?? 0) * 1000)}%;` +
-                          `top:${yPct(band, ceilingUsd)}%;bottom:${100 - yPct(band, floorUsd)}%;` +
+                          `right:${100 - xPct(t0, t1, shownBox.expiry * 1000)}%;` +
+                          `top:${clampPct(yPct(band, ceilingUsd))}%;` +
+                          `bottom:${clampPct(100 - yPct(band, floorUsd))}%;` +
                           `border:${revealed ? 2 : 1}px solid ${C.accent};border-radius:3px;` +
                           `background:${revealed ? "transparent" : `${C.accent}1a`};` +
-                          `box-shadow:0 0 22px ${C.accent}22;pointer-events:none`,
+                          `box-shadow:0 0 22px ${C.accent}${live ? "44" : "22"};` +
+                          `pointer-events:none`,
                       )}
                     >
                       <span
@@ -1661,17 +2649,92 @@ export function BoxBuilder({
                         {revealed ? "YOU " : ""}
                         {usd(floorUsd)} – {usd(ceilingUsd)}
                       </span>
+
+                      {editable && (
+                        <>
+                          {/* Body — move. Sits inside the edges so the edge
+                              handles win the pointer where they overlap. */}
+                          <div
+                            data-handle="move"
+                            title="Drag to move. The box keeps its height in rungs and stops at the ends of the ladder."
+                            {...editHandlers("move")}
+                            style={sx(
+                              `position:absolute;inset:7px 9px;cursor:${live ? "grabbing" : "grab"};` +
+                                `pointer-events:auto;touch-action:none`,
+                            )}
+                          />
+                          <div
+                            data-handle="ceiling"
+                            title="Drag to move the ceiling. It stops one rung above the floor."
+                            {...editHandlers("ceiling")}
+                            style={sx(
+                              `position:absolute;left:14px;right:14px;top:-4px;height:9px;` +
+                                `cursor:ns-resize;pointer-events:auto;touch-action:none`,
+                            )}
+                          />
+                          <div
+                            data-handle="floor"
+                            title="Drag to move the floor. It stops one rung below the ceiling."
+                            {...editHandlers("floor")}
+                            style={sx(
+                              `position:absolute;left:14px;right:14px;bottom:-4px;height:9px;` +
+                                `cursor:ns-resize;pointer-events:auto;touch-action:none`,
+                            )}
+                          />
+                          <div
+                            data-handle="expiry"
+                            title="Drag to change the expiry. It snaps to dates the book quotes, and to nothing in between."
+                            {...editHandlers("expiry")}
+                            style={sx(
+                              `position:absolute;top:12px;bottom:12px;right:-4px;width:9px;` +
+                                `cursor:ew-resize;pointer-events:auto;touch-action:none`,
+                            )}
+                          />
+                          <div
+                            data-handle="corner-ceiling"
+                            title="Ceiling and expiry together."
+                            {...editHandlers("corner-ceiling")}
+                            style={sx(
+                              `${grip};right:-3px;top:-3px;width:7px;height:7px;cursor:nesw-resize`,
+                            )}
+                          />
+                          <div
+                            data-handle="corner-floor"
+                            title="Floor and expiry together."
+                            {...editHandlers("corner-floor")}
+                            style={sx(
+                              `${grip};right:-3px;bottom:-3px;width:7px;height:7px;cursor:nwse-resize`,
+                            )}
+                          />
+                        </>
+                      )}
                     </div>
                   );
                 })()}
               </div>
 
-              {/* Strike axis — the rungs, as buttons. Clicking two of them
-                  draws the same box a drag does, through the same snapper. */}
+              {/*
+                ── The price axis, down the right ───────────────────────────
+
+                On the right because that is the edge the newest price arrives
+                at, so the scale that reads it sits beside it rather than a
+                chart's width away — the convention every trading chart uses,
+                and the one the owner's reference has.
+
+                The rungs are buttons, and clicking two of them draws the same
+                box a drag does, through the same snapper. **Every rung of the
+                ladder is here, at every zoom level**, which is the promise that
+                makes zooming safe: a strike that has left the window is pinned
+                to the edge it left by, dimmed, with an arrow — never removed.
+                Clicking one brings the window back to it and then behaves
+                exactly as it would have on screen, so a zoom can never put a
+                strike out of reach.
+              */}
               <div
                 data-role="ladder"
                 style={sx(
-                  `position:absolute;top:${PAD.top}px;bottom:${PAD.bottom}px;left:0;width:${PAD.left}px`,
+                  `position:absolute;top:${PAD.top}px;bottom:${PAD.bottom}px;right:0;` +
+                    `width:${PAD.right}px`,
                 )}
               >
                 {ladder.prices.map((price, i) => {
@@ -1681,27 +2744,185 @@ export function BoxBuilder({
                     ladderIndex(ladder, box.floor) <= i &&
                     i <= ladderIndex(ladder, box.ceiling);
                   const isFloor = pendingFloor !== null && ladderIndex(ladder, pendingFloor) === i;
+                  const above = price > band.hi;
+                  const below = price < band.lo;
+                  const off = above || below;
+                  // Off-window rungs stack outwards from the edge they left by,
+                  // so a deep zoom shows a legible pile of "these are up there"
+                  // rather than a dozen labels on one line.
+                  const rank = above
+                    ? ladder.prices.filter((p) => p > band.hi && p < price).length
+                    : below
+                      ? ladder.prices.filter((p) => p < band.lo && p > price).length
+                      : 0;
+                  // Parked rungs stack inward from the edge they left by, in
+                  // pixels, and sit in the outer half of the gutter — so they
+                  // read as a pile of strikes set aside rather than landing on
+                  // top of the prices that are actually on the board.
+                  const place = off
+                    ? above
+                      ? `top:0;transform:translateY(${rank * 15}px)`
+                      : `bottom:0;transform:translateY(${-rank * 15}px)`
+                    : `top:${clampPct(yPct(band, price))}%;transform:translateY(-50%)`;
                   return (
                     <button
                       key={strike || i}
                       data-rung={strike}
+                      data-offscreen={off ? (above ? "above" : "below") : undefined}
+                      title={
+                        off
+                          ? `${usd(price)} is outside the current zoom — click to bring it back on screen`
+                          : undefined
+                      }
                       onClick={() => onRung(price)}
                       style={sx(
-                        `position:absolute;right:6px;top:${yPct(band, price)}%;transform:translateY(-50%);` +
-                          `padding:2px 6px;border-radius:4px;cursor:pointer;font:500 10px/1 ${MONO};` +
+                        `position:absolute;left:${off ? AXIS_PARKED_X : AXIS_LABEL_X}px;${place};` +
+                          `padding:2px 5px;border-radius:4px;cursor:pointer;white-space:nowrap;` +
+                          `font:${off ? "500" : "600"} ${off ? 9 : 10}px/1 ${MONO};` +
                           (isFloor
                             ? `background:${C.accent};color:${C.bg};border:1px solid ${C.accent}`
-                            : inBox
-                              ? `background:transparent;color:${C.accent};border:1px solid ${C.accent}55`
-                              : `background:transparent;color:${C.dim};border:1px solid transparent`),
+                            : off
+                              ? `background:${C.card};color:${C.faint};border:1px dashed ${C.border}`
+                              : inBox
+                                ? `background:${C.accent}14;color:${C.accent};border:1px solid ${C.accent}66`
+                                : `background:transparent;color:${C.muted};border:1px solid transparent`),
                       )}
                     >
+                      {off ? (above ? "↑" : "↓") : ""}
                       {usd(price)}
                     </button>
                   );
                 })}
+
+                {/*
+                  The live price, as a filled pill on the axis.
+
+                  It is the one number on this axis that is not a strike, so it
+                  is the one that gets the fill — a player looking for "where is
+                  it now" finds it without reading. Cents, because spot is a
+                  price rather than an axis tick.
+
+                  Outside the window it pins to the edge with an arrow instead
+                  of being drawn at a height it is not at. The same rule as
+                  `fitToLadder`: never move a price to make it fit.
+                */}
+                {spotPrice !== null && (
+                  <span
+                    data-role="spot-pill"
+                    data-offscreen={
+                      spotPrice > band.hi ? "above" : spotPrice < band.lo ? "below" : undefined
+                    }
+                    title={
+                      spotPrice > band.hi || spotPrice < band.lo
+                        ? `${underlying} spot ${usd(spotPrice, true)} is outside the current zoom`
+                        : `${underlying} spot ${usd(spotPrice, true)}`
+                    }
+                    style={sx(
+                      `position:absolute;left:2px;transform:translateY(-50%);` +
+                        `top:${spotPrice > band.hi ? 1 : spotPrice < band.lo ? 99 : clampPct(yPct(band, spotPrice))}%;` +
+                        `padding:3px 6px;border-radius:5px;white-space:nowrap;` +
+                        `font:700 10px/1 ${MONO};color:${C.bg};background:${C.blue};` +
+                        `box-shadow:0 0 12px ${C.blue}55`,
+                    )}
+                  >
+                    {spotPrice > band.hi ? "↑ " : spotPrice < band.lo ? "↓ " : ""}
+                    {usd(spotPrice, true)}
+                  </span>
+                )}
               </div>
 
+              {/*
+                ── The time axis, along the bottom ─────────────────────────
+
+                Wall clock, and every label is a date the book actually quotes.
+                The owner's reference runs ten-second columns; this venue has
+                none — its expiries are daily at 08:00Z — so the columns here
+                are those dates and the caption under the chart says so rather
+                than letting the spacing imply a cadence.
+
+                `NOW` carries the real clock time, which is what makes the rest
+                of the axis legible as a countdown: the gap between it and the
+                first column is how long the player has.
+              */}
+              <div
+                data-role="time-axis"
+                aria-hidden="true"
+                style={sx(
+                  `position:absolute;left:${PAD.left}px;right:${PAD.right}px;bottom:0;` +
+                    `height:${PAD.bottom}px`,
+                )}
+              >
+                <div
+                  style={sx(
+                    `position:absolute;left:0;right:0;top:0;height:0;border-top:1px solid ${C.line}`,
+                  )}
+                />
+                <span
+                  style={sx(
+                    `position:absolute;left:${clampPct(xPct(t0, t1, dividerMs))}%;top:5px;` +
+                      `transform:translateX(-50%);white-space:nowrap;text-align:center;` +
+                      `font:700 8.5px/1.5 ${MONO};letter-spacing:.08em;color:${C.muted}`,
+                  )}
+                >
+                  NOW
+                  <br />
+                  <span style={sx(`font:500 8.5px/1.5 ${MONO};color:${C.faint}`)}>
+                    {utcClock(dividerMs)}
+                  </span>
+                </span>
+                {drawn.map((e) => (
+                  <span
+                    key={e}
+                    data-axis-expiry={e}
+                    style={sx(
+                      `position:absolute;left:${clampPct(xPct(t0, t1, e * 1000))}%;top:5px;` +
+                        `transform:translateX(-50%);white-space:nowrap;text-align:center;` +
+                        `font:${e === chosen ? "700" : "500"} 8.5px/1.5 ${MONO};` +
+                        `color:${e === chosen ? C.accent : C.dim}`,
+                    )}
+                  >
+                    {expiryLabel(e)}
+                    <br />
+                    <span style={sx(`font:500 8.5px/1.5 ${MONO};color:${C.faint}`)}>
+                      {utcClock(e * 1000)}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* The three states a cell can be in, named where they are drawn.
+                A legend is the cheapest possible way to keep "filled means a
+                maker has listed it" from being something a player has to infer
+                from a colour. */}
+            <div
+              data-role="cell-legend"
+              style={sx("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}
+            >
+              {(
+                [
+                  [`${C.green}26`, `1px solid ${C.green}aa`, "on the book — fills now"],
+                  [C.cardAlt, `1px solid ${C.border}`, "drawable — priced on demand"],
+                  [
+                    `repeating-linear-gradient(135deg,${C.line} 0 3px,transparent 3px 8px)`,
+                    `1px solid ${C.line}`,
+                    "no strikes — nothing to draw",
+                  ],
+                ] as const
+              ).map(([fill, edge, label]) => (
+                <span
+                  key={label}
+                  style={sx("display:inline-flex;align-items:center;gap:6px")}
+                >
+                  <span
+                    style={sx(
+                      `width:16px;height:10px;border-radius:2px;background:${fill};border:${edge}`,
+                    )}
+                  />
+                  <span style={sx(`font:500 10px/1 ${MONO};color:${C.dim}`)}>{label}</span>
+                </span>
+              ))}
+              <span style={sx(`${NOTE};flex:1;min-width:24ch`)}>{CELL_LEGEND_COPY}</span>
             </div>
 
             {/*
@@ -1810,12 +3031,19 @@ export function BoxBuilder({
               </div>
             )}
 
-            {/* Provenance, and the two things about the line that are easy to
-                misread: the blank right edge, and anything that ran off the
-                ladder. Both are said only when there is a line to say them
-                about — an absent chart makes no claims at all. */}
+            {/* Provenance, and the three things about the line that are easy
+                to misread: the blank right edge, anything that ran off the
+                ladder, and anything the player's own zoom is covering. All are
+                said only when there is a line to say them about — an absent
+                chart makes no claims at all.
+
+                The last two are deliberately separate sentences. "Outside the
+                ladder" is the venue's doing and no zoom recovers it; "hidden by
+                the zoom" is the player's own and one button recovers it.
+                Adding them together would have blamed the book for the
+                viewport. */}
             <span style={sx(NOTE)}>
-              {NOW_COPY}
+              {NOW_COPY} {TIME_AXIS_COPY}
               {hasLine ? ` History: ${priceSource ?? PRICE_SOURCE}. ` : ""}
               {hasLine ? (settlementNote ?? SETTLEMENT_NOTE) : ""}
               {hasLine && boundary.staleMs !== null && boundary.staleMs > 0
@@ -1824,7 +3052,30 @@ export function BoxBuilder({
               {hasLine && line.clipped > 0
                 ? ` ${line.clipped} print${line.clipped === 1 ? "" : "s"} ran outside the ladder and ${line.clipped === 1 ? "is" : "are"} not drawn — the line is clipped, never rescaled.`
                 : ""}
+              {hasLine && line.hidden > 0
+                ? ` A further ${line.hidden} ${line.hidden === 1 ? "print is" : "prints are"} inside the ladder but outside this zoom — Fit ladder brings ${line.hidden === 1 ? "it" : "them"} back.`
+                : ""}
             </span>
+
+            {/* The rungs the zoom is covering, said as a count with the way
+                back. A strike that has left the board silently is a strike the
+                player can no longer draw on and was never told about; this and
+                the pinned labels on the axis are the two places that cannot
+                happen. */}
+            {!fitted && (band.below > 0 || band.above > 0) && (
+              <span data-role="offscreen-rungs" style={sx(`${NOTE};color:${C.amber}`)}>
+                {band.above > 0
+                  ? `${band.above} rung${band.above === 1 ? "" : "s"} above`
+                  : ""}
+                {band.above > 0 && band.below > 0 ? " and " : ""}
+                {band.below > 0
+                  ? `${band.below} rung${band.below === 1 ? "" : "s"} below`
+                  : ""}{" "}
+                {band.above + band.below === 1 ? "is" : "are"} outside this zoom. They are still on
+                the axis, pinned to the edge — click one to bring the board back to it, or Fit
+                ladder for all of them.
+              </span>
+            )}
           </div>
 
           {/* ── The parameters panel ──────────────────────────────────── */}
@@ -1865,16 +3116,50 @@ export function BoxBuilder({
                   </span>
                 </div>
 
-                {/* §4.2 — the wing is the upside, so it is readable even
-                    though it is not draggable yet. */}
+                {/* §4.2 — the wing is the upside, so it is readable whether or
+                    not it is the player's to set, and it is now steppable on a
+                    drawn box. The steps are `wingCandidates` and nothing else:
+                    every value is a distance the ladder can express, which is
+                    what "snapped" means for a width on an irregular ladder. */}
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(LABEL)}>WING WIDTH</span>
-                  <span style={sx(VALUE)}>
-                    {box ? usd(strikeUsd(box.wing) ?? 0) : "—"}
-                  </span>
+                  <div style={sx("display:flex;align-items:center;gap:8px")}>
+                    <span data-role="wing-value" style={sx(VALUE)}>
+                      {box ? usd(strikeUsd(box.wing) ?? 0) : "—"}
+                    </span>
+                    <div style={sx("flex:1")} />
+                    <button
+                      data-role="wing-down"
+                      aria-label="Narrower wing"
+                      disabled={!wingEditable || wingAt <= 0}
+                      onClick={() => stepWing(-1)}
+                      style={sx(
+                        `${CHIP(false, !wingEditable || wingAt <= 0)};height:24px;padding:0 9px`,
+                      )}
+                    >
+                      −
+                    </button>
+                    <button
+                      data-role="wing-up"
+                      aria-label="Wider wing"
+                      disabled={!wingEditable || wingAt < 0 || wingAt >= wings.length - 1}
+                      onClick={() => stepWing(1)}
+                      style={sx(
+                        `${CHIP(false, !wingEditable || wingAt < 0 || wingAt >= wings.length - 1)};` +
+                          `height:24px;padding:0 9px`,
+                      )}
+                    >
+                      +
+                    </button>
+                  </div>
                   <span style={sx(NOTE)}>
                     The distance below the floor and above the ceiling. It is also the most this can
-                    pay per contract, which is why it is on screen even while it is fixed.
+                    pay per contract, which is why stepping it steps the upside.
+                    {match
+                      ? " Fixed here: this box fills a zone the maker already listed, and its wings came with it."
+                      : wings.length > 1
+                        ? ` The ladder offers ${wings.length} widths at this band — every one of them a gap the book is quoting, and nothing in between.`
+                        : " The ladder offers one width at this band, so there is nothing to step to."}
                   </span>
                 </div>
 
@@ -1953,7 +3238,26 @@ export function BoxBuilder({
                   <span style={sx(NOTE)}>
                     Drag on the chart, or click a floor strike and then a ceiling strike. The box
                     snaps to strikes the book is quoting, so the tighter you can draw it, the more
-                    the market is quoting near there.
+                    the market is quoting near there. Scroll to zoom the board, shift-scroll to pan;
+                    the arrow keys and 0 do the same from the keyboard.
+                  </span>
+                )}
+
+                {/* What can still be changed, said once the box exists — the
+                    handles are small and a player should not have to find them
+                    by hovering. The last clause is the limit, and it is the
+                    ladder's rather than ours. */}
+                {box && !frozen && !problem && (
+                  <span data-role="edit-hint" style={sx(NOTE)}>
+                    Drag the box to move it, its top or bottom edge to resize it, and its right edge
+                    to change the expiry. Edges land on strikes the book quotes and the expiry lands
+                    on a date it lists — there is nothing in between to land on.
+                  </span>
+                )}
+                {box && frozen && (
+                  <span data-role="edit-hint" style={sx(NOTE)}>
+                    This box is committed to the duel, so it can no longer be moved or resized — the
+                    rectangle on screen is the one the opponent is playing against.
                   </span>
                 )}
               </>

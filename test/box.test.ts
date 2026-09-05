@@ -30,16 +30,22 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { UtilsModule, validateCondor, validateRanger } from "@thetanuts-finance/thetanuts-client";
 import {
+  DEFAULT_ZOOM_STEPS,
   MIN_LADDER_STRIKES,
+  MIN_WINDOW_RUNGS,
   boxProblem,
+  chartWindow,
   defaultWing,
   deriveLadder,
   deriveLadders,
   formatStrike,
   isPlayable,
   ladderBounds,
+  ladderCore,
   ladderIndex,
+  ladderStep,
   liveExpiries,
+  maxZoomSteps,
   minBoxHeight,
   parseStrike,
   priceToStrike,
@@ -1436,5 +1442,224 @@ describe("a ranger cannot reach an SDK payout helper unflagged", () => {
       expect(file, file).toBe(join(root, "data", "ranger.ts"));
       expect(body).toMatch(/isRanger:\s*true/);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The viewport — one scale, but not the whole ladder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `chartWindow` replaced `ladderBounds` as the chart's y-axis, and the reason is
+ * a measurement rather than a preference: the whole 33-hour Chainlink window is
+ * 4.3% wide on both ETH and BTC (read live off Base on 2026-09-05), while ETH's
+ * 11 Sep column on this fixture spans $700 — 28% — so real price movement drew
+ * as a flat squiggle across 15% of the plot.
+ *
+ * These tests pin the three properties that make that fix safe rather than
+ * merely prettier:
+ *
+ *  1. **it is still one scale**, derived from the ladder and clamped to it, so
+ *     the §2.5 invariant survives;
+ *  2. **no rung is ever lost** — what leaves the window is counted, so the
+ *     screen can say so and offer a way back;
+ *  3. **it is deterministic**, because two seats of a duel must open on the
+ *     same board from the same snapshot.
+ */
+describe("the chart window", () => {
+  const rungsIn = (l: StrikeLadder, w: { lo: number; hi: number }): number =>
+    l.prices.filter((p) => p >= w.lo && p <= w.hi).length;
+
+  test("ladderStep is the median gap, not the mean — irregular ladders have no mean", () => {
+    // ETH 5 Sep gaps are 20 20 20 70 100. The mean is 46 and describes no part
+    // of this ladder; the median is 20 and is exactly what the venue quotes
+    // where it quotes densely.
+    expect(ladderStep(ETH())).toBe(20);
+    // BTC 5 Sep gaps: 500 500 500 1000 500 3500 1000 1000.
+    expect(ladderStep(BTC())).toBe(1000);
+  });
+
+  test("ladderStep is 0 for a ladder with no gap at all", () => {
+    const one = ladder("BTC", ETH_18SEP);
+    expect(one.prices).toHaveLength(1);
+    expect(ladderStep(one)).toBe(0);
+  });
+
+  test("ladderCore is the ladder's densest run — its own opinion of where spot is", () => {
+    // 2420 2440 2460 2480 are one increment apart; 2550 and 2650 are the tail.
+    expect(ladderCore(ETH())).toEqual({ lo: 2420, hi: 2480 });
+    expect(ladderCore(BTC())).toEqual({ lo: 78500, hi: 81500 });
+  });
+
+  test("the default window is narrower than the ladder on a ladder worth zooming", () => {
+    const l = ETH();
+    const full = ladderBounds(l) as { lo: number; hi: number };
+    const w = chartWindow(l, 2450, DEFAULT_ZOOM_STEPS) as { lo: number; hi: number };
+    expect(w.hi - w.lo).toBeLessThan(full.hi - full.lo);
+    // …and never wider. The ladder is the extent of what the venue quotes, so
+    // outside it there is nothing to draw and no reason to be.
+    expect(w.lo).toBeGreaterThanOrEqual(full.lo);
+    expect(w.hi).toBeLessThanOrEqual(full.hi);
+  });
+
+  test("a coarse column is NOT zoomed, because there is nothing to zoom into", () => {
+    // ETH 11 Sep is 2200 / 2650 / 2900. Three rungs, $450 and $250 apart. A
+    // window tighter than that takes the rungs off the board, so the honest
+    // answer is the whole ladder — and the flat line on this column is the
+    // book being coarse, not the chart being wrong.
+    const l = ladder("ETH", ETH_11SEP);
+    expect(l.prices).toEqual([2200, 2650, 2900]);
+    expect(chartWindow(l, 2450, DEFAULT_ZOOM_STEPS)).toMatchObject(
+      ladderBounds(l) as object,
+    );
+  });
+
+  test("never shows fewer than MIN_WINDOW_RUNGS rungs, at any zoom", () => {
+    for (const l of playableLadders()) {
+      const cap = Math.min(MIN_WINDOW_RUNGS, l.prices.length);
+      for (const steps of [0.1, 0.5, 1, DEFAULT_ZOOM_STEPS, 12]) {
+        const w = chartWindow(l, l.prices[Math.floor(l.prices.length / 2)] ?? null, steps);
+        expect(w).not.toBeNull();
+        expect(rungsIn(l, w as { lo: number; hi: number })).toBeGreaterThanOrEqual(cap);
+      }
+    }
+  });
+
+  test("Infinity — and maxZoomSteps — give back exactly ladderBounds", () => {
+    // This is the documented way to ask for the old behaviour, and it is what
+    // the screen's "Fit ladder" control passes. If these ever diverge, the
+    // control stops meaning what its label says.
+    for (const l of playableLadders()) {
+      expect(chartWindow(l, null, Number.POSITIVE_INFINITY)).toMatchObject(
+        ladderBounds(l) as object,
+      );
+      expect(chartWindow(l, null, maxZoomSteps(l))).toMatchObject(ladderBounds(l) as object);
+    }
+  });
+
+  test("below and above count every rung off the board — nothing is lost silently", () => {
+    for (const l of playableLadders()) {
+      for (const steps of [1, DEFAULT_ZOOM_STEPS, 8]) {
+        const w = chartWindow(l, l.prices[0] ?? null, steps);
+        if (!w) continue;
+        // The three counts partition the ladder. A rung that is neither on the
+        // board nor counted as off it is a strike the player can no longer
+        // draw on and was never told about.
+        expect(w.below + w.above + rungsIn(l, w)).toBe(l.prices.length);
+      }
+    }
+  });
+
+  test("fitted means fitted: at the full ladder nothing is above or below", () => {
+    for (const l of playableLadders()) {
+      const w = chartWindow(l, null, Number.POSITIVE_INFINITY);
+      expect(w?.below).toBe(0);
+      expect(w?.above).toBe(0);
+    }
+  });
+
+  test("the window is anchored on the market, and contains its anchor", () => {
+    const l = BTC();
+    const w = chartWindow(l, 81004.04, DEFAULT_ZOOM_STEPS) as { lo: number; hi: number };
+    expect(81004.04).toBeGreaterThanOrEqual(w.lo);
+    expect(81004.04).toBeLessThanOrEqual(w.hi);
+  });
+
+  test("with no spot at all it still opens on the dense core", () => {
+    // The board has to be usable with no price feed, and the ladder itself
+    // says where the market is: a maker lists tightly where they expect price.
+    const l = ETH();
+    const core = ladderCore(l) as { lo: number; hi: number };
+    const w = chartWindow(l, null, DEFAULT_ZOOM_STEPS) as { lo: number; hi: number };
+    const mid = (core.lo + core.hi) / 2;
+    expect(mid).toBeGreaterThanOrEqual(w.lo);
+    expect(mid).toBeLessThanOrEqual(w.hi);
+  });
+
+  test("near an edge it shifts rather than shrinks", () => {
+    // A box drawn at the bottom of the ladder must not be played on a
+    // two-rung board just because it is near the end.
+    const l = BTC();
+    const step = ladderStep(l);
+    const middle = chartWindow(l, 80000, 2) as { lo: number; hi: number };
+    const bottom = chartWindow(l, l.prices[0] as number, 2) as { lo: number; hi: number };
+    expect(bottom.lo).toBe(l.prices[0] as number);
+    // Same height, to within the min-rungs floor that can only ever widen it.
+    expect(bottom.hi - bottom.lo).toBeGreaterThanOrEqual(middle.hi - middle.lo - step);
+  });
+
+  test("a one-rung ladder is total, not a crash and not a divide by zero", () => {
+    const one = ladder("BTC", ETH_18SEP);
+    expect(chartWindow(one, 74000, DEFAULT_ZOOM_STEPS)).toEqual({
+      lo: 74000,
+      hi: 74000,
+      below: 0,
+      above: 0,
+    });
+  });
+
+  test("nonsense zoom degrades to the whole ladder rather than to NaN", () => {
+    const l = ETH();
+    const full = ladderBounds(l) as object;
+    for (const steps of [0, -1, Number.NaN]) {
+      expect(chartWindow(l, 2450, steps)).toMatchObject(full);
+    }
+  });
+
+  test("centre overrides the anchor — this is the whole of pan", () => {
+    const l = BTC();
+    const low = chartWindow(l, 81000, 2, 79000) as { lo: number; hi: number };
+    const high = chartWindow(l, 81000, 2, 85000) as { lo: number; hi: number };
+    expect(low.lo).toBeLessThan(high.lo);
+    // Panned or not, the window never leaves the ladder.
+    const full = ladderBounds(l) as { lo: number; hi: number };
+    for (const w of [low, high]) {
+      expect(w.lo).toBeGreaterThanOrEqual(full.lo);
+      expect(w.hi).toBeLessThanOrEqual(full.hi);
+    }
+  });
+
+  test("deterministic — two seats on the same snapshot open on the same board", () => {
+    // The property the duel rests on. Same ladder, same anchor, same numbers,
+    // with no clock, no randomness and no viewport history in the answer.
+    for (const l of playableLadders()) {
+      const a = chartWindow(l, l.prices[1] ?? null, DEFAULT_ZOOM_STEPS);
+      const b = chartWindow(l, l.prices[1] ?? null, DEFAULT_ZOOM_STEPS);
+      expect(a).toEqual(b);
+    }
+  });
+
+  test("a spot that ticks between two rungs does not move the board", () => {
+    // Why the screen snaps spot to a rung before passing it here: an unsnapped
+    // anchor would slide the axis on every tick and hand the two seats two
+    // subtly different boards. Snapped, everything between two rungs is one
+    // answer.
+    const l = ETH();
+    const first = chartWindow(l, strikeUsd(snapPrice(l, 2451) as string), DEFAULT_ZOOM_STEPS);
+    for (const tick of [2450.01, 2452.4, 2455, 2458.9]) {
+      expect(chartWindow(l, strikeUsd(snapPrice(l, tick) as string), DEFAULT_ZOOM_STEPS)).toEqual(
+        first,
+      );
+    }
+  });
+
+  test("the window shows real rungs and only real rungs", () => {
+    // The viewport is allowed to end between two strikes — an axis edge claims
+    // nothing — but it must never invent a rung or move one. Whatever is on the
+    // board is a strike the venue quotes, unchanged.
+    for (const l of playableLadders()) {
+      const w = chartWindow(l, l.prices[1] ?? null, DEFAULT_ZOOM_STEPS) as {
+        lo: number;
+        hi: number;
+      };
+      for (const p of l.prices.filter((x) => x >= w.lo && x <= w.hi)) {
+        expect(l.prices).toContain(p);
+        expect(ladderIndex(l, priceToStrike(p) as string)).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  test("a ladder with no bounds has no window", () => {
+    expect(chartWindow({ underlying: "ETH", expiry: 1, strikes: [], prices: [] }, 100)).toBeNull();
   });
 });

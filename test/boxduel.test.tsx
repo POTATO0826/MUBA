@@ -28,7 +28,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { liveExpiries, type Box, type LadderSnapshot } from "../src/data/box.ts";
 import type { RoomSeat, RoomView } from "../src/data/room.ts";
-import { usdc } from "../src/data/stake.ts";
+import { poolOf, usdc } from "../src/data/stake.ts";
 import {
   _resetRooms,
   createRoom,
@@ -568,7 +568,12 @@ describe("custody is claimed only when something holds the stake", () => {
 
     // And the same asymmetry in the strip.
     expect(stakeBasisLine(10, null)).toBe(`${usdc(10)} each, notional · nothing is held`);
-    expect(stakeBasisLine(10, held)).toBe(`${usdc(10)} each · winner takes ${usdc(20)}`);
+    // Derived from `poolOf`, never typed: the pot is the escrow's arithmetic
+    // (stake × 2, less the house rake), and a number frozen here would go
+    // stale the day that rake changes — which is exactly what happened.
+    expect(stakeBasisLine(10, held)).toBe(
+      `${usdc(10)} each · winner takes ${usdc(poolOf(10))}`,
+    );
   });
 
   test("custody, when it is real, reaches the screen", () => {
@@ -586,7 +591,7 @@ describe("custody is claimed only when something holds the stake", () => {
     );
     // The promise comes back, and the disclaimer goes away — one switch, and
     // the escrow address is what throws it.
-    expect(text()).toContain(`winner takes ${usdc(20)}`);
+    expect(text()).toContain(`winner takes ${usdc(poolOf(10))}`);
     expect(text()).toContain("6-hour refund returns both stakes, rake-free");
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
   });
@@ -768,7 +773,7 @@ describe("custody is claimed only when something holds the stake", () => {
     // One seam, one switch, three screens — and the switch is an address, not a
     // flag, so nothing here can be turned on by optimism.
     mount(hub(CONNECTED, [view(id)], held));
-    expect(text()).toContain(`winner takes ${usdc(20)}`);
+    expect(text()).toContain(`winner takes ${usdc(poolOf(10))}`);
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
     unmount();
 
@@ -788,7 +793,9 @@ describe("custody is claimed only when something holds the stake", () => {
       />,
     );
     expect(text()).toContain("WINNER TAKES");
-    expect(text()).toContain(usdc(20));
+    // `poolOf` again, not a literal — the lobby renders the escrow's own
+    // arithmetic and the test must move with it.
+    expect(text()).toContain(usdc(poolOf(10)));
     expect(container.querySelector('[data-role="notional-stake"]')).toBeNull();
     unmount();
   });
