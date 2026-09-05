@@ -24,15 +24,48 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { deriveLadder, liveExpiries, type LadderSnapshot } from "../src/data/box.ts";
-import type { CondorSpec } from "../src/data/condor.ts";
+import {
+  deriveLadder,
+  liveExpiries,
+  snapBox,
+  strikeUsd,
+  wingCandidates,
+  type LadderSnapshot,
+  type StrikeLadder,
+} from "../src/data/box.ts";
+import {
+  boxToCondor,
+  condorEconomics,
+  type CondorEconomics,
+  type CondorSpec,
+} from "../src/data/condor.ts";
 import { emptyHistory, type PriceHistory } from "../src/data/history.ts";
-import type { RoomView } from "../src/data/room.ts";
+import {
+  listedZones,
+  zoneBox,
+  zoneWingUsd,
+  type ListedZone,
+} from "../src/data/ranger.ts";
+import {
+  PRACTICE_TAPE_CHIP,
+  PRACTICE_TAPE_NOTE,
+  liveOpenChip,
+  type RoomView,
+} from "../src/data/room.ts";
+import { stateAge } from "../src/theme.ts";
+import { MAX_FILL_USDC } from "../src/desk/fill.ts";
 import {
   BoxBuilder,
+  FILL_CAP_USD,
+  MAX_PANEL_CONTRACTS,
   decodeBoxPick,
   encodeBoxPick,
   expiryLabel,
+  fillCapCopy,
+  listedFill,
+  positionEconomics,
+  positionWingUsd,
+  rungGapCopy,
   segments,
   shortAge,
   type ListedFill,
@@ -1089,5 +1122,420 @@ describe("the board with no book behind it", () => {
     // It says what is missing, never why. Guessing at a cause is how this repo
     // once blamed the venue for a local DNS block.
     expect(card?.textContent).not.toMatch(/outage|down|unreachable|error/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Four bugs the arena carried, and the four sentences that close them
+//
+// Each test below fails on the code as it stood. They are grouped because they
+// share one shape: a screen asserting something the data behind it did not say.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A `PriceHistory` shaped exactly as `createHistorySource` returns one. The
+ *  suite above has its own copy inside a closure; this is the same builder. */
+function historyLine(points: readonly { t: number; px: number }[], at: number): PriceHistory {
+  const last = points[points.length - 1];
+  const base = emptyHistory(at);
+  return {
+    ...base,
+    meta: {
+      ...base.meta,
+      ok: points.length > 0,
+      source: "chainlink",
+      transport: "logs",
+      granularity: { points: points.length, medianGapMs: 60_000, maxGapMs: 60_000, spanMs: 0 },
+    },
+    points: [...points],
+    now: { at, lastPrintAt: last?.t ?? null, staleMs: last ? at - last.t : null },
+    observed: null,
+  };
+}
+
+describe("the eighth money bug — one instrument answers the money questions", () => {
+  /**
+   * The exact state the UI can reach, built with the UI's own functions.
+   *
+   * `wingCandidates` is what the stepper offers, `snapBox` is the only thing in
+   * `BoxBuilder` that builds a `Box`, and `endEdit` carries the wing across a
+   * band drag — so a box on the listed band carrying a wing that is *not* the
+   * maker's is a box a player can hold. Nothing here is synthesised.
+   */
+  function widenedOntoListed() {
+    const zone = listedZones(BOOKED, NOW)[0] as ListedZone;
+    const ladder = deriveLadder(BOOKED, zone.underlying, zone.expiry, NOW) as StrikeLadder;
+    const drawn = zoneBox(zone);
+    const wings = wingCandidates(ladder, drawn.floor, drawn.ceiling);
+    // The widest width the ladder expresses at this band — $4,000 against the
+    // maker's $500, which is the audit's own pair.
+    const wide = wings.find((w) => strikeUsd(w) === 4000) as string;
+    return { zone, box: snapBox({ ...drawn, wing: wide }, ladder) };
+  }
+
+  test("a wider wing still matches the listed zone — the match is on the band alone", () => {
+    // Not a defect: a listed zone's wings are the maker's and the player does
+    // not choose them, which is what `LISTED_WING_COPY` says on screen. This
+    // test pins the premise the bug rests on so the fix cannot be mistaken for
+    // "make the wing filter".
+    const { zone, box } = widenedOntoListed();
+    expect(strikeUsd(box.wing)).toBe(4000);
+    expect(zoneWingUsd(zone)).toBe(500);
+    expect(listedFill(box, BOOKED, NOW)?.zone.index).toBe(zone.index);
+  });
+
+  test("max payout comes from the order that pays it, not from the drawing", () => {
+    const { box } = widenedOntoListed();
+    const match = listedFill(box, BOOKED, NOW) as ListedFill;
+    const spec = boxToCondor(box);
+
+    // The shape of the bug, stated so it cannot come back quietly: the drawn
+    // box's own arithmetic promises eight times what the order settles.
+    expect(condorEconomics(spec, 120, 1).maxPayout).toBe(4000);
+    expect(condorEconomics(spec, 120, 1).payoutMultiple).toBeCloseTo(4000 / 120, 6);
+
+    // What the screen prints now. The premium was previewed against
+    // `match.zone.order`, so the ceiling has to be that order's wing or the
+    // ratio between them is a ratio of two different contracts.
+    const econ = positionEconomics(spec, match, 120, 1) as CondorEconomics;
+    expect(econ.maxPayout).toBe(500);
+    expect(econ.maxLoss).toBe(120);
+    expect(econ.payoutMultiple).toBeCloseTo(500 / 120, 6);
+  });
+
+  test("with no match the box is still the condor the player drew", () => {
+    // The fix must not quietly re-price the unlisted path, which is most boxes.
+    const { box } = widenedOntoListed();
+    const spec = boxToCondor(box);
+    expect((positionEconomics(spec, null, 120, 1) as CondorEconomics).maxPayout).toBe(4000);
+    expect(positionEconomics(null, null, 120, 1)).toBeNull();
+  });
+
+  test("the wing the panel prints is the wing the position has", () => {
+    const { zone, box } = widenedOntoListed();
+    const match = listedFill(box, BOOKED, NOW) as ListedFill;
+    // The row sits directly under "its wings came with it", so printing the
+    // drawing's wing there made that sentence false about the number above it.
+    expect(positionWingUsd(box, match)).toBe(zoneWingUsd(zone));
+    expect(positionWingUsd(box, null)).toBe(4000);
+    expect(positionWingUsd(null, null)).toBeNull();
+  });
+
+  test("on screen, a picked zone prices off the maker's wing end to end", () => {
+    mountOnBtc({ premium: 120 });
+    click(all("[data-zone]")[0] as Element);
+    expect(container.querySelector('[data-role="wing-value"]')?.textContent).toBe("$500");
+    expect(container.querySelector('[data-role="max-payout"]')?.textContent).toBe(
+      "$500.00 per contract",
+    );
+    expect(container.querySelector('[data-role="payout-multiple"]')?.textContent).toBe(
+      `${(500 / 120).toFixed(2)}× the premium`,
+    );
+    expect(container.querySelector('[data-role="max-loss"]')?.textContent).toBe("$120.00");
+  });
+});
+
+describe("the ladder's heading claims only what the caller said", () => {
+  test("with no provenance it asserts none", () => {
+    // The bug: this read `LIVE STRIKES` unconditionally, on a path
+    // `useLiveMarket` reaches with a stale ladder by design.
+    mount(<BoxBuilder {...BASE} />);
+    expect(text()).toContain("ETH · STRIKES");
+    expect(text()).not.toContain("LIVE STRIKES");
+    expect(container.querySelector('[data-role="ladder-age"]')).toBeNull();
+  });
+
+  test("a live read says LIVE, and carries no age because it does not need one", () => {
+    mount(<BoxBuilder {...BASE} feed={{ state: "live", at: NOW - 8_000 }} />);
+    expect(text()).toContain("ETH · LIVE STRIKES");
+    expect(container.querySelector('[data-role="ladder-age"]')).toBeNull();
+  });
+
+  test("a stale read says STALE and always beside its age", () => {
+    // `theme.ts`: for STALE "the age is the disclosure; the word alone is not".
+    mount(<BoxBuilder {...BASE} feed={{ state: "stale", at: NOW - 45 * 60_000 }} />);
+    expect(text()).toContain("ETH · STALE STRIKES");
+    expect(container.querySelector('[data-role="ladder-age"]')?.textContent).toBe(
+      stateAge(NOW - 45 * 60_000, NOW) ?? "",
+    );
+  });
+
+  test("a stale read with no timestamp says STALE without inventing a duration", () => {
+    mount(<BoxBuilder {...BASE} feed={{ state: "stale", at: 0 }} />);
+    expect(text()).toContain("ETH · STALE STRIKES");
+    expect(container.querySelector('[data-role="ladder-age"]')).toBeNull();
+  });
+});
+
+describe("the room's opening print, rendered rather than merely captured", () => {
+  const ROOM: RoomView = {
+    id: "r1",
+    joinPath: "/room/r1",
+    host: "0x1111111111111111111111111111111111111111",
+    guest: "0x2222222222222222222222222222222222222222",
+    stakeUsdc: 10,
+    durationMinutes: 5,
+    lobbyName: "kz",
+    seed: 42,
+    open: null,
+    mode: "box",
+    picks: [null, null],
+    revealed: false,
+    ready: [true, true],
+    readyBothAt: NOW,
+    updatedAt: NOW,
+  };
+
+  test("no captured open is a practice tape, and it says both halves", () => {
+    // `openFor` was built so a screen cannot render a reference price where a
+    // live one is implied. Nothing in this file destructured it, so the whole
+    // disclosure was invisible.
+    mount(<BoxBuilder {...BASE} room={ROOM} seat="host" onLock={() => {}} />);
+    const chip = container.querySelector('[data-role="room-open"]');
+    expect(chip?.getAttribute("data-open-live")).toBe("false");
+    expect(chip?.textContent).toBe(PRACTICE_TAPE_CHIP);
+    expect(container.querySelector('[data-role="practice-tape"]')?.textContent).toBe(
+      PRACTICE_TAPE_NOTE,
+    );
+  });
+
+  test("a real captured open says so, names the feed, and drops the practice note", () => {
+    const open = {
+      px: { ETH: 2453.17 },
+      source: "chainlink" as const,
+      at: NOW - 12_000,
+      label: "Chainlink · Base 8453",
+    };
+    mount(<BoxBuilder {...BASE} room={{ ...ROOM, open }} seat="host" onLock={() => {}} />);
+    const chip = container.querySelector('[data-role="room-open"]');
+    expect(chip?.getAttribute("data-open-live")).toBe("true");
+    expect(chip?.textContent).toContain(liveOpenChip(open));
+    expect(chip?.textContent).toContain("$2,453.17");
+    expect(container.querySelector('[data-role="practice-tape"]')).toBeNull();
+  });
+
+  test("a capture with no price for the asset on screen is still a practice tape", () => {
+    // `openFor` answers per symbol, not per capture — BTC has a feed here and
+    // the chart opens on ETH's ladder.
+    const open = {
+      px: { BTC: 79_644 },
+      source: "chainlink" as const,
+      at: NOW - 12_000,
+      label: "Chainlink · Base 8453",
+    };
+    mount(<BoxBuilder {...BASE} room={{ ...ROOM, open }} seat="host" onLock={() => {}} />);
+    expect(
+      container.querySelector('[data-role="room-open"]')?.getAttribute("data-open-live"),
+    ).toBe("false");
+  });
+});
+
+describe("a chart that is blank because of the book says so", () => {
+  test("every print outside the ladder leaves a sentence, not a silence", () => {
+    // The ETH 5 Sep ladder runs 2420-2650. A price line entirely at $9,000 is
+    // BTC's 25 Sep column in miniature: real prints, a real ladder, and no
+    // overlap between them. `hasLine` is false, so the "clipped" clause that
+    // would have explained it was gated off by the very fact it describes.
+    const points = Array.from({ length: 12 }, (_, i) => ({
+      t: NOW - (20 - i) * 60_000,
+      px: 9_000,
+    }));
+    mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
+    const note = container.querySelector('[data-role="no-coverage"]');
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain("All 12 prints are outside this expiry's ladder");
+    // It names the band, because the band is the answer.
+    expect(note?.textContent).toContain("The book quotes ETH at");
+    // And it blames the book rather than the chart — the direction this repo
+    // has got wrong before (`docs/asset-gate.md`).
+    expect(note?.textContent).toContain("because of the book, not the chart");
+    expect(note?.textContent).not.toMatch(/outage|down|unreachable|error/i);
+  });
+
+  test("the two causes never merge into one number", () => {
+    // Reporting them together would blame the venue for a viewport, which is
+    // exactly the pair the clipped/hidden split already keeps apart.
+    const points = Array.from({ length: 6 }, (_, i) => ({
+      t: NOW - (20 - i) * 60_000,
+      px: 9_000,
+    }));
+    const note = (() => {
+      mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
+      return container.querySelector('[data-role="no-coverage"]')?.textContent ?? "";
+    })();
+    expect(note).toContain("outside this expiry's ladder");
+    expect(note).not.toContain("outside this zoom");
+  });
+
+  test("no history at all makes no claim about coverage", () => {
+    mount(<BoxBuilder {...BASE} />);
+    expect(container.querySelector('[data-role="no-coverage"]')).toBeNull();
+  });
+
+  test("a drawable line says nothing about coverage either", () => {
+    const points = Array.from({ length: 20 }, (_, i) => ({
+      t: NOW - (30 - i) * 60_000,
+      px: 2450 + i,
+    }));
+    mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
+    expect(container.querySelector('[data-role="no-coverage"]')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The controls a trade needs, and the sentences a discrete instrument owes
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("position size — the half of a ticket that was missing", () => {
+  test("the panel carries a size control at all", () => {
+    // `contracts` was a prop defaulting to 1 whose only caller forwarded its own
+    // default, so there was no way to say how much to buy.
+    mount(<BoxBuilder {...BASE} />);
+    expect(container.querySelector('[data-role="size-input"]')).not.toBeNull();
+    expect(container.querySelector('[data-role="size-up"]')).not.toBeNull();
+    expect(container.querySelector('[data-role="size-down"]')).not.toBeNull();
+  });
+
+  test("both dollar figures scale with it and the multiple does not", () => {
+    // The invariant that says the units agree: premium and ceiling are two
+    // totals over one position, so their ratio is size-free.
+    mountOnBtc({ premium: 120 });
+    click(all("[data-zone]")[0] as Element);
+    expect(container.querySelector('[data-role="max-loss"]')?.textContent).toBe("$120.00");
+    expect(container.querySelector('[data-role="max-payout"]')?.textContent).toBe(
+      "$500.00 per contract",
+    );
+
+    click(container.querySelector('[data-role="size-up"]') as Element);
+    click(container.querySelector('[data-role="size-up"]') as Element);
+    expect(container.querySelector('[data-role="size-input"]') as HTMLInputElement).toHaveProperty(
+      "value",
+      "3",
+    );
+    expect(container.querySelector('[data-role="max-loss"]')?.textContent).toBe("$360.00");
+    // "per contract" drops away the moment the position is not one contract.
+    expect(container.querySelector('[data-role="max-payout"]')?.textContent).toBe("$1,500.00");
+    expect(container.querySelector('[data-role="payout-multiple"]')?.textContent).toBe(
+      `${(500 / 120).toFixed(2)}× the premium`,
+    );
+  });
+
+  test("the size cannot go below one or past the panel's own bound", () => {
+    mount(<BoxBuilder {...BASE} />);
+    expect(
+      (container.querySelector('[data-role="size-down"]') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(MAX_PANEL_CONTRACTS).toBeGreaterThan(1);
+  });
+
+  test("the fill cap is stated in dollars, and it is the code's cap", () => {
+    // `MAX_FILL_USDC` is checked in `runFill` before a dependency is touched,
+    // so the panel is reporting a bound rather than imposing one.
+    expect(FILL_CAP_USD).toBe(Number(MAX_FILL_USDC) / 1_000_000);
+    expect(fillCapCopy(null)).toContain("$2.00 a press");
+    expect(fillCapCopy(0.5)).toContain("4 contracts");
+    // A box that costs more than the cap says so plainly rather than offering a
+    // button that cannot fire.
+    expect(fillCapCopy(120)).toContain("none at all");
+    mountOnBtc({ premium: 120 });
+    click(all("[data-zone]")[0] as Element);
+    expect(container.querySelector('[data-role="fill-cap"]')?.textContent).toContain(
+      "none at all",
+    );
+  });
+
+  test("no depth limit is claimed, because none was measured", () => {
+    // `availableAmount` is in the collateral token's own decimals and this
+    // screen holds no map to convert it. Inventing a cap from it is the shape
+    // of every money bug in this repo.
+    mount(<BoxBuilder {...BASE} />);
+    expect(text()).toContain("does not convert it — so no depth limit is claimed here");
+  });
+});
+
+describe("zoom says what it is doing, including when it can do nothing", () => {
+  test("the state is on screen beside the controls", () => {
+    mount(<BoxBuilder {...BASE} />);
+    expect(container.querySelector('[data-role="zoom-state"]')?.textContent).toMatch(
+      /showing \d+ of \d+ rungs/,
+    );
+  });
+
+  test("a control that cannot move is disabled rather than enabled and inert", () => {
+    // The bug: `+` was gated on `view.steps <= MIN_ZOOM_STEPS`, which on a
+    // coarse column is false while `zoomTo` still clamps to the identical
+    // window. Enabled and doing nothing is indistinguishable from broken.
+    mount(<BoxBuilder {...BASE} />);
+    const inBtn = container.querySelector('[data-role="zoom-in"]') as HTMLButtonElement;
+    const outBtn = container.querySelector('[data-role="zoom-out"]') as HTMLButtonElement;
+    const before = container.querySelector('[data-role="window"]')?.textContent ?? null;
+    if (!inBtn.disabled) {
+      click(inBtn);
+      expect(container.querySelector('[data-role="window"]')?.textContent).not.toBe(before);
+    }
+    // Whatever the ladder allows, an enabled control must actually move it.
+    for (const b of [inBtn, outBtn]) {
+      if (b.disabled) continue;
+      const was = container.querySelector('[data-role="window"]')?.textContent ?? "";
+      click(b);
+      const now = container.querySelector('[data-role="window"]')?.textContent ?? "";
+      expect(now === was).toBe(false);
+    }
+  });
+});
+
+describe("the strikes are visible before the drag, and their discreteness is said", () => {
+  test("every rung in the window is drawn as a labelled gridline", () => {
+    mount(<BoxBuilder {...BASE} />);
+    const lines = all("[data-gridline]");
+    expect(lines.length).toBeGreaterThan(1);
+    // The lattice carries prices, so the snap targets are readable before a
+    // drag rather than discoverable only by drawing a box.
+    expect(lines.some((l) => /\$[\d,]/.test(l.textContent ?? ""))).toBe(true);
+  });
+
+  test("the panel answers 'why can I not size it to the cent' in both directions", () => {
+    mount(<BoxBuilder {...BASE} />);
+    const said = container.querySelector('[data-role="precision"]')?.textContent ?? "";
+    // The instrument really is discrete …
+    expect(said).toContain("Strikes are discrete");
+    expect(said).toContain("strikes, ");
+    expect(said).toContain("apart at the median");
+    // … and the precise path really does exist, and is honestly not wired here.
+    expect(said).toContain("quoted on request at any strikes");
+    expect(said).toContain("not wired into this screen in this build");
+  });
+
+  test("the gap sentence is the ladder's own arithmetic, not a constant", () => {
+    const eth = deriveLadder(FIXTURE, "ETH", liveExpiries(FIXTURE, "ETH", NOW)[0] as number, NOW);
+    expect(rungGapCopy(eth)).toContain(`${eth?.prices.length} strikes`);
+    expect(rungGapCopy(null)).toBeNull();
+  });
+});
+
+describe("the axis explains its own shape rather than looking broken", () => {
+  test("the two halves of the time axis are stated when there is a line", () => {
+    const points = Array.from({ length: 20 }, (_, i) => ({
+      t: NOW - (30 - i) * 60_000,
+      px: 2450 + i,
+    }));
+    mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
+    const said = container.querySelector('[data-role="axis-scale"]')?.textContent ?? "";
+    expect(said).toContain("of history on the left");
+    expect(said).toContain("to expiry on the right");
+    expect(said).toContain("the prints stay where they were made");
+  });
+
+  test("a clipped line says why it starts where it starts", () => {
+    const points = [
+      ...Array.from({ length: 8 }, (_, i) => ({ t: NOW - (30 - i) * 60_000, px: 9_000 })),
+      ...Array.from({ length: 8 }, (_, i) => ({ t: NOW - (20 - i) * 60_000, px: 2450 + i })),
+    ];
+    mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
+    expect(text()).toContain("begins where the price entered the board");
+  });
+
+  test("no line, no claim about the axis", () => {
+    mount(<BoxBuilder {...BASE} />);
+    expect(container.querySelector('[data-role="axis-scale"]')).toBeNull();
   });
 });
