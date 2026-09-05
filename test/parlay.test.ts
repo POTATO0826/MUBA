@@ -8,10 +8,12 @@ import {
   PARLAY_CARDS,
   PRICE_DECIMALS,
   REFERENCE_MOVE,
+  SLIP_LEG_COUNTS,
   STRIKE_COUNT,
   TIER_BANDS,
   TIER_MOVE,
   TIER_ORDER,
+  allOneTierProbability,
   assertStrikes,
   basketPayoff,
   basketPremium,
@@ -22,9 +24,11 @@ import {
   degeneracyScore,
   fullLadderSlice,
   impliedProbability,
+  isLoud,
   legForCard,
   legFromLiveCard,
   legsForPicks,
+  loudMidpointFor,
   multipleAt,
   oddsOf,
   slipLabel,
@@ -33,9 +37,11 @@ import {
   tierOf,
   tierProb,
   toUnits,
+  wouldGoLoud,
   type LiveCard,
   type PayoutCalculator,
   type PayoutQuery,
+  type Tier,
 } from "../src/engine/parlay.ts";
 import type { MarketSlice, PricingRow } from "../src/types.ts";
 
@@ -187,6 +193,192 @@ describe("the slip's two numbers", () => {
     expect(s.prob).toBeLessThan(LOUD_BELOW);
     expect(s.loud).toBe(true);
     expect(summarize([buildLeg("ETH", "over", "SAFE")], 100).loud).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The loud line — a guard on a coupling, not a decision about it
+//
+// `summarize` compares a PRODUCT of band midpoints against a bare constant. The
+// dependency on `TIER_BANDS` is total and, until this block existed, invisible:
+// nothing anywhere asserted that the safest slip in the game renders as the safe
+// one. These tests do not choose where the bands go or where the loud line sits.
+// They make it impossible to move one without being told about the other.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Every ordered tuple of `n` tiers — the full space of same-length slips. */
+function tierTuples(n: number): Tier[][] {
+  let out: Tier[][] = [[]];
+  for (let i = 0; i < n; i++) out = out.flatMap((t) => TIER_ORDER.map((tier) => [...t, tier]));
+  return out;
+}
+
+describe("the loud line and the bands", () => {
+  test("the loud midpoint is the n-th root of LOUD_BELOW, and more legs is a higher bar", () => {
+    for (const n of SLIP_LEG_COUNTS) {
+      expect(loudMidpointFor(n)).toBe(LOUD_BELOW ** (1 / n));
+      // The property the root is FOR: a tier sitting just under it is loud at
+      // that leg count, and one sitting just over it is not. Nudged by 1% so the
+      // assertion is about the relationship and not about the last float bit at
+      // the root itself, which is neither well-defined nor interesting.
+      const root = loudMidpointFor(n);
+      let under = 1;
+      let over = 1;
+      for (let i = 0; i < n; i++) {
+        under *= root * 0.99;
+        over *= root * 1.01;
+      }
+      expect(isLoud(under)).toBe(true);
+      expect(isLoud(over)).toBe(false);
+    }
+
+    // The three figures written into LOUD_BELOW's docblock, checked against the
+    // function so a reworded comment cannot outlive the constant.
+    expect(loudMidpointFor(2)).toBeCloseTo(0.316228, 6);
+    expect(loudMidpointFor(3)).toBeCloseTo(0.464159, 6);
+    expect(loudMidpointFor(4)).toBeCloseTo(0.562341, 6);
+
+    // Rising, not falling: the FOUR-leg slip is the one that trips first, which
+    // is the counter-intuitive half of the whole relationship.
+    expect(loudMidpointFor(3)).toBeGreaterThan(loudMidpointFor(2));
+    expect(loudMidpointFor(4)).toBeGreaterThan(loudMidpointFor(3));
+
+    // And 2, 3, 4 is the domain, because that is what a lobby can deal.
+    expect([...SLIP_LEG_COUNTS]).toEqual([2, 3, 4]);
+  });
+
+  test("wouldGoLoud is the rule itself, not a model of it", () => {
+    // Every tier at every legal leg count, asked ahead of time and then asked of
+    // a slip that was actually built and summarized. If these ever disagree the
+    // guard below is guarding a fiction.
+    for (const tier of TIER_ORDER) {
+      for (const n of SLIP_LEG_COUNTS) {
+        const legs = Array.from({ length: n }, () => buildLeg("BTC", "over", tier));
+        const s = summarize(legs, 2400);
+        expect(allOneTierProbability(tier, n)).toBe(s.prob);
+        expect(wouldGoLoud(tier, n)).toBe(s.loud);
+      }
+    }
+  });
+
+  /**
+   * **The guard.** This is the test that has to stop the next person.
+   *
+   * It reads SAFE's midpoint out of the CURRENT `TIER_BANDS` and asks whether an
+   * all-SAFE slip would go loud at 2, 3 and 4 legs. Today it would not, because
+   * SAFE's midpoint is 0.75 and the roots are 0.3162 / 0.4642 / 0.5623. Nothing
+   * about that is chosen — it is where the band happens to sit — and re-cutting
+   * the ladder onto the venue's real |delta| range (the book stops at 0.50) pulls
+   * that midpoint down through two of the three roots.
+   */
+  test("an all-SAFE slip is never loud at any legal leg count", () => {
+    const offenders = SLIP_LEG_COUNTS.filter((n) => wouldGoLoud("SAFE", n));
+    const [lo, hi] = TIER_BANDS.SAFE;
+    const mid = tierProb("SAFE");
+
+    const report =
+      offenders.length === 0
+        ? ""
+        : [
+            "",
+            "The safest slip in the game now renders in the DANGER colour.",
+            "",
+            `SAFE's band is [${lo}, ${hi}) so its midpoint is ${mid}. An all-SAFE slip of`,
+            `${offenders.join(", ")} leg(s) therefore has an implied probability of`,
+            `${offenders.map((n) => `${n}→${allOneTierProbability("SAFE", n)}`).join(", ")},`,
+            `which is under LOUD_BELOW (${LOUD_BELOW}). summarize() answers loud:true, and`,
+            "ParlayPick paints the slip's border, ODDS and ALL LAND violet.",
+            "",
+            "WHY: loud is `impliedProbability(legs) < LOUD_BELOW`, and implied",
+            "probability is the PRODUCT of the legs' band midpoints. So a tier goes",
+            "loud at n legs once its midpoint falls below the n-th root of",
+            "LOUD_BELOW. At LOUD_BELOW = 0.1 those roots are:",
+            ...SLIP_LEG_COUNTS.map((n) => `    ${n} legs   ${loudMidpointFor(n).toFixed(6)}`),
+            `SAFE's midpoint ${mid} clears ${SLIP_LEG_COUNTS.filter((n) => !wouldGoLoud("SAFE", n)).join(", ") || "none"} of them.`,
+            "More legs is a HIGHER bar, so the long slips break first.",
+            "",
+            "THE TRADE-OFF, which is a real one and not a formality:",
+            "  · Lower LOUD_BELOW so the roots drop under the new SAFE midpoint,",
+            "    and the alarm stops firing on safe slips — but it also stops",
+            "    firing on some genuinely long shots that trip it now.",
+            `    On the ladder as it currently stands ${(() => {
+              let n = 0;
+              let all = 0;
+              for (const c of SLIP_LEG_COUNTS) {
+                const t = tierTuples(c);
+                all += t.length;
+                n += t.filter((tt) => isLoud(tt.reduce((p, x) => p * tierProb(x), 1))).length;
+              }
+              return `${n} of ${all}`;
+            })()} possible slips are loud;`,
+            "    that ratio is itself a reading on how far the ladder moved.",
+            "  · Or leave LOUD_BELOW and accept that an all-SAFE parlay is, on the",
+            "    new ladder, genuinely a sub-10% bet — in which case the violet is",
+            "    honest and this test should be updated to say so, deliberately.",
+            "",
+            "LOUD_BELOW (src/engine/parlay.ts) is the likely fix. Do NOT silence",
+            "this test by deleting it; the whole point is that the two constants",
+            "cannot move independently. Read LOUD_BELOW's docblock first.",
+            "",
+          ].join("\n");
+
+    expect(report).toBe("");
+    // Stated positively too, so the intent survives a rewrite of the message.
+    for (const n of SLIP_LEG_COUNTS) expect(wouldGoLoud("SAFE", n)).toBe(false);
+  });
+
+  test("the trap is arithmetic, not a hunch: a SAFE midpoint near 0.45 flips 3 and 4 legs", () => {
+    // The bands are NOT touched. This is the same product `summarize` computes,
+    // over the midpoint a ladder cut on the venue's real range (|delta| out to
+    // 0.50) would produce, so the docblock's claim is checkable rather than
+    // asserted. It is the reason the guard above exists and it is why the guard
+    // covers 2 as well as 3 and 4: two legs survives the move.
+    const hypothetical = 0.45;
+    const probAt = (n: number) => {
+      let p = 1;
+      for (let i = 0; i < n; i++) p *= hypothetical;
+      return p;
+    };
+    expect(isLoud(probAt(2))).toBe(false); // 0.2025
+    expect(isLoud(probAt(3))).toBe(true); //  0.091125
+    expect(isLoud(probAt(4))).toBe(true); //  0.041006
+    expect(probAt(3)).toBeCloseTo(0.091125, 9);
+
+    // And today's midpoint clears all three, which is the state the guard pins.
+    expect(tierProb("SAFE")).toBe(0.75);
+    for (const n of SLIP_LEG_COUNTS) expect(tierProb("SAFE")).toBeGreaterThan(loudMidpointFor(n));
+  });
+
+  test("today's loud set is unchanged: every slip that was loud still is, and no other", () => {
+    // The behaviour pin behind the refactor. `loud` moved from an inline
+    // `prob < LOUD_BELOW` to `isLoud(prob)`; this enumerates the entire space of
+    // seeded slips — 4^2 + 4^3 + 4^4 = 336 of them — and checks both that the
+    // predicate still equals the comparison and that the exact COUNT of loud
+    // slips at each leg count is what it was.
+    const frozen: Record<number, number> = { 2: 5, 3: 44, 4: 225 };
+    for (const n of SLIP_LEG_COUNTS) {
+      const tuples = tierTuples(n);
+      expect(tuples).toHaveLength(4 ** n);
+      let loudCount = 0;
+      for (const tiers of tuples) {
+        const legs = tiers.map((t) => buildLeg("BTC", "over", t));
+        const s = summarize(legs, 2400);
+        expect(s.loud).toBe(impliedProbability(legs) < LOUD_BELOW);
+        expect(s.loud).toBe(isLoud(s.prob));
+        if (s.loud) loudCount++;
+      }
+      expect(loudCount).toBe(frozen[n]!);
+    }
+
+    // The two endpoints, by name rather than by count.
+    for (const n of SLIP_LEG_COUNTS) {
+      expect(wouldGoLoud("SAFE", n)).toBe(false);
+      expect(wouldGoLoud("DEGEN", n)).toBe(true);
+    }
+    // And the one that is not loud at two legs but is at three — the tier the
+    // whole rule is most sensitive at, today.
+    expect(wouldGoLoud("SHARP", 2)).toBe(false);
+    expect(wouldGoLoud("SHARP", 3)).toBe(true);
   });
 });
 

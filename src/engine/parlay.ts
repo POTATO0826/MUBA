@@ -152,8 +152,149 @@ export function tierOdds(tier: Tier): number {
   return oddsOf(tierProb(tier));
 }
 
-/** Below this implied probability the card goes loud. */
+// ─────────────────────────────────────────────────────────────────────────────
+// The loud line, and the band it is silently coupled to
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Below this implied probability the slip goes loud.
+ *
+ * `summarize` sets `loud = prob < LOUD_BELOW` and `prob` is
+ * {@link impliedProbability} — the *product* of the legs' chances. On the seeded
+ * path every one of those chances is a {@link TIER_BANDS} midpoint. So this
+ * constant is not independent of the ladder, however much a bare `0.1` on its
+ * own line looks like it is: **`LOUD_BELOW` and `TIER_BANDS` are two ends of one
+ * decision and only one of them is written down.** That is the trap this section
+ * exists to defuse.
+ *
+ * ## The n-th root, which is the whole relationship
+ *
+ * A slip of `n` legs that all sit in one tier has `prob = m × m × … × m` for `m`
+ * that tier's midpoint ({@link tierProb}). It goes loud exactly when
+ *
+ *     mⁿ  <  LOUD_BELOW      ⟺      m  <  LOUD_BELOW ^ (1/n)
+ *
+ * so the midpoint at which a tier tips into the alarm state is the **n-th root
+ * of `LOUD_BELOW`** — {@link loudMidpointFor}. A lobby deals 2, 3 or 4 legs
+ * ({@link SLIP_LEG_COUNTS}), and at `LOUD_BELOW = 0.1` those three roots are:
+ *
+ *     2 legs   0.1 ^ (1/2)  =  0.316228
+ *     3 legs   0.1 ^ (1/3)  =  0.464159
+ *     4 legs   0.1 ^ (1/4)  =  0.562341
+ *
+ * Note which way that runs: **more legs is a HIGHER bar.** A four-leg slip needs
+ * a midpoint above 0.5623 to stay quiet; a two-leg slip only needs 0.3162. The
+ * *longest* slip trips first, which is the opposite of the intuition that a long
+ * parlay is obviously the reckless one — it is, and that is precisely why an
+ * all-SAFE four-legger must not be painted as one.
+ *
+ * ## Why this is load-bearing right now
+ *
+ * SAFE's midpoint is 0.75 today and clears all three roots with room, so an
+ * all-SAFE slip is never loud at any legal leg count. That is not a property
+ * anybody chose. It is a coincidence of where the band currently sits, and it
+ * has never been asserted anywhere, so nothing would notice it ending.
+ *
+ * The bands are cut on `|delta|`, and the venue lists options only out to
+ * `|delta|` 0.50. Re-cutting `TIER_BANDS` onto the range the book actually
+ * quotes therefore pulls SAFE's midpoint **down** — toward ~0.45 on the shape
+ * under discussion. At 0.45, three legs give 0.091125 and four give 0.041006,
+ * both under `LOUD_BELOW`, and **every three- and four-leg all-SAFE slip flips
+ * into the alarm state**: violet border, violet ODDS, violet ALL LAND
+ * (`src/views/ParlayPick.tsx`). Two legs survive at 0.2025. The safest slip in
+ * the game would render in the danger colour, and nothing about the band edit
+ * would look like it had caused it.
+ *
+ * **Nothing here decides that.** Where the bands land is a measurement against
+ * the book; where the loud line sits is a design call. Both are the owner's and
+ * this file states neither. What it does is make the coupling impossible to trip
+ * *silently*: `test/parlay.test.ts` asks {@link wouldGoLoud} for SAFE at every
+ * count in {@link SLIP_LEG_COUNTS}, off the **current** bands, and fails if any
+ * answer is `true`. Re-cut the ladder without revisiting this constant and that
+ * test stops you, with the trade-off spelled out in the failure.
+ *
+ * The live path sits outside all of this on purpose: a market-priced leg carries
+ * the option's own `|delta|` ({@link legFromLiveCard}), never a midpoint, so a
+ * live slip's `prob` is a product of real deltas and the loud line is just a
+ * threshold on it. The coupling is a property of the *seeded* ladder alone.
+ */
 export const LOUD_BELOW = 0.1;
+
+/**
+ * The loud test itself, in one place: is this implied probability under the
+ * line?
+ *
+ * Extracted so {@link summarize} and {@link wouldGoLoud} share the comparison
+ * rather than each writing it. That is what lets the guard test claim it is
+ * checking the rule and not a model of the rule — there is one `<` in this
+ * module and both callers go through it.
+ */
+export function isLoud(prob: number): boolean {
+  return prob < LOUD_BELOW;
+}
+
+/**
+ * The leg counts a slip can actually have: 2, 3 or 4.
+ *
+ * Not decoration on the guard — it is the domain the guard has to cover, and it
+ * is enforced two modules away rather than here: `state/match.ts` clamps the
+ * create form to `[2, min(4, book.length)]` (`clampLegs` over `legsMax`), the
+ * form's own copy says "2 to 4" (`views/CreateLobby.tsx`), and every seeded
+ * lobby in `data/lobbies.ts` carries a `legs` of 2, 3 or 4. Restated here so the
+ * root table above and the guard test below are quantified over the same set
+ * instead of each guessing at it.
+ *
+ * One leg is not in the set and would not be interesting if it were: a one-leg
+ * slip is loud iff the tier's own midpoint is under `LOUD_BELOW`, which no band
+ * on a ladder that stops at 0.05 can be.
+ */
+export const SLIP_LEG_COUNTS: readonly number[] = [2, 3, 4];
+
+/**
+ * The band midpoint at which an all-one-tier slip of `legCount` legs tips into
+ * the loud state: `LOUD_BELOW ^ (1 / legCount)`.
+ *
+ * A tier whose midpoint is at or above this is quiet at that leg count; one
+ * below it is loud. See {@link LOUD_BELOW} for the derivation, the three figures
+ * it produces today, and why the bar *rises* with the leg count.
+ *
+ * Derived rather than tabulated, so the numbers written into that docblock
+ * cannot outlive the constant they were computed from — the test checks them
+ * against this function.
+ */
+export function loudMidpointFor(legCount: number): number {
+  return LOUD_BELOW ** (1 / legCount);
+}
+
+/**
+ * The implied probability of a slip whose `legCount` legs all sit in one tier.
+ *
+ * Folded left from `1`, one multiplication per leg — **the identical arithmetic
+ * {@link impliedProbability} performs over the identical legs**, and deliberately
+ * not `tierProb(tier) ** legCount`. The two agree for every midpoint the current
+ * ladder produces, and float multiplication is not associative, so they are not
+ * obliged to agree for the next one. A guard that answers a hair's breadth away
+ * from the number `summarize` actually compares is a guard that can pass while
+ * the screen goes violet.
+ */
+export function allOneTierProbability(tier: Tier, legCount: number): number {
+  let prob = 1;
+  for (let i = 0; i < legCount; i++) prob *= tierProb(tier);
+  return prob;
+}
+
+/**
+ * Would a slip of `legCount` legs, every one of them in `tier`, go loud?
+ *
+ * The same {@link isLoud} comparison `summarize` makes, over the same product
+ * ({@link allOneTierProbability}) — so this is not a model of the loud rule, it
+ * *is* the loud rule asked ahead of time. It reads {@link TIER_BANDS} through
+ * {@link tierProb}, which is exactly what makes it move when the ladder is
+ * re-cut and what makes the guard test in `test/parlay.test.ts` bite.
+ */
+export function wouldGoLoud(tier: Tier, legCount: number): boolean {
+  return isLoud(allOneTierProbability(tier, legCount));
+}
 
 /**
  * How far a seeded leg's line sits from spot, as a multiple of the asset's own
@@ -281,7 +422,16 @@ export interface ParlaySummary {
   prob: number;
   /** Points, not currency. `stakePoints × mult`. */
   potentialPoints: number;
-  /** True when `prob` is below `LOUD_BELOW`. */
+  /**
+   * True when `prob` is below {@link LOUD_BELOW} — {@link isLoud}, and nothing
+   * else.
+   *
+   * It is the alarm state on the pick screen: violet border, violet ODDS, violet
+   * ALL LAND. Which slips reach it is **not** a free choice of this constant, it
+   * is that constant crossed with {@link TIER_BANDS}: see `LOUD_BELOW`'s
+   * docblock for the n-th-root relationship, and {@link wouldGoLoud} for the
+   * question the guard test asks of it.
+   */
   loud: boolean;
 }
 
@@ -294,7 +444,11 @@ export function summarize(
 ): ParlaySummary {
   const mult = degeneracyScore(legs) * oddsBoost;
   const prob = impliedProbability(legs);
-  return { mult, prob, potentialPoints: Math.round(stakePoints * mult), loud: prob < LOUD_BELOW };
+  // `isLoud` and not an inline `prob < LOUD_BELOW`: the guard in
+  // `test/parlay.test.ts` asks the same predicate about a slip that has not been
+  // built yet, and two spellings of one comparison is how that guard would
+  // quietly stop describing this line.
+  return { mult, prob, potentialPoints: Math.round(stakePoints * mult), loud: isLoud(prob) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

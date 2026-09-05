@@ -200,6 +200,24 @@ interface ParlayPickProps {
 const HOT = 5;
 
 /**
+ * Below this implied probability, ALL LAND prints a decimal place.
+ *
+ * `0.1` — the same digits as `LOUD_BELOW`, and **deliberately not that
+ * constant.** This one is a legibility rule: under 10% a whole-percent figure
+ * starts rounding real differences to the same "8%", and a slip at 4.1% and one
+ * at 0.4% must not read alike. `LOUD_BELOW` is a design call about when a slip
+ * is a long shot worth painting violet. They coincide today; nothing requires
+ * them to, and importing one to serve the other would make a future move of the
+ * alarm line silently restyle a number's precision.
+ *
+ * Named rather than left inline so the coincidence is a stated one — see
+ * `LOUD_BELOW`'s docblock in `src/engine/parlay.ts` for the coupling that
+ * constant does have (to `TIER_BANDS`, through the leg product) and the guard
+ * that holds it.
+ */
+const PCT_DECIMAL_BELOW = 0.1;
+
+/**
  * The pick phase's bed — the hero-select music.
  *
  * Served by `index.ts` from `src/assets/` when the operator has dropped a file
@@ -666,7 +684,7 @@ export function ParlayPick(p: ParlayPickProps) {
 
             <div style={sx(`display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid ${C.border}`)}>
               <Stat label="ODDS" value={p.allPicked ? `×${s.mult.toFixed(2)}` : "—"} color={s.loud ? C.violet : C.accent} testid="combined-mult" />
-              <Stat label="ALL LAND" value={p.allPicked ? `${(s.prob * 100).toFixed(s.prob < 0.1 ? 1 : 0)}%` : "—"} color={s.loud ? C.violet : C.text} testid="implied-prob" />
+              <Stat label="ALL LAND" value={p.allPicked ? `${(s.prob * 100).toFixed(s.prob < PCT_DECIMAL_BELOW ? 1 : 0)}%` : "—"} color={s.loud ? C.violet : C.text} testid="implied-prob" />
               <Stat label="IF IT PAYS" value={p.allPicked ? s.potentialPoints.toLocaleString("en-US") : "—"} testid="potential-points" />
             </div>
 
