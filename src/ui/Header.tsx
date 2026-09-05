@@ -21,6 +21,12 @@ const NAV: readonly { key: Tab; label: string; pitch: number }[] = [
   { key: "arena", label: "Live arena", pitch: 622 / 660 },
   { key: "ranks", label: "Ranking", pitch: 659 / 660 },
   { key: "desk", label: "Options desk", pitch: 698 / 660 },
+  // The GameStake console. It was reachable at `/testing` and had a `Tab`
+  // entry from the moment `6f7102a` merged it, but nothing in this row pointed
+  // at it — a screen you can only reach by typing the URL is, to everyone who
+  // does not already know it is there, a screen that did not ship. The fifth
+  // step continues the ladder rather than squeezing a semitone in.
+  { key: "testing", label: "Testing", pitch: 784 / 660 },
 ];
 
 interface HeaderProps {
