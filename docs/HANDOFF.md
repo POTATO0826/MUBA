@@ -21,7 +21,7 @@
 ## ACCOUNT SWITCH — 2026-09-05 ~14:55. READ THIS BLOCK FIRST.
 
 `origin/new` is at **`7b5b6da`**, everything below it pushed and green
-(**1858 pass / 0 fail**, `bunx tsc --noEmit` clean).
+(**1896 pass / 0 fail** at `eefa595`, `bunx tsc --noEmit` clean).
 
 ### THE BOOK IS REACHABLE NOW — do not re-diagnose it
 
@@ -39,7 +39,7 @@ spot ETH 2453.04 / BTC 79611.09.
 Add it before concluding anything is broken. `dns.setServers` alone does NOT
 work under Bun, nor does patching `dns.lookup` — read the resolver's header.
 
-### IN FLIGHT WHEN THE SESSION ENDED — 2 agents, ~1,900 uncommitted lines
+### IN FLIGHT WHEN THE SESSION ENDED — 1 agent (Agent B landed as `eefa595`)
 
 Both die on the switch. **Their work is on disk and also snapshotted** at tag
 **`wip-20260905-1450`** (commit `eaad1f5`, pushed). If the tree is ever
@@ -58,7 +58,7 @@ Grep says three of four bugs look closed, one uncertain, sizing thin:
 | columns whose ladder holds no price | looks closed — 6 hits for a new state |
 | **position sizing** | **only 2 hits — expect incomplete** |
 
-**Agent B — study screen** (owned `views/Study.tsx`, `components/NewsWire.tsx`,
+**Agent B — study screen — DONE, landed `eefa595`, 1896 pass.** Killed the fake AI coach and the invented 2017-2024 chart dates (both `windowLabel` and the duplicate hash in `data/wire.ts`), added a ZOOM 1x/2x/4x/8x period control that selects real prints without resampling, and made news relevance evidence rather than a score. Two bugs fell out: RANGE was the full tapes hi/lo while the chart drew a shorter window, and `card.px` used `toFixed(2)` where the range beside it used `fmtPx`. **`docs/reality-check.md` §5.10 is now stale** — it describes the anachronism as live. Original brief was: (owned `views/Study.tsx`, `components/NewsWire.tsx`,
 `engine/tape.ts`, `engine/chart.ts`, `views/Live.tsx`, `data/wire.ts`,
 `server/news.ts`). Killing the fake "AI Coach" (three hardcoded strings with an
 AI avatar), rebuilding the wire's presentation, adding a chart period control,
