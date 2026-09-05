@@ -30,6 +30,48 @@ sign, approve or spend. **Everything that can spend money is opt-IN and off** �
 deployed escrow for the side bet. See *Thetanuts — what is actually live* for
 what each flag reaches and, just as importantly, what has never run.
 
+### If the book looks dead, check your DNS before you blame the venue
+
+`/api/market` answering `{"ok":false,"reason":"HTTP request failed"}` while the
+charts keep updating is, on the evidence so far, a **local DNS filter** and not
+a Thetanuts outage. The book is served from a Cloudflare Worker,
+`round-snowflake-9c31.devops-118.workers.dev`, and plenty of networks block
+`*.workers.dev` by category because the zone is cheap to abuse for phishing.
+The filter answers with a block page whose certificate does not validate, so the
+error surfaces as a TLS failure and looks nothing like DNS. Meanwhile the Base
+RPC is not filtered, so spot and history carry on — which is what makes the
+whole thing read as "the venue is down".
+
+It is not. This has been misdiagnosed twice here; `docs/book-endpoint.md` is the
+retraction of the first. One command tells you which it is:
+
+```bash
+nslookup round-snowflake-9c31.devops-118.workers.dev            # your resolver
+nslookup round-snowflake-9c31.devops-118.workers.dev 1.1.1.1    # a public one
+```
+
+Two different answers means your network is filtering it. On the machine this
+was found on, the first returned `146.112.61.104` — reverse lookup
+`hit-block.opendns.com` — and the second returned the real Cloudflare
+addresses.
+
+**The fix is to fix the network**: change the machine's DNS servers, or get off
+the filtered link. Where that needs Administrator and you do not have it, there
+is an opt-in, process-local escape hatch:
+
+```bash
+THETADUEL_DNS=1.1.1.1,8.8.8.8 bun dev
+```
+
+Unset — the default, and what every clone gets — it is completely inert: no
+patching, no logging, no behaviour change. Set, it points this process's
+hostname resolution at those servers, prints a banner at startup naming them so
+nobody mistakes the workaround for the venue's health, and refuses anything that
+is not a literal IP address rather than quietly resolving somewhere unintended.
+It does **not** weaken certificate validation and must never be made to — the
+cert error is the block page being correctly rejected. `src/server/resolver.ts`
+carries the measurements and the exact scope of the override.
+
 ## The flow
 
 ```

@@ -1,3 +1,7 @@
+// FIRST, and it matters that it is first: this is the opt-in DNS resolver
+// override, and it must be applied before anything opens a connection. See the
+// `install()` call below, and `src/server/resolver.ts` for what it is for.
+import { install as installResolver } from "./src/server/resolver.ts";
 import index from "./src/index.html";
 import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
 import { createAttestService } from "./src/server/attest.ts";
@@ -18,6 +22,33 @@ import { createMarketService } from "./src/server/thetanuts.ts";
  * `client.tsx` and `styles.css`, and hot-reloads them in development. No Vite,
  * no build step.
  */
+
+/**
+ * The `THETADUEL_DNS` escape hatch, applied before the first socket.
+ *
+ * **Unset — the default, and what every clone of this repo gets — this call
+ * does nothing whatsoever.** It reads one env var, finds it empty, and returns
+ * without touching a global. Nothing below behaves differently for its
+ * presence.
+ *
+ * Set, it points this process's hostname resolution at the DNS servers named in
+ * it, because some networks (a phone hotspot running OpenDNS, in the case that
+ * prompted this) block `*.workers.dev` by category — and the Thetanuts book is
+ * served from a Cloudflare Worker. `src/server/resolver.ts` documents the
+ * measurement, why `dns.setServers` alone is not enough under Bun, and, in
+ * detail, what the override does and does not touch. It does **not** weaken
+ * certificate validation.
+ *
+ * Why here, as the first statement rather than inside a service: the override
+ * has to be in place before any connection is opened. ES imports are hoisted,
+ * so the modules above have already been *evaluated* by the time this line
+ * runs — but none of them dials out at module scope. `createMarketService`
+ * builds its SDK client lazily on the first read, `createAttestService` reads
+ * no key until first use, and the news service fetches nothing until a request
+ * arrives. The first socket of the process cannot be opened before
+ * `Bun.serve` below has answered something, which is well after this line.
+ */
+installResolver();
 
 /**
  * One service instance for the process, because both of its caches — the
