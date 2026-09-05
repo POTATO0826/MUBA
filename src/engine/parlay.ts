@@ -596,35 +596,120 @@ function expiryOf(row: PricingRow): number | null {
 }
 
 /**
- * The widest slice a chain can support: its front expiry, and the whole listed
- * strike ladder at that expiry.
+ * How many of the eight (tier, stance) slots one expiry could fill.
+ *
+ * The predicate is {@link cardsForSlice}'s steps 1–5, restated over a single
+ * expiry: a plain vanilla on some side, a fillable order behind it, exactly one
+ * strike, a delta that buckets into a band, and an ask a buyer could pay. It
+ * deliberately does **not** check the strike window, because the window
+ * {@link fullLadderSlice} builds for an expiry is the min–max of that expiry's
+ * own rows — every row it counts is inside it by construction.
+ *
+ * Counted as a set of *slots*, not a count of rows. Eleven calls all sitting in
+ * DEGEN cover one slot, not eleven, and an expiry that deals one card per tier
+ * on both sides beats them however thin it is. Coverage is what the grid shows;
+ * depth is not.
+ *
+ * Returned as a `Set` of `PARLAY_CARDS` indices rather than a number so the
+ * caller can tie-break, log or test on *which* slots an expiry covers.
+ */
+function slotsCoveredAt(rows: readonly PricingRow[], expiry: number): ReadonlySet<number> {
+  const covered = new Set<number>();
+  for (const row of rows) {
+    if (row.type !== "CALL" && row.type !== "PUT") continue;
+    if (row.structure !== undefined && row.structure !== row.type) continue;
+    if (!row.order) continue;
+    if (strikeUnitsOf(row) === null) continue;
+    if (expiryOf(row) !== expiry) continue;
+    const delta = parseNum(row.delta);
+    if (delta === null) continue;
+    const tier = tierOf(delta);
+    if (tier === null) continue;
+    const ask = parseNum(row.ask);
+    if (ask === null || !(ask > 0)) continue;
+    const stance: Stance = row.type === "CALL" ? "bull" : "bear";
+    const i = PARLAY_CARDS.findIndex((c) => c.tier === tier && c.stance === stance);
+    if (i >= 0) covered.add(i);
+  }
+  return covered;
+}
+
+/**
+ * The widest slice a chain can support: **the expiry that fills the most slots**,
+ * and the whole listed strike ladder at that expiry.
  *
  * ## Why this is not the reel dealing a window
  *
  * `spinSlice` deals arenas — an underlying, an expiry, a *narrowed* strike
  * window, sometimes a constraint — and everything it decides comes off a seed.
- * This function decides nothing. It is the **identity window**: every strike the
- * book lists at the nearest expiry, in, and nothing out. A surface that already
- * knows which ticker it is showing (the pick screen knows: the reel dealt it)
- * needs a `MarketSlice` to call {@link cardsForSlice} with, and the honest one
- * to hand it is "all of this ticker's book" rather than a window nobody spun.
+ * This function narrows nothing. It is the **identity window** over the expiry
+ * it selects: every strike the book lists at that expiry, in, and nothing out. A
+ * surface that already knows which ticker it is showing (the pick screen knows:
+ * the reel dealt it) needs a `MarketSlice` to call {@link cardsForSlice} with,
+ * and the honest one to hand it is "all of this ticker's book at one expiry"
+ * rather than a window nobody spun.
  *
  * If a spun slice ever reaches that surface, it replaces this — narrowing is the
  * reel's job and this is the absence of narrowing, so the two compose rather
  * than compete.
  *
- * The front expiry, and not all of them, because `cardsForSlice` matches one:
- * two expiries in one window would let a SAFE card expire in three days and the
- * DEGEN beside it in three weeks, which are not the same bet in different
- * clothes.
+ * ## One expiry, and not all of them — unchanged, and still the point
  *
- * Filters mirror `cardsForSlice` steps 1–3 exactly — a plain vanilla, a fillable
- * order, one strike, a real option expiry — so the window can never contain rows
- * that could never become cards.
+ * `cardsForSlice` matches one expiry: two expiries in one window would let a
+ * SAFE card expire in three days and the DEGEN beside it in three weeks, which
+ * are not the same bet in different clothes. **That reasoning has not changed
+ * and this function still honours it.** A grid is one expiry or it is not a
+ * grid; mixing was never on the table and is not on it now.
+ *
+ * ## What changed: *which* one expiry
+ *
+ * This used to take the **front** expiry — the earliest one any dealable row
+ * named. That is a defensible tie-break and it was a bad selection rule, because
+ * the front expiry is where the book is thinnest. Measured on a real ETH chain,
+ * 95 vanillas narrowed to 20 that were single-strike-and-askable, and only 2 of
+ * those sat at the front expiry while a later one carried 11. The grid dealt two
+ * live cards and fell back to a seeded card — `MAX LOSS —` — in the other six
+ * slots, not because the book had nothing to say but because we asked the
+ * emptiest date.
+ *
+ * So the rule is now **coverage**: of every expiry the chain lists, take the one
+ * whose rows fill the most of the eight (tier, stance) slots
+ * ({@link slotsCoveredAt}). Ties break to the **earlier** expiry, which is the
+ * old rule surviving exactly where it belongs — as a tie-break, not as the
+ * selection.
+ *
+ * Two properties this must have, and does:
+ *
+ *  - **Pure, and total, in the snapshot.** No clock, no `Date.now()`, no
+ *    ordering dependence: the answer is a function of the rows alone. Both
+ *    players deal the same grid from the same data or the duel is not a duel,
+ *    and a selection that drifted with wall-clock time would break that
+ *    silently, on one machine, mid-match.
+ *  - **Deterministic on ties.** Equal coverage resolves to the smaller unix
+ *    expiry, so two machines iterating the same rows in the same order — or in
+ *    any order — agree. The candidate expiries are sorted before the scan rather
+ *    than trusted to arrive sorted.
+ *
+ * It maximises *slots covered*, not rows available: see {@link slotsCoveredAt}.
+ * An expiry with one card in each of the eight slots beats an expiry with forty
+ * rows that all bucket into DEGEN, because eight live cards is a grid and one
+ * live card beside seven dashes is the defect this rule exists to remove.
+ *
+ * ## The window itself
+ *
+ * The strike bounds still come from the *dealable* rows at the chosen expiry —
+ * vanilla, fillable, one strike, a real expiry — and not from the narrower set
+ * `slotsCoveredAt` counts. A row with no delta cannot be dealt but it is still a
+ * strike the venue lists at that expiry, and the window is "the ladder", so it
+ * stays inside the bounds. This preserves the identity property: filtering the
+ * chain through its own slice loses nothing.
  *
  * @returns `null` when no row in the chain is dealable at all. Ordinary: the
  *   seeded fixtures carry no `order` and answer `null` here, which is what keeps
- *   the offline board on the seeded path.
+ *   the offline board on the seeded path. Also `null`-adjacent by design: when
+ *   *no* expiry covers a single slot, coverage is 0 everywhere, the tie-break
+ *   picks the earliest, and `cardsForTicker` then answers `null` because nothing
+ *   was dealt — the same honest outcome by a different route.
  */
 export function fullLadderSlice(
   underlying: string,
@@ -643,8 +728,22 @@ export function fullLadderSlice(
   }
   if (dealable.length === 0) return null;
 
-  let expiry = dealable[0]!.expiry;
-  for (const d of dealable) if (d.expiry < expiry) expiry = d.expiry;
+  // Sorted ascending so the scan below can keep the first best it meets and
+  // have that be the earliest — the tie-break, expressed as iteration order
+  // rather than as a comparison that could be got backwards.
+  const expiries = [...new Set(dealable.map((d) => d.expiry))].sort((a, b) => a - b);
+
+  let expiry = expiries[0]!;
+  let bestCovered = -1;
+  for (const candidate of expiries) {
+    const covered = slotsCoveredAt(rows, candidate).size;
+    // Strictly greater: an equal-coverage later expiry never displaces the
+    // earlier one already held.
+    if (covered > bestCovered) {
+      bestCovered = covered;
+      expiry = candidate;
+    }
+  }
 
   let lo: bigint | null = null;
   let hi: bigint | null = null;

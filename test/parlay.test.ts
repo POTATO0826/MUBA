@@ -503,16 +503,107 @@ describe("fullLadderSlice — the identity window", () => {
     expect(cards.filter((c) => c !== null)).toHaveLength(3);
   });
 
-  test("takes the FRONT expiry and leaves the back one out of the window", () => {
+  test("deals ONE expiry, and leaves the other one out of the window", () => {
     // Two expiries in one window would let a SAFE card expire in three days and
     // the DEGEN beside it in three weeks — not the same bet in different
-    // clothes. `cardsForSlice` matches one expiry, and this picks the near one.
+    // clothes. `cardsForSlice` matches one expiry, and this picks exactly one.
+    //
+    // Both candidates here cover the same single slot (sharp-bull), so this is
+    // the TIE case and the tie-break takes the earlier expiry — the old
+    // front-expiry rule surviving where it belongs.
     const slice = fullLadderSlice("ETH", [
       row({ strike: 3000, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY }),
       row({ strike: 2250, delta: 0.3, ask: 0.02 }),
     ])!;
     expect(slice.expiry).toBe(EXPIRY);
     expect(slice.strikeHi).toBe(String(2250 * 10 ** PRICE_DECIMALS));
+  });
+
+  test("picks the expiry that fills the MOST slots, not the earliest one", () => {
+    // This is the whole rule, and the regression it exists to prevent. The
+    // front expiry lists one askable vanilla; the back expiry lists four, one
+    // per tier. The old rule dealt 1 live card and 7 seeded dashes; the new one
+    // deals 4 — from a date the venue is genuinely quoting.
+    const rows = [
+      // Front expiry: one lonely SHARP call.
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      // Back expiry: a card in every tier, on the bull side.
+      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY }),
+      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.3, ask: 0.03, expiry: OTHER_EXPIRY }),
+      row({ strike: 2800, delta: 0.1, ask: 0.01, expiry: OTHER_EXPIRY }),
+    ];
+    const slice = fullLadderSlice("ETH", rows)!;
+    expect(slice.expiry).toBe(OTHER_EXPIRY);
+    // And the window is the back expiry's own ladder, not the front's.
+    expect(slice.strikeLo).toBe(String(1800 * 10 ** PRICE_DECIMALS));
+    expect(slice.strikeHi).toBe(String(2800 * 10 ** PRICE_DECIMALS));
+    // Dealt through the real dealer: four live cards where the old rule gave one.
+    expect(cardsForSlice(rows, slice, deps).filter((c) => c !== null)).toHaveLength(4);
+  });
+
+  test("coverage counts SLOTS, not rows — depth in one tier never wins", () => {
+    // Forty rows that all bucket into DEGEN cover one slot. Two rows that split
+    // across two tiers cover two, and two live cards is a grid where forty
+    // stacked in one bucket is still one card and seven dashes.
+    const deep = Array.from({ length: 40 }, (_, i) =>
+      row({ strike: 2800 + i * 10, delta: 0.1, ask: 0.01 }),
+    );
+    const spread = [
+      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.3, ask: 0.03, expiry: OTHER_EXPIRY }),
+    ];
+    expect(fullLadderSlice("ETH", [...deep, ...spread])!.expiry).toBe(OTHER_EXPIRY);
+  });
+
+  test("a row that could never be dealt does not count toward coverage", () => {
+    // The back expiry looks richer by row count and is poorer by slot count:
+    // one unfillable, one with no delta, one with no ask, one out of every
+    // band. None of the four can become a card, so the front expiry's single
+    // real SHARP call wins on coverage 1 to 0.
+    const slice = fullLadderSlice("ETH", [
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY, fillable: false }),
+      row({ strike: 2000, delta: "—", ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.3, ask: 0, expiry: OTHER_EXPIRY }),
+      row({ strike: 2800, delta: 0.97, ask: 0.01, expiry: OTHER_EXPIRY }),
+    ])!;
+    expect(slice.expiry).toBe(EXPIRY);
+  });
+
+  test("selection is a pure function of the snapshot, whatever order the rows arrive in", () => {
+    // Both players must deal the same grid from the same data. A selection that
+    // depended on iteration order would break that on one machine, mid-match,
+    // silently — so it is asserted rather than assumed.
+    const rows = [
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY }),
+      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
+    ];
+    const want = fullLadderSlice("ETH", rows);
+    expect(fullLadderSlice("ETH", [...rows].reverse())).toEqual(want!);
+    // A tie is stable under reordering too, and resolves to the earlier expiry
+    // from either direction.
+    const tied = [
+      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ strike: 3000, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY }),
+    ];
+    expect(fullLadderSlice("ETH", tied)!.expiry).toBe(EXPIRY);
+    expect(fullLadderSlice("ETH", [...tied].reverse())!.expiry).toBe(EXPIRY);
+  });
+
+  test("the window still spans strikes that carry no delta, so the identity holds", () => {
+    // Coverage is counted over rows that could become cards; the WINDOW is the
+    // ladder. A listed strike with no greeks is still a strike the venue lists
+    // at that expiry, so it stays inside the bounds and filtering the chain
+    // through its own slice loses nothing.
+    const rows = [
+      row({ strike: 2000, delta: 0.5, ask: 0.06 }),
+      row({ strike: 3200, delta: "—", ask: 0.01 }),
+    ];
+    const slice = fullLadderSlice("ETH", rows)!;
+    expect(slice.strikeHi).toBe(String(3200 * 10 ** PRICE_DECIMALS));
+    expect(cardsForSlice(rows, slice, deps).filter((c) => c !== null)).toHaveLength(1);
   });
 
   test("a chain with nothing dealable in it answers null, not an empty window", () => {
