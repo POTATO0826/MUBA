@@ -6,7 +6,10 @@
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/[...path].ts": { "maxDuration": 60 }
+    "api/**/*.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/@noble/hashes/**"
+    }
   },
   "rewrites": [
     { "source": "/((?!api/|assets/|.*\\.[^/]+$).*)", "destination": "/index.html" }

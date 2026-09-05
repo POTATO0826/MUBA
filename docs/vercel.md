@@ -33,6 +33,12 @@ the app's existing silent/synthesized fallbacks apply.
 
 Run `bun run typecheck` and
 `bun test test/vercel.test.ts test/chain-guard.test.ts test/market-route.test.ts test/secrets.test.ts`.
-The secrets test builds and scans fresh frontend output. After deployment,
+The secrets test builds and scans fresh frontend output. To verify Vercel's
+emitted function, run `bunx vercel build --prod` followed by
+`bun scripts/check-vercel-build.ts`. The TypeScript setting
+`rewriteRelativeImportExtensions` is required because Vercel emits `.js` files
+from the server's `.ts` modules. The function also explicitly includes Noble's
+hash package so both conditional crypto exports are present at runtime.
+After deployment,
 check `/`, a nested frontend URL, `/api/config`, and `/api/market`, and confirm
 that the deployment's source is the expected GitHub commit.
