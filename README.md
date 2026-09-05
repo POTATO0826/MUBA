@@ -350,19 +350,33 @@ sets a payout by hand:
 
 | Tier | Delta band | Fair odds | Line (seeded tape) |
 |---|---|---|---|
-| SAFE | 0.65 – 0.85 | ×1.33 | 0.35× the asset's base move |
-| EVEN | 0.45 – 0.65 | ×1.82 | the base move |
-| SHARP | 0.25 – 0.45 | ×2.86 | 1.8× |
-| DEGEN | 0.05 – 0.25 | ×6.67 | 3.2× |
+| SAFE | 0.30 – 0.50 | ×2.50 | 0.35× the asset's base move |
+| EVEN | 0.20 – 0.30 | ×4.00 | the base move |
+| SHARP | 0.10 – 0.20 | ×6.67 | 1.8× |
+| DEGEN | 0.05 – 0.10 | ×13.33 | 3.2× |
 
 Delta is the desk's approximation of the risk-neutral chance an option finishes
 in the money, so it is both the game's "chance to land" and the trader's greek —
-one quantity, one word, which is why the card never needs two. The bands tile
-without overlap and both ends are excluded on purpose: below 0.05 the spread is
-wider than the premium, above 0.85 you are paying intrinsic value. **Fair odds
-are the reciprocal of the band midpoint** — no house edge and no invented
-ladder; the old table's `SHARP ×3.6 at 25%` was a 44% overround dressed as
-generosity. The *lines* in the last column are tape geometry, not odds: the
+one quantity, one word, which is why the card never needs two. **Fair odds are
+the reciprocal of the band midpoint** — no house edge and no invented ladder;
+the old table's `SHARP ×3.6 at 25%` was a 44% overround dressed as generosity.
+
+**These brackets were re-cut on 2026-09-05, and the reason is worth stating.**
+They ran `SAFE 0.65 – 0.85` down to `DEGEN 0.05 – 0.25` and were chosen before
+anyone had measured a delta distribution. The venue lists only out-of-the-money
+vanillas, so the largest `|delta|` on the whole book is 0.49 — **`SAFE` could
+not fill on any ticker, on any day.** Every SAFE slot fell through to a seeded
+card printing `MAX LOSS —`, under a face claiming a 75% chance no market had
+quoted. The bands above are cut on a live measurement instead (n = 123 askable
+vanillas across six underlyings; median `|delta|` 0.19, p25 0.09, p75 0.29), at
+the three round tenths inside the range the book quotes. Measured through the
+engine on the same snapshots, live slot fill went from **26–29 of 48 to 42–45 of
+48**, and SAFE from **0 of 12 to 10–12 of 12**.
+
+The two ends are still excluded on purpose, and neither is a measurement: below
+0.05 the spread is wider than the premium, and 0.50 is **at-the-money** — the
+structural ceiling of a book that lists only OTM wings, not the largest figure
+observed. The *lines* in the last column are tape geometry, not odds: the
 seeded walk needs a distance and delta does not supply one without a volatility
 model.
 
