@@ -65,10 +65,10 @@ import {
 import { MAX_FILL_USDC } from "../desk/fill.ts";
 import { usdc, winnerTakesUsdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
-import { expiryStamp, timeLeft, type Ticket, type TicketRow } from "../desk/ticket.ts";
+import { expiryStamp, fieldNote, timeLeft, type Ticket, type TicketRow } from "../desk/ticket.ts";
 import { sx } from "../lib/sx.ts";
 import { C, FEED_STATE, MONO, SANS, meansOf, stateAge, type FeedState } from "../theme.ts";
-import { TicketToggle, useTradeTicket } from "../ui/TradeTicket.tsx";
+import { FieldInfo, useTradeTicket } from "../ui/TradeTicket.tsx";
 
 /**
  * The arena — draw a box, and the box is the option.
@@ -248,6 +248,92 @@ export function fillCapCopy(premiumPerContractUsd: number | null): string {
     ? `${base} At ${usd(premiumPerContractUsd, true)} a contract that is ${affordable} contract${affordable === 1 ? "" : "s"}.`
     : `${base} At ${usd(premiumPerContractUsd, true)} a contract that is none at all: this box is priced and readable here, and not buyable from this build.`;
 }
+
+// ── Teaching behind the ⓘ, disclosure on the panel ──────────────────────────
+//
+// The owner's ask was *"let all the explanations show only when hover across
+// their respective i button"*, and it is right about the symptom: this panel
+// printed six paragraphs under three headings, so a screenshot of SIZE, MAX
+// LOSS and MAX PAYOUT was mostly prose and the figures were the small part.
+//
+// It cannot be applied to every sentence, because not every sentence is an
+// explanation. Two piles, and the test between them is whether the line would
+// still be true on another venue, on another day, about another box:
+//
+//  - **Teaching.** Timeless definitions — what a premium *is*, what a wing
+//    pays, what "size" scales. Nothing in one depends on this build, this book
+//    or this box. These are the ones that moved behind an `ⓘ`, and they are the
+//    constants below.
+//  - **Disclosure.** What is true of *this* position *right now*: that nothing
+//    has priced it and that is why the figure is a dash; that this build will
+//    not sign a press over {@link FILL_CAP_USD}; that no depth limit is claimed
+//    because none was measured; how many wing widths the ladder actually
+//    offers. A player who never hovers must still read every one of these, so
+//    every one of them stayed on the panel — condensed to a clause where it was
+//    long, and never removed.
+//
+// The rule when a line was both was to keep a short visible clause and put the
+// full sentence behind the `ⓘ`, and the rule when it was genuinely unclear was
+// to leave it visible: a cluttered panel is a smaller failure than a hidden
+// constraint. {@link SETTLEMENT_COPY} is the case that decided itself — "lands
+// in", never "stays within", is the difference between this instrument and the
+// one a player imagines, and a player who draws a box a week wide because they
+// think the price has to *stay* there has been misled by an absence. It stays
+// on the panel, and the `ⓘ` beside it carries the longer version.
+//
+// `docs/reality-check.md` is the standing authority for the split, and the
+// owner's own rule is shorter: *"i dont want to demo fake stuff"* — which
+// covers hiding a real constraint just as much as inventing a figure.
+
+/** §4.2 — what a wing *is*, for the `ⓘ` beside the stepper. The count of
+ *  widths the ladder offers is not in here: that is this column's own fact and
+ *  it stays on the panel as a chip. */
+export const WING_COPY =
+  "The distance below the floor and above the ceiling. It is also the most this can pay per contract, which is why stepping it steps the upside.";
+
+/** The teaching behind each figure's `ⓘ`, one entry per paragraph.
+ *
+ *  Every line here is a definition and none of them names a price, a cap, a
+ *  build or an absence — that is the whole of what makes them safe to put
+ *  behind a gesture. Adding a sentence to this table that fails that test is
+ *  the one way this change could do harm, so they are gathered in one place
+ *  rather than spread through the JSX where a new one could be slipped in
+ *  beside a real disclosure and read as the same kind of thing. */
+export const FIELD_NOTES = {
+  wing: [
+    WING_COPY,
+    "Widen it and the ceiling rises with it; narrow it and the position gets cheaper and pays less. Neither changes where the box sits — only how far the payoff has to taper.",
+  ],
+  size: [SIZE_COPY],
+  maxLoss: [
+    MAX_LOSS_COPY,
+    "It is the premium and nothing else: the position cannot be assigned, cannot be margin-called and cannot cost more than it did to open.",
+  ],
+  maxPayout: [
+    "The most this position can return at expiry, for the size above. It is paid in full anywhere between the floor and the ceiling, and tapers to nothing across each wing.",
+    "The wing width is that ceiling, which is why the wing stepper moves this figure.",
+  ],
+} as const;
+
+/**
+ * The four notes, built once at module scope.
+ *
+ * They are static because a definition is static — none of them reads the box,
+ * the book, the premium or the clock, and if one ever did it would belong in
+ * the other pile. Building them here rather than in a `useMemo` is not an
+ * optimisation; it is the property being enforced by construction, since a
+ * constant cannot close over state it does not have.
+ */
+const FIELD_NOTE_TICKETS = {
+  wing: fieldNote({ id: "box:wing", label: "WING WIDTH", lines: FIELD_NOTES.wing }),
+  size: fieldNote({ id: "box:size", label: "SIZE", lines: FIELD_NOTES.size }),
+  maxLoss: fieldNote({ id: "box:maxLoss", label: "MAX LOSS", lines: FIELD_NOTES.maxLoss }),
+  maxPayout: fieldNote({
+    id: "box:maxPayout",
+    label: "MAX PAYOUT",
+    lines: FIELD_NOTES.maxPayout,
+  }),
+} as const;
 
 // ── Precision: what is genuinely discrete, and what is simply missing ───────
 
@@ -694,12 +780,231 @@ export function priceAtFraction(band: Band, fraction: number): number {
   return band.lo + (1 - fraction) * span;
 }
 
-/** The time axis, as a percentage across the plot. Continuous, unlike the
- *  expiry columns drawn on it, which are the book's real dates and only those. */
+/** A linear time → percent map. The primitive {@link boardAxis} builds its two
+ *  halves out of, and the whole of the x-axis wherever a stretch of it really
+ *  is continuous. */
 export function xPct(t0: number, t1: number, t: number): number {
   const span = t1 - t0;
   if (!Number.isFinite(span) || span <= 0) return 0;
   return Math.max(0, Math.min(100, ((t - t0) / span) * 100));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The x-axis: time on the left of NOW, listed dates on the right
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The share of the plot the past gets, when there is a past to put in it.
+ *
+ * Fixed rather than proportional, and that is the point. It used to be however
+ * much history happened to have arrived measured against however far out the
+ * chosen expiry was — so picking Sep 18 squeezed ten hours of Chainlink prints
+ * into a 4% smear, and picking tomorrow gave them half the board. The seam
+ * moving under the player as they change a date is the thing this removes.
+ */
+export const HISTORY_PCT = 30;
+
+/** ...and when there is none: room for the NOW label, and not a pixel more. An
+ *  empty half-chart labelled NOW is width spent on nothing, and the future is
+ *  where the box goes. */
+export const NO_HISTORY_PCT = 8;
+
+/** Breathing room past the final column, so the box's right edge reads as an
+ *  edge rather than as the plot running out of room. */
+export const TAIL_PCT = 6;
+
+/** One column boundary: the expiry it is, and where it sits. */
+export interface AxisStop {
+  /** The expiry, in **ms**. */
+  at: number;
+  /** Its right edge, as a percent across the plot. */
+  pct: number;
+}
+
+/**
+ * The board's x-axis — **two scales, meeting at NOW**.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS NOT ONE SCALE ANY MORE
+ * ────────────────────────────────────────────────────────────────────────────
+ * It was, and the result was unusable. The venue lists expiries daily and then
+ * weekly — Sep 5, 6, 11, 18, 25 — so a single time-linear axis out to Sep 25
+ * crushed tomorrow and the day after into the leftmost 8% of the board and gave
+ * the two furthest dates two thirds of it. The near columns are the ones a duel
+ * is actually played on, and they were the thinnest and least drawable things
+ * on screen.
+ *
+ * The fix is to stop treating the columns as samples of a continuum. **They are
+ * not.** There is no intraday expiry in this product and nothing between Sep 6
+ * and Sep 11 is buyable, so the space between those two dates represents
+ * nothing a player can do. Every listed date gets an equal column, which is how
+ * an option chain has been laid out since they were printed on paper, and every
+ * column is as drawable as every other.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHAT MAY NOT BE RE-SPACED, AND IS NOT
+ * ────────────────────────────────────────────────────────────────────────────
+ * **The history line is continuous in time and stays that way.** A print at
+ * 04:10 and a print at 04:12 are two minutes apart and no layout is allowed to
+ * say otherwise, so everything left of `now` keeps a single linear map from
+ * `t0` to `now` — the region is a different *width* than it used to be, which
+ * is a uniform scale and not a distortion, and no point moves relative to any
+ * other. `fitToLadder` refuses to move a price to make it fit; this refuses to
+ * move a timestamp for the same reason.
+ *
+ * The cost is that the two halves are no longer comparable, and a chart whose
+ * two halves have different scales has to say so or it is lying by omission.
+ * {@link axisScaleCopy} is that sentence, it is on the panel rather than behind
+ * a hover, and it names the real gap between the first and last column so the
+ * even spacing cannot be read as an even cadence.
+ *
+ * Pure — a function of the snapshot's own dates and the history's own span, so
+ * both seats of a duel render the identical board. It reaches nothing that
+ * encodes a pick.
+ */
+export interface BoardAxis {
+  /** Where the divider sits, as a percent. Left of it is history. */
+  nowPct: number;
+  /** One per drawn expiry, left to right. `pct` is the column's right edge, so
+   *  column `i` spans `stops[i-1].pct` (or `nowPct`) to `stops[i].pct`. */
+  stops: readonly AxisStop[];
+  /** ms → percent across the plot. Monotone, clamped to 0–100. */
+  x(t: number): number;
+  /**
+   * A 0–1 fraction across the plot → the index of the column it is over, or
+   * `stops.length` for the tail past the last one.
+   *
+   * Ordinal by construction: a pointer is *in a column*, and there is no
+   * instant between two dates for it to be at. The old inverse mapped x back to
+   * a timestamp and then hunted for the nearest expiry to it, which on an axis
+   * where Sep 5 and Sep 6 shared 8% of the width meant the two were four pixels
+   * apart and a drag could not reliably pick either.
+   */
+  columnAt(fraction: number): number;
+}
+
+export function boardAxis(input: {
+  /** The oldest print on screen, ms. */
+  t0: number;
+  /** The divider, ms. */
+  now: number;
+  /** The expiries drawn as columns, in **seconds**, ascending. */
+  drawn: readonly number[];
+  /** The end of the axis, ms — the chosen expiry plus its tail. */
+  t1: number;
+}): BoardAxis {
+  const { t0, now, drawn, t1 } = input;
+  const hasPast = now > t0;
+  const nowPct = hasPast ? HISTORY_PCT : NO_HISTORY_PCT;
+  const n = drawn.length;
+  const width = n > 0 ? (100 - nowPct - TAIL_PCT) / n : 0;
+  const stops: AxisStop[] = drawn.map((e, i) => ({
+    at: e * 1000,
+    pct: nowPct + (i + 1) * width,
+  }));
+
+  const x = (t: number): number => {
+    if (!Number.isFinite(t)) return 0;
+    if (t <= t0) return 0;
+    // The past: one linear map, so the prints keep their spacing.
+    if (t <= now) return hasPast ? xPct(t0, now, t) * (nowPct / 100) : nowPct;
+    // The future: linear *within* a column, so a boundary lands on its own
+    // edge and anything between two of them is somewhere sensible in between.
+    let prevAt = now;
+    let prevPct = nowPct;
+    for (const stop of stops) {
+      if (t <= stop.at) {
+        const span = stop.at - prevAt;
+        return span <= 0
+          ? stop.pct
+          : prevPct + (stop.pct - prevPct) * ((t - prevAt) / span);
+      }
+      prevAt = stop.at;
+      prevPct = stop.pct;
+    }
+    // Past the last column, into the tail.
+    const span = t1 - prevAt;
+    if (span <= 0) return Math.min(100, prevPct);
+    return Math.max(0, Math.min(100, prevPct + (100 - prevPct) * ((t - prevAt) / span)));
+  };
+
+  const columnAt = (fraction: number): number => {
+    if (n === 0) return 0;
+    const pct = Math.max(0, Math.min(1, fraction)) * 100;
+    for (let i = 0; i < stops.length; i += 1) {
+      if (pct <= (stops[i] as AxisStop).pct) return i;
+    }
+    return n;
+  };
+
+  return { nowPct, stops, x, columnAt };
+}
+
+/**
+ * Which rungs on the price axis may print their price, top-down.
+ *
+ * A **guaranteed pixel gap**, not a rung count. The board used to thin by
+ * count — "past twenty in the window, label every other one" — and that is the
+ * wrong measure on an irregular ladder: the venue quotes ETH at $20 steps
+ * around spot and $100 steps out in the wings, so a window can be sparse at one
+ * end and stacked at the other, and one rule for the whole of it either thins
+ * what was already legible or leaves `$2,400` sitting on `$2,360` on `$2,350`.
+ * Only the pixels know, so the pixels decide: walk down from the top and keep a
+ * price only once it clears {@link MIN_RUNG_GAP_PX} of the last one kept.
+ *
+ * **A thinned rung is not a removed rung.** It keeps its button, its full-size
+ * click target, its title and its accessible name — all of which are its price
+ * — and shows a tick where the digits were. The promise that no zoom may put a
+ * strike out of reach is about reachability, and nothing here is unreachable.
+ */
+export function labelledRungPrices(prices: readonly number[], band: Band): number[] {
+  const keep: number[] = [];
+  let lastY = Number.NEGATIVE_INFINITY;
+  for (const price of [...prices].filter((p) => p >= band.lo && p <= band.hi).sort((a, b) => b - a)) {
+    const y = (yPct(band, price) / 100) * LADDER_H;
+    if (y - lastY < MIN_RUNG_GAP_PX) continue;
+    keep.push(price);
+    lastY = y;
+  }
+  return keep;
+}
+
+/**
+ * The axis, explaining its own shape — and it has to, because it has two.
+ *
+ * Disclosure, not teaching: a reader who takes the equal columns for an even
+ * cadence has been misled by the layout, and the only thing that stops that is
+ * the layout saying what it is. So this is on the panel, in full, with no
+ * hover in front of it, and it names the real distance between the first and
+ * last column in days so the arithmetic is checkable against the labels.
+ *
+ * `null` when there is nothing to describe — no columns, or no history to have
+ * a left half at all with only one column, in which case the axis has one scale
+ * and the old sentence would be over-explaining a straight line.
+ */
+export function axisScaleCopy(input: {
+  /** ms of history on the left, or `0`. */
+  pastMs: number;
+  /** The drawn expiries, seconds, ascending. */
+  drawn: readonly number[];
+}): string | null {
+  const { pastMs, drawn } = input;
+  if (drawn.length === 0) return null;
+  const first = drawn[0] as number;
+  const last = drawn[drawn.length - 1] as number;
+  const past =
+    pastMs > 0
+      ? `Left of the divider is ${shortAge(pastMs)} of history, linear in time, so the prints stay where they were made. `
+      : "";
+  const spread =
+    drawn.length > 1
+      ? ` ${expiryLabel(first)} to ${expiryLabel(last)} is ${shortAge((last - first) * 1000)} of real time, not ${drawn.length - 1} equal steps.`
+      : "";
+  return (
+    `${past}Right of it, each of the ${drawn.length} ${drawn.length === 1 ? "date" : "dates"} the book lists gets an equal column — ` +
+    `they are expiries the venue quotes, not ticks of a clock, so tomorrow is as drawable as next month. ` +
+    `Column width is not time.${spread}`
+  );
 }
 
 /**
@@ -1284,6 +1589,34 @@ const LABEL = `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`;
 const VALUE = `font:700 15px/1 ${MONO};color:${C.text}`;
 const NOTE = `font:400 11px/1.55 ${SANS};color:${C.faint}`;
 
+/**
+ * A figure's heading row: the label, and the `ⓘ` pushed to the far edge.
+ *
+ * The minimum height is the label's own, not the button's. The button is 26px
+ * because a hit target has to be pressable ({@link FIELD_INFO_HIT}), and left
+ * alone it would set the row height and open a gap under every heading on the
+ * panel — so it is pulled back into the row by {@link INFO_NUDGE} and the row
+ * measures the text.
+ */
+const ROW_HEAD = "min-height:16px";
+
+/** The `ⓘ`'s padding, removed from the layout but not from the target. */
+const INFO_NUDGE = "margin:-5px -5px -5px 0";
+
+/**
+ * A disclosure, on the panel, where a player who never hovers still reads it.
+ *
+ * Deliberately *brighter* than {@link NOTE} rather than dimmer. What is left on
+ * this panel after the definitions moved behind their `ⓘ` is the material half
+ * — the cap this build will sign, the depth it does not claim, the reason a
+ * figure is a dash — and fine print is the wrong typography for the half that
+ * matters most. The rule down the left is a gutter, so a column of them reads
+ * as one register instead of as prose that failed to move.
+ */
+const CHIP_NOTE =
+  `font:500 10px/1.45 ${SANS};color:${C.muted};padding-left:8px;` +
+  `border-left:2px solid ${C.border};text-wrap:pretty`;
+
 const BTN = (tone: string, filled: boolean, off = false): string =>
   `height:38px;padding:0 18px;border-radius:10px;cursor:pointer;font:700 12px/1 ${SANS};` +
   (filled
@@ -1310,6 +1643,34 @@ const CHIP = (active: boolean, off = false): string =>
  */
 const CHART_H = 400;
 const PAD = { top: 18, right: 122, bottom: 42, left: 14 };
+
+/** The ladder gutter's own height, in pixels — the plot's, minus the strips
+ *  above and below it. Label thinning needs a real length to measure against;
+ *  a percentage cannot tell you whether two labels touch. */
+const LADDER_H = CHART_H - PAD.top - PAD.bottom;
+
+/**
+ * The least vertical room two rung labels may have between their centres.
+ *
+ * A rung pill is `2px` of padding around a `10px` line, so it occupies about
+ * fourteen. Fifteen is that plus a hair, and it is enforced rather than
+ * approximated by a rung count: `showing 22 of 40` says nothing about whether
+ * two of the 22 are on top of each other, because the ladder is irregular —
+ * ETH quotes $20 steps around spot and $100 steps in the wings, so a window can
+ * be sparse at one end and stacked at the other. Only the pixels know.
+ */
+const MIN_RUNG_GAP_PX = 15;
+
+/**
+ * How many labelled dates the bottom axis will carry before it thins.
+ *
+ * Nothing is ever removed from the board by this: a thinned column keeps its
+ * cells, its boundary line and its chip in the picker, and loses only the
+ * duplicate of a date that is legible two inches below. What it protects is the
+ * origin, where `NOW`, its clock and the first two columns used to be drawn on
+ * top of each other into an unreadable smear.
+ */
+const MAX_AXIS_DATES = 6;
 
 /** Where an in-window price label sits in the right gutter, and where a rung the
  *  zoom has parked sits instead — far enough apart that a pinned label never
@@ -1569,6 +1930,14 @@ export function BoxBuilder({
    *  before the window hides any more of it. */
   const extent = useMemo(() => (ladder ? ladderBounds(ladder) : null), [ladder]);
 
+  /** Which rungs on the price axis print their price. See
+   *  {@link labelledRungPrices} for the rule and why it is a gap and not a
+   *  count. */
+  const labelledRungs = useMemo(
+    () => new Set(ladder && band ? labelledRungPrices(ladder.prices, band) : []),
+    [ladder, band],
+  );
+
   // A new board means a new default viewport: a centre carried over from ETH's
   // ladder is a price BTC has never traded at.
   const boardKey = `${underlying}|${chosen ?? ""}`;
@@ -1607,6 +1976,23 @@ export function BoxBuilder({
    *  the box is drawn against. A later date is not on the axis, so it cannot be
    *  drawn as a line that would sit off the plot. */
   const drawn = columns.filter((e) => e * 1000 <= target);
+
+  /**
+   * The x-axis itself — history on one scale, the listed dates on another.
+   *
+   * Every horizontal position on this board goes through `axis.x`; nothing
+   * computes a second one, for the same reason {@link yPct} is the only
+   * vertical map. Two functions placing the same expiry would eventually
+   * disagree, and the one that lost would be drawing a box edge on a date it
+   * does not settle on.
+   */
+  const axis = useMemo(
+    () => boardAxis({ t0, now: dividerMs, drawn, t1 }),
+    // `drawn` is rebuilt each render from `columns`; its contents are what
+    // matter, so the key is its dates rather than its identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t0, dividerMs, t1, drawn.join(",")],
+  );
 
   /**
    * 3b. The line, clipped **twice**, and the two clips mean different things.
@@ -2097,22 +2483,37 @@ export function BoxBuilder({
     [ladder],
   );
 
-  /** Pointer x → the nearest **live expiry column**. Never an instant between
-   *  two of them: the only dates that exist are the ones the book quotes. */
+  /**
+   * Pointer x → the **live expiry column it is over**. Never an instant between
+   * two of them: the only dates that exist are the ones the book quotes.
+   *
+   * Ordinal, now that the columns are. It used to map x back to a timestamp and
+   * hunt for the nearest expiry to it, which was fine on a uniform axis and
+   * hopeless on the real one: with Sep 5 and Sep 6 sharing 8% of the width, the
+   * two were four pixels apart and a drag could not reliably reach either. A
+   * column is a column, and the pointer is in exactly one of them.
+   *
+   * The tail past the last column is the one place a *later* date is meant: the
+   * right edge is extended by dragging past the end of the axis, so the tail
+   * resolves to the next date the book quotes and, when there is none, stays on
+   * the last. Dragging further right than the book goes cannot invent a date.
+   */
   const expiryAtClientX = useCallback(
     (clientX: number): number | null => {
       const el = plotRef.current;
       if (!el || columns.length === 0) return null;
       const rect = el.getBoundingClientRect();
       if (!rect.width) return null;
-      const at = t0 + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (t1 - t0);
-      let best = columns[0] as number;
-      for (const e of columns) {
-        if (Math.abs(e * 1000 - at) < Math.abs(best * 1000 - at)) best = e;
-      }
-      return best;
+      if (drawn.length === 0) return columns[0] as number;
+      const i = axis.columnAt((clientX - rect.left) / rect.width);
+      if (i < drawn.length) return drawn[i] as number;
+      const lastDrawn = drawn[drawn.length - 1] as number;
+      const next = columns[columns.indexOf(lastDrawn) + 1];
+      return next ?? lastDrawn;
     },
-    [columns, t0, t1],
+    // `drawn` is derived fresh each render; its dates are the dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [columns, axis, drawn.join(",")],
   );
 
   const startEdit = useCallback(
@@ -3002,8 +3403,8 @@ export function BoxBuilder({
                   {drawn.map((e, ci) => {
                     const colLadder = columnLadders.get(e);
                     const leftMs = ci === 0 ? dividerMs : ((drawn[ci - 1] as number) * 1000);
-                    const left = xPct(t0, t1, leftMs);
-                    const right = xPct(t0, t1, e * 1000);
+                    const left = axis.x(leftMs);
+                    const right = axis.x(e * 1000);
                     const width = Math.max(0, right - left);
                     const zonesHere = columnZones.get(e) ?? [];
                     const playable = (colLadder?.prices.length ?? 0) >= 2;
@@ -3147,7 +3548,7 @@ export function BoxBuilder({
                         strokeWidth="1.25"
                         vectorEffect="non-scaling-stroke"
                         points={seg
-                          .map((p) => `${xPct(t0, t1, p.t)},${yPct(band, p.px)}`)
+                          .map((p) => `${axis.x(p.t)},${yPct(band, p.px)}`)
                           .join(" ")}
                       />
                     ))}
@@ -3169,15 +3570,19 @@ export function BoxBuilder({
                     go. `DISCRETE_STRIKES_COPY` is the sentence under the panel
                     that names it.
 
-                    Labels thin out rather than overlap: past twenty rungs in the
-                    window every other one is labelled, and the lines all stay.
-                    A number that collides with its neighbour is less readable
-                    than no number, and the line is the load-bearing part. */}
+                    **These lines carry no price of their own, and that is the
+                    fix rather than a regression.** They used to print one at
+                    `left:5px`, inside the plot — which gave the board two price
+                    axes saying the same numbers, one down each edge, and on a
+                    dense window the left one stacked `$2,400` on `$2,360` on
+                    `$2,350` into an unreadable smear. The prices live on the
+                    right-hand ladder, where the owner asked for them and where
+                    the live-price pill already is, and every one of them is a
+                    button that draws a box. A line's job here is to say where a
+                    strike is; the ladder's is to say which. */}
                 {ladder.prices.map((price, i) => {
                   if (price < band.lo || price > band.hi) return null;
                   const edge = i === 0 || i === ladder.prices.length - 1;
-                  const shown = ladder.prices.filter((q) => q >= band.lo && q <= band.hi).length;
-                  const label = shown <= 20 || i % 2 === 0;
                   return (
                     <div
                       key={ladder.strikes[i] ?? i}
@@ -3186,18 +3591,7 @@ export function BoxBuilder({
                         `position:absolute;left:0;right:0;top:${clampPct(yPct(band, price))}%;height:0;` +
                           `border-top:1px ${edge ? "solid" : "dashed"} ${C.line};pointer-events:none`,
                       )}
-                    >
-                      {label && (
-                        <span
-                          style={sx(
-                            `position:absolute;left:5px;top:-11px;` +
-                              `font:500 8.5px/1 ${MONO};color:${C.faint};pointer-events:none`,
-                          )}
-                        >
-                          {usd(price)}
-                        </span>
-                      )}
-                    </div>
+                    />
                   );
                 })}
 
@@ -3217,13 +3611,13 @@ export function BoxBuilder({
                 <div
                   data-role="now-divider"
                   style={sx(
-                    `position:absolute;top:0;bottom:0;left:${xPct(t0, t1, dividerMs)}%;width:0;` +
+                    `position:absolute;top:0;bottom:0;left:${axis.x(dividerMs)}%;width:0;` +
                       `border-left:1px solid ${C.muted};pointer-events:none`,
                   )}
                 />
                 <span
                   style={sx(
-                    `position:absolute;top:2px;left:calc(${xPct(t0, t1, dividerMs)}% + 5px);` +
+                    `position:absolute;top:2px;left:calc(${axis.x(dividerMs)}% + 5px);` +
                       `font:700 8.5px/1 ${MONO};letter-spacing:.12em;color:${C.muted};pointer-events:none`,
                   )}
                 >
@@ -3238,7 +3632,7 @@ export function BoxBuilder({
                   <div
                     data-role="last-print"
                     style={sx(
-                      `position:absolute;top:0;bottom:0;left:${xPct(t0, t1, boundary.lastPrintAt)}%;` +
+                      `position:absolute;top:0;bottom:0;left:${axis.x(boundary.lastPrintAt)}%;` +
                         `width:0;border-left:1px dotted ${C.faint};pointer-events:none`,
                     )}
                   />
@@ -3250,7 +3644,7 @@ export function BoxBuilder({
                   <div
                     key={e}
                     style={sx(
-                      `position:absolute;top:0;bottom:0;left:${xPct(t0, t1, e * 1000)}%;width:0;` +
+                      `position:absolute;top:0;bottom:0;left:${axis.x(e * 1000)}%;width:0;` +
                         `border-left:1px ${e === chosen ? "solid" : "dashed"} ${e === chosen ? `${C.accent}88` : C.line};pointer-events:none`,
                     )}
                   />
@@ -3275,8 +3669,8 @@ export function BoxBuilder({
                   <div
                     data-role="drag"
                     style={sx(
-                      `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
-                        `right:${100 - xPct(t0, t1, (chosen ?? 0) * 1000)}%;` +
+                      `position:absolute;left:${axis.x(dividerMs)}%;` +
+                        `right:${100 - axis.x((chosen ?? 0) * 1000)}%;` +
                         `top:${yPct(band, dragBand.hi)}%;bottom:${100 - yPct(band, dragBand.lo)}%;` +
                         `border:1px dashed ${C.accent}99;border-radius:3px;background:${C.accent}0d;pointer-events:none`,
                     )}
@@ -3326,8 +3720,8 @@ export function BoxBuilder({
                       <div
                         data-role="opponent-box"
                         style={sx(
-                          `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
-                            `right:${100 - xPct(t0, t1, theirBox.expiry * 1000)}%;` +
+                          `position:absolute;left:${axis.x(dividerMs)}%;` +
+                            `right:${100 - axis.x(theirBox.expiry * 1000)}%;` +
                             `top:${yPct(band, ceilingUsd)}%;bottom:${100 - yPct(band, floorUsd)}%;` +
                             `border:1px solid ${C.violet};border-radius:3px;` +
                             `background:${C.violet}3d;pointer-events:none`,
@@ -3392,8 +3786,8 @@ export function BoxBuilder({
                       data-role="box"
                       data-editing={live ? "true" : "false"}
                       style={sx(
-                        `position:absolute;left:${xPct(t0, t1, dividerMs)}%;` +
-                          `right:${100 - xPct(t0, t1, shownBox.expiry * 1000)}%;` +
+                        `position:absolute;left:${axis.x(dividerMs)}%;` +
+                          `right:${100 - axis.x(shownBox.expiry * 1000)}%;` +
                           `top:${clampPct(yPct(band, ceilingUsd))}%;` +
                           `bottom:${clampPct(100 - yPct(band, floorUsd))}%;` +
                           `border:${revealed ? 2 : 1}px solid ${C.accent};border-radius:3px;` +
@@ -3528,20 +3922,33 @@ export function BoxBuilder({
                       ? `top:0;transform:translateY(${rank * 15}px)`
                       : `bottom:0;transform:translateY(${-rank * 15}px)`
                     : `top:${clampPct(yPct(band, price))}%;transform:translateY(-50%)`;
+                  // A parked rung is already spaced by its own stack; an
+                  // on-board one prints its price only if it has the room.
+                  const labelled = off || labelledRungs.has(price);
                   return (
                     <button
                       key={strike || i}
                       data-rung={strike}
                       data-offscreen={off ? (above ? "above" : "below") : undefined}
+                      // Thinned or not, the price is the name and the tooltip.
+                      // A tick a screen reader announced as "button" would be a
+                      // strike that had left the board for anyone not looking
+                      // at it, which is the failure the parked-rung rule exists
+                      // to prevent — by another door.
+                      aria-label={usd(price)}
+                      data-labelled={labelled ? "" : undefined}
                       title={
                         off
                           ? `${usd(price)} is outside the current zoom — click to bring it back on screen`
-                          : undefined
+                          : labelled
+                            ? undefined
+                            : `${usd(price)} — too close to its neighbour to print, click to draw from it`
                       }
                       onClick={() => onRung(price)}
                       style={sx(
                         `position:absolute;left:${off ? AXIS_PARKED_X : AXIS_LABEL_X}px;${place};` +
                           `padding:2px 5px;border-radius:4px;cursor:pointer;white-space:nowrap;` +
+                          `display:flex;align-items:center;min-height:13px;` +
                           `font:${off ? "500" : "600"} ${off ? 9 : 10}px/1 ${MONO};` +
                           (isFloor
                             ? `background:${C.accent};color:${C.bg};border:1px solid ${C.accent}`
@@ -3552,8 +3959,20 @@ export function BoxBuilder({
                                 : `background:transparent;color:${C.muted};border:1px solid transparent`),
                       )}
                     >
-                      {off ? (above ? "↑" : "↓") : ""}
-                      {usd(price)}
+                      {labelled ? (
+                        <>
+                          {off ? (above ? "↑" : "↓") : ""}
+                          {usd(price)}
+                        </>
+                      ) : (
+                        /* The tick. Same button, same height, same target —
+                           only the digits are gone, because the digits are
+                           what collided. */
+                        <span
+                          aria-hidden="true"
+                          style={sx("display:block;width:11px;height:1px;background:currentColor")}
+                        />
+                      )}
                     </button>
                   );
                 })}
@@ -3623,7 +4042,7 @@ export function BoxBuilder({
                 />
                 <span
                   style={sx(
-                    `position:absolute;left:${clampPct(xPct(t0, t1, dividerMs))}%;top:5px;` +
+                    `position:absolute;left:${clampPct(axis.x(dividerMs))}%;top:5px;` +
                       `transform:translateX(-50%);white-space:nowrap;text-align:center;` +
                       `font:700 8.5px/1.5 ${MONO};letter-spacing:.08em;color:${C.muted}`,
                   )}
@@ -3634,12 +4053,24 @@ export function BoxBuilder({
                     {utcClock(dividerMs)}
                   </span>
                 </span>
-                {drawn.map((e) => (
+                {drawn.map((e, di) => (
                   <span
                     key={e}
                     data-axis-expiry={e}
+                    // Thinned when the board carries more dates than the strip
+                    // has room for — every k-th, and always the chosen one and
+                    // the last, because those two are the box's own edge and
+                    // the end of the axis. Nothing leaves the board: the
+                    // column, its cells, its boundary line and its chip in the
+                    // picker below are all still there.
+                    hidden={
+                      drawn.length > MAX_AXIS_DATES &&
+                      e !== chosen &&
+                      di !== drawn.length - 1 &&
+                      di % Math.ceil(drawn.length / MAX_AXIS_DATES) !== 0
+                    }
                     style={sx(
-                      `position:absolute;left:${clampPct(xPct(t0, t1, e * 1000))}%;top:5px;` +
+                      `position:absolute;left:${clampPct(axis.x(e * 1000))}%;top:5px;` +
                         `transform:translateX(-50%);white-space:nowrap;text-align:center;` +
                         `font:${e === chosen ? "700" : "500"} 8.5px/1.5 ${MONO};` +
                         `color:${e === chosen ? C.accent : C.dim}`,
@@ -3867,21 +4298,27 @@ export function BoxBuilder({
               </span>
             )}
 
-            {/* How the axis is divided, because the division is the reason the
-                history sometimes reads as a jagged burst against a long empty
-                stretch. Both halves are on one linear scale: the left is
-                whatever history arrived, the right runs to the expiry the box
-                is drawn against. Pick a date a week out and thirty-three hours
-                of prints get a fifth of the width; pick tomorrow and they get
-                half. Nothing is compressed non-linearly and no point is moved —
-                the axis simply has to hold both, and saying the proportion is
-                cheaper than leaving it to look broken. */}
-            {hasLine && (
-              <span data-role="axis-scale" style={sx(NOTE)}>
-                The axis holds {shortAge(Math.max(0, dividerMs - t0))} of history on the left and{" "}
-                {shortAge(Math.max(0, t1 - dividerMs))} to expiry on the right, on one linear scale
-                — a further-out expiry gives the past less of the width, and the prints stay where
-                they were made.
+            {/*
+                How the axis is divided — and it is disclosure rather than
+                commentary, which is why it is not behind a hover.
+
+                The axis used to be one linear scale and the columns were
+                unusable for it: the venue lists daily then weekly, so an axis
+                out to Sep 25 crushed tomorrow and the day after into the
+                leftmost 8% of the board. The columns are equal now, which makes
+                every listed date as drawable as every other and makes the even
+                spacing a thing that could be misread as an even cadence. It
+                cannot be allowed to be, so the sentence names the real gap
+                between the first column and the last, in days, checkable
+                against the labels directly above it.
+
+                The left half is untouched and stays that way: history is
+                continuous in time and no layout gets to say two prints four
+                minutes apart were two.
+            */}
+            {axisScaleCopy({ pastMs: hasLine ? Math.max(0, dividerMs - t0) : 0, drawn }) && (
+              <span data-role="axis-scale" style={sx(CHIP_NOTE)}>
+                {axisScaleCopy({ pastMs: hasLine ? Math.max(0, dividerMs - t0) : 0, drawn })}
               </span>
             )}
 
@@ -3923,18 +4360,23 @@ export function BoxBuilder({
             ) : (
               <>
                 <div style={sx("display:grid;gap:5px")}>
-                  <div style={sx("display:flex;align-items:center;gap:8px")}>
+                  <div style={sx(`display:flex;align-items:center;gap:8px;${ROW_HEAD}`)}>
                     <span style={sx(LABEL)}>PRICE BAND</span>
                     <div style={sx("flex:1")} />
-                    {/* The keyboard and touch way into the ticket. Hovering the
-                        rectangle on the chart is the pointer's way in; this is
-                        the one that does not need a pointer, and it pins rather
-                        than hovers so a tap can read it. */}
+                    {/* The same control the three figures below carry, opening
+                        the box's full trade ticket rather than a one-paragraph
+                        note — `FieldInfo` takes any ticket, and a row whose
+                        `ⓘ` did nothing on hover while every other `ⓘ` on the
+                        panel opened would read as a broken one. Hovering the
+                        rectangle on the chart is still the pointer's other way
+                        in; this is the one that needs neither a pointer nor a
+                        steady hand on a 60-pixel target. */}
                     {boxTicket && (
-                      <TicketToggle
-                        id={boxTicket.id}
-                        open={ticket.openId === boxTicket.id}
-                        onToggle={(el) => ticket.pin(boxTicket, el)}
+                      <FieldInfo
+                        host={ticket}
+                        note={boxTicket}
+                        label="PRICE BAND"
+                        style={INFO_NUDGE}
                       />
                     )}
                   </div>
@@ -3964,7 +4406,16 @@ export function BoxBuilder({
                     every value is a distance the ladder can express, which is
                     what "snapped" means for a width on an irregular ladder. */}
                 <div style={sx("display:grid;gap:5px")}>
-                  <span style={sx(LABEL)}>WING WIDTH</span>
+                  <div style={sx(`display:flex;align-items:center;gap:8px;${ROW_HEAD}`)}>
+                    <span style={sx(LABEL)}>WING WIDTH</span>
+                    <div style={sx("flex:1")} />
+                    <FieldInfo
+                      host={ticket}
+                      note={FIELD_NOTE_TICKETS.wing}
+                      label="WING WIDTH"
+                      style={INFO_NUDGE}
+                    />
+                  </div>
                   <div style={sx("display:flex;align-items:center;gap:8px")}>
                     {/* The maker's wing on a matched box, the player's on an
                         unmatched one — `positionWingUsd`, the same instrument
@@ -4001,14 +4452,20 @@ export function BoxBuilder({
                       +
                     </button>
                   </div>
-                  <span style={sx(NOTE)}>
-                    The distance below the floor and above the ceiling. It is also the most this can
-                    pay per contract, which is why stepping it steps the upside.
+                  {/* What the definition of a wing has been lifted out of: the
+                      count of widths this column actually offers, and whether
+                      they are the player's to pick at all. That is a fact about
+                      this box against this book right now — it is the reason
+                      the steppers are live or dead — so it is a chip on the
+                      panel rather than a sentence behind a hover. The full
+                      version of the sentence it was carved out of is on the
+                      `ⓘ` above. */}
+                  <span data-role="wing-state" style={sx(CHIP_NOTE)}>
                     {match
-                      ? " Fixed here: this box fills a zone the maker already listed, and its wings came with it."
+                      ? "Fixed here: this box fills a zone the maker already listed, and its wings came with it."
                       : wings.length > 1
-                        ? ` The ladder offers ${wings.length} widths at this band — every one of them a gap the book is quoting, and nothing in between.`
-                        : " The ladder offers one width at this band, so there is nothing to step to."}
+                        ? `The ladder offers ${wings.length} widths at this band — every one of them a gap the book is quoting, and nothing in between.`
+                        : "The ladder offers one width at this band, so there is nothing to step to."}
                   </span>
                 </div>
 
@@ -4023,7 +4480,16 @@ export function BoxBuilder({
                     The clamp is on read (`size`), not on the input, so a
                     half-typed value does not fight the keyboard. */}
                 <div style={sx("display:grid;gap:5px")}>
-                  <span style={sx(LABEL)}>SIZE</span>
+                  <div style={sx(`display:flex;align-items:center;gap:8px;${ROW_HEAD}`)}>
+                    <span style={sx(LABEL)}>SIZE</span>
+                    <div style={sx("flex:1")} />
+                    <FieldInfo
+                      host={ticket}
+                      note={FIELD_NOTE_TICKETS.size}
+                      label="SIZE"
+                      style={INFO_NUDGE}
+                    />
+                  </div>
                   <div style={sx("display:flex;align-items:center;gap:8px")}>
                     <input
                       data-role="size-input"
@@ -4065,11 +4531,19 @@ export function BoxBuilder({
                       +
                     </button>
                   </div>
-                  <span style={sx(NOTE)}>
-                    {SIZE_COPY}
+                  {/* Everything below this line is disclosure, and none of it
+                      moved behind the `ⓘ` above. What the position costs at
+                      today's premium, or that nothing has priced it and that is
+                      why there is no cost to scale; the cap this build will
+                      actually sign; and the depth limit that is deliberately
+                      NOT claimed. `SIZE_COPY` — the definition of what a
+                      contract count *is* — is the only line that left, because
+                      it is the only one that would still be true about a
+                      different box on a different book. */}
+                  <span data-role="size-cost" style={sx(CHIP_NOTE)}>
                     {quoted && premium !== null
-                      ? ` At ${usd(premium, true)} a contract, ${size} ${size === 1 ? "costs" : "cost"} ${usd(premium * size, true)}.`
-                      : " Nothing has priced this box yet, so there is no cost to scale."}
+                      ? `At ${usd(premium, true)} a contract, ${size} ${size === 1 ? "costs" : "cost"} ${usd(premium * size, true)}.`
+                      : "Nothing has priced this box yet, so there is no cost to scale."}
                   </span>
                   {/* The bound that is real, named where it bites — and the one
                       that is NOT claimed, said too. The maker's remaining depth
@@ -4077,10 +4551,10 @@ export function BoxBuilder({
                       this screen holds no map to convert it, so it is not
                       converted; a limit invented from a number in unknown units
                       is how this repo's money bugs start. */}
-                  <span data-role="fill-cap" style={sx(NOTE)}>
+                  <span data-role="fill-cap" style={sx(CHIP_NOTE)}>
                     {fillCapCopy(quoted ? premium : null)}
                   </span>
-                  <span style={sx(NOTE)}>
+                  <span style={sx(CHIP_NOTE)}>
                     The maker's remaining size is published in the collateral token's own units, and
                     this screen does not convert it — so no depth limit is claimed here. The cap
                     above is this build's own and is checked before anything signs.
@@ -4090,20 +4564,44 @@ export function BoxBuilder({
                 <div style={sx(`height:1px;background:${C.line}`)} />
 
                 {/* Max loss, above the upside figure. Always, at every detail
-                    level, ungated — plan6 §A7 and plan7 §4.3. */}
+                    level, ungated — plan6 §A7 and plan7 §4.3. The figure and its
+                    heading are what that rule is about and neither has moved;
+                    what went behind the `ⓘ` is `MAX_LOSS_COPY`, which explains
+                    what a premium is rather than disclosing anything about this
+                    box. The dash's own reason stayed, because on the unpriced
+                    path the reason IS the content of the row. */}
                 <div style={sx("display:grid;gap:5px")}>
-                  <span style={sx(`${LABEL};color:${C.red}`)}>MAX LOSS</span>
+                  <div style={sx(`display:flex;align-items:center;gap:8px;${ROW_HEAD}`)}>
+                    <span style={sx(`${LABEL};color:${C.red}`)}>MAX LOSS</span>
+                    <div style={sx("flex:1")} />
+                    <FieldInfo
+                      host={ticket}
+                      note={FIELD_NOTE_TICKETS.maxLoss}
+                      label="MAX LOSS"
+                      style={INFO_NUDGE}
+                    />
+                  </div>
                   <span data-role="max-loss" style={sx(`${VALUE};color:${C.red}`)}>
                     {quoted && econ ? usd(econ.maxLoss, true) : "—"}
                   </span>
-                  <span style={sx(NOTE)}>
-                    {MAX_LOSS_COPY}
-                    {quoted ? "" : " Nothing has priced this box yet, so there is no figure to print."}
-                  </span>
+                  {!quoted && (
+                    <span data-role="max-loss-absent" style={sx(CHIP_NOTE)}>
+                      Nothing has priced this box yet, so there is no figure to print.
+                    </span>
+                  )}
                 </div>
 
                 <div style={sx("display:grid;gap:5px")}>
-                  <span style={sx(LABEL)}>MAX PAYOUT</span>
+                  <div style={sx(`display:flex;align-items:center;gap:8px;${ROW_HEAD}`)}>
+                    <span style={sx(LABEL)}>MAX PAYOUT</span>
+                    <div style={sx("flex:1")} />
+                    <FieldInfo
+                      host={ticket}
+                      note={FIELD_NOTE_TICKETS.maxPayout}
+                      label="MAX PAYOUT"
+                      style={INFO_NUDGE}
+                    />
+                  </div>
                   <span data-role="max-payout" style={sx(`${VALUE};color:${C.green}`)}>
                     {econ ? `${usd(econ.maxPayout, true)}${size === 1 ? " per contract" : ""}` : "—"}
                   </span>
@@ -4117,7 +4615,18 @@ export function BoxBuilder({
                       {multiple.toFixed(2)}× the premium
                     </span>
                   )}
-                  <span style={sx(NOTE)}>{SETTLEMENT_COPY}</span>
+                  {/* The one line that argued for both piles and lost the
+                      argument for the hover. "Lands in", never "stays within",
+                      is the difference between this instrument and the one a
+                      player imagines — a player who believes the price has to
+                      STAY in the band will draw a box far too wide and pay for
+                      range they did not need. That is a decision changed by an
+                      absence, which makes it disclosure whatever else it also
+                      is, so it stays on the panel and the `ⓘ` above carries the
+                      longer version. */}
+                  <span data-role="settlement" style={sx(CHIP_NOTE)}>
+                    {SETTLEMENT_COPY}
+                  </span>
                 </div>
 
                 <div style={sx(`height:1px;background:${C.line}`)} />

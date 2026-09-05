@@ -25,10 +25,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   DASH,
-  SAFE_UNFILLABLE,
   bandLabel,
   cardTicket,
   expiryStamp,
+  fieldNote,
   fine,
   instrumentName,
   liveTicket,
@@ -39,8 +39,15 @@ import {
 } from "../src/desk/ticket.ts";
 import { DUEL_WINDOW } from "../src/desk/optionize.ts";
 import { decayOver } from "../src/data/greeks.ts";
-import { TICKET_DELAY_MS, useTradeTicket } from "../src/ui/TradeTicket.tsx";
-import { buildLeg, type LiveCard } from "../src/engine/parlay.ts";
+import { TICKET_ACCENT, TICKET_DELAY_MS, useTradeTicket } from "../src/ui/TradeTicket.tsx";
+import {
+  buildLeg,
+  tierProb,
+  TIER_BANDS,
+  TIER_ORDER,
+  type LiveCard,
+  type Tier,
+} from "../src/engine/parlay.ts";
 import type { PricingRow, RowGreeks } from "../src/types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +61,10 @@ const EXPIRY = Math.floor(Date.UTC(2026, 8, 12, 8, 0, 0) / 1000);
 
 const GREEKS: RowGreeks = {
   source: "model",
-  delta: 0.3612,
+  // Inside SHARP's `[0.10, 0.20)` band. It was 0.3612 while the ladder ran
+  // SAFE `[0.65, 0.85)`; 0.36 buckets into SAFE now, and a fixture whose delta
+  // contradicts its own tier is the exact mismatch this suite exists to catch.
+  delta: 0.1612,
   gamma: 0.001184,
   thetaPerDay: -0.4213,
   thetaPerYear: -0.4213 * 365,
@@ -73,7 +83,7 @@ const ROW: PricingRow = {
   bid: "6.10",
   ask: "6.70",
   iv: "58.2%",
-  delta: "0.36",
+  delta: "0.16",
   depth: 40,
   size: "10.0k",
   greeks: GREEKS,
@@ -89,9 +99,9 @@ const CARD: LiveCard = {
   strikeAt: 2460,
   expiry: "12 SEP",
   expiryAt: EXPIRY,
-  prob: 0.3612,
+  prob: 0.1612,
   premium: 6.7,
-  odds: 1 / 0.3612,
+  odds: 1 / 0.1612,
   payoutMult: 90.54,
   mark: null,
   row: ROW,
@@ -164,7 +174,7 @@ describe("a card the book dealt reads as the contract it is", () => {
     // The tier is the game's word; the band under it is the real thing.
     expect(t.subtitle).toContain("SHARP");
     expect(t.subtitle).toContain(bandLabel("SHARP"));
-    expect(bandLabel("SHARP")).toBe("|Δ| 0.25–0.45");
+    expect(bandLabel("SHARP")).toBe("|Δ| 0.10–0.20");
   });
 
   test("it carries everything a person needs to place the trade", () => {
@@ -207,8 +217,9 @@ describe("a card the book dealt reads as the contract it is", () => {
   test("delta is the venue's, and it is linked to the tier's band", () => {
     const d = rowOf(t, "delta");
     expect(d?.source).toBe("venue");
-    expect(d?.note).toContain("36% odds");
-    expect(d?.note).toContain("|Δ| 0.25–0.45");
+    expect(d?.note).toContain("16% odds");
+    expect(d?.note).toContain(bandLabel("SHARP"));
+    expect(d?.note).toContain("|Δ| 0.10–0.20");
   });
 
   test("moneyness names the distance the price has to travel", () => {
@@ -350,8 +361,12 @@ describe("a card the game wrote is never dressed as a contract", () => {
   });
 
   test("the chance on the face is named as a band midpoint, not a delta", () => {
-    // This is the substitution the owner's screenshot makes: `75% chance` on a
+    // This is the substitution the owner's screenshot makes: the chance on a
     // SAFE card is `tierProb("SAFE")`, and no option's delta is behind it.
+    // Derived from the constant rather than typed out, so a re-cut of the
+    // ladder moves the assertion with the card instead of failing it — what
+    // this test pins is the WORDING, `… · band midpoint`, which is the whole
+    // disclosure.
     const safe = seededTicket({
       ...BASE,
       card: null,
@@ -360,24 +375,41 @@ describe("a card the game wrote is never dressed as a contract", () => {
       reason: "no-book",
     });
     const d = rowOf(safe, "delta");
-    expect(d?.value).toBe("75% · band midpoint");
+    expect(d?.value).toBe(`${Math.round(tierProb("SAFE") * 100)}% · band midpoint`);
+    expect(d?.value).toBe("40% · band midpoint");
     expect(d?.source).toBe("game");
     expect(d?.note).toContain("not any option's delta");
   });
 
-  test("SAFE says why it can never fill, on every seeded SAFE ticket", () => {
-    const safe = seededTicket({
-      ...BASE,
-      card: null,
-      tier: "SAFE",
-      leg: buildLeg("ETH", "over", "SAFE"),
-      reason: "no-book",
-    });
-    expect(safe.footer.join(" ")).toContain(SAFE_UNFILLABLE);
-    expect(SAFE_UNFILLABLE).toContain("0.50");
-    expect(SAFE_UNFILLABLE).toContain("0.65");
-    // A tier that CAN fill makes no such claim.
-    expect(t.footer.join(" ")).not.toContain(SAFE_UNFILLABLE);
+  /**
+   * This used to assert the opposite: that a seeded SAFE ticket carries an extra
+   * footer sentence saying SAFE can never fill. It could not, then — the ladder
+   * ran SAFE `[0.65, 0.85)` over a book whose largest listed |delta| is under
+   * 0.50 — and `SAFE_UNFILLABLE` was that sentence.
+   *
+   * `TIER_BANDS` was re-cut onto the range the venue actually quotes, `SAFE` is
+   * `[0.30, 0.50)` and fills off live orders, and the constant is retired. The
+   * test is inverted rather than deleted, because "SAFE is special-cased in the
+   * footer" is exactly the state that must not quietly come back: an empty SAFE
+   * tier now means what an empty DEGEN tier means, and gets the same sentence.
+   */
+  test("no tier is special-cased in the footer — SAFE reads like the rest", () => {
+    const seeded = (tier: Tier) =>
+      seededTicket({
+        ...BASE,
+        card: null,
+        tier,
+        leg: buildLeg("ETH", "over", tier),
+        reason: "no-book",
+      });
+    const safe = seeded("SAFE");
+    for (const t2 of TIER_ORDER) {
+      expect(seeded(t2).footer).toHaveLength(safe.footer.length);
+      expect(seeded(t2).footer.join(" ")).not.toContain("can never fill");
+    }
+    // The band it names is its own, and it is one the book can reach.
+    expect(safe.subtitle).toContain(bandLabel("SAFE"));
+    expect(TIER_BANDS.SAFE[1]).toBeLessThanOrEqual(0.5);
   });
 
   test("the three reasons a slot is seeded are three different sentences", () => {
@@ -622,5 +654,43 @@ describe("what the rendered panel actually says", () => {
     // `.vc-tip` animates opacity only and is switched off entirely under
     // `prefers-reduced-motion` in `styles.css`.
     expect(open(CARD).className).toContain("vc-tip");
+  });
+});
+
+describe("a field note is a definition, and never a quote", () => {
+  /**
+   * The one thing that could go wrong here is a figure creeping onto a note.
+   * The panel shape is the same one that carries a listed contract's premium
+   * three rows away on the parlay screen, and a reader has learned to read it
+   * as one — so a note that grew a `value` and a `source` tag would be an
+   * invented number wearing the venue's clothes. It cannot, because it has no
+   * rows at all, and this is the test that keeps it that way.
+   */
+  test("it is one paragraph and its continuations, with nothing else", () => {
+    const n = fieldNote({ id: "box:maxLoss", label: "MAX LOSS", lines: ["first", "second"] });
+    expect(n.state).toBe("note");
+    expect(n.id).toBe("box:maxLoss");
+    expect(n.title).toBe("MAX LOSS");
+    expect(n.banner).toBe("first");
+    expect(n.body).toEqual(["second"]);
+    expect(n.rows.length).toBe(0);
+    expect(n.footer.length).toBe(0);
+    // Said out loud on the panel, because the same shape carries live quotes
+    // elsewhere in this app.
+    expect(n.subtitle).toBe("WHAT THIS FIGURE MEANS");
+  });
+
+  test("a single line leaves the body empty rather than repeating itself", () => {
+    const n = fieldNote({ id: "box:size", label: "SIZE", lines: ["only"] });
+    expect(n.banner).toBe("only");
+    expect(n.body).toEqual([]);
+  });
+
+  test("it borrows none of the state vocabulary's colours", () => {
+    // LIVE is green because a listed contract is live. A definition is not a
+    // market state and must not read as one.
+    expect(TICKET_ACCENT.note).not.toBe(TICKET_ACCENT.live);
+    expect(TICKET_ACCENT.note).not.toBe(TICKET_ACCENT.seeded);
+    expect(TICKET_ACCENT.note).not.toBe(TICKET_ACCENT["not-dealt"]);
   });
 });

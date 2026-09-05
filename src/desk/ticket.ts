@@ -4,6 +4,7 @@ import {
   type Greeks,
 } from "../data/greeks.ts";
 import {
+  chancePct,
   REFERENCE_MOVE,
   TIER_BANDS,
   type LiveCard,
@@ -53,7 +54,7 @@ import { DUEL_WINDOW, SETTLEMENT_NOTE } from "./optionize.ts";
  * WHAT THIS MODULE REFUSES TO DO
  * ────────────────────────────────────────────────────────────────────────────
  * **A seeded card has no contract.** No premium, no listed strike, no expiry,
- * and its "75% chance" is `tierProb(SAFE)` — the midpoint of a band — not any
+ * and its "40% chance" is `tierProb(SAFE)` — the midpoint of a band — not any
  * option's delta. Dressing that in trade-ticket clothing is the exact failure
  * this shape invites, so {@link seededTicket} is a different ticket rather than
  * the same one with dashes in it: it opens by saying there is nothing to buy,
@@ -111,8 +112,18 @@ export interface TicketRow {
   source: TicketSource | null;
 }
 
-/** The state the whole ticket is in. Drives the banner and the accent. */
-export type TicketState = "live" | "seeded" | "not-dealt";
+/**
+ * The state the whole ticket is in. Drives the banner and the accent.
+ *
+ * `note` is the odd one out and deliberately so: the first three are claims
+ * about a *position* — there is a contract, there is no contract, the book
+ * refused to deal one — and `note` is a claim about nothing at all. It is a
+ * definition of a figure, timeless, true before the box is drawn and still true
+ * after it is torn up. It wears its own neutral accent for that reason: a
+ * definition that borrowed LIVE's green would be asserting a market state it
+ * knows nothing about.
+ */
+export type TicketState = "live" | "seeded" | "not-dealt" | "note";
 
 export interface Ticket {
   /** `ETH:sharp-bull` — matches the card's own `data-parlay`. */
@@ -125,6 +136,15 @@ export interface Ticket {
   subtitle: string;
   /** The sentence that must be read before any number below it. */
   banner: string;
+  /**
+   * Further paragraphs of the same prose, below the banner and above the rows.
+   *
+   * Only {@link fieldNote} fills it. A trade ticket says its piece in the
+   * banner and then gets on with the figures; a field note has no figures, so
+   * the paragraph *is* the panel and one bordered block would have to hold the
+   * lot. Absent on every other ticket, and the panel renders nothing for it.
+   */
+  body?: readonly string[];
   rows: readonly TicketRow[];
   /** Closing sentences: provenance, then settlement. */
   footer: readonly string[];
@@ -382,20 +402,26 @@ export const SEEDED_BANNER =
 export const NOT_DEALT_BANNER =
   "Not dealt. The book carries a chain here but nothing resting in this tier's band, so no contract stands behind this slot.";
 
-/**
- * **SAFE cannot fill, on any ticker, ever** — and the reason is a property of
- * the venue rather than of this build.
+/*
+ * There used to be a `SAFE_UNFILLABLE` constant here, appended to the footer of
+ * every SAFE ticket that had no card — which was every SAFE ticket there was.
+ * It read: *"SAFE can never fill: the venue lists only out-of-the-money wings —
+ * the largest |delta| on the whole book is 0.50 — and SAFE's band starts at
+ * 0.65, so no resting order can reach it."*
  *
- * The book lists only out-of-the-money wings; the maximum `|delta|` across the
- * whole capture is 0.50 (`docs/greeks.md` §1). SAFE's band starts at 0.65. So
- * no resting order can reach it, the tier is seeded on every ticker including
- * the live ones, and the `75%` on its face is `tierProb("SAFE")` — the midpoint
- * of a band the book cannot reach — rather than anything a market said.
+ * Every clause of that was true, and it is retired rather than corrected
+ * because the condition it described is gone. The venue still lists only OTM
+ * wings and the largest listed `|delta|` is still under 0.50 — what changed is
+ * the ladder: `TIER_BANDS.SAFE` is `[0.30, 0.50)` now, cut onto the range the
+ * book actually quotes, and SAFE fills off live orders like any other tier.
  *
- * Printed on every SAFE ticket that has no card, which today is all of them.
+ * It is written down instead of deleted because the sentence was RIGHT, and a
+ * future reader who finds an empty SAFE tier should be able to tell this
+ * diagnosis apart from a regression. A SAFE slot with no card today means the
+ * same thing a DEGEN slot with no card means — nothing rested in that band at
+ * that expiry on that side — and {@link NOT_DEALT_BANNER} says exactly that,
+ * for all four tiers, with no special case.
  */
-export const SAFE_UNFILLABLE =
-  "SAFE can never fill: the venue lists only out-of-the-money wings — the largest |delta| on the whole book is 0.50 — and SAFE's band starts at 0.65, so no resting order can reach it.";
 
 /**
  * The trade ticket for a card the book actually dealt.
@@ -630,7 +656,7 @@ export function seededTicket(input: CardTicketInput): Ticket {
     {
       key: "delta",
       label: "CHANCE ON THE FACE",
-      value: `${Math.round(leg.prob * 100)}% · band midpoint`,
+      value: `${chancePct(leg.prob)} · band midpoint`,
       note: `${tier} is the |delta| band ${lo.toFixed(2)}–${hi.toFixed(2)} and this is its midpoint — the game's label for the tier, and not any option's delta.`,
       source: "game",
     },
@@ -657,8 +683,10 @@ export function seededTicket(input: CardTicketInput): Ticket {
         ? `The book reached this screen but carries no option chain for ${sym}, so its cards are the game's.`
         : `The book carries a chain for ${sym}, but no resting ${side} falls in ${tier}'s band at this expiry — so this slot was not dealt. A card that always exists is the tell that the odds are house-set.`;
 
+  // No per-tier special case. SAFE used to get an extra sentence here saying it
+  // could never fill; see the note under `NOT_DEALT_BANNER` for why that is no
+  // longer true and why the sentence is quoted there rather than deleted.
   const footer = [why];
-  if (tier === "SAFE") footer.push(SAFE_UNFILLABLE);
   footer.push(
     "Seeded strike, seeded odds, simulated settlement. You are not holding a position and nothing here is spent.",
   );
@@ -671,6 +699,73 @@ export function seededTicket(input: CardTicketInput): Ticket {
     banner: dealt ? NOT_DEALT_BANNER : SEEDED_BANNER,
     rows,
     footer,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The field note — one figure's definition, on the ticket's own panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What one figure *means*, shaped as a {@link Ticket} so it rides the panel and
+ * the interaction that already exist.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY A TICKET AND NOT A NEW TOOLTIP
+ * ────────────────────────────────────────────────────────────────────────────
+ * The owner asked for the arena panel's prose to move behind a per-figure `ⓘ`.
+ * The temptation is a small second tooltip — a `title` attribute, or forty
+ * lines of `onMouseEnter` — and it would be the third hover mechanism in this
+ * app and the only one without a settle delay, a keyboard path, a touch path,
+ * an Escape, a viewport flip or `role="tooltip"`. `useTradeTicket` has all six.
+ * So a field note is not a new kind of thing: it is a `Ticket` with no rows, no
+ * footer and one paragraph, and `TradeTicketPanel` renders it unchanged.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHAT MAY GO IN ONE, AND WHAT MAY NOT
+ * ────────────────────────────────────────────────────────────────────────────
+ * **Teaching only.** A field note holds definitions — what a premium is, what a
+ * wing pays, what "size" scales. It is timeless: nothing in it may depend on
+ * what this build priced, what the book listed, what this screen is capped at,
+ * or why a figure is a dash. Those are *disclosures*, they are the reason a
+ * player would act differently, and `docs/reality-check.md` does not let them
+ * sit behind a gesture a player may never perform. They stay on the panel.
+ *
+ * The line is easy to state and easy to get wrong, so the test for it is: would
+ * this sentence still be true on a different venue, on a different day, with a
+ * different box? If yes it is teaching. If it names a price, a cap, a build or
+ * an absence, it is disclosure and it stays visible.
+ *
+ * There is no `source` tag anywhere on a field note, because there is no figure
+ * on it to have a provenance. That is not an omission — a definition is nobody's
+ * quote.
+ */
+export interface FieldNoteInput {
+  /** `box:maxLoss`. Becomes the panel's `id` and the trigger's
+   *  `aria-describedby`, so it has to be unique on the screen. */
+  id: string;
+  /** The figure's own heading, verbatim — `MAX LOSS`. The note is titled with
+   *  it so an opened panel names the thing it is about rather than floating
+   *  free beside a column of similar figures. */
+  label: string;
+  /** One paragraph per entry. The first is the banner; the rest follow it. */
+  lines: readonly string[];
+}
+
+export function fieldNote(input: FieldNoteInput): Ticket {
+  const [first, ...rest] = input.lines;
+  return {
+    id: input.id,
+    state: "note",
+    title: input.label,
+    // Said out loud, because the same panel shape carries live quotes three
+    // rows away on the parlay screen and a reader has learned to read it as
+    // one. This one is not a quote and is not about this box.
+    subtitle: "WHAT THIS FIGURE MEANS",
+    banner: first ?? "",
+    body: rest,
+    rows: [],
+    footer: [],
   };
 }
 

@@ -175,10 +175,13 @@ export function liveTag(live: number | null): string | null {
  *
  * ## Why delta, and why "second opinion" and not "the answer"
  *
- * A parlay tier states a probability outright: SHARP is `~25%`, because
- * `TIERS.SHARP.prob` says `0.25`. That number is a game-design decision, and it
- * is not up for revision — `TIERS` and `summarize()` are pinned (the `×47.52`
- * fixture rides on them) and nothing here touches, imports or restates them.
+ * A parlay tier states a probability outright: SHARP is 15%, because SHARP's
+ * `TIER_BANDS` bracket is `[0.10, 0.20)` and `tierProb` takes its midpoint.
+ * (This paragraph used to cite `TIERS.SHARP.prob` at `0.25`. `TIERS` was a
+ * hand-written payout table; it was deleted in plan 6 and must not return —
+ * a tier is a |delta| band now, and the band is the whole of what it means.)
+ * Where that band sits is a measurement against the book rather than a
+ * game-design decision, and nothing here touches, imports or restates it.
  *
  * But the live book has an opinion of its own. An option's delta is, to a very
  * good first approximation, the market's probability that the option finishes

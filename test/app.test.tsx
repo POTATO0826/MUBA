@@ -603,10 +603,13 @@ describe("modes", () => {
     pick(syms[1]!, "safe-bull");
     pick(syms[2]!, "degen-bull");
     // Plan 6 retired the invented odds table: a tier is now a |delta| band and a
-    // multiplier is 1/prob, so this slip reads (1/.35)(1/.75)(1/.15) = 25.40 where
-    // the fiction read 47.52. The seeded LINES are untouched — `TIER_MOVE` still
-    // places them — so the replay locks still hold; only the odds moved.
-    expect(testid("combined-mult")?.textContent).toBe("×25.40");
+    // multiplier is 1/prob. The bands were then re-cut onto the range the venue
+    // actually quotes, so this slip reads (1/.15)(1/.40)(1/.075) = 222.22 — it
+    // read 25.40 on the old bands and 47.52 under the fiction before them. The
+    // seeded LINES are untouched — `TIER_MOVE` still places them — so the replay
+    // locks still hold; only the odds moved, and they moved because the
+    // probabilities behind them are now ones the book can quote.
+    expect(testid("combined-mult")?.textContent).toBe("×222.22");
   });
 });
 
@@ -1286,10 +1289,10 @@ describe("the parlay picks", () => {
           expect(cards().some((c) => c.dataset.parlay === `${sym}:${tier}-${stance}`)).toBe(true);
         }
       }
-      // SAFE sits in the [0.65, 0.85) delta band, so 1/0.75 = ×1.33.
-      expect(sec.textContent).toContain("×1.33");
-      // DEGEN is the [0.05, 0.25) band; 1/0.15 = ×6.67.
-      expect(sec.textContent).toContain("×6.67");
+      // SAFE sits in the [0.30, 0.50) delta band, so 1/0.40 = ×2.50.
+      expect(sec.textContent).toContain("×2.50");
+      // DEGEN is the [0.05, 0.10) band; 1/0.075 = ×13.33.
+      expect(sec.textContent).toContain("×13.33");
       expect(sec.textContent).toContain("↑ BULL");
       expect(sec.textContent).toContain("↓ BEAR");
     }
@@ -1314,25 +1317,31 @@ describe("the parlay picks", () => {
   test("the slip's odds are the product of the picks, per ticker, and update on every change", () => {
     mount("/match/kz-semis/parlay?seed=424242");
     const syms = slipLegs() as string[];
-    pick(syms[0]!, "sharp-bear"); // 3.6
-    pick(syms[1]!, "safe-bull"); // 1.2
-    pick(syms[2]!, "degen-bull"); // 11
+    pick(syms[0]!, "sharp-bear"); // 1/.15 = 6.67
+    pick(syms[1]!, "safe-bull"); //  1/.40 = 2.50
+    pick(syms[2]!, "degen-bull"); // 1/.075 = 13.33
     // Plan 6 retired the invented odds table: a tier is now a |delta| band and a
-    // multiplier is 1/prob, so this slip reads (1/.35)(1/.75)(1/.15) = 25.40 where
-    // the fiction read 47.52. The seeded LINES are untouched — `TIER_MOVE` still
-    // places them — so the replay locks still hold; only the odds moved.
-    expect(mult()).toBe("×25.40");
-    expect(prob()).toBe("3.9%"); // .35 × .75 × .15, the band midpoints
+    // multiplier is 1/prob. The bands were then re-cut onto the range the venue
+    // actually quotes, so this slip reads (1/.15)(1/.40)(1/.075) = 222.22 — it
+    // read 25.40 on the old bands and 47.52 under the fiction before them.
+    expect(mult()).toBe("×222.22");
+    // .15 × .40 × .075 = 0.0045. Two significant figures, not one decimal
+    // place: at 1dp this and every other sub-0.05% slip print `0.0%`, which is
+    // the legibility rule `PCT_SIGFIG_BELOW` was added for when the re-cut
+    // pushed the whole distribution down an order of magnitude.
+    expect(prob()).toBe("0.45%");
     expect(text()).toContain("SHARP↓ SAFE↑ DEGEN↑");
     expect(text()).toContain("closes below");
     expect(text()).toContain("closes above");
 
     pick(syms[2]!, "even-bull"); // swaps the DEGEN leg for an EVEN one
-    // (1/.35)(1/.75)(1/.55) = 6.93, and .35 × .75 × .55 = 14%. Swapping the
-    // long shot out lifts the slip back over the 10% loud line — the threshold
-    // itself is asserted in test/parlay.test.ts, on `summarize`.
-    expect(mult()).toBe("×6.93");
-    expect(prob()).toBe("14%");
+    // (1/.15)(1/.40)(1/.25) = 66.67, and .15 × .40 × .25 = 1.5%. Swapping the
+    // long shot out lifts the slip back over the loud line — 0.45% was under
+    // `LOUD_BELOW` (0.007) and 1.5% clears it. The threshold itself is asserted
+    // in test/parlay.test.ts, on `summarize`; what this pins is that a swap on
+    // the pick screen actually moves a slip across it.
+    expect(mult()).toBe("×66.67");
+    expect(prob()).toBe("1.5%");
   });
 
   test("the opponent's picks stay hidden until both lock", () => {
@@ -1862,15 +1871,20 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     // ETH SHARP bull asks for +9%: 4,559.03 seeded, and the same +9% of the
     // live 2,522.13 is 2,749.12 — nearest live call is the 2,800 at Δ0.21.
     const card = container.querySelector<HTMLElement>('[data-parlay="ETH:sharp-bull"]')!;
-    // SHARP is the [0.25, 0.45) band; its midpoint reads 35%. Plan 6 §E3/§E4.1
-    // pins the delta face as the phrase `35% chance` — one quantity, one term —
-    // so the tilde form the tier table used is gone from the card.
-    expect(card.textContent).toContain("35% chance");
+    // SHARP is the [0.10, 0.20) band; its midpoint reads 15%. Plan 6 §E3/§E4.1
+    // pins the delta face as the phrase `N% chance` — one quantity, one term —
+    // so the tilde form the tier table used is gone from the card. The figure
+    // was `35% chance` on the old bands; what is pinned is the phrasing and the
+    // fact that it is the tier's own midpoint, not the number itself.
+    expect(card.textContent).toContain("15% chance");
+    expect(card.textContent).toContain(`${Math.round(tierProb("SHARP") * 100)}% chance`);
     expect(card.textContent).toContain("book Δ 0.21 (second opinion)");
     // The tier's own multiplier is untouched — the advisory is a sibling line,
-    // not an input.
-    // SHARP's band midpoint: 1/0.35 = ×2.86.
-    expect(card.textContent).toContain("×2.86");
+    // not an input. The book says Δ0.21 and the card still says 15%: that is
+    // the whole point of the row, and the re-cut narrowed the gap rather than
+    // closing it.
+    // SHARP's band midpoint: 1/0.15 = ×6.67.
+    expect(card.textContent).toContain("×6.67");
   });
 
   test("no book, no advisory — spot alone is not enough", () => {
@@ -1914,8 +1928,8 @@ describe("hybrid anchoring — live spot beside the seeded tape", () => {
     };
     // The pinned slip: the band model prices it identically with the book live
     // and without it, which is the property this test exists for.
-    expect(price()).toBe("×25.40");
-    expect(price(live())).toBe("×25.40");
+    expect(price()).toBe("×222.22");
+    expect(price(live())).toBe("×222.22");
     // Remounted so `afterEach` has something to tear down.
     mount("/");
   });
@@ -2008,9 +2022,16 @@ describe("a market-priced leg carries the dealt card's number — at the source"
    * what the retired `optionizeTier` path did.
    */
   const CHAIN = [
-    liveRow({ type: "CALL", strike: 1900, delta: 0.7, ask: 60 }),
-    liveRow({ type: "CALL", strike: 2100, delta: 0.3, ask: 20 }),
-    liveRow({ type: "PUT", strike: 1850, delta: -0.2, ask: 15 }),
+    liveRow({ type: "CALL", strike: 1900, delta: 0.42, ask: 60 }),
+    // 0.13 sits inside SHARP's `[0.10, 0.20)` band and deliberately OFF its
+    // 0.15 midpoint — the assertions below distinguish the option's own delta
+    // from the tier's, and equal numbers would let them agree by accident.
+    // These read 0.70 / 0.30 / 0.20 before the ladder was re-cut, when they
+    // bucketed SAFE / SHARP / DEGEN on bands whose SAFE tier no order could
+    // reach. Nothing backs EVEN `[0.20, 0.30)` on either side, which is what
+    // the dead-slot assertions rely on.
+    liveRow({ type: "CALL", strike: 2100, delta: 0.13, ask: 20 }),
+    liveRow({ type: "PUT", strike: 1850, delta: -0.07, ask: 15 }),
   ];
 
   const BOOK: OptionBook = {
@@ -2063,9 +2084,9 @@ describe("a market-priced leg carries the dealt card's number — at the source"
     strikeAt: 2100,
     expiry: "12 SEP",
     expiryAt: EXPIRY,
-    prob: 0.3,
+    prob: 0.13,
     premium: 20,
-    odds: oddsOf(0.3),
+    odds: oddsOf(0.13),
     payoutMult: 0,
     mark: null,
     row: CHAIN[1]!,
@@ -2100,8 +2121,8 @@ describe("a market-priced leg carries the dealt card's number — at the source"
     mountProbe(BOOK);
     const leg = legAfterPicking("sharp-bull");
 
-    // The option's own delta at fair odds: 1/0.30 = ×3.33.
-    expect(leg.mult).toBeCloseTo(oddsOf(0.3), 10);
+    // The option's own delta at fair odds: 1/0.13 = ×7.69.
+    expect(leg.mult).toBeCloseTo(oddsOf(0.13), 10);
     expect(leg.mult * leg.prob).toBeCloseTo(1, 10);
 
     // NOT the payout multiple. That number is real, it is ×20 here, and it is
@@ -2112,8 +2133,8 @@ describe("a market-priced leg carries the dealt card's number — at the source"
 
     // …and it is neither of the two numbers it was before that. `multiplierFor`
     // reads 0.25 × 2100/2000 ÷ 20 = 0.013 and clamps up to MULT_MIN — the
-    // hand-rolled ratio plan 6 §9.2 retired. `tierOdds("SHARP")` = 1/0.35 =
-    // ×2.86 is the seeded fallback, and a live leg is not on the band.
+    // hand-rolled ratio plan 6 §9.2 retired. `tierOdds("SHARP")` = 1/0.15 =
+    // ×6.67 is the seeded fallback, and a live leg is not on the band.
     expect(multiplierFor(2100, 20, SPOT)).toBeCloseTo(MULT_MIN, 10);
     expect(leg.mult).not.toBeCloseTo(MULT_MIN, 2);
     expect(leg.mult).not.toBeCloseTo(tierOdds("SHARP"), 2);
@@ -2126,7 +2147,7 @@ describe("a market-priced leg carries the dealt card's number — at the source"
     // The option's own |delta|, not the band midpoint. This is the number
     // `summarize` and `degeneracyScore` read, so it reaches every surface that
     // prints combined odds.
-    expect(leg.prob).toBeCloseTo(0.3, 10);
+    expect(leg.prob).toBeCloseTo(0.13, 10);
     expect(leg.prob).not.toBeCloseTo(tierProb("SHARP"), 3);
     // A strike the venue lists, on the live scale, and the spot it was quoted
     // against.
@@ -2142,7 +2163,7 @@ describe("a market-priced leg carries the dealt card's number — at the source"
 
   test("a tier the book does not back keeps its seeded leg — no nearest-delta substitute", () => {
     mountProbe(BOOK);
-    // Nothing in CHAIN falls in EVEN's [0.45, 0.65) band on either side. The old
+    // Nothing in CHAIN falls in EVEN's [0.20, 0.30) band on either side. The old
     // path took the nearest listed delta anyway and flagged the miss; the card
     // path does not deal that card at all, and the leg stays what the seed made.
     const leg = legAfterPicking("even-bull");

@@ -56,12 +56,23 @@ import { stateAge } from "../src/theme.ts";
 import { MAX_FILL_USDC } from "../src/desk/fill.ts";
 import {
   BoxBuilder,
+  FIELD_NOTES,
   FILL_CAP_USD,
+  HISTORY_PCT,
+  MAX_LOSS_COPY,
   MAX_PANEL_CONTRACTS,
+  NO_HISTORY_PCT,
+  SETTLEMENT_COPY,
+  SIZE_COPY,
+  TAIL_PCT,
+  WING_COPY,
+  axisScaleCopy,
+  boardAxis,
   decodeBoxPick,
   encodeBoxPick,
   expiryLabel,
   fillCapCopy,
+  labelledRungPrices,
   listedFill,
   positionEconomics,
   positionWingUsd,
@@ -70,6 +81,7 @@ import {
   shortAge,
   type ListedFill,
 } from "../src/views/BoxBuilder.tsx";
+import { FIELD_INFO_HIT, TICKET_DELAY_MS } from "../src/ui/TradeTicket.tsx";
 
 const FIXTURE = (await Bun.file(join(import.meta.dir, "fixtures", "orders.json")).json()) as
   LadderSnapshot & { prices: Record<string, number> };
@@ -1484,13 +1496,28 @@ describe("zoom says what it is doing, including when it can do nothing", () => {
 });
 
 describe("the strikes are visible before the drag, and their discreteness is said", () => {
-  test("every rung in the window is drawn as a labelled gridline", () => {
+  test("every rung is a gridline, and its price is on the ONE price axis", () => {
+    // CHANGED, deliberately. This used to assert the gridlines carried price
+    // text, and they did — which gave the board two price axes printing the
+    // same numbers, one down each edge, and stacked `$2,400` on `$2,360` on
+    // `$2,350` on any dense window. The property being protected was never
+    // "the text is inside the plot"; it was **the snap targets are readable
+    // before a drag rather than discoverable only by drawing a box**, and that
+    // is asserted here more strongly than it was: every rung's price is on the
+    // right-hand rail, and every one of them is a button that draws from it.
     mount(<BoxBuilder {...BASE} />);
     const lines = all("[data-gridline]");
     expect(lines.length).toBeGreaterThan(1);
-    // The lattice carries prices, so the snap targets are readable before a
-    // drag rather than discoverable only by drawing a box.
-    expect(lines.some((l) => /\$[\d,]/.test(l.textContent ?? ""))).toBe(true);
+    // A line still names its strike, so a test can address one without prose.
+    expect(lines.every((l) => (l.getAttribute("data-gridline") ?? "").length > 0)).toBe(true);
+    // And it carries no price of its own. The duplicate axis is gone.
+    expect(lines.some((l) => /\$[\d,]/.test(l.textContent ?? ""))).toBe(false);
+    const rungs = all("[data-rung]");
+    expect(rungs.length).toBeGreaterThanOrEqual(lines.length);
+    // The price is the accessible name whether or not the digits are printed,
+    // so a thinned rung is thinned on screen and nowhere else.
+    expect(rungs.every((r) => /\$[\d,]/.test(r.getAttribute("aria-label") ?? ""))).toBe(true);
+    expect(rungs.some((r) => /\$[\d,]/.test(r.textContent ?? ""))).toBe(true);
   });
 
   test("the panel answers 'why can I not size it to the cent' in both directions", () => {
@@ -1513,16 +1540,25 @@ describe("the strikes are visible before the drag, and their discreteness is sai
 });
 
 describe("the axis explains its own shape rather than looking broken", () => {
-  test("the two halves of the time axis are stated when there is a line", () => {
+  test("the two halves of the time axis are stated, and named as two scales", () => {
+    // CHANGED, because the axis changed. It used to be one linear scale from
+    // the oldest print to the chosen expiry, and the sentence said so. It is
+    // two now — time on the left of NOW, equal columns on the right — and a
+    // chart whose halves have different scales has to say so or it is lying by
+    // omission. The half of the old assertion that must survive is the one
+    // about the prints, because that is the promise the left half still keeps.
     const points = Array.from({ length: 20 }, (_, i) => ({
       t: NOW - (30 - i) * 60_000,
       px: 2450 + i,
     }));
     mount(<BoxBuilder {...BASE} history={historyLine(points, NOW)} />);
     const said = container.querySelector('[data-role="axis-scale"]')?.textContent ?? "";
-    expect(said).toContain("of history on the left");
-    expect(said).toContain("to expiry on the right");
+    expect(said).toContain("of history, linear in time");
     expect(said).toContain("the prints stay where they were made");
+    // And the new half: the columns are the book's dates, equally wide, and the
+    // even spacing is explicitly not a cadence.
+    expect(said).toContain("gets an equal column");
+    expect(said).toContain("Column width is not time");
   });
 
   test("a clipped line says why it starts where it starts", () => {
@@ -1534,8 +1570,371 @@ describe("the axis explains its own shape rather than looking broken", () => {
     expect(text()).toContain("begins where the price entered the board");
   });
 
-  test("no line, no claim about the axis", () => {
+  test("no line, no claim about a left half — but the columns still explain themselves", () => {
+    // CHANGED for the same reason. The property was "do not claim history that
+    // did not arrive", and it holds: with no line the sentence says nothing
+    // about the past. What it does still say is that the columns are equal and
+    // that their width is not time, which is true with or without a price feed
+    // and is the thing a player could otherwise misread.
     mount(<BoxBuilder {...BASE} />);
-    expect(container.querySelector('[data-role="axis-scale"]')).toBeNull();
+    const said = container.querySelector('[data-role="axis-scale"]')?.textContent ?? "";
+    expect(said).not.toContain("of history");
+    expect(said).not.toContain("prints");
+    expect(said).toContain("gets an equal column");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Teaching behind the ⓘ, disclosure on the panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A pointer arriving, the way a browser actually delivers it.
+ *
+ * React does not listen for `pointerenter`; it delegates `pointerover` at the
+ * root and synthesises the enter/leave pair from it. Dispatching a bare
+ * non-bubbling `pointerenter` would reach nothing, and the test would pass on a
+ * handler that never fires in a browser. `test/ticket.test.tsx` says the same
+ * at more length, over the same hook.
+ */
+function hover(el: HTMLElement, pointerType: string) {
+  el.dispatchEvent(
+    Object.assign(new MouseEvent("pointerover", { bubbles: true, relatedTarget: null }), {
+      pointerType,
+    }),
+  );
+}
+
+function unhover(el: HTMLElement, pointerType: string) {
+  el.dispatchEvent(
+    Object.assign(new MouseEvent("pointerout", { bubbles: true, relatedTarget: null }), {
+      pointerType,
+    }),
+  );
+}
+
+const info = (id: string) =>
+  container.querySelector(`[data-field-info="${id}"]`) as HTMLButtonElement | null;
+const tip = () => container.querySelector("[data-trade-ticket]");
+
+/** A drawn ETH box with nothing priced — the state the panel is hardest in,
+ *  because most figures are dashes whose only content is *why*. */
+function drawEthBox() {
+  mount(<BoxBuilder {...BASE} />);
+  const rungs = all("[data-rung]");
+  click(rungs[0] as Element);
+  click(rungs[3] as Element);
+}
+
+describe("the panel reads as figures, with the teaching behind an ⓘ", () => {
+  test("no definition is on the panel until one is asked for", () => {
+    // The owner's complaint, as an assertion: three headings should not be
+    // buried in six paragraphs. Every line named here is timeless — it would be
+    // true of another box on another book on another day — which is the whole
+    // test for whether a sentence was allowed to move behind a gesture.
+    drawEthBox();
+    const said = text();
+    expect(said).not.toContain(MAX_LOSS_COPY);
+    expect(said).not.toContain(SIZE_COPY);
+    expect(said).not.toContain(WING_COPY);
+    for (const line of FIELD_NOTES.maxPayout) expect(said).not.toContain(line);
+    // And nothing is open: the panel is absent, not merely transparent.
+    expect(tip()).toBeNull();
+  });
+
+  test("every disclosure is on the panel with no interaction at all", () => {
+    // The other pile, and the reason it is a different pile. Each of these is a
+    // fact about THIS box against THIS build right now, and a player who never
+    // hovers has to read all of them: why a figure is a dash, what this build
+    // will actually sign, and the depth limit it deliberately does not claim.
+    drawEthBox();
+    const said = text();
+    expect(said).toContain("Nothing has priced this box yet, so there is no cost to scale.");
+    expect(said).toContain("Nothing has priced this box yet, so there is no figure to print.");
+    expect(said).toContain("Buying is capped at $2.00 a press in this build");
+    expect(said).toContain("does not convert it — so no depth limit is claimed here");
+    expect(said).toContain("widths at this band");
+    // "Lands in", never "stays within" — the one line that is both teaching and
+    // disclosure, and it stayed visible because a player who believes the price
+    // must STAY in the band draws a box far too wide and pays for range they
+    // did not need. The longer version is behind the ⓘ; this is not.
+    expect(container.querySelector('[data-role="settlement"]')?.textContent).toBe(SETTLEMENT_COPY);
+    expect(said).not.toContain("stays within");
+  });
+
+  test("a mouse hover reveals one figure's definition, and a leave takes it back", async () => {
+    drawEthBox();
+    const btn = info("box:maxLoss") as HTMLButtonElement;
+    act(() => {
+      hover(btn, "mouse");
+    });
+    // Not immediately. The settle delay is the trade ticket's own, unmodified,
+    // so a pointer crossing four ⓘ on its way to the Review button opens none.
+    expect(tip()).toBeNull();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, TICKET_DELAY_MS + 40));
+    });
+    expect(tip()?.textContent).toContain(MAX_LOSS_COPY);
+    act(() => {
+      unhover(btn, "mouse");
+    });
+    expect(tip()).toBeNull();
+  });
+
+  test("the keyboard reaches every ⓘ, opens it with no delay, and traps nothing", () => {
+    // The panel's hover ticket is deliberately out of the tab order, because
+    // the card it describes is already a button and is the trigger. These are
+    // not that: `MAX LOSS` is a span and a dollar figure is a span, so without
+    // a real focusable control the explanation would be pointer-only.
+    drawEthBox();
+    const labels: [string, string][] = [
+      ["box", "PRICE BAND"],
+      ["box:wing", "WING WIDTH"],
+      ["box:size", "SIZE"],
+      ["box:maxLoss", "MAX LOSS"],
+      ["box:maxPayout", "MAX PAYOUT"],
+    ];
+    for (const [id, label] of labels) {
+      const btn = info(id);
+      expect(btn).not.toBeNull();
+      expect((btn as HTMLButtonElement).tagName).toBe("BUTTON");
+      // A real name, and it names its own field: five controls all called
+      // "More info" is a tab order that says nothing.
+      expect(btn?.getAttribute("aria-label")).toBe(`What ${label} means`);
+      expect(btn?.getAttribute("tabindex")).toBeNull();
+      expect((btn as HTMLButtonElement).disabled).toBe(false);
+    }
+
+    const btn = info("box:size") as HTMLButtonElement;
+    act(() => {
+      btn.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    const open = tip();
+    expect(open?.textContent).toContain(SIZE_COPY);
+    // It is a tooltip, it is announced with the control that opened it, and Tab
+    // moves past it rather than into it.
+    expect(open?.getAttribute("role")).toBe("tooltip");
+    expect(open?.getAttribute("tabindex")).toBeNull();
+    expect(btn.getAttribute("aria-describedby")).toBe("ticket-box:size");
+    expect(btn.getAttribute("aria-expanded")).toBe("true");
+    act(() => {
+      btn.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(tip()).toBeNull();
+  });
+
+  test("a touch pins the note, and a second touch puts it away", () => {
+    // A touch fires `pointerover` and then `pointerout` on release, so hovering
+    // it would flash. There is no `onClick` on these for the same reason: the
+    // compatibility click that follows a tap would re-toggle what the pointer
+    // path just opened, inside one gesture.
+    drawEthBox();
+    const btn = info("box:wing") as HTMLButtonElement;
+    act(() => {
+      hover(btn, "touch");
+    });
+    expect(tip()?.textContent).toContain(WING_COPY);
+    act(() => {
+      unhover(btn, "touch");
+    });
+    expect(tip()).not.toBeNull();
+    act(() => {
+      hover(btn, "touch");
+    });
+    expect(tip()).toBeNull();
+  });
+
+  test("the ⓘ is not shrunk to fit a dense row", () => {
+    // The pull in a column of ten-pixel labels is to make the control ten
+    // pixels too. A hit target is not typography.
+    drawEthBox();
+    const btn = info("box:maxLoss") as HTMLButtonElement;
+    expect(btn.style.width).toBe(`${FIELD_INFO_HIT}px`);
+    expect(btn.style.height).toBe(`${FIELD_INFO_HIT}px`);
+    expect(FIELD_INFO_HIT).toBeGreaterThanOrEqual(24);
+  });
+
+  test("a note carries no figure, so it carries no provenance either", () => {
+    // The trade ticket tags every number with who said it. A definition is
+    // nobody's quote, so a note has no rows, no source tags and no footer — and
+    // if one ever grew a figure, this is the test that would say so.
+    drawEthBox();
+    act(() => {
+      hover(info("box:maxPayout") as HTMLButtonElement, "touch");
+    });
+    const p = tip() as HTMLElement;
+    expect(p.getAttribute("data-ticket-state")).toBe("note");
+    expect(p.querySelectorAll("[data-ticket-row]").length).toBe(0);
+    expect(p.querySelectorAll("[data-ticket-source]").length).toBe(0);
+    expect(p.querySelectorAll("[data-ticket-footer]").length).toBe(0);
+    for (const line of FIELD_NOTES.maxPayout) expect(p.textContent).toContain(line);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The x-axis: time on the left of NOW, listed dates on the right
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("boardAxis", () => {
+  /** Sep 5, 6, 11 and 18 at 08:00 UTC — daily, then weeklies, which is the real
+   *  shape the single linear axis could not draw. */
+  const DATES = [1_788_595_200, 1_788_681_600, 1_789_113_600, 1_789_718_400];
+  const NOW_MS = 1_788_500_000_000;
+  const T1 = (DATES[3] as number) * 1000 + 60_000;
+
+  const withPast = () =>
+    boardAxis({ t0: NOW_MS - 10 * 3_600_000, now: NOW_MS, drawn: DATES, t1: T1 });
+
+  test("every listed date gets an equal column, whatever the gap between them", () => {
+    // The whole point. Sep 5→6 is one day and Sep 11→18 is seven, and on the
+    // old axis that meant tomorrow got 3% of the board and next week got half.
+    // A column is a date, not a duration.
+    const a = withPast();
+    const widths = a.stops.map((s, i) => s.pct - (i === 0 ? a.nowPct : (a.stops[i - 1] as { pct: number }).pct));
+    for (const w of widths) expect(w).toBeCloseTo(widths[0] as number, 8);
+    expect(widths[0]).toBeGreaterThan(0);
+  });
+
+  test("the seam is NOW, and the past keeps its own linear scale", () => {
+    // The one thing that may not be re-spaced. Two prints an hour apart have to
+    // stay an hour apart relative to each other, or the chart is claiming the
+    // oracle published on a schedule it did not.
+    const t0 = NOW_MS - 10 * 3_600_000;
+    const a = boardAxis({ t0, now: NOW_MS, drawn: DATES, t1: T1 });
+    expect(a.x(t0)).toBe(0);
+    expect(a.x(NOW_MS)).toBeCloseTo(a.nowPct, 8);
+    // Half the history is half the history's width — a uniform scale, which is
+    // not the same thing as a re-spacing.
+    expect(a.x(t0 + 5 * 3_600_000)).toBeCloseTo(a.nowPct / 2, 8);
+    // Quarter, three quarters: the ratios survive.
+    expect(a.x(t0 + 2.5 * 3_600_000)).toBeCloseTo(a.nowPct / 4, 8);
+  });
+
+  test("with no history the past is a sliver rather than half an empty board", () => {
+    const a = boardAxis({ t0: NOW_MS, now: NOW_MS, drawn: DATES, t1: T1 });
+    expect(a.nowPct).toBe(NO_HISTORY_PCT);
+    expect(a.nowPct).toBeLessThan(HISTORY_PCT);
+    // And the seam does not move when a different date is chosen, which is the
+    // bug the fixed share fixes: it used to be however much history happened to
+    // have arrived, measured against however far out the expiry was.
+    const near = boardAxis({ t0: NOW_MS - 3_600_000, now: NOW_MS, drawn: [DATES[0] as number], t1: T1 });
+    const far = boardAxis({ t0: NOW_MS - 3_600_000, now: NOW_MS, drawn: DATES, t1: T1 });
+    expect(near.nowPct).toBe(far.nowPct);
+  });
+
+  test("an expiry lands on its own column edge, and the map is monotone", () => {
+    const a = withPast();
+    for (const [i, e] of DATES.entries()) {
+      expect(a.x(e * 1000)).toBeCloseTo((a.stops[i] as { pct: number }).pct, 8);
+    }
+    let last = -1;
+    for (let t = NOW_MS - 10 * 3_600_000; t <= T1; t += 3_600_000) {
+      const x = a.x(t);
+      expect(x).toBeGreaterThanOrEqual(last);
+      expect(x).toBeLessThanOrEqual(100);
+      last = x;
+    }
+  });
+
+  test("the tail past the last column is real room, not an off-board edge", () => {
+    // The box's right edge has to read as an edge rather than as the plot
+    // running out of width.
+    const a = withPast();
+    expect(100 - (a.stops[3] as { pct: number }).pct).toBeCloseTo(TAIL_PCT, 8);
+    expect(a.x(T1)).toBeCloseTo(100, 6);
+  });
+
+  test("a pointer is in a column, never at an instant between two dates", () => {
+    // The inverse is ordinal now. It used to map x back to a timestamp and hunt
+    // for the nearest expiry, which was fine on a uniform axis and hopeless on
+    // the real one: Sep 5 and Sep 6 were four pixels apart.
+    const a = withPast();
+    const mid = (i: number) => {
+      const left = i === 0 ? a.nowPct : (a.stops[i - 1] as { pct: number }).pct;
+      return (left + (a.stops[i] as { pct: number }).pct) / 200;
+    };
+    for (let i = 0; i < DATES.length; i += 1) expect(a.columnAt(mid(i))).toBe(i);
+    // Left of the divider is still the first column: a drag that started in the
+    // history cannot land on a date that is not offered.
+    expect(a.columnAt(0)).toBe(0);
+    // And the tail reports past-the-end, which is what lets a drag reach for
+    // the next date the book quotes rather than inventing one.
+    expect(a.columnAt(1)).toBe(DATES.length);
+  });
+
+  test("no columns is not a crash", () => {
+    const a = boardAxis({ t0: NOW_MS - 3_600_000, now: NOW_MS, drawn: [], t1: T1 });
+    expect(a.stops.length).toBe(0);
+    expect(a.x(NOW_MS)).toBeCloseTo(a.nowPct, 8);
+    expect(a.x(T1)).toBeCloseTo(100, 6);
+    expect(a.columnAt(0.5)).toBe(0);
+  });
+});
+
+describe("axisScaleCopy", () => {
+  const DATES = [1_788_595_200, 1_788_681_600, 1_789_113_600, 1_789_718_400];
+
+  test("names the real gap, so equal columns cannot read as an even cadence", () => {
+    // The disclosure the equal columns cost. Sep 5 to Sep 18 is thirteen days
+    // across three column boundaries, and the sentence says both numbers.
+    const said = axisScaleCopy({ pastMs: 3_600_000, drawn: DATES }) ?? "";
+    expect(said).toContain("Column width is not time");
+    expect(said).toContain("Sep 5 to Sep 18");
+    expect(said).toContain("not 3 equal steps");
+    expect(said).toContain("of history, linear in time");
+  });
+
+  test("claims no history when none arrived", () => {
+    const said = axisScaleCopy({ pastMs: 0, drawn: DATES }) ?? "";
+    expect(said).not.toContain("history");
+    expect(said).toContain("gets an equal column");
+  });
+
+  test("one column has no spread to state, and states none", () => {
+    const said = axisScaleCopy({ pastMs: 0, drawn: [DATES[0] as number] }) ?? "";
+    expect(said).toContain("1 date the book lists");
+    expect(said).not.toContain("equal steps");
+  });
+
+  test("no columns, no sentence", () => {
+    expect(axisScaleCopy({ pastMs: 3_600_000, drawn: [] })).toBeNull();
+  });
+});
+
+describe("labelledRungPrices", () => {
+  /** A window 340px tall over $2,000–$2,400. */
+  const band = { lo: 2000, hi: 2400 } as const;
+
+  test("keeps every price when the ladder is sparse enough to fit", () => {
+    const prices = [2000, 2100, 2200, 2300, 2400];
+    expect(labelledRungPrices(prices, band).sort((a, b) => a - b)).toEqual(prices);
+  });
+
+  test("guarantees a gap rather than dropping every other one", () => {
+    // The old rule was a count — "past twenty in the window, label every other
+    // one" — and it is the wrong measure on an irregular ladder. Here the
+    // bottom half is $5 apart and the top half is $100 apart: a count thins
+    // both, a gap thins only the half that needed it.
+    const dense = Array.from({ length: 41 }, (_, i) => 2000 + i * 5);
+    const sparse = [2300, 2400];
+    const kept = labelledRungPrices([...dense, ...sparse], band);
+    // Nothing kept is closer than the gap to its neighbour, measured the way
+    // the axis measures it.
+    const ys = kept.map((p) => ((1 - (p - band.lo) / (band.hi - band.lo)) * 340));
+    for (let i = 1; i < ys.length; i += 1) {
+      expect((ys[i] as number) - (ys[i - 1] as number)).toBeGreaterThanOrEqual(15 - 1e-9);
+    }
+    // The sparse end survives intact — it never collided with anything.
+    for (const p of sparse) expect(kept).toContain(p);
+    // And the dense end is thinned rather than emptied.
+    expect(kept.length).toBeGreaterThan(sparse.length);
+    expect(kept.length).toBeLessThan(dense.length);
+  });
+
+  test("a rung outside the window is not labelled here at all", () => {
+    // Off-window rungs are parked on the axis edge in their own fixed stack,
+    // which is this same gap by another route, so they are never this
+    // function's business.
+    expect(labelledRungPrices([1000, 2200, 9999], band)).toEqual([2200]);
   });
 });

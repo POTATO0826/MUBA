@@ -35,6 +35,7 @@ import {
   summarize,
   tierOdds,
   tierOf,
+  chancePct,
   tierProb,
   toUnits,
   wouldGoLoud,
@@ -50,9 +51,11 @@ import type { MarketSlice, PricingRow } from "../src/types.ts";
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("tier bands", () => {
-  test("the four brackets tile 0.05–0.85 with no gap and no overlap", () => {
+  test("the four brackets tile 0.05–0.50 with no gap and no overlap", () => {
     const bands = TIER_ORDER.map((t) => TIER_BANDS[t]);
-    expect(bands[0]![1]).toBe(0.85);
+    // 0.50 is at-the-money — the structural ceiling of a book that lists only
+    // out-of-the-money wings — and not "the largest delta we measured" (0.49).
+    expect(bands[0]![1]).toBe(0.5);
     expect(bands[bands.length - 1]![0]).toBe(0.05);
     for (let i = 1; i < bands.length; i++) {
       // SAFE.lo === EVEN.hi, EVEN.lo === SHARP.hi, …
@@ -63,12 +66,12 @@ describe("tier bands", () => {
 
   test("bands are half-open [lo, hi) — the low edge is in, the high edge is out", () => {
     // Every boundary belongs to exactly one tier, and it is the tier below it.
-    expect(tierOf(0.65)).toBe("SAFE");
-    expect(tierOf(0.6499999)).toBe("EVEN");
-    expect(tierOf(0.45)).toBe("EVEN");
-    expect(tierOf(0.4499999)).toBe("SHARP");
-    expect(tierOf(0.25)).toBe("SHARP");
-    expect(tierOf(0.2499999)).toBe("DEGEN");
+    expect(tierOf(0.3)).toBe("SAFE");
+    expect(tierOf(0.2999999)).toBe("EVEN");
+    expect(tierOf(0.2)).toBe("EVEN");
+    expect(tierOf(0.1999999)).toBe("SHARP");
+    expect(tierOf(0.1)).toBe("SHARP");
+    expect(tierOf(0.0999999)).toBe("DEGEN");
     expect(tierOf(0.05)).toBe("DEGEN");
   });
 
@@ -76,14 +79,19 @@ describe("tier bands", () => {
     // Below 0.05 the quote is dust with a spread wider than the premium.
     expect(tierOf(0.0499999)).toBeNull();
     expect(tierOf(0)).toBeNull();
-    // At and above 0.85 the option is deep ITM — intrinsic value, not a bet.
-    expect(tierOf(0.85)).toBeNull();
+    // At and above 0.50 the option is at or in the money. The venue lists no
+    // such vanilla — the largest |delta| measured live is 0.49 — so this end of
+    // the ladder is the mirror of the defect the re-cut fixed: if ITM listings
+    // ever appear they fall outside every band and are dealt by nothing, and
+    // the answer then is another re-cut, not a widened SAFE. See TIER_BANDS.
+    expect(tierOf(0.5)).toBeNull();
+    expect(tierOf(0.75)).toBeNull();
     expect(tierOf(0.99)).toBeNull();
     expect(tierOf(1)).toBeNull();
   });
 
   test("a put's negative delta buckets exactly like the call it mirrors", () => {
-    for (const d of [0.7, 0.5, 0.3, 0.1]) expect(tierOf(-d)).toBe(tierOf(d));
+    for (const d of [0.42, 0.25, 0.15, 0.07]) expect(tierOf(-d)).toBe(tierOf(d));
   });
 
   test("garbage in is null, never a tier", () => {
@@ -92,11 +100,45 @@ describe("tier bands", () => {
   });
 
   test("a tier's probability is its band midpoint, and its price is fair odds on it", () => {
-    expect(tierProb("SAFE")).toBeCloseTo(0.75, 10);
-    expect(tierProb("EVEN")).toBeCloseTo(0.55, 10);
-    expect(tierProb("SHARP")).toBeCloseTo(0.35, 10);
-    expect(tierProb("DEGEN")).toBeCloseTo(0.15, 10);
+    // Midpoints of the ladder cut onto the venue's real |delta| range. These
+    // read 75 / 55 / 35 / 15 until the re-cut, on bands whose SAFE tier no
+    // resting order could reach — see `TIER_BANDS` for the measurement.
+    expect(tierProb("SAFE")).toBeCloseTo(0.4, 10);
+    expect(tierProb("EVEN")).toBeCloseTo(0.25, 10);
+    expect(tierProb("SHARP")).toBeCloseTo(0.15, 10);
+    expect(tierProb("DEGEN")).toBeCloseTo(0.075, 10);
+    // …and every one of them is a chance the book can actually quote.
+    for (const t of TIER_ORDER) {
+      const [lo, hi] = TIER_BANDS[t];
+      expect(tierProb(t)).toBeGreaterThan(lo);
+      expect(tierProb(t)).toBeLessThan(Math.min(hi, 0.5));
+    }
     for (const t of TIER_ORDER) expect(tierOdds(t) * tierProb(t)).toBeCloseTo(1, 10);
+  });
+
+  /**
+   * The card's arithmetic has to survive its own formatting.
+   *
+   * `Math.round(prob * 100)` was exact for every midpoint the old ladder had
+   * (0.75 / 0.55 / 0.35 / 0.15). The re-cut gave DEGEN a midpoint of 0.075, and
+   * a rounded face then read `8% chance` above `×13.33` — two correct numbers
+   * that contradict each other, because `1 / 0.08` is 12.5. `chancePct` prints
+   * the decimal when there is one; this is the property that made it necessary,
+   * checked over the ladder rather than over the one tier that broke.
+   */
+  test("the printed chance and the printed odds are reciprocals, tier by tier", () => {
+    for (const t of TIER_ORDER) {
+      const shown = Number(chancePct(tierProb(t)).replace("%", "")) / 100;
+      expect(shown).toBeCloseTo(tierProb(t), 10);
+      // 1 / what the player reads == the × the player reads, to the 2dp the
+      // card prints it at. This is the whole claim the card makes.
+      expect(1 / shown).toBeCloseTo(tierOdds(t), 2);
+    }
+    expect(chancePct(tierProb("DEGEN"))).toBe("7.5%");
+    expect(chancePct(tierProb("SAFE"))).toBe("40%");
+    // A live card's delta arrives as a 2dp string and keeps its whole percent.
+    expect(chancePct(0.13)).toBe("13%");
+    expect(chancePct(0.07)).toBe("7%");
   });
 
   test("the ladder climbs in odds and falls in probability, by construction", () => {
@@ -148,13 +190,13 @@ describe("the slip's two numbers", () => {
   ];
 
   test("degeneracyScore is the product of 1/prob, and is the reciprocal of the slip's chance", () => {
-    expect(degeneracyScore(legs)).toBeCloseTo(1 / (0.75 * 0.55 * 0.35 * 0.15), 8);
+    expect(degeneracyScore(legs)).toBeCloseTo(1 / (0.4 * 0.25 * 0.15 * 0.075), 8);
     expect(degeneracyScore([])).toBe(1);
     expect(degeneracyScore(legs) * impliedProbability(legs)).toBeCloseTo(1, 8);
   });
 
   test("implied probability is the product of the leg hit rates", () => {
-    expect(impliedProbability(legs)).toBeCloseTo(0.75 * 0.55 * 0.35 * 0.15, 10);
+    expect(impliedProbability(legs)).toBeCloseTo(0.4 * 0.25 * 0.15 * 0.075, 10);
   });
 
   test("degeneracyScore is a game number and is never confused for money", async () => {
@@ -163,7 +205,7 @@ describe("the slip's two numbers", () => {
     // 1. It is dimensionless: it is built from probabilities alone and never
     //    touches a premium, a payout or a collateral amount. Scaling every
     //    premium on the slip by 100 cannot move it.
-    const cheap = [card("bull", "SHARP", 0.35, 0.02), card("bear", "DEGEN", -0.15, 0.01)];
+    const cheap = [card("bull", "SHARP", 0.15, 0.02), card("bear", "DEGEN", -0.07, 0.01)];
     const dear = cheap.map((c) => ({ ...c, premium: c.premium * 100 }));
     expect(degeneracyScore(dear)).toBe(degeneracyScore(cheap));
     // …where `basketPayoff`, which IS money, moves by exactly that premium.
@@ -234,9 +276,9 @@ describe("the loud line and the bands", () => {
 
     // The three figures written into LOUD_BELOW's docblock, checked against the
     // function so a reworded comment cannot outlive the constant.
-    expect(loudMidpointFor(2)).toBeCloseTo(0.316228, 6);
-    expect(loudMidpointFor(3)).toBeCloseTo(0.464159, 6);
-    expect(loudMidpointFor(4)).toBeCloseTo(0.562341, 6);
+    expect(loudMidpointFor(2)).toBeCloseTo(0.083666, 6);
+    expect(loudMidpointFor(3)).toBeCloseTo(0.191293, 6);
+    expect(loudMidpointFor(4)).toBeCloseTo(0.289251, 6);
 
     // Rising, not falling: the FOUR-leg slip is the one that trips first, which
     // is the counter-intuitive half of the whole relationship.
@@ -265,11 +307,24 @@ describe("the loud line and the bands", () => {
    * **The guard.** This is the test that has to stop the next person.
    *
    * It reads SAFE's midpoint out of the CURRENT `TIER_BANDS` and asks whether an
-   * all-SAFE slip would go loud at 2, 3 and 4 legs. Today it would not, because
-   * SAFE's midpoint is 0.75 and the roots are 0.3162 / 0.4642 / 0.5623. Nothing
-   * about that is chosen — it is where the band happens to sit — and re-cutting
-   * the ladder onto the venue's real |delta| range (the book stops at 0.50) pulls
-   * that midpoint down through two of the three roots.
+   * all-SAFE slip would go loud at 2, 3 and 4 legs. It fired exactly as designed
+   * when the ladder was re-cut, and what it caught is worth keeping in front of
+   * whoever moves either constant next:
+   *
+   *  - `LOUD_BELOW` was `0.1`. A four-leg all-one-tier slip stays quiet there
+   *    only if its midpoint exceeds `0.1 ^ (1/4) = 0.5623`.
+   *  - The venue lists only out-of-the-money vanillas, so the largest listed
+   *    `|delta|` is 0.49 — and a band's midpoint can never exceed the largest
+   *    delta the band is able to hold.
+   *  - Therefore **no cut of `TIER_BANDS` onto this book could have kept an
+   *    all-SAFE four-legger quiet at `LOUD_BELOW = 0.1`.** It was not a
+   *    near-miss to be tuned around; it was arithmetically out of reach.
+   *
+   * So `LOUD_BELOW` moved, to 0.007, and the assertion below is unchanged — the
+   * same question, answering `false` again for a reason that is now chosen
+   * rather than coincidental. The failure message that laid out the trade-off is
+   * kept and re-aimed: if this ever fires again it fires with the derivation
+   * that resolves it, not with a suggestion to pick a number.
    */
   test("an all-SAFE slip is never loud at any legal leg count", () => {
     const offenders = SLIP_LEG_COUNTS.filter((n) => wouldGoLoud("SAFE", n));
@@ -292,16 +347,21 @@ describe("the loud line and the bands", () => {
             "WHY: loud is `impliedProbability(legs) < LOUD_BELOW`, and implied",
             "probability is the PRODUCT of the legs' band midpoints. So a tier goes",
             "loud at n legs once its midpoint falls below the n-th root of",
-            "LOUD_BELOW. At LOUD_BELOW = 0.1 those roots are:",
+            `LOUD_BELOW. At LOUD_BELOW = ${LOUD_BELOW} those roots are:`,
             ...SLIP_LEG_COUNTS.map((n) => `    ${n} legs   ${loudMidpointFor(n).toFixed(6)}`),
             `SAFE's midpoint ${mid} clears ${SLIP_LEG_COUNTS.filter((n) => !wouldGoLoud("SAFE", n)).join(", ") || "none"} of them.`,
             "More legs is a HIGHER bar, so the long slips break first.",
             "",
-            "THE TRADE-OFF, which is a real one and not a formality:",
-            "  · Lower LOUD_BELOW so the roots drop under the new SAFE midpoint,",
-            "    and the alarm stops firing on safe slips — but it also stops",
-            "    firing on some genuinely long shots that trip it now.",
-            `    On the ladder as it currently stands ${(() => {
+            "THE WINDOW, derived from the ladder rather than a matter of taste:",
+            `  · Upper bound  ${allOneTierProbability("SAFE", Math.max(...SLIP_LEG_COUNTS))} — four SAFE legs. LOUD_BELOW must sit`,
+            "    at or under this, or the alarm fires on the safest slip there is.",
+            `  · Lower bound  ${allOneTierProbability("DEGEN", Math.min(...SLIP_LEG_COUNTS))} — two DEGEN legs. LOUD_BELOW must sit`,
+            "    strictly above this, or a pair of lottery tickets goes quiet.",
+            "  An EMPTY window means the bands are the thing to move, not this",
+            "  constant: it says the ladder can no longer tell its own safest slip",
+            "  apart from its own longest shot.",
+            "",
+            `On the ladder as it currently stands ${(() => {
               let n = 0;
               let all = 0;
               for (const c of SLIP_LEG_COUNTS) {
@@ -311,14 +371,13 @@ describe("the loud line and the bands", () => {
               }
               return `${n} of ${all}`;
             })()} possible slips are loud;`,
-            "    that ratio is itself a reading on how far the ladder moved.",
-            "  · Or leave LOUD_BELOW and accept that an all-SAFE parlay is, on the",
-            "    new ladder, genuinely a sub-10% bet — in which case the violet is",
-            "    honest and this test should be updated to say so, deliberately.",
+            "that ratio reads how selective the alarm still is. Pick the value in",
+            "the window that keeps it near where it was, and check that no",
+            "achievable slip probability lands exactly ON the new line.",
             "",
-            "LOUD_BELOW (src/engine/parlay.ts) is the likely fix. Do NOT silence",
-            "this test by deleting it; the whole point is that the two constants",
-            "cannot move independently. Read LOUD_BELOW's docblock first.",
+            "LOUD_BELOW (src/engine/parlay.ts) is the fix and its docblock carries",
+            "this derivation in full. Do NOT silence this test by deleting it; the",
+            "whole point is that the two constants cannot move independently.",
             "",
           ].join("\n");
 
@@ -327,35 +386,94 @@ describe("the loud line and the bands", () => {
     for (const n of SLIP_LEG_COUNTS) expect(wouldGoLoud("SAFE", n)).toBe(false);
   });
 
-  test("the trap is arithmetic, not a hunch: a SAFE midpoint near 0.45 flips 3 and 4 legs", () => {
-    // The bands are NOT touched. This is the same product `summarize` computes,
-    // over the midpoint a ladder cut on the venue's real range (|delta| out to
-    // 0.50) would produce, so the docblock's claim is checkable rather than
-    // asserted. It is the reason the guard above exists and it is why the guard
-    // covers 2 as well as 3 and 4: two legs survives the move.
-    const hypothetical = 0.45;
-    const probAt = (n: number) => {
-      let p = 1;
-      for (let i = 0; i < n; i++) p *= hypothetical;
-      return p;
-    };
-    expect(isLoud(probAt(2))).toBe(false); // 0.2025
-    expect(isLoud(probAt(3))).toBe(true); //  0.091125
-    expect(isLoud(probAt(4))).toBe(true); //  0.041006
-    expect(probAt(3)).toBeCloseTo(0.091125, 9);
+  /**
+   * The other half of the guard, and the half that was missing.
+   *
+   * The old pair was "SAFE must be quiet" plus a hypothetical showing a lower
+   * SAFE midpoint breaking it. That let `LOUD_BELOW` be dragged arbitrarily far
+   * DOWN to satisfy the first assertion — at `LOUD_BELOW = 0` nothing is ever
+   * loud and the guard above passes perfectly. The alarm would have gone silent
+   * rather than wrong, which is the failure a one-sided test cannot see, and it
+   * is a live risk precisely while somebody is under pressure to make the guard
+   * green again.
+   *
+   * So the window is pinned from BOTH ends, and both ends are read out of
+   * `TIER_BANDS` through {@link wouldGoLoud} rather than typed in.
+   */
+  test("the loud window is closed at both ends: SAFE quiet, DEGEN loud, always", () => {
+    for (const n of SLIP_LEG_COUNTS) {
+      expect(wouldGoLoud("SAFE", n)).toBe(false);
+      expect(wouldGoLoud("DEGEN", n)).toBe(true);
+    }
+    // The same thing as arithmetic, so the window itself is checkable: the line
+    // sits strictly above the loudest two-leg slip and at or below the quietest
+    // four-leg one.
+    const floor = allOneTierProbability("DEGEN", Math.min(...SLIP_LEG_COUNTS));
+    const ceil = allOneTierProbability("SAFE", Math.max(...SLIP_LEG_COUNTS));
+    expect(LOUD_BELOW).toBeGreaterThan(floor);
+    expect(LOUD_BELOW).toBeLessThanOrEqual(ceil);
+    // 0.005625 < 0.007 ≤ 0.0256, worked by hand as well as derived.
+    expect(floor).toBeCloseTo(0.005625, 10);
+    expect(ceil).toBeCloseTo(0.0256, 10);
 
-    // And today's midpoint clears all three, which is the state the guard pins.
-    expect(tierProb("SAFE")).toBe(0.75);
+    // And the line does not sit ON an achievable slip probability. A threshold a
+    // real slip lands exactly on is one float hair from flipping that slip's
+    // colour, and `<` versus `<=` silently becomes a rendering decision.
+    for (const n of SLIP_LEG_COUNTS) {
+      for (const tuple of tierTuples(n)) {
+        expect(tuple.reduce((p, t) => p * tierProb(t), 1)).not.toBe(LOUD_BELOW);
+      }
+    }
+  });
+
+  /**
+   * The claim `LOUD_BELOW`'s docblock makes about why it HAD to move, checked
+   * rather than asserted.
+   *
+   * This replaces a test that showed a hypothetical SAFE midpoint of 0.45
+   * tripping the old 0.1 line. The hypothetical is history — the real midpoint
+   * is 0.40 — and the general statement underneath it is the part worth pinning:
+   * at `LOUD_BELOW = 0.1` the four-leg bar is 0.5623, which is above every
+   * `|delta|` this venue lists, so no ladder cut on this book could have
+   * satisfied the guard above while that constant stood.
+   */
+  test("no ladder cut on this book could have kept LOUD_BELOW at 0.1", () => {
+    const OLD_LOUD_BELOW = 0.1;
+    const MAX_LISTED_DELTA = 0.49; // measured live, 2026-09-05 — see TIER_BANDS
+
+    const barAt4 = OLD_LOUD_BELOW ** (1 / 4);
+    expect(barAt4).toBeCloseTo(0.562341, 6);
+    // The impossibility, in one line: the bar sits above the whole book.
+    expect(barAt4).toBeGreaterThan(MAX_LISTED_DELTA);
+
+    // A band's midpoint cannot exceed the largest delta it can contain, so no
+    // band cut on this book reaches the bar either. SAFE's is the largest
+    // midpoint the ladder has and it is nowhere near.
+    expect(tierProb("SAFE")).toBeLessThan(barAt4);
+    expect(TIER_BANDS.SAFE[1]).toBeLessThanOrEqual(0.5);
+
+    // And the constant did move, which is what makes the guard above pass for a
+    // reason rather than by luck.
+    expect(LOUD_BELOW).toBeLessThan(OLD_LOUD_BELOW);
     for (const n of SLIP_LEG_COUNTS) expect(tierProb("SAFE")).toBeGreaterThan(loudMidpointFor(n));
   });
 
-  test("today's loud set is unchanged: every slip that was loud still is, and no other", () => {
-    // The behaviour pin behind the refactor. `loud` moved from an inline
-    // `prob < LOUD_BELOW` to `isLoud(prob)`; this enumerates the entire space of
-    // seeded slips — 4^2 + 4^3 + 4^4 = 336 of them — and checks both that the
-    // predicate still equals the comparison and that the exact COUNT of loud
-    // slips at each leg count is what it was.
-    const frozen: Record<number, number> = { 2: 5, 3: 44, 4: 225 };
+  test("the loud set is pinned by count at every leg count, and by name at the ends", () => {
+    // The behaviour pin. `loud` is `isLoud(prob)` and nothing else; this
+    // enumerates the entire space of seeded slips — 4^2 + 4^3 + 4^4 = 336 of
+    // them — and checks both that the predicate still equals the comparison and
+    // that the COUNT of loud slips at each leg count is what it was measured to
+    // be. A count catches a band or a threshold moving by a hair; the named
+    // endpoints below catch one moving by a mile.
+    // Re-pinned with the ladder. The TOTAL is unchanged at 274 of 336, and that
+    // is not a coincidence: LOUD_BELOW was chosen inside its derived window at
+    // the point that keeps the alarm exactly as selective as it was (see its
+    // docblock). The per-count split DID move, because the new ladder's
+    // probabilities are lower across the board — short slips escape the line and
+    // long ones catch it.
+    //    old ladder @ 0.1      2: 5   3: 44   4: 225   -> 274
+    //    new ladder @ 0.007    2: 1   3: 32   4: 241   -> 274
+    const frozen: Record<number, number> = { 2: 1, 3: 32, 4: 241 };
     for (const n of SLIP_LEG_COUNTS) {
       const tuples = tierTuples(n);
       expect(tuples).toHaveLength(4 ** n);
@@ -410,7 +528,7 @@ describe("cards", () => {
     expect(legs.map((l) => l.sym)).toEqual(["NVDA", "AAPL", "TSLA"]);
     expect(legs.map((l) => l.tier)).toEqual(["SHARP", "SAFE", "DEGEN"]);
     expect(legs.map((l) => l.dir)).toEqual(["over", "under", "over"]);
-    expect(degeneracyScore(legs)).toBeCloseTo(1 / (0.35 * 0.75 * 0.15), 8);
+    expect(degeneracyScore(legs)).toBeCloseTo(1 / (0.15 * 0.4 * 0.075), 8);
     expect(slipLabel(legs)).toBe("SHARP↑ SAFE↓ DEGEN↑");
   });
 
@@ -546,17 +664,17 @@ describe("cardsForSlice", () => {
 
   test("a card is built from the row whose |delta| is inside its band", () => {
     const by = deal([
-      row({ type: "CALL", strike: 1800, delta: 0.72, ask: 0.09 }), // SAFE
-      row({ type: "CALL", strike: 2000, delta: 0.5, ask: 0.06 }), // EVEN
-      row({ type: "CALL", strike: 2300, delta: 0.3, ask: 0.03 }), // SHARP
-      row({ type: "CALL", strike: 2800, delta: 0.1, ask: 0.01 }), // DEGEN
+      row({ type: "CALL", strike: 1800, delta: 0.42, ask: 0.09 }), // SAFE
+      row({ type: "CALL", strike: 2000, delta: 0.25, ask: 0.06 }), // EVEN
+      row({ type: "CALL", strike: 2300, delta: 0.15, ask: 0.03 }), // SHARP
+      row({ type: "CALL", strike: 2800, delta: 0.07, ask: 0.01 }), // DEGEN
     ]);
     expect(by.get("safe-bull")?.strikeAt).toBe(1800);
     expect(by.get("even-bull")?.strikeAt).toBe(2000);
     expect(by.get("sharp-bull")?.strikeAt).toBe(2300);
     expect(by.get("degen-bull")?.strikeAt).toBe(2800);
     // The probability on the card is the option's own delta, not the midpoint.
-    expect(by.get("safe-bull")?.prob).toBeCloseTo(0.72, 10);
+    expect(by.get("safe-bull")?.prob).toBeCloseTo(0.42, 10);
     // Calls are bull cards only. Nothing bearish was dealt.
     for (const c of PARLAY_CARDS.filter((x) => x.stance === "bear")) {
       expect(by.get(c.id)).toBeNull();
@@ -564,24 +682,24 @@ describe("cardsForSlice", () => {
   });
 
   test("a bear card buys a put, and reads the put's |delta|", () => {
-    const by = deal([row({ type: "PUT", strike: 1700, delta: -0.3, ask: 0.02 })]);
+    const by = deal([row({ type: "PUT", strike: 1700, delta: -0.15, ask: 0.02 })]);
     expect(by.get("sharp-bear")?.strikeAt).toBe(1700);
-    expect(by.get("sharp-bear")?.prob).toBeCloseTo(0.3, 10);
+    expect(by.get("sharp-bear")?.prob).toBeCloseTo(0.15, 10);
     expect(by.get("sharp-bull")).toBeNull();
   });
 
   test("the band edges are enforced half-open, on live rows", () => {
-    // 0.65 is SAFE's floor — in. 0.6499 is EVEN's ceiling side — out of SAFE.
-    const at = deal([row({ strike: 1900, delta: "0.6500", ask: 0.08 })]);
+    // 0.30 is SAFE's floor — in. 0.2999 is EVEN's ceiling side — out of SAFE.
+    const at = deal([row({ strike: 1900, delta: "0.3000", ask: 0.08 })]);
     expect(at.get("safe-bull")).not.toBeNull();
     expect(at.get("even-bull")).toBeNull();
 
-    const below = deal([row({ strike: 1900, delta: "0.6499", ask: 0.08 })]);
+    const below = deal([row({ strike: 1900, delta: "0.2999", ask: 0.08 })]);
     expect(below.get("safe-bull")).toBeNull();
     expect(below.get("even-bull")).not.toBeNull();
 
     // Both ends of the whole ladder are excluded: nothing is dealt at all.
-    for (const d of ["0.0499", "0.8500", "0.9700"]) {
+    for (const d of ["0.0499", "0.5000", "0.9700"]) {
       const out = deal([row({ strike: 1900, delta: d, ask: 0.08 })]);
       expect([...out.values()].every((c) => c === null)).toBe(true);
     }
@@ -589,22 +707,22 @@ describe("cardsForSlice", () => {
 
   test("the lowest ask wins among rows in the same band", () => {
     const by = deal([
-      row({ strike: 2200, delta: 0.32, ask: 0.055 }),
-      row({ strike: 2250, delta: 0.3, ask: 0.021 }), // cheapest
-      row({ strike: 2300, delta: 0.28, ask: 0.049 }),
+      row({ strike: 2200, delta: 0.17, ask: 0.055 }),
+      row({ strike: 2250, delta: 0.15, ask: 0.021 }), // cheapest
+      row({ strike: 2300, delta: 0.13, ask: 0.049 }),
     ]);
     expect(by.get("sharp-bull")?.premium).toBeCloseTo(0.021, 10);
     expect(by.get("sharp-bull")?.strikeAt).toBe(2250);
   });
 
   test("a row with no fillable order is display-only and is never dealt", () => {
-    const by = deal([row({ strike: 2250, delta: 0.3, ask: 0.02, fillable: false })]);
+    const by = deal([row({ strike: 2250, delta: 0.15, ask: 0.02, fillable: false })]);
     expect(by.get("sharp-bull")).toBeNull();
 
     // …and the cheapest unfillable row does not beat a fillable one.
     const mixed = deal([
-      row({ strike: 2250, delta: 0.3, ask: 0.001, fillable: false }),
-      row({ strike: 2300, delta: 0.3, ask: 0.04 }),
+      row({ strike: 2250, delta: 0.15, ask: 0.001, fillable: false }),
+      row({ strike: 2300, delta: 0.15, ask: 0.04 }),
     ]);
     expect(mixed.get("sharp-bull")?.strikeAt).toBe(2300);
     expect(mixed.get("sharp-bull")?.premium).toBeCloseTo(0.04, 10);
@@ -616,14 +734,14 @@ describe("cardsForSlice", () => {
 
   test("the slice's window and expiry are both hard filters", () => {
     // Outside the strike window.
-    expect(deal([row({ strike: 6000, delta: 0.3, ask: 0.02 })]).get("sharp-bull")).toBeNull();
-    expect(deal([row({ strike: 500, delta: 0.3, ask: 0.02 })]).get("sharp-bull")).toBeNull();
+    expect(deal([row({ strike: 6000, delta: 0.15, ask: 0.02 })]).get("sharp-bull")).toBeNull();
+    expect(deal([row({ strike: 500, delta: 0.15, ask: 0.02 })]).get("sharp-bull")).toBeNull();
     // Inclusive at both edges — 8dp integer comparison, no float round trip.
-    expect(deal([row({ strike: 1000, delta: 0.3, ask: 0.02 })]).get("sharp-bull")).not.toBeNull();
-    expect(deal([row({ strike: 5000, delta: 0.3, ask: 0.02 })]).get("sharp-bull")).not.toBeNull();
+    expect(deal([row({ strike: 1000, delta: 0.15, ask: 0.02 })]).get("sharp-bull")).not.toBeNull();
+    expect(deal([row({ strike: 5000, delta: 0.15, ask: 0.02 })]).get("sharp-bull")).not.toBeNull();
     // A different option expiry is a different contract.
     expect(
-      deal([row({ strike: 2250, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY })]).get("sharp-bull"),
+      deal([row({ strike: 2250, delta: 0.15, ask: 0.02, expiry: OTHER_EXPIRY })]).get("sharp-bull"),
     ).toBeNull();
   });
 
@@ -632,19 +750,19 @@ describe("cardsForSlice", () => {
     // enough to refuse it, because pricing a leg off a spread's premium buys a
     // completely different payoff.
     const byStructure = deal([
-      row({ strike: 2250, delta: 0.3, ask: 0.02, structure: "SPREAD" }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02, structure: "SPREAD" }),
     ]);
     expect(byStructure.get("sharp-bull")).toBeNull();
 
     const byStrikes = deal([
-      row({ strike: 2250, delta: 0.3, ask: 0.02, strikes: ["225000000000", "240000000000"] }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02, strikes: ["225000000000", "240000000000"] }),
     ]);
     expect(byStrikes.get("sharp-bull")).toBeNull();
   });
 
   test("a dead slot is the honest answer, and the grid keeps its shape", () => {
     // A book with one SHARP call and nothing else: seven dead slots, in place.
-    const cards = cardsForSlice([row({ strike: 2250, delta: 0.3, ask: 0.02 })], SLICE, deps);
+    const cards = cardsForSlice([row({ strike: 2250, delta: 0.15, ask: 0.02 })], SLICE, deps);
     const dealt = cards.filter((c) => c !== null);
     expect(dealt).toHaveLength(1);
     expect(cards.filter((c) => c === null)).toHaveLength(7);
@@ -655,24 +773,24 @@ describe("cardsForSlice", () => {
   });
 
   test("mark rides along verbatim when the MM chain named this instrument, and is null otherwise", () => {
-    const withMark = deal([row({ strike: 2250, delta: 0.3, ask: 0.02, mark: "0.0214" })]);
+    const withMark = deal([row({ strike: 2250, delta: 0.15, ask: 0.02, mark: "0.0214" })]);
     expect(withMark.get("sharp-bull")?.mark).toBeCloseTo(0.0214, 10);
-    const without = deal([row({ strike: 2250, delta: 0.3, ask: 0.02 })]);
+    const without = deal([row({ strike: 2250, delta: 0.15, ask: 0.02 })]);
     expect(without.get("sharp-bull")?.mark).toBeNull();
   });
 
   test("a malformed slice deals nothing rather than throwing", () => {
     const bad = { ...SLICE, strikeLo: "not-a-number" };
-    expect(cardsForSlice([row({ strike: 2250, delta: 0.3, ask: 0.02 })], bad, deps).every((c) => c === null)).toBe(true);
+    expect(cardsForSlice([row({ strike: 2250, delta: 0.15, ask: 0.02 })], bad, deps).every((c) => c === null)).toBe(true);
   });
 });
 
 describe("fullLadderSlice — the identity window", () => {
   test("spans every listed strike at the front expiry, and names the ticker", () => {
     const slice = fullLadderSlice("ETH", [
-      row({ strike: 2000, delta: 0.7, ask: 0.05 }),
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
-      row({ type: "PUT", strike: 1800, delta: -0.2, ask: 0.01 }),
+      row({ strike: 2000, delta: 0.42, ask: 0.05 }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
+      row({ type: "PUT", strike: 1800, delta: -0.07, ask: 0.01 }),
     ])!;
     expect(slice.underlying).toBe("ETH");
     expect(slice.expiry).toBe(EXPIRY);
@@ -687,9 +805,9 @@ describe("fullLadderSlice — the identity window", () => {
     // The property that makes it the identity: filtering the chain through its
     // own slice loses nothing. A narrower window is a decision; this is not.
     const rows = [
-      row({ strike: 2000, delta: 0.7, ask: 0.05 }),
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
-      row({ type: "PUT", strike: 1800, delta: -0.2, ask: 0.01 }),
+      row({ strike: 2000, delta: 0.42, ask: 0.05 }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
+      row({ type: "PUT", strike: 1800, delta: -0.07, ask: 0.01 }),
     ];
     const cards = cardsForSlice(rows, fullLadderSlice("ETH", rows)!, deps);
     expect(cards.filter((c) => c !== null)).toHaveLength(3);
@@ -704,8 +822,8 @@ describe("fullLadderSlice — the identity window", () => {
     // the TIE case and the tie-break takes the earlier expiry — the old
     // front-expiry rule surviving where it belongs.
     const slice = fullLadderSlice("ETH", [
-      row({ strike: 3000, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY }),
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ strike: 3000, delta: 0.15, ask: 0.02, expiry: OTHER_EXPIRY }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
     ])!;
     expect(slice.expiry).toBe(EXPIRY);
     expect(slice.strikeHi).toBe(String(2250 * 10 ** PRICE_DECIMALS));
@@ -718,12 +836,12 @@ describe("fullLadderSlice — the identity window", () => {
     // deals 4 — from a date the venue is genuinely quoting.
     const rows = [
       // Front expiry: one lonely SHARP call.
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
       // Back expiry: a card in every tier, on the bull side.
-      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY }),
-      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
-      row({ strike: 2300, delta: 0.3, ask: 0.03, expiry: OTHER_EXPIRY }),
-      row({ strike: 2800, delta: 0.1, ask: 0.01, expiry: OTHER_EXPIRY }),
+      row({ strike: 1800, delta: 0.42, ask: 0.09, expiry: OTHER_EXPIRY }),
+      row({ strike: 2000, delta: 0.25, ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.15, ask: 0.03, expiry: OTHER_EXPIRY }),
+      row({ strike: 2800, delta: 0.07, ask: 0.01, expiry: OTHER_EXPIRY }),
     ];
     const slice = fullLadderSlice("ETH", rows)!;
     expect(slice.expiry).toBe(OTHER_EXPIRY);
@@ -739,11 +857,11 @@ describe("fullLadderSlice — the identity window", () => {
     // across two tiers cover two, and two live cards is a grid where forty
     // stacked in one bucket is still one card and seven dashes.
     const deep = Array.from({ length: 40 }, (_, i) =>
-      row({ strike: 2800 + i * 10, delta: 0.1, ask: 0.01 }),
+      row({ strike: 2800 + i * 10, delta: 0.07, ask: 0.01 }),
     );
     const spread = [
-      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
-      row({ strike: 2300, delta: 0.3, ask: 0.03, expiry: OTHER_EXPIRY }),
+      row({ strike: 2000, delta: 0.25, ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.15, ask: 0.03, expiry: OTHER_EXPIRY }),
     ];
     expect(fullLadderSlice("ETH", [...deep, ...spread])!.expiry).toBe(OTHER_EXPIRY);
   });
@@ -754,10 +872,10 @@ describe("fullLadderSlice — the identity window", () => {
     // band. None of the four can become a card, so the front expiry's single
     // real SHARP call wins on coverage 1 to 0.
     const slice = fullLadderSlice("ETH", [
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
-      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY, fillable: false }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
+      row({ strike: 1800, delta: 0.42, ask: 0.09, expiry: OTHER_EXPIRY, fillable: false }),
       row({ strike: 2000, delta: "—", ask: 0.06, expiry: OTHER_EXPIRY }),
-      row({ strike: 2300, delta: 0.3, ask: 0, expiry: OTHER_EXPIRY }),
+      row({ strike: 2300, delta: 0.15, ask: 0, expiry: OTHER_EXPIRY }),
       row({ strike: 2800, delta: 0.97, ask: 0.01, expiry: OTHER_EXPIRY }),
     ])!;
     expect(slice.expiry).toBe(EXPIRY);
@@ -768,17 +886,17 @@ describe("fullLadderSlice — the identity window", () => {
     // depended on iteration order would break that on one machine, mid-match,
     // silently — so it is asserted rather than assumed.
     const rows = [
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
-      row({ strike: 1800, delta: 0.72, ask: 0.09, expiry: OTHER_EXPIRY }),
-      row({ strike: 2000, delta: 0.5, ask: 0.06, expiry: OTHER_EXPIRY }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
+      row({ strike: 1800, delta: 0.42, ask: 0.09, expiry: OTHER_EXPIRY }),
+      row({ strike: 2000, delta: 0.25, ask: 0.06, expiry: OTHER_EXPIRY }),
     ];
     const want = fullLadderSlice("ETH", rows);
     expect(fullLadderSlice("ETH", [...rows].reverse())).toEqual(want!);
     // A tie is stable under reordering too, and resolves to the earlier expiry
     // from either direction.
     const tied = [
-      row({ strike: 2250, delta: 0.3, ask: 0.02 }),
-      row({ strike: 3000, delta: 0.3, ask: 0.02, expiry: OTHER_EXPIRY }),
+      row({ strike: 2250, delta: 0.15, ask: 0.02 }),
+      row({ strike: 3000, delta: 0.15, ask: 0.02, expiry: OTHER_EXPIRY }),
     ];
     expect(fullLadderSlice("ETH", tied)!.expiry).toBe(EXPIRY);
     expect(fullLadderSlice("ETH", [...tied].reverse())!.expiry).toBe(EXPIRY);
@@ -790,7 +908,7 @@ describe("fullLadderSlice — the identity window", () => {
     // at that expiry, so it stays inside the bounds and filtering the chain
     // through its own slice loses nothing.
     const rows = [
-      row({ strike: 2000, delta: 0.5, ask: 0.06 }),
+      row({ strike: 2000, delta: 0.25, ask: 0.06 }),
       row({ strike: 3200, delta: "—", ask: 0.01 }),
     ];
     const slice = fullLadderSlice("ETH", rows)!;
@@ -803,17 +921,17 @@ describe("fullLadderSlice — the identity window", () => {
     // null here is what keeps the offline board on the seeded path.
     expect(fullLadderSlice("ETH", [])).toBeNull();
     expect(
-      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.3, ask: 0.02, fillable: false })]),
+      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.15, ask: 0.02, fillable: false })]),
     ).toBeNull();
     // A spread has no single line to bet on, and a RANGER is not a vanilla —
     // neither may set the edge of a window it could never be dealt inside.
     expect(
       fullLadderSlice("ETH", [
-        row({ strike: 2250, delta: 0.3, ask: 0.02, strikes: ["225000000000", "240000000000"] }),
+        row({ strike: 2250, delta: 0.15, ask: 0.02, strikes: ["225000000000", "240000000000"] }),
       ]),
     ).toBeNull();
     expect(
-      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.3, ask: 0.02, structure: "SPREAD" })]),
+      fullLadderSlice("ETH", [row({ strike: 2250, delta: 0.15, ask: 0.02, structure: "SPREAD" })]),
     ).toBeNull();
   });
 });
@@ -823,7 +941,7 @@ describe("multipleAt", () => {
     // ETH spot 2000, +25% reference ⇒ settlement 2500. A 2100 call is worth
     // 400 there; at a $20 premium that is ×20. Worked by hand, then asserted
     // against the function.
-    const c = card("bull", "SHARP", 0.3, 20, 2100);
+    const c = card("bull", "SHARP", 0.15, 20, 2100);
     expect(multipleAt(c, SPOT, REFERENCE_MOVE, calc)).toBeCloseTo(400 / 20, 8);
     // And it is exactly `payout / premium`, with the payout coming back in
     // collateral decimals.
@@ -841,12 +959,12 @@ describe("multipleAt", () => {
 
   test("a bear card reads the move in its own direction", () => {
     // Settlement 1500. A 1700 put is worth 200 there; at $10 that is ×20.
-    const c = card("bear", "SHARP", -0.3, 10, 1700);
+    const c = card("bear", "SHARP", -0.15, 10, 1700);
     expect(multipleAt(c, SPOT, REFERENCE_MOVE, calc)).toBeCloseTo(200 / 10, 8);
   });
 
   test("it moves with both inputs — which is why it is never stored", () => {
-    const c = card("bull", "SHARP", 0.3, 20, 2100);
+    const c = card("bull", "SHARP", 0.15, 20, 2100);
     const wider = multipleAt(c, SPOT, 0.5, calc);
     const tighter = multipleAt(c, SPOT, 0.1, calc);
     expect(wider).toBeGreaterThan(multipleAt(c, SPOT, REFERENCE_MOVE, calc));
@@ -860,14 +978,14 @@ describe("multipleAt", () => {
 
   test("an out-of-the-money finish is ×0, and a degenerate input is 0 rather than a throw", () => {
     // A 2600 call with spot at 2000 does not reach 2500.
-    expect(multipleAt(card("bull", "DEGEN", 0.1, 1, 2600), SPOT, REFERENCE_MOVE, calc)).toBe(0);
-    expect(multipleAt(card("bull", "SHARP", 0.3, 0, 2100), SPOT, REFERENCE_MOVE, calc)).toBe(0);
-    expect(multipleAt(card("bull", "SHARP", 0.3, 20, 2100), 0, REFERENCE_MOVE, calc)).toBe(0);
-    expect(multipleAt(card("bull", "SHARP", 0.3, 20, 2100), SPOT, Number.NaN, calc)).toBe(0);
+    expect(multipleAt(card("bull", "DEGEN", 0.07, 1, 2600), SPOT, REFERENCE_MOVE, calc)).toBe(0);
+    expect(multipleAt(card("bull", "SHARP", 0.15, 0, 2100), SPOT, REFERENCE_MOVE, calc)).toBe(0);
+    expect(multipleAt(card("bull", "SHARP", 0.15, 20, 2100), 0, REFERENCE_MOVE, calc)).toBe(0);
+    expect(multipleAt(card("bull", "SHARP", 0.15, 20, 2100), SPOT, Number.NaN, calc)).toBe(0);
   });
 
   test("cardsForSlice fills `payoutMult` with exactly what multipleAt returns", () => {
-    const r = row({ strike: 2100, delta: 0.3, ask: 20 });
+    const r = row({ strike: 2100, delta: 0.13, ask: 20 });
     const dealt = deal([r]).get("sharp-bull")!;
     expect(dealt.payoutMult).toBeCloseTo(multipleAt(dealt, SPOT, REFERENCE_MOVE, calc), 10);
     expect(dealt.payoutMult).toBeCloseTo(400 / 20, 8);
@@ -884,14 +1002,14 @@ describe("multipleAt", () => {
    * ticker's `tierOdds` sits in the next grid down.
    */
   test("a dealt card carries `odds` and `payoutMult` as two separate numbers", () => {
-    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    const dealt = deal([row({ strike: 2100, delta: 0.13, ask: 20 })]).get("sharp-bull")!;
     // `odds` is the same construction the seeded card uses, over the option's
     // own delta rather than a band midpoint.
-    expect(dealt.odds).toBeCloseTo(oddsOf(0.3), 10);
-    expect(dealt.odds).toBeCloseTo(1 / 0.3, 10);
+    expect(dealt.odds).toBeCloseTo(oddsOf(0.13), 10);
+    expect(dealt.odds).toBeCloseTo(1 / 0.13, 10);
     expect(dealt.odds * dealt.prob).toBeCloseTo(1, 10);
-    // …and it is NOT the payout multiple. ×3.33 against ×20 here; against a
-    // real DEGEN ask it is ×4 against ×430.
+    // …and it is NOT the payout multiple. ×6.67 against ×20 here; against a
+    // real DEGEN ask it is ×13 against ×430.
     expect(dealt.payoutMult).toBeCloseTo(20, 8);
     expect(dealt.odds).not.toBeCloseTo(dealt.payoutMult, 1);
 
@@ -920,7 +1038,7 @@ describe("multipleAt", () => {
    * `WIN $` face in `test/detail.test.ts`.
    */
   test("legFromLiveCard puts the card's odds on the leg, never its payout multiple", () => {
-    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    const dealt = deal([row({ strike: 2100, delta: 0.13, ask: 20 })]).get("sharp-bull")!;
     const seeded = legForCard("ETH", PARLAY_CARDS.find((c) => c.id === "sharp-bull")!);
     const leg = legFromLiveCard(seeded, dealt, SPOT);
 
@@ -930,7 +1048,10 @@ describe("multipleAt", () => {
     // one glyph on one screen means one thing.
     expect(leg.mult * leg.prob).toBeCloseTo(1, 10);
     // And it is not the seeded number either: the option's delta, not the band.
-    expect(leg.prob).toBeCloseTo(0.3, 10);
+    // 0.13, deliberately inside SHARP's [0.10, 0.20) band but NOT on its 0.15
+    // midpoint — otherwise the two assertions below would agree by accident and
+    // the test would stop distinguishing the live path from the seeded one.
+    expect(leg.prob).toBeCloseTo(0.13, 10);
     expect(leg.mult).not.toBeCloseTo(tierOdds("SHARP"), 3);
   });
 
@@ -941,7 +1062,7 @@ describe("multipleAt", () => {
    * leg carried `multipleAt`.
    */
   test("a mixed slip's leg multiples multiply into the slip's own multiple", () => {
-    const dealt = deal([row({ strike: 2100, delta: 0.3, ask: 20 })]).get("sharp-bull")!;
+    const dealt = deal([row({ strike: 2100, delta: 0.13, ask: 20 })]).get("sharp-bull")!;
     const live = legFromLiveCard(
       legForCard("ETH", PARLAY_CARDS.find((c) => c.id === "sharp-bull")!),
       dealt,
@@ -988,7 +1109,7 @@ describe("the strikes-length guard", () => {
     };
     // A well-formed card never reaches the throw's cause — it reaches the
     // injected function, which is the seam the guard protects.
-    expect(() => multipleAt(card("bull", "SHARP", 0.3, 20, 2100), SPOT, REFERENCE_MOVE, thrower)).toThrow(
+    expect(() => multipleAt(card("bull", "SHARP", 0.15, 20, 2100), SPOT, REFERENCE_MOVE, thrower)).toThrow(
       "INVALID_PARAMS",
     );
   });
@@ -996,9 +1117,9 @@ describe("the strikes-length guard", () => {
 
 describe("basketPayoff", () => {
   const legs = [
-    card("bull", "SHARP", 0.3, 20, 2100),
-    card("bull", "DEGEN", 0.1, 5, 2400),
-    card("bear", "EVEN", -0.5, 30, 1900),
+    card("bull", "SHARP", 0.15, 20, 2100),
+    card("bull", "DEGEN", 0.07, 5, 2400),
+    card("bear", "EVEN", -0.25, 30, 1900),
   ];
 
   test("a basket pays the SUM of its legs minus the total premium, never the product", () => {

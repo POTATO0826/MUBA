@@ -314,20 +314,49 @@ const HOT = 5;
 /**
  * Below this implied probability, ALL LAND prints a decimal place.
  *
- * `0.1` — the same digits as `LOUD_BELOW`, and **deliberately not that
- * constant.** This one is a legibility rule: under 10% a whole-percent figure
- * starts rounding real differences to the same "8%", and a slip at 4.1% and one
- * at 0.4% must not read alike. `LOUD_BELOW` is a design call about when a slip
- * is a long shot worth painting violet. They coincide today; nothing requires
- * them to, and importing one to serve the other would make a future move of the
- * alarm line silently restyle a number's precision.
+ * `0.1` — a legibility rule, and **deliberately not `LOUD_BELOW`.** Under 10% a
+ * whole-percent figure starts rounding real differences to the same "8%", and a
+ * slip at 4.1% and one at 0.4% must not read alike. `LOUD_BELOW` is a design
+ * call about when a slip is a long shot worth painting violet. These two used to
+ * carry the same digits, which read as a link that was never there; the ladder
+ * re-cut moved `LOUD_BELOW` to 0.007 and left this at 0.1, which is the
+ * independence being real rather than merely asserted.
  *
- * Named rather than left inline so the coincidence is a stated one — see
- * `LOUD_BELOW`'s docblock in `src/engine/parlay.ts` for the coupling that
+ * See `LOUD_BELOW`'s docblock in `src/engine/parlay.ts` for the coupling that
  * constant does have (to `TIER_BANDS`, through the leg product) and the guard
  * that holds it.
  */
 const PCT_DECIMAL_BELOW = 0.1;
+
+/**
+ * Below this, one decimal place is not enough either, so ALL LAND switches to
+ * two significant figures.
+ *
+ * The re-cut of `TIER_BANDS` onto the venue's real |delta| range pulled every
+ * band midpoint down — SAFE 0.75 → 0.40, DEGEN 0.15 → 0.075 — and a slip's
+ * chance is the *product* of them, so the whole distribution fell by more than a
+ * decimal order at four legs. The floor moved from `0.15⁴ = 0.0506%` to
+ * `0.075⁴ = 0.0032%`.
+ *
+ * At one decimal place that floor prints **`0.0%`**, and so does a three-leg
+ * all-DEGEN slip at 0.042%, and so does everything else under 0.05%. A dozen
+ * genuinely different slips would have collapsed onto one figure that also reads
+ * as "impossible", on the screen where the player is choosing between them —
+ * which is the exact failure `PCT_DECIMAL_BELOW` above exists to prevent, one
+ * decimal place further down. Two significant figures rather than a third fixed
+ * decimal, because the interesting range now spans two orders of magnitude and a
+ * fixed count is wrong at one end of it: `0.56%`, `0.042%`, `0.0032%`.
+ */
+const PCT_SIGFIG_BELOW = 0.01;
+
+/** ALL LAND's figure. Whole percent down to 10%, one decimal down to 1%, two
+ *  significant figures below that — see the two constants above. */
+function allLandText(prob: number): string {
+  const pct = prob * 100;
+  if (prob >= PCT_DECIMAL_BELOW) return `${pct.toFixed(0)}%`;
+  if (prob >= PCT_SIGFIG_BELOW) return `${pct.toFixed(1)}%`;
+  return `${Number(pct.toPrecision(2))}%`;
+}
 
 /**
  * The pick phase's bed — the hero-select music.
@@ -972,7 +1001,7 @@ export function ParlayPick(p: ParlayPickProps) {
 
             <div style={sx(`display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid ${C.border}`)}>
               <Stat label="ODDS" value={p.allPicked ? `×${s.mult.toFixed(2)}` : "—"} color={s.loud ? C.violet : C.accent} testid="combined-mult" />
-              <Stat label="ALL LAND" value={p.allPicked ? `${(s.prob * 100).toFixed(s.prob < PCT_DECIMAL_BELOW ? 1 : 0)}%` : "—"} color={s.loud ? C.violet : C.text} testid="implied-prob" />
+              <Stat label="ALL LAND" value={p.allPicked ? allLandText(s.prob) : "—"} color={s.loud ? C.violet : C.text} testid="implied-prob" />
               <Stat label="IF IT PAYS" value={p.allPicked ? s.potentialPoints.toLocaleString("en-US") : "—"} testid="potential-points" />
             </div>
 
@@ -1219,11 +1248,62 @@ function DeadSlot({
   );
 }
 
+/**
+ * The widest a stat value can be before 15px monospace stops fitting on one
+ * line, and the arithmetic behind it.
+ *
+ * The slip panel is a fixed `340px` column holding three equal cells, each with
+ * `14px` of padding on both sides: `(340 − 6×14) / 3 = 85.3px` of content. A
+ * monospace advance is very close to `0.6em`, so at 15px a character costs 9px
+ * and **nine of them is the whole cell**.
+ *
+ * `IF IT PAYS` blew straight past that. It is `stakePoints × degeneracyScore ×
+ * the mode's boost`; `degeneracyScore` is `Π(1/p)`, so the ladder re-cut — every
+ * band midpoint roughly halved — multiplied a four-leg score by `2⁴ = 16`. A
+ * BLITZ lobby at the 999-prize clamp went from a reachable ceiling of
+ * `1,332,000,000` (13 characters, already wrapping) to `21,312,000,000`
+ * (14, wrapping harder). The wrap was live before the re-cut; the re-cut made it
+ * a digit worse and is what got it looked at.
+ */
+const STAT_FIT_CHARS = 9;
+/** `85.3px ÷ 0.6` — the numerator of "what size makes `n` characters fit". */
+const STAT_FIT_PX = 142;
+/** Small enough to be a fallback rather than a design, large enough to read. */
+const STAT_MIN_PX = 9.5;
+const STAT_MAX_PX = 15;
+
+/**
+ * The type size for a stat value: 15px until it would wrap, then exactly small
+ * enough to fit on one line.
+ *
+ * **Shrinking rather than abbreviating is the point.** `21.3B` would fit at any
+ * size, and it would also be the third number on this screen that is not the
+ * number it names — `potentialPoints` is an integer the escrow stake is sized
+ * from, and a rounded stand-in for it is precisely the class of substitution
+ * this repo keeps finding money bugs inside. Nothing is truncated, rounded or
+ * suffixed; the digits get smaller.
+ */
+function statFontPx(value: string): number {
+  if (value.length <= STAT_FIT_CHARS) return STAT_MAX_PX;
+  return Math.max(STAT_MIN_PX, Math.min(STAT_MAX_PX, STAT_FIT_PX / value.length));
+}
+
 function Stat({ label, value, color, testid }: { label: string; value: string; color?: string; testid: string }) {
   return (
     <div style={sx(`padding:12px 14px;border-right:1px solid ${C.line}`)}>
       <div style={sx(`font:500 8.5px/1 ${MONO};letter-spacing:.12em;color:${C.dim}`)}>{label}</div>
-      <div data-testid={testid} style={sx(`margin-top:6px;font:700 15px/1 ${MONO}${color ? `;color:${color}` : ""}`)}>
+      {/* `nowrap` is the belt to `statFontPx`'s braces: the size is computed
+          from a 0.6em advance that is true of every monospace face this app
+          ships and could still be off by a hair on a fallback font, and a
+          hair is enough to break a line. A single line that overflows its cell
+          by 2px is a far smaller defect than a figure silently split across
+          two rows, which is how `1,332,000,000` read before this. */}
+      <div
+        data-testid={testid}
+        style={sx(
+          `margin-top:6px;white-space:nowrap;font:700 ${statFontPx(value)}px/1 ${MONO}${color ? `;color:${color}` : ""}`,
+        )}
+      >
         {value}
       </div>
     </div>

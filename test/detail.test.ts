@@ -74,6 +74,7 @@ import {
   oddsOf,
   slotFor,
   summarize,
+  tierOdds,
   type LiveCard,
 } from "../src/engine/parlay.ts";
 import { OPTIONS_CHIP, SETTLEMENT_NOTE, type OptionBook } from "../src/desk/optionize.ts";
@@ -931,15 +932,19 @@ describe("the live card path — the multiplier's provenance and the dead slot",
   /**
    * Three orders, three tiers, five holes.
    *
-   * SAFE bull (Δ0.70), SHARP bull (Δ0.30) and DEGEN bear (Δ|0.20|) are backed;
+   * SAFE bull (Δ0.42), SHARP bull (Δ0.13) and DEGEN bear (Δ|0.07|) are backed;
    * nothing backs EVEN on either side, SAFE/SHARP bear, or DEGEN bull. That is
    * a completely ordinary shape for a book on Base — one side of a wing is
    * simply not quoted — and it is the shape the dead slot exists for.
    */
   const CHAIN = [
-    liveRow({ type: "CALL", strike: 1900, delta: 0.7, ask: 60 }),
-    liveRow({ type: "CALL", strike: 2100, delta: 0.3, ask: 20 }),
-    liveRow({ type: "PUT", strike: 1850, delta: -0.2, ask: 15 }),
+    liveRow({ type: "CALL", strike: 1900, delta: 0.42, ask: 60 }),
+    // 0.13 is inside SHARP's `[0.10, 0.20)` band and deliberately OFF its 0.15
+    // midpoint: several assertions below distinguish the live card's own odds
+    // from the seeded card's, and equal numbers would make them agree by
+    // accident. (These read 0.70 / 0.30 / 0.20 before the ladder was re-cut.)
+    liveRow({ type: "CALL", strike: 2100, delta: 0.13, ask: 20 }),
+    liveRow({ type: "PUT", strike: 1850, delta: -0.07, ask: 15 }),
   ];
 
   const BOOK: OptionBook = {
@@ -1007,9 +1012,9 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     strikeAt: 2100,
     expiry: "12 SEP",
     expiryAt: EXPIRY,
-    prob: 0.3,
+    prob: 0.13,
     premium: 20,
-    odds: oddsOf(0.3),
+    odds: oddsOf(0.13),
     payoutMult: 0,
     mark: null,
     row: CHAIN[1]!,
@@ -1033,9 +1038,10 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     // …and it is NOT what the screen printed before. `desk/optionize`'s
     // `multiplierFor` reads 0.25 × 2100/2000 ÷ 20 = 0.013, clamped up to its
     // MULT_MIN floor of 1.05 — the hand-rolled ratio plan 6 §9.2 retired. The
-    // seeded fallback (`tierOdds("SHARP")` = 1/0.35) would print ×2.86.
+    // seeded fallback (`tierOdds("SHARP")` = 1/0.15) would print ×6.67.
     expect(payoutOf("sharp-bull")).not.toContain("×1.05");
-    expect(payoutOf("sharp-bull")).not.toContain("×2.86");
+    expect(payoutOf("sharp-bull")).not.toContain(`×${tierOdds("SHARP").toFixed(2)}`);
+    expect(payoutOf("sharp-bull")).not.toContain("×6.67");
 
     // The max loss beside it is the ask itself, which is what a bought option
     // can cost you and not a cent more.
@@ -1070,7 +1076,7 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     // still the seeded card's headline, and it still means fair odds.
     unmount();
     pickScreen();
-    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    expect(payoutOf("sharp-bull")).toBe("×6.67");
     unmount();
   });
 
@@ -1078,16 +1084,16 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     pickScreen(BOOK, "sharp-bull");
     // The ticker header prints the picked card's multiple, directly above a
     // grid that may be live while the next ticker's is seeded. It is
-    // `oddsOf(|delta|)` = 1/0.30 = ×3.33 — NOT `payoutMult` (×20), and not the
-    // seeded band midpoint (×2.86).
+    // `oddsOf(|delta|)` = 1/0.13 = ×7.69 — NOT `payoutMult` (×20), and not the
+    // seeded band midpoint (×6.67).
     const header = container.querySelector('[data-leg-picker="ETH"]')?.textContent ?? "";
-    expect(header).toContain(`×${oddsOf(0.3).toFixed(2)}`);
-    expect(header).toContain("×3.33");
+    expect(header).toContain(`×${oddsOf(0.13).toFixed(2)}`);
+    expect(header).toContain("×7.69");
     expect(header).not.toContain("×20.00");
-    expect(header).not.toContain("×2.86");
+    expect(header).not.toContain("×6.67");
     // And the slip's leg row, which is the column a player adds up.
     const slipLeg = container.querySelector('[data-leg="ETH"]')?.textContent ?? "";
-    expect(slipLeg).toContain("×3.3");
+    expect(slipLeg).toContain("×7.7");
     expect(slipLeg).not.toContain("×20");
     unmount();
   });
@@ -1096,7 +1102,7 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     pickScreen(BOOK);
     const line = container.querySelector('[data-testid="option-ETH:sharp-bull"]')?.textContent ?? "";
     expect(line).toContain("ETH 2,100 CALL");
-    expect(line).toContain("Δ0.30");
+    expect(line).toContain("Δ0.13");
     expect(line).toContain("exp 12 SEP");
     // The convention the multiple was read at, on the card as well as in the
     // engine's docblock — it is a stated convention, not something the market
@@ -1140,8 +1146,8 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     pickScreen();
     expect(container.querySelectorAll("[data-parlay]")).toHaveLength(PARLAY_CARDS.length);
     expect(container.querySelectorAll("[data-parlay-dead]")).toHaveLength(0);
-    // Seeded fair odds on SHARP's band midpoint: 1/0.35 = ×2.86.
-    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    // Seeded fair odds on SHARP's band midpoint: 1/0.15 = ×6.67.
+    expect(payoutOf("sharp-bull")).toBe("×6.67");
     expect(container.querySelector('[data-testid="option-ETH:sharp-bull"]')).toBeNull();
     unmount();
   });
@@ -1160,7 +1166,7 @@ describe("the live card path — the multiplier's provenance and the dead slot",
     pickScreen(unfillable);
     expect(container.querySelectorAll("[data-parlay]")).toHaveLength(PARLAY_CARDS.length);
     expect(container.querySelectorAll("[data-parlay-dead]")).toHaveLength(0);
-    expect(payoutOf("sharp-bull")).toBe("×2.86");
+    expect(payoutOf("sharp-bull")).toBe("×6.67");
     expect(text("book-state-ETH")).toBe("SEEDED");
     unmount();
   });
@@ -1396,8 +1402,10 @@ ${el.innerHTML}`,
     // and the slip.
     expect(shown.length).toBeGreaterThanOrEqual(PARLAY_CARDS.length);
     // Fair odds on a delta are bounded by the tier ladder itself: every band
-    // sits inside [0.05, 0.85), so no `×` anywhere on this screen can be below
-    // ×1.18 or above ×20 — on either path. A payout multiple has no such
+    // sits inside [0.05, 0.50), so no `×` anywhere on this screen can be below
+    // ×2.00 or above ×20 — on either path. (The floor was ×1.18 while SAFE's
+    // band topped out at 0.85; it rose with the re-cut, and it is read out of
+    // `TIER_BANDS` below rather than typed in, so it moved on its own.) A payout multiple has no such
     // ceiling (×430 on the report's live DEGEN card), which is precisely why
     // the two may not share the glyph. This loop is the guard: one number out
     // of that range means a payout multiple has leaked back into a `×`.
@@ -1412,9 +1420,9 @@ ${el.innerHTML}`,
     // header and the slip row are in the sample too.
     pickScreen(BOOK, "sharp-bull");
     const picked = legMultiples();
-    // The header and the slip both print the live leg now: ×3.33, the option's
+    // The header and the slip both print the live leg now: ×7.69, the option's
     // own delta at fair odds — not ×20, its payout multiple.
-    expect(picked).toContain(3.33);
+    expect(picked).toContain(7.69);
     expect(picked).not.toContain(20);
     for (const n of picked) {
       expect({ n, inRange: n >= FLOOR && n <= CEIL }).toEqual({ n, inRange: true });

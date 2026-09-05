@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { REFERENCE_MOVE, type Stance } from "../engine/parlay.ts";
+import { chancePct, REFERENCE_MOVE, type Stance } from "../engine/parlay.ts";
 import { fmtPx } from "../engine/tape.ts";
 import { sx } from "../lib/sx.ts";
 import {
@@ -214,8 +214,9 @@ export function faceText(
       // The aside used to be `×430.75` — the dollar figure divided by the
       // premium — and that was the one number on this screen a player could
       // misread catastrophically: the seeded DEGEN card in the next ticker's
-      // grid prints `×6.67`, which is fair odds on a 15% chance, and the two
-      // are not the same kind of thing. So the live card's aside now states
+      // grid prints fair odds on DEGEN's band midpoint (`×13.33` on the current
+      // ladder, `×6.67` on the one before the re-cut), and the two are not the
+      // same kind of thing. So the live card's aside now states
       // the BASIS instead of a ratio: this is what the premium above becomes
       // if the underlying finishes the reference move away. Nothing is
       // clamped — `winAt` carries the payout multiple at full magnitude, in
@@ -236,9 +237,7 @@ export function faceText(
       // §E4.1, and the contract — not the level — picks the rendering.
       const glyph = (CARD_CONTRACT.delta.face[level] ?? "").includes(DELTA_GLYPH);
       return {
-        value: glyph
-          ? `${DELTA_GLYPH} ${v.prob.toFixed(2)}`
-          : `${Math.round(v.prob * 100)}% chance`,
+        value: glyph ? `${DELTA_GLYPH} ${v.prob.toFixed(2)}` : `${chancePct(v.prob)} chance`,
         aside: null,
       };
     }

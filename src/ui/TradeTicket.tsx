@@ -50,6 +50,24 @@ import { DASH, type Ticket, type TicketSource } from "../desk/ticket.ts";
  *    a pinned panel takes the pointer, and a pinned panel does not close on
  *    leave.
  *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THE SECOND THING ON THIS PANEL: A FIELD NOTE
+ * ────────────────────────────────────────────────────────────────────────────
+ * The arena's parameters panel printed its explanatory prose inline under every
+ * figure, so `SIZE` / `MAX LOSS` / `MAX PAYOUT` were three headings in six
+ * paragraphs. The owner asked for the explanations to sit behind a per-figure
+ * `ⓘ` instead, and the temptation was a small second tooltip — which would have
+ * been this app's third hover mechanism and the only one without a settle
+ * delay, a keyboard path, a touch path, an Escape or a viewport flip.
+ *
+ * So there is no second mechanism. A *field note* is a {@link Ticket} with no
+ * rows and no footer (`fieldNote` in `src/desk/ticket.ts`), {@link FieldInfo}
+ * is a `<button>` wired to the same {@link TradeTicketHost.bind}, and
+ * {@link TradeTicketPanel} renders it with two `length > 0` guards and nothing
+ * else new. What may go in one is a rule of the content module's, not this
+ * one's: definitions only, because a disclosure behind a hover is a disclosure
+ * a player may never perform.
+ *
  * `prefers-reduced-motion` is honoured through `.vc-tip` in `styles.css`, which
  * animates opacity only and is switched off entirely under the query. The panel
  * carries no transform of its own for the same reason the sector tip does not:
@@ -131,6 +149,9 @@ export const TICKET_ACCENT: Record<Ticket["state"], string> = {
   live: C.green,
   seeded: C.dim,
   "not-dealt": C.amber,
+  // A field note makes no claim about a market, so it borrows no state colour.
+  // Grey is the absence of the vocabulary rather than a fourth entry in it.
+  note: C.muted,
 };
 
 /** What a provenance tag says and what colour it says it in. The words are
@@ -187,6 +208,23 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
         {t.banner}
       </div>
 
+      {/* The rest of the same prose, when there is any. Only a field note fills
+          it, and it is outside the banner's tinted block rather than inside it
+          because the block is the *claim* the figures rest on — a second
+          paragraph of definition is not a second claim. */}
+      {(t.body ?? []).map((line) => (
+        <div
+          key={line.slice(0, 24)}
+          data-ticket-body=""
+          style={sx(
+            `margin-top:8px;font:400 10.5px/1.55 ${SANS};color:${C.textSoft};text-wrap:pretty`,
+          )}
+        >
+          {line}
+        </div>
+      ))}
+
+      {t.rows.length > 0 && (
       <div style={sx("margin-top:8px;display:flex;flex-direction:column;gap:7px")}>
         {t.rows.map((row) => {
           const tag = row.source === null ? null : SOURCE_TAG[row.source];
@@ -231,7 +269,13 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
           );
         })}
       </div>
+      )}
 
+      {/* Both blocks are guarded rather than left to render empty: a field note
+          has neither rows nor footer, and an unguarded footer would draw its
+          divider rule under nothing — a hairline that reads as content the
+          panel failed to load. */}
+      {t.footer.length > 0 && (
       <div
         style={sx(`margin-top:10px;padding-top:9px;border-top:1px solid ${C.line};display:grid;gap:6px`)}
       >
@@ -245,6 +289,7 @@ export function TradeTicketPanel({ at }: { at: TicketAt }) {
           </span>
         ))}
       </div>
+      )}
     </div>
   );
 }
@@ -458,6 +503,109 @@ export function TicketToggle({
       )}
     >
       i
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The per-figure ⓘ
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The hit target, in pixels — the whole button, ring and padding together.
+ *
+ * The `ⓘ` sits in a dense column of ten-pixel labels and the pull is to shrink
+ * it to match. It does not shrink: a control a person is meant to find and
+ * press has to be pressable with a thumb, and 26px is already at the low end of
+ * what a touch screen forgives. The *ring* is small; the button is not, and the
+ * difference is invisible padding.
+ */
+export const FIELD_INFO_HIT = 26;
+
+/**
+ * One figure's `ⓘ` — a real control, on the ticket's own interaction.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * WHY IT IS A BUTTON AND IN THE TAB ORDER
+ * ────────────────────────────────────────────────────────────────────────────
+ * The parlay card's hover ticket is deliberately *not* focusable: the card
+ * itself is the trigger, it is already a `<button>`, and the panel it opens is
+ * a description of the thing under the cursor. This is the other case. There is
+ * no surrounding control to hang the description on — `MAX LOSS` is a `<span>`
+ * and a figure is a `<span>` — so if the `ⓘ` were not itself focusable the
+ * explanation would be reachable by pointer alone. So it is a `<button>`, it
+ * takes a tab stop, and its accessible name names its own field: forty panels
+ * of "More info" is a tab order that says nothing.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * THREE WAYS IN, AND WHY THERE IS NO `onClick`
+ * ────────────────────────────────────────────────────────────────────────────
+ * Hover, focus and tap all come from {@link TradeTicketHost.bind}, unchanged —
+ * the settle delay, the instant keyboard open, the touch pin, Escape, the
+ * outside-pointerdown and the viewport flip are all already correct there and
+ * none of it is reimplemented.
+ *
+ * What is *not* wired is a click handler, and that is the one deliberate
+ * difference from {@link TicketToggle}. `bind`'s pointer path already pins on a
+ * non-mouse pointer, and a touch fires `pointerover` and *then* a compatibility
+ * `click`: pinning on both would open the panel and close it again inside one
+ * tap. `TicketToggle` can afford `onClick` because it has no `bind` on it;
+ * this cannot have both, and the pointer path is the one that also serves the
+ * mouse. A tap pins, a second tap unpins, Escape unpins, a press outside
+ * unpins — which is the whole of what a click would have bought.
+ *
+ * `data-ticket-toggle` is set for exactly one reason: the outside-pointerdown
+ * listener treats anything carrying it as inside, so moving from one open note
+ * to the next replaces the panel instead of closing it and opening it again.
+ */
+export function FieldInfo({
+  host,
+  note,
+  label,
+  style,
+}: {
+  host: TradeTicketHost;
+  /** Built by `fieldNote` in `src/desk/ticket.ts`. Its `id` is the panel's. */
+  note: Ticket;
+  /** The figure's heading, for the accessible name. `MAX LOSS` reads out as
+   *  "What MAX LOSS means", which is the question the control answers. */
+  label: string;
+  style?: string;
+}) {
+  const open = host.openId === note.id;
+  const bound = host.bind(note);
+  return (
+    <button
+      type="button"
+      data-field-info={note.id}
+      data-ticket-toggle={note.id}
+      aria-label={`What ${label} means`}
+      aria-expanded={open}
+      aria-describedby={bound["aria-describedby"]}
+      onPointerEnter={bound.onPointerEnter}
+      onPointerLeave={bound.onPointerLeave}
+      onFocus={bound.onFocus}
+      onBlur={bound.onBlur}
+      style={sx(
+        `${style ?? ""};display:grid;place-items:center;padding:0;` +
+          `width:${FIELD_INFO_HIT}px;height:${FIELD_INFO_HIT}px;` +
+          "background:transparent;border:0;cursor:pointer",
+      )}
+    >
+      {/* The ring is a child rather than the button's own border so the target
+          can be 26px while the mark stays 16px — a 26px circle beside a 10px
+          label would read as a control the figure belongs to. */}
+      <span
+        aria-hidden="true"
+        style={sx(
+          `display:grid;place-items:center;width:16px;height:16px;border-radius:99px;` +
+            `font:700 10px/1 ${MONO};` +
+            `border:1px solid ${open ? C.accent : C.borderMid};` +
+            `background:${open ? C.accent : "transparent"};color:${open ? C.bg : C.dim}`,
+        )}
+      >
+        i
+      </span>
     </button>
   );
 }

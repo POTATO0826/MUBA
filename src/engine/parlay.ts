@@ -66,22 +66,93 @@ export const TIER_ORDER: readonly Tier[] = ["SAFE", "EVEN", "SHARP", "DEGEN"];
  * land" and the trader's greek — the same number, which is why the UI never
  * needs two words for it.
  *
- * Bands are half-open `[lo, hi)` and cover 0.05–0.85. Below 0.05 the quote is
- * lottery-ticket dust with a spread wider than the premium; above 0.85 the
- * option is deep ITM and the player is paying intrinsic value to express a view
- * they could express more cheaply. **Both ends are excluded on purpose** — an
- * option at |delta| 0.02 or 0.92 is not a harder or safer version of this game,
- * it is a different trade, and dealing it as a card would be the house quietly
- * widening the ladder to make sure a card always exists.
+ * ## The ladder that could not fill, and why it is worth writing down
  *
- * Half-open also means the brackets tile without overlap: 0.65 is SAFE and not
- * EVEN, 0.45 is EVEN and not SHARP. Exactly one tier claims any given delta.
+ * The first cut of these bands ran `SAFE [0.65, 0.85)` down to
+ * `DEGEN [0.05, 0.25)`. It was chosen before anybody had looked at a delta
+ * distribution, and it was wrong in the one way a green suite cannot see: **the
+ * venue lists only out-of-the-money vanillas.** Every listed call is struck
+ * above spot and every listed put below it, so no resting order has ever
+ * carried a `|delta|` at or above 0.50 — and `SAFE`'s floor was 0.65. The tier
+ * could not fill on any ticker, on any day, for any expiry. Every SAFE slot on
+ * the board fell through to its seeded card and printed `MAX LOSS —`, and the
+ * card beside it claimed a 75% chance nothing in the market had said.
+ *
+ * No solver fixes that. You cannot imply a delta for an option nobody lists.
+ * The only honest repair is to cut the ladder onto the book that exists, which
+ * is what these four brackets are.
+ *
+ * ## The measurement
+ *
+ * A live capture of the resting book, 2026-09-05, filtered to plain vanillas
+ * (on `structure`, **not** `type` — a call spread's `type` is `CALL`) that
+ * carry both a fillable order and an ask a buyer could pay. Two snapshots
+ * ninety seconds apart, n = 123 and n = 121 rows, across ETH, BTC, BNB, SOL,
+ * AVAX and XRP:
+ *
+ *     min   0.05      p25  0.09–0.10      median  0.19
+ *     max   0.49      p75  0.28–0.29
+ *
+ * The distribution is dense at the bottom and thin at the top, which is a
+ * property of an option chain rather than of this venue: strikes are listed on
+ * a roughly linear grid and delta is convex in the strike, so a fixed strike
+ * step buys less and less delta as it walks away from the money.
+ *
+ * ## The rule the cut points follow: round tenths inside the listed range
+ *
+ * Two rules were on the table and this is the one taken — **cut points a player
+ * can hold in their head**, at the three round tenths that fall inside the
+ * range the venue lists. Equal population per tier was the alternative; on this
+ * snapshot it wanted 0.09 / 0.19 / 0.29, which is a fitted curve wearing three
+ * decimals of false precision. Those cuts would move every time the book moved,
+ * and this repo already has eight money bugs whose common shape is a number
+ * that meant something other than what it claimed. A ladder re-derived per
+ * snapshot is that shape waiting to happen.
+ *
+ * Round tenths cost almost nothing here, because the two rules very nearly
+ * agree. Row counts on the same two snapshots:
+ *
+ *     DEGEN [0.05, 0.10)     31 · 30
+ *     SHARP [0.10, 0.20)     34 · 34
+ *     EVEN  [0.20, 0.30)     30 · 32
+ *     SAFE  [0.30, 0.50)     28 · 25
+ *
+ * Every tier fills, on both sides, on live data. That is the whole point of the
+ * exercise and it is the thing to re-measure before believing this comment.
+ *
+ * ## The two endpoints, which are NOT measurements
+ *
+ *  - **0.05 is unchanged**, and it is the same judgement it always was: below
+ *    it the quote is lottery-ticket dust with a spread wider than the premium.
+ *  - **0.50 is at-the-money.** It is not "the largest delta we saw" (that was
+ *    0.49) — it is the structural ceiling of a book that lists only OTM wings,
+ *    which is why it is a round number and not a measured one.
+ *
+ * Both ends are excluded on purpose. An option outside them is not a harder or
+ * safer version of this game, it is a different trade, and dealing it as a card
+ * would be the house quietly widening the ladder to make sure a card always
+ * exists.
+ *
+ * **The mirror of the old defect is now the live risk, and it is worth naming.**
+ * If the venue ever starts listing in-the-money vanillas, their deltas land
+ * above 0.50, {@link tierOf} answers `null`, and they are dealt by nothing —
+ * the same silence SAFE used to sit in, from the other side. The fix then is
+ * the same as the fix now: re-measure and re-cut. It is not to widen SAFE's top
+ * to 0.85 and leave it there, because a band's midpoint is what the seeded card
+ * calls its chance ({@link tierProb}), and a `[0.30, 0.85)` SAFE would print
+ * "57%" over a book whose best row is 0.49.
+ *
+ * Half-open also means the brackets tile without overlap: 0.30 is SAFE and not
+ * EVEN, 0.20 is EVEN and not SHARP. Exactly one tier claims any given delta.
+ *
+ * ⚠ This constant is coupled to {@link LOUD_BELOW} through the n-th root, and
+ * to nothing else by hand — read that docblock before moving either.
  */
 export const TIER_BANDS: Record<Tier, readonly [number, number]> = {
-  SAFE: [0.65, 0.85],
-  EVEN: [0.45, 0.65],
-  SHARP: [0.25, 0.45],
-  DEGEN: [0.05, 0.25],
+  SAFE: [0.3, 0.5],
+  EVEN: [0.2, 0.3],
+  SHARP: [0.1, 0.2],
+  DEGEN: [0.05, 0.1],
 };
 
 /** The tier a live delta falls in, or `null` when it falls outside every band —
@@ -120,7 +191,9 @@ export function tierProb(tier: Tier): number {
  * `multipleAt`: what one contract's *premium* returns if the underlying happens
  * to finish 25% away. Both are true; neither is an answer to the other's
  * question; and a player reading them side by side concludes the first bet is
- * sixty-five times worse. See {@link LiveCard.payoutMult} for where that second
+ * sixty-five times worse. (DEGEN's midpoint is 0.075 since the re-cut, so the
+ * seeded card now prints `×13.33` — the same construction over a lower band,
+ * and the same argument.) See {@link LiveCard.payoutMult} for where that second
  * number went and why it is denominated in dollars now.
  *
  * The parlay's own arithmetic had already settled this and only the leg had not
@@ -139,10 +212,15 @@ export function oddsOf(prob: number): number {
 /**
  * The fair price of a tier: `1 / probability`.
  *
- * No house edge, no invented ladder. If a thing lands 35% of the time then even
- * money on it is ×2.857, and that is the number the seeded card prints. The old
- * table said `SHARP: ×3.6, 25%` — a 44% overround dressed as generosity, on a
- * game where nothing was ever paid.
+ * No house edge, no invented ladder. If a thing lands 15% of the time then even
+ * money on it is ×6.667, and that is the number the seeded card prints for
+ * SHARP. The old table said `SHARP: ×3.6, 25%` — a 44% overround dressed as
+ * generosity, on a game where nothing was ever paid.
+ *
+ * The four figures move as one whenever {@link TIER_BANDS} is re-cut and are
+ * never written down anywhere else: SAFE ×2.50, EVEN ×4.00, SHARP ×6.67,
+ * DEGEN ×13.33 on the current ladder. They were ×1.33 / ×1.82 / ×2.86 / ×6.67
+ * on the ladder whose SAFE tier could not fill.
  *
  * {@link oddsOf} over the band midpoint, so the seeded card and the live card
  * now print the same construction over two different probabilities rather than
@@ -150,6 +228,35 @@ export function oddsOf(prob: number): number {
  */
 export function tierOdds(tier: Tier): number {
   return oddsOf(tierProb(tier));
+}
+
+/**
+ * A chance, written as the percentage the `×` beside it can be checked against.
+ *
+ * It lives here, next to {@link oddsOf}, because it is not a styling choice: the
+ * card's whole claim is that its price is `1 / its chance` and that nothing is
+ * set by hand, so a rounding that breaks that arithmetic *on the face* is a
+ * defect in the claim rather than in the type.
+ *
+ * Both card surfaces used to write `Math.round(prob * 100)`, and it was exact
+ * for everything it ever met: the old band midpoints were 0.75 / 0.55 / 0.35 /
+ * 0.15, and a live card's delta arrives from the venue as a 2dp string. The
+ * ladder re-cut broke it on exactly one tier — `DEGEN [0.05, 0.10)` has a
+ * midpoint of **0.075** — and the card then printed `8% chance` over `×13.33`.
+ * Both numbers were right and together they were a lie a player could catch,
+ * because `1 / 0.08` is 12.5.
+ *
+ * So: a whole percent when the figure is one, one decimal when it is not.
+ * `40%`, `25%`, `15%` and every 2dp delta are untouched; DEGEN reads `7.5%`.
+ *
+ * Exported rather than written twice: `ParlayCardFace` prints it on the card and
+ * `desk/ticket.ts` prints it on the seeded ticket's CHANCE ON THE FACE row, and
+ * two spellings of one rule is how those two surfaces would come to disagree
+ * about one tier without either of them changing.
+ */
+export function chancePct(prob: number): string {
+  const pct = prob * 100;
+  return Number.isInteger(+pct.toFixed(4)) ? `${Math.round(pct)}%` : `${+pct.toFixed(1)}%`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,10 +269,10 @@ export function tierOdds(tier: Tier): number {
  * `summarize` sets `loud = prob < LOUD_BELOW` and `prob` is
  * {@link impliedProbability} — the *product* of the legs' chances. On the seeded
  * path every one of those chances is a {@link TIER_BANDS} midpoint. So this
- * constant is not independent of the ladder, however much a bare `0.1` on its
+ * constant is not independent of the ladder, however much a bare number on its
  * own line looks like it is: **`LOUD_BELOW` and `TIER_BANDS` are two ends of one
- * decision and only one of them is written down.** That is the trap this section
- * exists to defuse.
+ * decision**, and this section exists so that neither can be moved without the
+ * other being read.
  *
  * ## The n-th root, which is the whole relationship
  *
@@ -176,49 +283,100 @@ export function tierOdds(tier: Tier): number {
  *
  * so the midpoint at which a tier tips into the alarm state is the **n-th root
  * of `LOUD_BELOW`** — {@link loudMidpointFor}. A lobby deals 2, 3 or 4 legs
- * ({@link SLIP_LEG_COUNTS}), and at `LOUD_BELOW = 0.1` those three roots are:
+ * ({@link SLIP_LEG_COUNTS}), and at the value below those three roots are:
  *
- *     2 legs   0.1 ^ (1/2)  =  0.316228
- *     3 legs   0.1 ^ (1/3)  =  0.464159
- *     4 legs   0.1 ^ (1/4)  =  0.562341
+ *     2 legs   0.007 ^ (1/2)  =  0.083666
+ *     3 legs   0.007 ^ (1/3)  =  0.191293
+ *     4 legs   0.007 ^ (1/4)  =  0.289251
  *
  * Note which way that runs: **more legs is a HIGHER bar.** A four-leg slip needs
- * a midpoint above 0.5623 to stay quiet; a two-leg slip only needs 0.3162. The
+ * a midpoint above 0.2893 to stay quiet; a two-leg slip only needs 0.0837. The
  * *longest* slip trips first, which is the opposite of the intuition that a long
  * parlay is obviously the reckless one — it is, and that is precisely why an
  * all-SAFE four-legger must not be painted as one.
  *
- * ## Why this is load-bearing right now
+ * ## Why this constant HAD to move, and why no choice of bands could have saved it
  *
- * SAFE's midpoint is 0.75 today and clears all three roots with room, so an
- * all-SAFE slip is never loud at any legal leg count. That is not a property
- * anybody chose. It is a coincidence of where the band currently sits, and it
- * has never been asserted anywhere, so nothing would notice it ending.
+ * This was `0.1` for as long as the ladder ran from 0.65 to 0.85. SAFE's
+ * midpoint was 0.75 then and cleared all three roots (0.3162 / 0.4642 / 0.5623)
+ * with room. That was never a property anybody chose — it was a coincidence of
+ * where the band happened to sit, and it was left in place while the bands were
+ * re-cut onto the range the venue actually quotes.
  *
- * The bands are cut on `|delta|`, and the venue lists options only out to
- * `|delta|` 0.50. Re-cutting `TIER_BANDS` onto the range the book actually
- * quotes therefore pulls SAFE's midpoint **down** — toward ~0.45 on the shape
- * under discussion. At 0.45, three legs give 0.091125 and four give 0.041006,
- * both under `LOUD_BELOW`, and **every three- and four-leg all-SAFE slip flips
- * into the alarm state**: violet border, violet ODDS, violet ALL LAND
- * (`src/views/ParlayPick.tsx`). Two legs survive at 0.2025. The safest slip in
- * the game would render in the danger colour, and nothing about the band edit
- * would look like it had caused it.
+ * The re-cut settles the question that was left open, and it settles it
+ * arithmetically rather than by preference:
  *
- * **Nothing here decides that.** Where the bands land is a measurement against
- * the book; where the loud line sits is a design call. Both are the owner's and
- * this file states neither. What it does is make the coupling impossible to trip
- * *silently*: `test/parlay.test.ts` asks {@link wouldGoLoud} for SAFE at every
- * count in {@link SLIP_LEG_COUNTS}, off the **current** bands, and fails if any
- * answer is `true`. Re-cut the ladder without revisiting this constant and that
- * test stops you, with the trade-off spelled out in the failure.
+ *  - The venue lists only out-of-the-money vanillas, so its **largest listed
+ *    `|delta|` is 0.49** (see {@link TIER_BANDS} for the measurement).
+ *  - At `LOUD_BELOW = 0.1` a four-leg all-one-tier slip needs a midpoint above
+ *    **0.5623** to stay quiet.
+ *  - 0.5623 is larger than 0.49. **No band cut on this book has a midpoint that
+ *    can reach it** — not this cut, not any cut, because a band's midpoint
+ *    cannot exceed the largest delta the band can contain.
+ *
+ * So `0.1` guaranteed that a four-leg all-SAFE slip — the safest slip the game
+ * can deal — would render in the alarm colour, whatever the bands were. Keeping
+ * it was not the conservative option; it was a choice to paint the safest bet
+ * violet. The constant had to move, and choosing it is part of the re-cut rather
+ * than a follow-up to it.
+ *
+ * ## How the new value was chosen
+ *
+ * Two hard bounds, both **derived from the ladder** rather than picked, which is
+ * why they move on their own the next time it is re-cut:
+ *
+ *  - **Upper bound — the safest slip must be quiet.** The quietest slip the
+ *    ladder can produce is four SAFE legs: `0.40⁴ = 0.0256`. `LOUD_BELOW` must
+ *    be at or under that, or the alarm fires on the safest thing in the game.
+ *  - **Lower bound — the longest shot must still fire.** The loudest slip at the
+ *    *shortest* legal length is two DEGEN legs: `0.075² = 0.005625`. Anything at
+ *    or below that lets a pair of lottery tickets pass as an ordinary bet.
+ *
+ * That leaves the half-open window `(0.005625, 0.0256]`, and both endpoints are
+ * exactly {@link wouldGoLoud} answered for SAFE and for DEGEN — which is what the
+ * guard test in `test/parlay.test.ts` asks, rather than a restatement of it.
+ *
+ * The value inside that window is picked on **selectivity**: the alarm should be
+ * as rare after the re-cut as it was before it, because nothing about the game
+ * got riskier — only the numbering changed. Enumerating every seeded slip there
+ * is (`4² + 4³ + 4⁴ = 336` tier tuples), the old ladder at `0.1` made **274 of
+ * 336** loud. On the new ladder that same count of 274 is produced by any
+ * `LOUD_BELOW` in `(0.00625, 0.0075]`, and `0.007` sits inside it with a real
+ * margin either side. Nothing lands *on* 0.007 — the nearest achievable slip
+ * probabilities are 0.00625 below and 0.0075 above — so no slip's state hangs on
+ * a float hair.
+ *
+ * The endpoints of the window are not usable in its place. At the top (0.0256)
+ * the alarm reaches 321 of 336 and stops distinguishing anything; at the bottom
+ * it stops firing on a two-leg all-DEGEN slip, which is the one slip everybody
+ * would agree is a long shot.
+ *
+ * ## What that leaves on the screen
+ *
+ *     all-SAFE    2L 0.1600     3L 0.0640      4L 0.0256      quiet, quiet, quiet
+ *     all-EVEN    2L 0.0625     3L 0.0156      4L 0.0039      quiet, LOUD,  LOUD
+ *     all-SHARP   2L 0.0225     3L 0.0034      4L 0.0005      quiet, LOUD,  LOUD
+ *     all-DEGEN   2L 0.0056     3L 0.00042     4L 0.000032    LOUD,  LOUD,  LOUD
+ *
+ * The SAFE row clears the line by 28% at its tightest (four legs), which is the
+ * point of picking 0.007 over 0.02 or 0.025: those also keep SAFE quiet, but by
+ * 2–28% *and* at the cost of firing on 314–318 of the 336, which is an alarm
+ * that has stopped saying anything.
+ *
+ * **274 of 336 is still 82%**, and that is worth stating plainly rather than
+ * presenting as a win: this alarm has always fired on most seeded slips, and the
+ * re-cut neither improved nor worsened that. If it should be rarer, the knob is
+ * this constant moving *down*, and it cannot go far — under 0.00625 the count
+ * drops to 258 and by 0.005625 a two-leg all-DEGEN slip has gone quiet. Making
+ * the alarm genuinely selective is a change to what `loud` measures, not to
+ * where its line sits, and it is not made here.
  *
  * The live path sits outside all of this on purpose: a market-priced leg carries
  * the option's own `|delta|` ({@link legFromLiveCard}), never a midpoint, so a
  * live slip's `prob` is a product of real deltas and the loud line is just a
  * threshold on it. The coupling is a property of the *seeded* ladder alone.
  */
-export const LOUD_BELOW = 0.1;
+export const LOUD_BELOW = 0.007;
 
 /**
  * The loud test itself, in one place: is this implied probability under the
@@ -1165,8 +1323,8 @@ export function slotFor(
  *  - `leg.mult * leg.prob === 1` on **both** paths — the invariant
  *    `test/parlay.test.ts` already pinned for the seeded leg.
  *  - `Π(leg.mult)` is the slip's own `×` ({@link degeneracyScore}, times the
- *    mode's boost). A slip whose legs read `×4.00 ×6.67 ×2.86` and whose ODDS
- *    read `×76.3` is now arithmetic a player can check.
+ *    mode's boost). A slip whose legs read `×2.50 ×6.67 ×13.33` and whose ODDS
+ *    read `×222.22` is now arithmetic a player can check.
  *
  * `multipleAt` and `calculatePayout` have not left the screen: `WIN $` is
  * `premium × payoutMult`, so the protocol's payout arithmetic is still the

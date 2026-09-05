@@ -142,11 +142,14 @@ describe("OptionQuote.iv — absence", () => {
 
 describe("OptionQuote.iv — it is the CHOSEN row's IV", () => {
   test("the IV travels with the strike the tier picked, not the first row", () => {
-    // EVEN's target is ~0.55, so the 0.52-delta row wins over the 0.19 one —
-    // and the IV that arrives must be that row's, not its neighbour's.
+    // EVEN's target is `tierProb("EVEN")` = 0.25, so the 0.26-delta row wins
+    // over the 0.06 one — and the IV that arrives must be that row's, not its
+    // neighbour's. (These deltas read 0.19 and 0.52 against a 0.55 target while
+    // the ladder ran SAFE `[0.65, 0.85)`; the winner is still the SECOND row,
+    // which is what the test title is about.)
     const chain = [
-      row("46.2%", { strike: "4,600", delta: "0.19", ask: "0.0441" }),
-      row("61.0%", { strike: "4,100", delta: "0.52", ask: "0.0902" }),
+      row("46.2%", { strike: "4,600", delta: "0.06", ask: "0.0441" }),
+      row("61.0%", { strike: "4,100", delta: "0.26", ask: "0.0902" }),
     ];
     const q = optionizeTier("EVEN", "bull", chain, SPOT, "ETH")!;
     expect(q.strike).toBe(4_100);

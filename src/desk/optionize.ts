@@ -8,13 +8,19 @@ import type { PricingRow, RowGreeks } from "../types.ts";
  * ## The insight
  *
  * The game already has the shape of an option chain and did not know it. A
- * parlay card is a tier (`SAFE ~75% / EVEN ~55% / SHARP ~35% / DEGEN ~15%`)
- * crossed with a stance, and it renders as `above 252.95 · ~75%`. That number
+ * parlay card is a tier (`SAFE 40% / EVEN 25% / SHARP 15% / DEGEN 7.5%`)
+ * crossed with a stance, and it renders as `above 252.95 · 40%`. That number
  * *is* a strike and that percentage *is* a probability of finishing in the
  * money. What was fake was only their provenance: both came out of a fixed
  * payout table multiplied against an asset's seeded base move. That table is
  * gone — the percentages above are `TIER_BANDS` midpoints now, i.e. the |delta|
  * bracket each tier actually names.
+ *
+ * They are quoted here because a reader needs *something* concrete to hold, and
+ * they are quoted knowing they will go stale: `TIER_BANDS` is the only place
+ * that decides them, this module reads them through `tierProb`, and the four
+ * figures above were 75 / 55 / 35 / 15 until the ladder was re-cut onto the
+ * out-of-the-money-only book the venue actually lists.
  *
  * This module reads them off the live book instead:
  *
@@ -76,10 +82,27 @@ export const MULT_MAX = 25;
  * before the card says so out loud.
  *
  * The book lists the strikes it lists. On a thin chain the nearest thing to
- * SHARP's `~35%` can genuinely be a `0.51` delta, and a card that printed
- * `~35%` over a `0.51` option would be the exact lie this whole module exists
- * to remove. The card always prints the *real* delta; `offTarget` is what makes
- * it additionally say that the tier's target was missed.
+ * SHARP's 15% can genuinely be a `0.41` delta, and a card that printed `15%`
+ * over a `0.41` option would be the exact lie this whole module exists to
+ * remove. The card always prints the *real* delta; `offTarget` is what makes it
+ * additionally say that the tier's target was missed.
+ *
+ * ## It is deliberately WIDER than a band, and that is not a bug
+ *
+ * Since the ladder was re-cut onto the venue's real |delta| range the bands are
+ * narrower than they were: half-widths of 0.10 (`SAFE [0.30, 0.50)`), 0.05,
+ * 0.05 and 0.025 (`DEGEN [0.05, 0.10)`). So 0.08 is now wider than the band on
+ * three tiers of four — an EVEN, SHARP or DEGEN row inside its own bracket can
+ * no longer be `offTarget` at all, and only a SAFE row out past 0.48 or under
+ * 0.32 still can.
+ *
+ * That is the correct reading rather than a gap to close. This flag answers
+ * "did we have to leave the tier's neighbourhood to find a strike", and
+ * `optionizeTier` — unlike `cardsForSlice`, which refuses to deal outside the
+ * band at all — is allowed to leave it. Tightening this to a band half-width
+ * would start warning about rows that are exactly where they should be, and
+ * would say nothing new about the case the flag exists for: a chain so thin
+ * that the nearest listed delta is in a different tier entirely.
  */
 export const PROB_TOLERANCE = 0.08;
 
