@@ -578,6 +578,92 @@ export interface PricingRow {
    * cannot fill is the exact failure this shape exists to delete.
    */
   order?: FillableOrder;
+  /**
+   * The full greek set for this row, **with its provenance**.
+   *
+   * `bid`, `ask`, `iv` and `delta` above are the venue's own strings and stay
+   * exactly that. This field is the parallel, computed reading — Black–Scholes
+   * greeks from `src/data/greeks.ts` — and it is a *separate object* rather
+   * than five more sibling fields precisely so that a reader cannot pick one up
+   * by accident and believe the venue said it. `RowGreeks.source` says who is
+   * speaking, and it is never optional.
+   *
+   * Absent, and absent is ordinary, when the row could not be priced: no
+   * published IV anywhere on its (underlying, expiry) smile, no readable option
+   * expiry, no spot for the underlying, an already-expired contract, or a
+   * structure whose strikes fail the venue's own invariants. Every one of those
+   * is a real state of a real book and a dash on the screen is the correct
+   * rendering of it.
+   */
+  greeks?: RowGreeks;
+}
+
+/**
+ * The computed greek set that rides on a {@link PricingRow}.
+ *
+ * All the unit-naming discipline of `src/data/greeks.ts`, carried across the
+ * wire: there is no field called `theta` and none called `vega`, because a
+ * theta without a window and a vega without a vol scale are the two numbers
+ * this repo has already been bitten by. Numbers, not strings — unlike the rest
+ * of `PricingRow`, which is pre-formatted because `/desk` prints it verbatim.
+ * These are *inputs* to a formatter, not output of one, and rounding them here
+ * would throw away precision a downstream composition still needs.
+ */
+export interface RowGreeks {
+  /**
+   * Where these came from. **The whole point of the object.**
+   *
+   *  - `"venue"` — this repo never produces it; the field exists so a mixed
+   *    set can be described with one union.
+   *  - `"model"` — Black–Scholes on this exact strike, off an IV the venue
+   *    published for this exact strike.
+   *  - `"model-composed"` — summed from the legs of a multi-leg structure,
+   *    each leg priced off an IV published for a *different* strike. Every
+   *    SPREAD, FLY and RANGER row is this, because the venue publishes no
+   *    greeks for them at all.
+   */
+  source: "venue" | "model" | "model-composed";
+  /** ∂V/∂S. For a vanilla, `|delta|` is the market's rough probability of
+   *  finishing in the money; **for a structure it is not** — it is a net of
+   *  two or four such numbers and means only "moves this much per dollar". */
+  delta: number;
+  /** ∂²V/∂S², per one unit of the underlying. */
+  gamma: number;
+  /** ∂V/∂t per **calendar day** — the venue's own convention, and the only
+   *  theta safe to print without naming a window. */
+  thetaPerDay: number;
+  /** ∂V/∂t per year. Carried so a caller can scale it to the duel clock
+   *  without re-deriving it; see `decayOver` in `src/data/greeks.ts`. */
+  thetaPerYear: number;
+  /** ∂V/∂σ for a **1 volatility point** move — the venue's own convention. */
+  vegaPerPoint: number;
+  /** ∂V/∂r for a **1 rate point** move. Identically zero while the model's
+   *  rate is zero; carried anyway so its absence is never mistaken for a
+   *  missing calculation. */
+  rhoPerPoint: number;
+  /** The model's own value of the position, dollars per unit of underlying.
+   *  **Not a quote.** The row's `bid`/`ask` is the tradable number. */
+  modelPrice: number;
+  /**
+   * The volatility this was priced at, as a **fraction** — `0.6879`, matching
+   * `greeksOf().iv` and *not* the `iv` display string above.
+   *
+   * For a `model` row it is the row's own published IV. For a
+   * `model-composed` row it is the average of the legs' borrowed IVs, which
+   * is a summary and not an input — the legs really were priced separately.
+   */
+  vol: number;
+  /**
+   * Where the volatility came from, since for a structure it was borrowed.
+   *
+   *  - `"own"` — the venue published an IV for this exact strike.
+   *  - `"smile"` — taken from the nearest published strike on the same
+   *    (underlying, option expiry). Honest, and an approximation.
+   */
+  volSource: "own" | "smile";
+  /** Time to expiry in years, ACT/365, at the snapshot's `at`. Carried so a
+   *  consumer can re-derive or sanity-check without a second clock read. */
+  years: number;
 }
 
 /**

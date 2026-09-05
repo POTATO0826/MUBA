@@ -1,5 +1,6 @@
 import { tierProb, type ParlayLeg, type Stance, type Tier } from "../engine/parlay.ts";
-import type { PricingRow } from "../types.ts";
+import { decayOver, DAYS_PER_YEAR, SECONDS_PER_YEAR } from "../data/greeks.ts";
+import type { PricingRow, RowGreeks } from "../types.ts";
 
 /**
  * The duel, denominated in real options.
@@ -152,7 +153,100 @@ export interface OptionQuote {
   /** `"ETH 2600 CALL · Δ0.28 · exp 12 SEP"` — the provenance line, rendered
    *  verbatim beside the tier name. */
   label: string;
+  /**
+   * The **computed** greek set for this strike, or absent.
+   *
+   * ## Read the provenance before you read the numbers
+   *
+   * `delta` and `impliedProb` above are the **venue's** published delta,
+   * unchanged and unrounded, and they stay that way. This field is a separate
+   * object holding *our* Black-Scholes reading of the same contract, tagged
+   * `source: "model"`. The two agree closely — mean absolute difference 0.0010
+   * over the frozen capture, `VALIDATION` in `src/data/greeks.ts` — and they
+   * are still not the same claim, which is why they are not the same field.
+   *
+   * A card may show `greeks.gamma`, `greeks.thetaPerDay` or
+   * `greeks.vegaPerPoint` — none of which the venue publishes for anything a
+   * player sees — and it must label them as computed. It must **not** show
+   * `greeks.delta` where `impliedProb` belongs: the odds on a card are the
+   * market's number, not ours.
+   *
+   * Absent whenever the row could not be priced, or was priced off a borrowed
+   * vol, or was composed from legs. See `vanillaGreeks`.
+   */
+  greeks?: RowGreeks;
 }
+
+/**
+ * What theta costs over a window of the **duel** clock, in dollars per unit of
+ * underlying.
+ *
+ * ## The two clocks, said once
+ *
+ * This game runs two, and they differ by four orders of magnitude:
+ *
+ *  - the **duel clock** — the eight-second seeded tape, or the 30-60 s RFQ
+ *    window `docs/plan7-measurements.md` §2 measured. What a player watches.
+ *  - the **expiry clock** — the days to the option's settlement. What the
+ *    contract is written on, and what every published theta is quoted against.
+ *
+ * A BTC put in the frozen capture publishes `theta: -165.13`. That is
+ * **-$165.13 per calendar day**. Over an eight-second duel the same rate is
+ * **-$0.0153**. Both numbers are true; printing either one without its window
+ * is a lie of scale, and printing the per-day number *as* the duel's loss
+ * overstates it by 10,800x.
+ *
+ * So a card that wants to say "and it bleeds this much while you watch" calls
+ * this, with the window it means. A card that wants to say "this bleeds this
+ * much a day" reads `greeks.thetaPerDay`, which is named for its window. There
+ * is no third option, because there is no field called `theta`.
+ *
+ * The number is a first-order extrapolation of the instantaneous rate and is
+ * honest exactly while the window is short against the option's remaining life
+ * — which the duel's is by many orders of magnitude, and which is the reason
+ * this direction of the approximation is the safe one.
+ *
+ * Sign is preserved: negative, because a long option loses value. `0` when the
+ * quote carries no greeks, which is the same "nothing to say" a dash renders.
+ */
+export function duelDecay(quote: OptionQuote, windowSeconds: number): number {
+  if (!quote.greeks) return 0;
+  if (!Number.isFinite(windowSeconds)) return 0;
+  return decayOver(
+    {
+      price: quote.greeks.modelPrice,
+      delta: quote.greeks.delta,
+      gamma: quote.greeks.gamma,
+      vegaPerPoint: quote.greeks.vegaPerPoint,
+      vegaPerUnitVol: quote.greeks.vegaPerPoint * 100,
+      thetaPerYear: quote.greeks.thetaPerYear,
+      thetaPerDay: quote.greeks.thetaPerDay,
+      rhoPerPoint: quote.greeks.rhoPerPoint,
+    },
+    windowSeconds,
+  );
+}
+
+/**
+ * The two windows a screen is allowed to name, in seconds.
+ *
+ * Named here rather than typed at each call site so that a card cannot quietly
+ * invent a third one, and so `duelDecay(q, DUEL_WINDOW.tape)` reads as the
+ * sentence it is. `day` is present for symmetry and equals
+ * `SECONDS_PER_YEAR / DAYS_PER_YEAR` by construction, so
+ * `duelDecay(q, DUEL_WINDOW.day)` and `q.greeks.thetaPerDay` are the same
+ * number by definition rather than by coincidence — `test/greeks.test.ts`
+ * asserts exactly that.
+ */
+export const DUEL_WINDOW = {
+  /** The seeded settlement tape. `src/engine/tape.ts`. */
+  tape: 8,
+  /** The shortest RFQ offer window the venue has ever accepted on chain
+   *  (`docs/plan7-measurements.md` §2, row 2). */
+  rfqFloor: 30,
+  /** One calendar day — the window every published theta is quoted against. */
+  day: SECONDS_PER_YEAR / DAYS_PER_YEAR,
+} as const;
 
 /**
  * One frozen moment of the book: what a match is dealt against.
@@ -238,6 +332,10 @@ interface Candidate {
   /** Fraction, or `null` where the row carried no IV. Never a reason to reject
    *  a row: a quotable strike with no published IV is still a quotable strike. */
   iv: number | null;
+  /** The row's computed greek set, or `null`. Same rule as `iv`: carried, never
+   *  required. A strike with no model greeks is still a quotable strike — the
+   *  card simply has nothing to draw in the risk line. */
+  greeks: RowGreeks | null;
 }
 
 /**
@@ -278,8 +376,42 @@ function candidate(row: PricingRow, want: OptionSide): Candidate | null {
   if (premium === null) return null;
 
   // IV is carried, never required. It is a thing the card *says*, not a thing
-  // the leg is priced off, so its absence must not cost a strike.
-  return { strike, delta, premium, expiry: row.expiry, iv: parseIv(row.iv) };
+  // the leg is priced off, so its absence must not cost a strike. Same for the
+  // greeks beside it, with one extra guard below.
+  return {
+    strike,
+    delta,
+    premium,
+    expiry: row.expiry,
+    iv: parseIv(row.iv),
+    greeks: vanillaGreeks(row),
+  };
+}
+
+/**
+ * The row's computed greeks, **but only if they belong to a vanilla priced off
+ * its own published IV**.
+ *
+ * `candidate` above has already refused every multi-leg structure, so in
+ * principle nothing composed can reach here. This is the second lock on the
+ * same door, and it is deliberate: the failure it guards against — a spread's
+ * net delta rendered on a card as a probability — is the one that nearly
+ * shipped once already, and the cost of checking twice is one comparison.
+ *
+ *  - `source !== "model"` rejects anything composed from legs. A spread's
+ *    delta is a *net*, not odds, and this card renders delta as odds.
+ *  - `volSource !== "own"` rejects a vanilla whose vol was borrowed from a
+ *    neighbouring strike. Such a row exists (the venue skipped its greeks) and
+ *    its computed numbers are real, but the card puts them beside a *published*
+ *    delta, and mixing one strike's published delta with another strike's
+ *    borrowed vol on one line is a provenance muddle nobody could read.
+ */
+function vanillaGreeks(row: PricingRow): RowGreeks | null {
+  const g = row.greeks;
+  if (!g) return null;
+  if (g.source !== "model") return null;
+  if (g.volSource !== "own") return null;
+  return g;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -404,6 +536,10 @@ export function optionizeTier(
     offTarget: bestGap > PROB_TOLERANCE,
     spot,
     label,
+    // `?? undefined` for the same reason `iv` above does it: the quote says
+    // "absent" with `undefined` and the row's decoder says it with `null`, and
+    // the seam between the two conventions is here and only here.
+    greeks: best.greeks ?? undefined,
   };
 }
 

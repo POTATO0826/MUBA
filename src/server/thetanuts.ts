@@ -8,8 +8,16 @@ import type {
   MmQuote,
   OrderRow,
   PricingRow,
+  RowGreeks,
   ZoneQuote,
 } from "../types.ts";
+import {
+  DEFAULT_RATE,
+  modelGreeks,
+  structureGreeks,
+  yearsBetweenMs,
+  type OptionRight,
+} from "../data/greeks.ts";
 import { qualifiedAssets, type QualifiedAsset } from "../data/qualify.ts";
 // The registry name of the one product a drawn box can fill off the book. Named
 // once, in the module that reads it on the far side, so the wire and the arena
@@ -798,13 +806,38 @@ function collateralUsd(
   return units * (token?.usd ?? 1);
 }
 
-/** What `greeksOf` could salvage from one order. */
+/** What `greeksOf` could salvage from one order — the narrow two-field view the
+ *  level builder has always used. {@link VenueGreeks} is the rest of it. */
 interface Greeks {
   delta: number | null;
   iv: number | null;
 }
 
-const NO_GREEKS: Greeks = { delta: null, iv: null };
+/**
+ * Every number `rawApiData.greeks` publishes, each `null` when absent or
+ * unusable, and **each named for the unit the venue actually quotes it in**.
+ *
+ * The venue's own field names are `theta` and `vega`; ours are `thetaPerDay`
+ * and `vegaPerPoint`, because that is what the numbers turned out to be when
+ * they were repriced (see {@link venueGreeksOf}). Renaming at the boundary is
+ * the whole defence: nothing downstream can hold a `theta` whose window it has
+ * to remember.
+ */
+export interface VenueGreeks extends Greeks {
+  gamma: number | null;
+  /** The venue's `theta`, which is **per calendar day**. */
+  thetaPerDay: number | null;
+  /** The venue's `vega`, which is **per one volatility point**. */
+  vegaPerPoint: number | null;
+}
+
+const NO_VENUE_GREEKS: VenueGreeks = {
+  delta: null,
+  iv: null,
+  gamma: null,
+  thetaPerDay: null,
+  vegaPerPoint: null,
+};
 
 /**
  * Greeks, defensively.
@@ -824,11 +857,242 @@ const NO_GREEKS: Greeks = { delta: null, iv: null };
  * shipped before, and every one of them would poison a median.
  */
 export function greeksOf(raw: unknown): Greeks {
-  if (!raw || typeof raw !== "object") return NO_GREEKS;
-  const g = raw as { delta?: unknown; iv?: unknown };
-  const delta = typeof g.delta === "number" && Number.isFinite(g.delta) ? g.delta : null;
-  const iv = typeof g.iv === "number" && Number.isFinite(g.iv) ? g.iv : null;
+  const { delta, iv } = venueGreeksOf(raw);
   return { delta, iv };
+}
+
+/**
+ * Everything `rawApiData.greeks` carries, not just the two we used to keep.
+ *
+ * The field really does ship five numbers — `test/fixtures/orders.json` has
+ * `{delta: 0.0805, iv: 0.6879, gamma: 0.0017, theta: -7.0104, vega: 0.1909}` on
+ * its first order — and until now `greeksOf` threw three of them away. It does
+ * not any more: `greeksOf` is a two-field *projection* of this function, so the
+ * shape-checking lives in one place and its existing callers (and its existing
+ * test, which pins the two-field shape) are untouched.
+ *
+ * **The units are the venue's, and they were measured rather than assumed.**
+ * `test/greeks.test.ts` reprices all 25 greeked vanillas in the frozen capture
+ * with Black-Scholes and finds:
+ *
+ *  - `iv` is a **fraction** — `0.6879` is 68.79%.
+ *  - `theta` is **per calendar day**. Not per year: the first order's `-7.0104`
+ *    against a premium of `3.97` would be absurd as an annual rate, and it is
+ *    exactly `-S·φ(d1)·σ/(2√T)/365`. Reading it as per-year would understate
+ *    the daily bleed by 365x.
+ *  - `vega` is **per one volatility point** — `S·φ(d1)·√T / 100`.
+ *  - `delta` and `gamma` are the raw derivatives, unscaled.
+ *
+ * Those four sentences are why {@link VenueGreeks} and `RowGreeks` name their
+ * fields `thetaPerDay` and `vegaPerPoint` rather than `theta` and `vega`. A
+ * number whose scale lives only in a docstring is a number waiting to be
+ * misread, and this repo has the scars.
+ *
+ * `Number.isFinite` rather than `typeof === "number"` on purpose: JSON `null`,
+ * a string, `NaN` from a bad divide and `Infinity` are all things an API has
+ * shipped before, and every one of them would poison a median.
+ */
+export function venueGreeksOf(raw: unknown): VenueGreeks {
+  if (!raw || typeof raw !== "object") return NO_VENUE_GREEKS;
+  const g = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    delta: num(g.delta),
+    iv: num(g.iv),
+    gamma: num(g.gamma),
+    thetaPerDay: num(g.theta),
+    vegaPerPoint: num(g.vega),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Computed greeks — the half the venue does not publish
+// ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The published implied-volatility smile of one (underlying, option expiry),
+ * ascending by strike.
+ *
+ * **Calls and puts share one curve, deliberately.** Under put-call parity a
+ * call and a put on the same strike and expiry have the same implied
+ * volatility — parity is a model-free identity between their *prices*, so any
+ * sigma that reprices one reprices the other. Keeping one smile per
+ * (underlying, expiry) instead of two therefore loses nothing and roughly
+ * doubles the coverage, which matters: a four-strike ranger needs a vol at four
+ * strikes and the book does not list a vanilla at every one of them on both
+ * sides.
+ *
+ * (Strictly, parity is exact only for a European cash-settled option with no
+ * carry, which is precisely the regime `src/data/greeks.ts` establishes for
+ * this venue from the SDK's own settlement code. It is not a shortcut taken in
+ * spite of the conventions; it is one the conventions license.)
+ */
+export type Smile = Array<{ strike: number; iv: number }>;
+
+/** `underlying|expiry` -> its smile. Built once per snapshot. */
+function smileIndex(levels: Iterable<Level>): Map<string, Smile> {
+  const out = new Map<string, Smile>();
+  for (const level of levels) {
+    // Single-strike levels only. A spread publishes no IV, and a spread's
+    // *strikes* are not points on a vanilla smile — attributing the one to the
+    // other is how a two-strike row gets read as a vanilla.
+    if (level.iv === null || level.strikes.length !== 1) continue;
+    const strike = level.strikes[0]!;
+    if (!(strike > 0) || !(level.iv > 0)) continue;
+    const key = `${level.underlying}|${level.expiry}`;
+    const smile = out.get(key) ?? [];
+    smile.push({ strike, iv: level.iv });
+    out.set(key, smile);
+  }
+  for (const smile of out.values()) smile.sort((a, b) => a.strike - b.strike);
+  return out;
+}
+
+/**
+ * The published IV nearest a strike on one smile, or `null` for an empty one.
+ *
+ * **Nearest, not interpolated.** Interpolating between two listed strikes would
+ * be defensible and is a strictly larger claim: it asserts the smile is smooth
+ * and locally linear between two points that can be $1,000 apart on BTC. The
+ * nearest neighbour asserts only "this is the closest thing the venue actually
+ * said", which is the weakest claim that still produces a number — and
+ * weakest-claim is the house rule. It is also stable: a new listing between two
+ * old ones cannot swing a neighbour's greek the way a refitted curve would.
+ *
+ * Ties break to the lower strike, deterministically, so two machines agree.
+ */
+export function nearestIv(smile: Smile | undefined, strike: number): number | null {
+  if (!smile || smile.length === 0 || !(strike > 0)) return null;
+  let best = smile[0]!;
+  let bestGap = Math.abs(best.strike - strike);
+  for (const point of smile) {
+    const gap = Math.abs(point.strike - strike);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = point;
+    }
+  }
+  return best.iv;
+}
+
+/**
+ * One level's computed greeks, or `null`.
+ *
+ * This is where the engine in `src/data/greeks.ts` meets the book. Four things
+ * have to be true before a number comes out, and every failure is `null` rather
+ * than a fallback:
+ *
+ *  1. **The product is named.** `payout` comes off `payoutTypeFor`, resolved
+ *     from the *implementation address* — never from counting strikes and never
+ *     from `PricingRow.type`. An `UNKNOWN` four-strike row gets no greeks,
+ *     which is the correct answer to "condor or ranger?" when nothing
+ *     authoritative said. A call spread's `type` is `CALL`; a previous agent
+ *     read that field, took 22 spreads for in-the-money vanillas and nearly
+ *     shipped a card promising "88% chance" on a 10-delta instrument.
+ *  2. **There is time left.** An expired or expiring-this-second contract has a
+ *     step-function delta and an unbounded gamma; `blackScholes` refuses it and
+ *     so does this.
+ *  3. **There is a spot.** Two of the eight probed assets have no readable
+ *     market price on some captures (`docs/reality-check.md` §1.1 shows DOGE and
+ *     PAXG rejected for exactly that).
+ *  4. **Every leg has a volatility.** A four-leg ranger needs four, and a
+ *     structure priced off three real IVs and one invented one is not
+ *     three-quarters honest.
+ *
+ * `volSource` is `"own"` only when the row is a vanilla *and* the venue
+ * published an IV for that very strike. Everything else — every spread, fly and
+ * ranger, and any vanilla whose own greeks were missing — is `"smile"`, meaning
+ * the number was borrowed from a neighbouring listed strike. The distinction
+ * rides on the row so a screen can draw it differently, and it exists because
+ * borrowing is an approximation and this repo says so out loud.
+ */
+export function levelGreeks(
+  level: Pick<Level, "underlying" | "strikes" | "expiry" | "iv" | "isCall">,
+  payout: PayoutType | null,
+  spot: number | undefined,
+  atMs: number,
+  smiles: Map<string, Smile>,
+): RowGreeks | null {
+  if (payout === null) return null;
+  if (typeof spot !== "number" || !(spot > 0)) return null;
+  if (!(level.expiry > 0)) return null;
+
+  const years = yearsBetweenMs(atMs, level.expiry);
+  if (!(years > 0)) return null;
+
+  const smile = smiles.get(`${level.underlying}|${level.expiry}`);
+  const ownStrike = level.strikes.length === 1 ? level.strikes[0]! : null;
+  const ownIv = level.iv;
+  let borrowed = false;
+  const vols: number[] = [];
+
+  /**
+   * The leg's volatility: its own published one where the venue printed one for
+   * this exact strike, and otherwise the nearest listed strike's. The `borrowed`
+   * flag is what becomes `volSource`, and it flips on the first borrow rather
+   * than at the end — a condor with one borrowed leg is a borrowed condor.
+   */
+  const volFor = (strike: number): number | null => {
+    if (ownStrike !== null && ownIv !== null && strike === ownStrike) {
+      vols.push(ownIv);
+      return ownIv;
+    }
+    const iv = nearestIv(smile, strike);
+    if (iv === null) return null;
+    borrowed = true;
+    vols.push(iv);
+    return iv;
+  };
+
+  const vanilla = level.strikes.length === 1 && ownIv !== null && (payout === "call" || payout === "put");
+  let computed: { source: "model" | "model-composed"; g: ReturnType<typeof modelGreeks> } | null;
+  if (vanilla) {
+    // A vanilla with its own published IV takes the short path: same model,
+    // same answer, and `source: "model"` then says something about the *input*
+    // — one venue IV, this very strike — rather than counting legs.
+    vols.push(ownIv!);
+    computed = {
+      source: "model",
+      g: modelGreeks({
+        spot,
+        strike: ownStrike!,
+        vol: ownIv!,
+        years,
+        right: (level.isCall ? "CALL" : "PUT") as OptionRight,
+        rate: DEFAULT_RATE,
+      }),
+    };
+  } else {
+    const g = structureGreeks({
+      payout,
+      strikes: level.strikes,
+      spot,
+      years,
+      rate: DEFAULT_RATE,
+      volFor,
+    });
+    computed = g === null ? null : { source: g.source === "model" ? "model" : "model-composed", g };
+  }
+
+  if (computed === null || computed.g === null) return null;
+  const g = computed.g;
+  const vol = vols.length === 0 ? 0 : vols.reduce((a, b) => a + b, 0) / vols.length;
+  if (!(vol > 0)) return null;
+
+  return {
+    source: computed.source,
+    delta: g.delta,
+    gamma: g.gamma,
+    thetaPerDay: g.thetaPerDay,
+    thetaPerYear: g.thetaPerYear,
+    vegaPerPoint: g.vegaPerPoint,
+    rhoPerPoint: g.rhoPerPoint,
+    modelPrice: g.price,
+    vol,
+    volSource: borrowed ? "smile" : "own",
+    years,
+  };
 }
 
 /**
@@ -1772,6 +2036,17 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
   // rather than O(levels × quotes) against a list.
   const marks = markIndex(raw.mmPricing);
 
+  /**
+   * The published IV curve per (underlying, option expiry) — the only real
+   * volatility input this app has, and the thing every computed greek below
+   * ultimately rests on.
+   *
+   * Built after the level loop and before the row loop, for the same reason
+   * `marks` is: a spread needs the vols at strikes that belong to *other*
+   * levels, so the whole set has to exist before any row can be priced.
+   */
+  const smiles = smileIndex(levels.values());
+
   const pricing: Record<string, PricingRow[]> = {};
   const ordered = new Map<string, Level[]>();
   const rowOf = new Map<Level, PricingRow>();
@@ -1851,6 +2126,18 @@ export function buildSnapshot(raw: RawMarket, at: number): MarketSnapshot {
       // level with no ask carries none, and `cardsForSlice` drops it: a card
       // must be pressable or it must not be dealt.
       order: level.askEntry,
+      // The computed set, tagged with where it came from. **This is the only
+      // new claim the row makes**, and it is a claim about our model, never
+      // about the venue: `iv` and `delta` above are still the venue's strings,
+      // untouched, and `greeks.source` is `"model"` or `"model-composed"` and
+      // never `"venue"`. `undefined` wherever the row could not be priced —
+      // no smile, no spot, no expiry, an unnameable product — which for a
+      // four-strike `UNKNOWN` row is the point rather than a shortfall.
+      //
+      // 103 of the 341 rows on the capture in `docs/reality-check.md` are
+      // SPREAD / FLY / RANGER and carry **no venue greeks at all**. This field
+      // is the only risk number they have ever had.
+      greeks: levelGreeks(level, payout, spot[level.underlying], at, smiles) ?? undefined,
     };
     rowOf.set(level, row);
     pricing[level.underlying] = [...(pricing[level.underlying] ?? []), row];
