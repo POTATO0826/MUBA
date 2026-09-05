@@ -55,7 +55,36 @@ export interface Wire {
   greeksSeen?: number;
   note?: string;
   reason?: string;
+  /**
+   * Why the read failed, when the server actually knows — mirroring
+   * `MarketFailureCause` in `src/server/thetanuts.ts`. Hand-mirrored rather
+   * than imported, like every other field on this interface: importing a server
+   * module here would pull the SDK, axios and ethers into the client bundle,
+   * which is the rule this whole file exists to keep.
+   *
+   * **Absent is the normal case.** The server emits it only for a cause it
+   * measured; an ordinary failure carries `reason` alone and this stays
+   * undefined. Read `cause` before `reason`, never instead of the envelope's
+   * `ok`.
+   */
+  cause?: string;
+  /**
+   * One short sentence about *this network*, written by the server, for the
+   * footer's error line.
+   *
+   * It rides on successful envelopes too, which is the unusual part and the
+   * important one: a board that works only because the server resolved around
+   * the machine's DNS filter is real data obtained by an unusual route, and the
+   * footer says so for as long as that is true. It is NOT `note` — `note` means
+   * stale and would paint live rows amber and label them old.
+   */
+  advisory?: string;
 }
+
+/** The one `cause` this client changes its wording for. Mirrors
+ *  `MarketFailureCause` in `src/server/thetanuts.ts`; `test/market-route.test.ts`
+ *  drives a real envelope through both sides so the two cannot drift. */
+export const NETWORK_FILTER = "network-filter";
 
 /** Re-read the book on this cadence. The server caches for 15s behind it, so
  *  two clients polling out of phase still cost about one upstream read. */
@@ -133,9 +162,18 @@ export interface LiveMarketState {
   source: MarketSource;
   /** True while the first read is still in flight. */
   loading: boolean;
-  /** Why the live book is degraded, or `null`. Non-null with a `mock` source
-   *  means the screen is showing fixtures; non-null with a `stale` source
-   *  means the rows are real but old. */
+  /**
+   * What the footer prints in amber, or `null`.
+   *
+   * Three readings, and the source beside it says which:
+   *   - with a `mock` source — the screen is showing fixtures, and this is why;
+   *   - with a `stale` source — the rows are real but old;
+   *   - with a **`live`** source — the rows are real and current, and this is
+   *     an advisory about how they were obtained. Today that is exactly one
+   *     thing: the server had to resolve the book's host around this network's
+   *     DNS filter. A green chip and an amber sentence is the honest pairing —
+   *     the data is live, the route to it was not the normal one.
+   */
   error: string | null;
 }
 
@@ -174,10 +212,17 @@ export function useLiveMarket(): LiveMarketState {
         const wire = (await res.json()) as Wire;
         if (!live) return;
         if (!wire.ok) {
+          // A classified failure is shown in the server's own words and NOT
+          // wrapped in "Book unavailable — …". The generic wrapper is what this
+          // teammate actually saw ("Book unavailable — HTTP request failed"),
+          // and it named neither the cause nor the fix; when the server has
+          // measured the cause, its sentence is the whole message.
           degrade(
             wire.reason === "disabled"
               ? "Live market is switched off."
-              : `Book unavailable — ${wire.reason ?? "no reason given"}.`,
+              : wire.cause === NETWORK_FILTER && wire.advisory
+                ? wire.advisory
+                : `Book unavailable — ${wire.reason ?? "no reason given"}.`,
           );
           return;
         }
@@ -190,7 +235,11 @@ export function useLiveMarket(): LiveMarketState {
         setState({
           source: sourceFrom(wire, stale),
           loading: false,
-          error: stale ? (wire.note ?? "Book is stale.") : null,
+          // Live rows with an advisory are still LIVE — the chip stays green
+          // and the amber prose beside it says how they got here. Staleness
+          // wins when both are true, because "these numbers are old" is the
+          // more urgent of the two claims.
+          error: stale ? (wire.note ?? "Book is stale.") : (wire.advisory ?? null),
         });
       } catch {
         // A dropped socket, a 502 from a reverse proxy, a body that is not

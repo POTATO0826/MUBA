@@ -10,12 +10,23 @@ React on Bun. No Vite, no webpack — Bun bundles `src/index.html` directly.
 
 ## Running
 
+**This project runs on [Bun](https://bun.sh), and only on Bun.** `bun dev` is
+`bun --hot index.ts`; the server is `Bun.serve`, the bundler is Bun's own HTML
+bundler, and the tests are `bun:test`. `npm run dev` will not save you — npm
+happily runs the script and then hands it to a `bun` that may not be installed —
+and `node index.ts` fails outright. `package.json` declares
+`"engines": { "bun": ">=1.2.0" }`, which npm reports as `EBADENGINE` on install
+but **Bun itself ignores** (measured on 1.3.14: `bun install` and `bun run` both
+accept an impossible range without a word), so this paragraph is the enforcement
+and the field is documentation.
+
 ```bash
 bun install
 bun dev          # http://localhost:3000, hot reload
 bun test         # full unit and UI suite
 bun run typecheck
 bun run build    # → dist/
+bun run doctor   # ← if ANYTHING looks wrong, run this first
 ```
 
 **Out of the box nothing is written to a chain.** The seeded game — the board,
@@ -30,47 +41,99 @@ sign, approve or spend. **Everything that can spend money is opt-IN and off** �
 deployed escrow for the side bet. See *Thetanuts — what is actually live* for
 what each flag reaches and, just as importantly, what has never run.
 
-### If the book looks dead, check your DNS before you blame the venue
+## Troubleshooting
 
-`/api/market` answering `{"ok":false,"reason":"HTTP request failed"}` while the
-charts keep updating is, on the evidence so far, a **local DNS filter** and not
-a Thetanuts outage. The book is served from a Cloudflare Worker,
+**`bun run doctor`, first, before reading any of the rest of this.** It checks
+seven things in the order a failure actually propagates — runtime, dependencies,
+git position, general connectivity, the book's host through two different
+resolvers, `/api/market` if a server is up, and which `.env` variables are set
+(names only; it never reads a value out of that file) — and then prints a *what
+to do* derived from what actually failed rather than a standing checklist. It
+changes nothing: no install, no `git fetch`, no writing `.env`. Paste its output
+when you ask someone for help.
+
+### `ETH · NO BOARD`, or a board with very few cells
+
+**An empty board is the arena working correctly.** It refuses to draw cells
+nobody can buy rather than inventing a grid, so "no board" means "the book lists
+no zone for this underlying at this expiry" — a fact about the venue, not a bug
+in the app.
+
+**And a sparse board is the market, not a fault.** The venue lists RANGERs on
+**ETH and BTC only**, and only **1–3 zones per (underlying, expiry)**. Measured
+on a live capture: twelve (underlying, expiry) buckets holding one, two or three
+distinct zones each, and none at all on SOL or BNB. Three cells in a row is a
+full row.
+
+So a board with a few cells is healthy. A board with *nothing anywhere*, while
+the price charts keep updating, is the next section.
+
+### An empty board everywhere, while the charts still update
+
+That is, on the evidence so far, a **local DNS filter on your network** and not
+a Thetanuts outage. It has been misdiagnosed as an outage twice in this repo
+(`docs/book-endpoint.md` is the retraction of the first) and it has now cost four
+separate investigations, so it is worth one flat sentence: *the venue has been up
+the entire time.*
+
+The book is served from a Cloudflare Worker,
 `round-snowflake-9c31.devops-118.workers.dev`, and plenty of networks block
-`*.workers.dev` by category because the zone is cheap to abuse for phishing.
-The filter answers with a block page whose certificate does not validate, so the
+`*.workers.dev` by category because the zone is cheap to abuse for phishing. The
+filter answers with a block page whose certificate does not validate, so the
 error surfaces as a TLS failure and looks nothing like DNS. Meanwhile the Base
-RPC is not filtered, so spot and history carry on — which is what makes the
-whole thing read as "the venue is down".
+RPC is not filtered, so spot and history carry on — which is what makes the whole
+thing read as "the venue is down".
 
-It is not. This has been misdiagnosed twice here; `docs/book-endpoint.md` is the
-retraction of the first. One command tells you which it is:
+**The app now handles this by itself.** On a read that fails with that exact
+signature, and only then, it asks your resolver and a public one for the same
+name; if the two answers share no address it resolves the book's host through
+`1.1.1.1` / `8.8.8.8` for the rest of that process — once, not in a loop. It
+says so loudly: a paragraph in the server log naming both answers it measured,
+and an amber line in the footer for as long as it is true. It does **not** weaken
+certificate validation and must never be made to — the cert error is the block
+page being correctly rejected, and the fix is to stop talking to the block page.
+`src/server/resolver.ts` carries the measurements and the exact scope.
+
+Two knobs, in `.env`, neither of them needed by default:
+
+```bash
+THETADUEL_DNS=1.1.1.1,8.8.8.8   # pin the resolvers, skip the probe
+THETADUEL_DNS=off               # respect your network's answer, whatever it says
+```
+
+The second exists because **your network operator may have blocked that host on
+purpose**, and routing around a deliberate policy is defensible on a personal
+machine and much less so on a managed corporate one. That is why the behaviour
+is loud rather than silent, and why one line turns it off.
+
+To see it yourself, `bun run doctor` prints both resolvers' answers side by side,
+or:
 
 ```bash
 nslookup round-snowflake-9c31.devops-118.workers.dev            # your resolver
 nslookup round-snowflake-9c31.devops-118.workers.dev 1.1.1.1    # a public one
 ```
 
-Two different answers means your network is filtering it. On the machine this
-was found on, the first returned `146.112.61.104` — reverse lookup
-`hit-block.opendns.com` — and the second returned the real Cloudflare
-addresses.
+Two answers with no address in common means your network is filtering it. On the
+machine this was found on, the first returned `146.112.61.104` — reverse lookup
+`hit-block.opendns.com`, an OpenDNS / Cisco Umbrella block page — and the second
+returned the real Cloudflare addresses.
 
-**The fix is to fix the network**: change the machine's DNS servers, or get off
-the filtered link. Where that needs Administrator and you do not have it, there
-is an opt-in, process-local escape hatch:
+### Two people on two laptops cannot duel each other
 
-```bash
-THETADUEL_DNS=1.1.1.1,8.8.8.8 bun dev
-```
+**Rooms are in-memory and per-server.** They live in a `Map` in
+`src/server/rooms.ts` — no database, no file, nothing shared between processes —
+and a room's join link is built against *the browser's own* origin
+(`window.location.origin`, `src/state/room.ts`). So two people each running
+`bun dev` on their own `localhost:3000` are two separate room stores that have
+never heard of each other, and a link copied from one machine points the other
+machine at its own empty server.
 
-Unset — the default, and what every clone gets — it is completely inert: no
-patching, no logging, no behaviour change. Set, it points this process's
-hostname resolution at those servers, prints a banner at startup naming them so
-nobody mistakes the workaround for the venue's health, and refuses anything that
-is not a literal IP address rather than quietly resolving somewhere unintended.
-It does **not** weaken certificate validation and must never be made to — the
-cert error is the block page being correctly rejected. `src/server/resolver.ts`
-carries the measurements and the exact scope of the override.
+For a real 1v1 across two machines both browsers must reach **one** server:
+either one laptop runs it and the other opens `http://<that-laptop-ip>:3000` on
+the same LAN, or the app is deployed somewhere both can reach. Restarting the
+server empties every room, for the same reason.
+
 
 ## The flow
 

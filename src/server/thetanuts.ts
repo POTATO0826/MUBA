@@ -23,6 +23,20 @@ import { qualifiedAssets, type QualifiedAsset } from "../data/qualify.ts";
 // once, in the module that reads it on the far side, so the wire and the arena
 // cannot disagree about what a listed zone is.
 import { RANGER_PRODUCT } from "../data/ranger.ts";
+// Why a market module imports a DNS module: the single most common way this
+// read fails is not the venue at all, it is the machine's resolver answering
+// for the venue with a block page. `resolver.ts` is where that is measured and
+// where the words for it live, so this file classifies the failure there rather
+// than growing its own opinion about what a certificate error means.
+import {
+  FALLBACK_ADVISORY,
+  FILTERED_ADVICE,
+  FILTER_OPTED_OUT_ADVICE,
+  FILTER_PERSISTS_ADVICE,
+  autoFallback,
+  classifyFailure,
+  type FallbackOutcome,
+} from "./resolver.ts";
 
 /**
  * Live Thetanuts market data, read on the server.
@@ -485,9 +499,28 @@ export interface MarketSnapshot {
   note?: string;
 }
 
+/**
+ * Why a read failed, as a machine-readable token, when — and only when — the
+ * server actually knows.
+ *
+ *   `"disabled"`       — `THETADUEL_MARKET=off`. Not a failure at all.
+ *   `"network-filter"` — the book's host is being answered by something that is
+ *                        not the book. `src/server/resolver.ts` explains the
+ *                        signature and, more importantly, refuses to claim this
+ *                        without measuring it.
+ *
+ * **Absent is the normal case**, and that is the point: an unclassified failure
+ * says only that the read failed, in `reason`, in the venue's own words. This
+ * repo has twice written down "Thetanuts outage" for what was a local DNS
+ * filter; a field that guesses the other way — "your network is blocking this"
+ * while the venue is genuinely down — would be the same mistake with the sign
+ * flipped, and it is not worth trading one for the other.
+ */
+export type MarketFailureCause = "disabled" | "network-filter";
+
 export type MarketEnvelope =
-  | ({ ok: true } & MarketSnapshot)
-  | { ok: false; reason: string };
+  | ({ ok: true; advisory?: string } & MarketSnapshot)
+  | { ok: false; reason: string; cause?: MarketFailureCause; advisory?: string };
 
 export interface MarketService {
   /** Always resolves. A dead RPC is data, not an exception. */
@@ -602,6 +635,15 @@ export interface MarketDeps {
   /** Omitted means the real read-only Base client, built lazily. */
   client?: MarketClient;
   now?: () => number;
+  /**
+   * The DNS-filter recovery, as a seam.
+   *
+   * Omitted means the real {@link autoFallback}, which on a filtered read does
+   * two DNS queries. A test that wants to drive the filtered path must pass its
+   * own — a suite that reaches the network is a suite that fails on an
+   * aeroplane, and this whole feature exists because networks lie.
+   */
+  fallback?: (error: unknown) => Promise<FallbackOutcome>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2434,7 +2476,15 @@ export function createMarketService(deps: MarketDeps = {}): MarketService {
   let cached: MarketSnapshot | null = null;
   let inFlight: Promise<MarketSnapshot> | null = null;
 
-  async function read(): Promise<MarketSnapshot> {
+  /**
+   * What the DNS fallback did, if it was ever consulted. Kept so the envelope
+   * can carry the advisory on a *successful* read too — a board that only works
+   * because this process is resolving around the network must say so every time
+   * it is served, not once in a log nobody scrolled back to.
+   */
+  let recovery: FallbackOutcome | null = null;
+
+  async function readOnce(): Promise<MarketSnapshot> {
     const client = deps.client ?? getRealClient();
     // One round trip each, in parallel — the book, the spot prices and the MM
     // chains are independent reads on two different hosts. `readMmPricing`
@@ -2457,6 +2507,32 @@ export function createMarketService(deps: MarketDeps = {}): MarketService {
       },
       now(),
     );
+  }
+
+  /**
+   * One read, plus **at most one** retry through a public resolver.
+   *
+   * The happy path is untouched and costs nothing: `readOnce` runs against the
+   * machine's own resolver, and if it answers, nothing below this line
+   * executes. The retry happens only when `autoFallback` has *measured* that
+   * this network resolves the book's host to something no public resolver
+   * agrees with — see `src/server/resolver.ts`, which also states the case
+   * against doing this at all, since a network operator may have blocked the
+   * host on purpose.
+   *
+   * `applied` is true only on the call that installed the override, so this is
+   * one retry per process and not a loop: a second failure finds the cached
+   * outcome, gets `applied: false`, and rethrows.
+   */
+  async function read(): Promise<MarketSnapshot> {
+    try {
+      return await readOnce();
+    } catch (error) {
+      const outcome = await (deps.fallback ?? autoFallback)(error);
+      recovery = outcome;
+      if (!outcome.applied) throw error;
+      return await readOnce();
+    }
   }
 
   /** Begin a read and publish it as the one in-flight job. */
@@ -2501,10 +2577,51 @@ export function createMarketService(deps: MarketDeps = {}): MarketService {
   async function snapshot(): Promise<MarketEnvelope> {
     if (disabled()) return { ok: false, reason: "disabled" };
     try {
-      return { ok: true, ...(await refresh()) };
+      const snap = await refresh();
+      // Carried on every successful envelope, not just the first, because the
+      // footer reads one envelope and has no memory of the boot log. A board
+      // that exists only because this process is routing around the network's
+      // resolver says so, on screen, for as long as that is true.
+      const viaFallback = recovery?.reason === "applied";
+      return { ok: true, ...snap, ...(viaFallback ? { advisory: FALLBACK_ADVISORY } : {}) };
     } catch (error) {
-      return { ok: false, reason: reasonOf(error) };
+      return { ok: false, ...classifyEnvelope(error) };
     }
+  }
+
+  /**
+   * The failure half of the envelope: the venue's own words in `reason`, plus a
+   * `cause` and an `advisory` **only** when the failure was actually classified.
+   *
+   * Two independent things have to agree before this says "network filter":
+   * the error carries the interception signature (`classifyFailure`), and the
+   * fallback either measured the two resolvers disagreeing or was explicitly
+   * told not to look (`opted-out`). A cert error whose probe found both
+   * resolvers agreeing is left unclassified on purpose — that is what a genuine
+   * certificate problem at the venue looks like, and telling the user to change
+   * their DNS would send them a day in the wrong direction.
+   */
+  function classifyEnvelope(error: unknown): { reason: string; cause?: MarketFailureCause; advisory?: string } {
+    const reason = reasonOf(error);
+    if (classifyFailure(error).kind !== "filtered") return { reason };
+
+    // One sentence per situation, and the situations are genuinely different —
+    // telling somebody who has already set THETADUEL_DNS to set THETADUEL_DNS
+    // is how an hour disappears. `agree` and `probe-failed` are absent by
+    // design: nothing was measured, so nothing is claimed.
+    const ADVICE: Record<FallbackOutcome["reason"], string | null> = {
+      applied: FILTER_PERSISTS_ADVICE,
+      already: FILTER_PERSISTS_ADVICE,
+      "opted-out": FILTER_OPTED_OUT_ADVICE,
+      failed: FILTERED_ADVICE,
+      agree: null,
+      "probe-failed": null,
+      "not-filtered": null,
+    };
+
+    const advisory = recovery === null ? null : ADVICE[recovery.reason];
+    if (advisory === null) return { reason };
+    return { reason, cause: "network-filter", advisory };
   }
 
   return {

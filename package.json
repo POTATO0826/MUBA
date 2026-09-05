@@ -7,7 +7,11 @@
     "dev": "bun --hot index.ts",
     "start": "NODE_ENV=production bun index.ts",
     "build": "bun -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && bun build ./src/index.html --outdir=dist --minify",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "doctor": "bun scripts/doctor.ts"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
   },
   "dependencies": {
     "@reown/appkit": "1.8.23",

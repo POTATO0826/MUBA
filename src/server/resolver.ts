@@ -5,8 +5,24 @@ import { isIP } from "node:net";
 
 /**
  * ────────────────────────────────────────────────────────────────────────────
- * THETADUEL_DNS — an opt-in resolver override for a network that filters the
- * book's host. Unset, this file does nothing at all.
+ * Resolving the book's host on a network that filters it.
+ *
+ * Two mechanisms live here, and the order matters:
+ *
+ *   1. **`THETADUEL_DNS`** — an explicit, opt-in resolver override. Unset, it
+ *      does nothing at all. `THETADUEL_DNS=off` disables everything in this
+ *      file including 2.
+ *   2. **An automatic, one-shot fallback** — on a market read that fails with
+ *      the *interception signature*, and only then, this file measures whether
+ *      the machine's resolver and a public one disagree about the book's host,
+ *      and if they do it applies the same override and says so loudly.
+ *
+ * 2 was added because 1 is unreachable for the person who needs it: `.env` is
+ * gitignored, so every fresh clone starts without the line, and the arena's
+ * `ETH · NO BOARD` — which is the board correctly refusing to draw cells nobody
+ * can buy — told nobody why. That cost the owner an afternoon and then cost a
+ * teammate the same afternoon. See "## The automatic fallback" below, which
+ * also states the trade-off it makes, because it is a real one.
  * ────────────────────────────────────────────────────────────────────────────
  *
  * ## The failure this exists to remove, stated precisely
@@ -117,10 +133,86 @@ import { isIP } from "node:net";
  *    override only ever *replaces an answer the public resolvers also have* —
  *    which is the whole shape of the bug: the filtered resolver returns a
  *    successful, wrong answer.
+ *
+ * ## The automatic fallback
+ *
+ * `THETADUEL_DNS` fixed the owner's machine and fixed nothing else, because
+ * `.env` is gitignored: a teammate who pulls this repo gets no such line, gets
+ * `ETH · NO BOARD`, and gets no way to find out why. So {@link autoFallback}
+ * runs the same override without being asked — under four conditions, each of
+ * which exists to stop it firing when it would be wrong:
+ *
+ *  1. **Only on the interception signature.** {@link classifyFailure} reads the
+ *     error's own code. A 429, a timeout, a socket hang up, an expired venue
+ *     certificate — none of them get here. If the venue is genuinely down,
+ *     retrying through Cloudflare finds it equally down and all a blanket retry
+ *     would buy is a doubled timeout and a muddier diagnosis.
+ *  2. **Only on measured disagreement.** {@link probeHost} asks the machine's
+ *     resolver and a public one for the same name and compares the answers. It
+ *     falls back only when they have **no address in common** — the shape a
+ *     block page has, and not the shape of two resolvers returning the same
+ *     Cloudflare anycast set in a different order. A code alone would be an
+ *     inference; two answers side by side is an observation.
+ *  3. **Once per process.** The outcome is cached, so the 30s refresh does not
+ *     re-probe. One retry, not a loop.
+ *  4. **Never over an explicit choice.** `THETADUEL_DNS=<servers>` wins and
+ *     skips the probe entirely; `THETADUEL_DNS=off` disables the fallback and
+ *     the override both, and the network's answer is then respected whatever it
+ *     says.
+ *
+ * ### The trade-off, stated rather than buried
+ *
+ * **A network operator may have blocked that host on purpose.** Routing around
+ * a filter is defensible for a local dev tool on a personal machine — the owner
+ * cannot change the DNS servers on a hotspot he does not administer — and it is
+ * much less defensible on a managed corporate network, where the filter is
+ * somebody's deliberate policy and this process is quietly stepping over it.
+ *
+ * That is precisely why the behaviour is **loud rather than silent**: it prints
+ * a paragraph to the server log naming both answers it measured, and it rides
+ * to the screen as an advisory on the market envelope, so nobody can be using
+ * the fallback without knowing they are. And it is why `THETADUEL_DNS=off`
+ * exists: one line, and the network's answer stands, board or no board.
+ *
+ * It still does not weaken TLS. The fallback fixes **name resolution only** —
+ * every certificate is validated exactly as before, and the reason the block
+ * page throws a certificate error is that this is working.
  */
 
 /** Read once per install, named here so the string appears in one place. */
 export const DNS_ENV = "THETADUEL_DNS";
+
+/**
+ * The one value of `THETADUEL_DNS` that is not a server list.
+ *
+ * Same opt-out spelling as `THETADUEL_MARKET=off` and `THETADUEL_OPTIONS=off`,
+ * deliberately: one word to remember across every switch in this app. It turns
+ * off the explicit override AND the automatic fallback, which is the point —
+ * it is the answer for anyone who wants their network's answer respected
+ * whatever it says.
+ */
+export const DNS_OFF = "off";
+
+/**
+ * The host the Thetanuts SDK reads the Base order book from —
+ * `chainConfig.apiBaseUrl` for chain 8453, hostname only.
+ *
+ * Transcribed rather than imported: this module is the *first* import in
+ * `index.ts`, ahead of anything that can open a socket, and pulling the SDK
+ * (axios, viem, ethers) in here to read one string would invert that. It cannot
+ * drift silently — `test/resolver.test.ts` asserts it equals
+ * `getChainConfigById(8453).apiBaseUrl`'s host, read from the SDK itself.
+ */
+export const BOOK_HOST = "round-snowflake-9c31.devops-118.workers.dev";
+
+/**
+ * Where {@link autoFallback} looks when the machine's resolver is filtering.
+ *
+ * Two, from two operators, so one being unreachable is not the end of it.
+ * Literal addresses for the reason `parseResolvers` refuses hostnames: a
+ * resolver you have to resolve is not a resolver.
+ */
+export const FALLBACK_SERVERS: readonly string[] = ["1.1.1.1", "8.8.8.8"];
 
 /** What `parseResolvers` learned from the raw env string. */
 export type ResolverSpec = {
@@ -202,11 +294,13 @@ export type ResolverInstall = {
   /**
    * Why it is inert, when it is:
    *   `"unset"`      — the env var is absent or empty. The default. Silent.
+   *   `"off"`        — the var is the literal `off`. Everything in this file,
+   *                    including the automatic fallback, is disabled. Silent.
    *   `"no-valid"`   — the var was set but nothing in it validated. Loud.
    *   `"failed"`     — `dns.setServers` refused the list. Loud.
    *   `"already"`    — install() already ran in this process; ignored.
    */
-  reason?: "unset" | "no-valid" | "failed" | "already";
+  reason?: "unset" | "off" | "no-valid" | "failed" | "already";
 };
 
 /**
@@ -216,9 +310,15 @@ export type ResolverInstall = {
  */
 let installed = false;
 
+/** Set by `install()` when it saw `THETADUEL_DNS=off`. Read by the fallback. */
+let optedOut = false;
+
 /** Test seam only — lets the suite assert the inert path more than once. */
 export function resetResolverForTests(): void {
   installed = false;
+  optedOut = false;
+  fallback = null;
+  fallbackJob = null;
 }
 
 export type InstallOptions = {
@@ -250,6 +350,15 @@ export function install(options: InstallOptions = {}): ResolverInstall {
   const warn = options.warn ?? ((m: string) => console.error(m));
   const raw = options.value !== undefined ? options.value : (Bun.env[DNS_ENV] ?? null);
 
+  // Checked before parsing, because `off` is not a malformed server list — it
+  // is a decision, and reporting it as junk would be the opposite of what the
+  // operator asked for. Silent like `unset`: someone who turned the feature off
+  // does not need a paragraph about it every boot.
+  if ((raw ?? "").trim().toLowerCase() === DNS_OFF) {
+    optedOut = true;
+    return { active: false, servers: [], rejected: [], reason: "off" };
+  }
+
   const { servers, rejected } = parseResolvers(raw);
 
   // The default path. Note it returns before reading anything else and before
@@ -279,21 +388,15 @@ export function install(options: InstallOptions = {}): ResolverInstall {
 
   if (installed) return { active: true, servers, rejected, reason: "already" };
 
-  try {
-    dns.setServers(servers);
-  } catch (error) {
+  const applied = applyOverride(servers);
+  if (!applied.ok) {
     warn(
       `${DNS_ENV}: dns.setServers(${servers.join(", ")}) was refused — ` +
-        `${error instanceof Error ? error.message : String(error)}\n` +
+        `${applied.error instanceof Error ? applied.error.message : String(applied.error)}\n` +
         `  the resolver override is OFF and DNS is unchanged.`,
     );
     return { active: false, servers: [], rejected, reason: "failed" };
   }
-
-  const lookup = makeLookup();
-  patchModule(http, lookup);
-  patchModule(https, lookup);
-  installed = true;
 
   log(
     `${DNS_ENV} ON — this process resolves hostnames via ${servers.join(", ")}, ` +
@@ -306,6 +409,516 @@ export function install(options: InstallOptions = {}): ResolverInstall {
   );
 
   return { active: true, servers, rejected };
+}
+
+/**
+ * Point `dns.resolve*` at `servers` and inject the matching lookup into the
+ * four HTTP entry points. The one place either path — explicit env var or
+ * automatic fallback — actually touches a global, so the blast radius
+ * documented in the header has exactly one implementation.
+ */
+function applyOverride(servers: readonly string[]): { ok: true } | { ok: false; error: unknown } {
+  try {
+    dns.setServers([...servers]);
+  } catch (error) {
+    return { ok: false, error };
+  }
+  const lookup = makeLookup();
+  patchModule(http, lookup);
+  patchModule(https, lookup);
+  installed = true;
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Classifying a failed read — the part that must not guess
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a failed market read looks like, as far as this file can *observe*.
+ *
+ *   `"filtered"` — something between this process and the venue answered in
+ *                  the venue's place. The strong form of this claim is only
+ *                  ever made after {@link probeHost} confirms it.
+ *   `"unknown"`  — everything else, including "the venue is genuinely down".
+ *                  The deliberate default: a confident wrong "your network is
+ *                  blocking this" while Thetanuts is actually offline would be
+ *                  this repo's fourth misdiagnosis of the same host, pointing
+ *                  the other way.
+ */
+export type FailureKind = "filtered" | "unknown";
+
+export type FailureVerdict = {
+  kind: FailureKind;
+  /** The observable that decided it — an error code or an address. Never a
+   *  paraphrase, so a log line can be checked against the machine. */
+  evidence: string | null;
+};
+
+/**
+ * TLS errors that mean *somebody else answered*, not *the venue is misbehaving*.
+ *
+ * The book is served from Cloudflare behind a publicly trusted certificate. A
+ * chain that will not validate against the system store is therefore not the
+ * venue's certificate at all — it is a block page, or a corporate MITM proxy
+ * whose root this process does not trust. Both are the same class of thing and
+ * both are fixed by not talking to them.
+ *
+ * `CERT_HAS_EXPIRED` is deliberately **absent**. An expired certificate is the
+ * one cert error a real venue plausibly serves itself, and calling that a
+ * network filter would send the reader off to check their DNS while the actual
+ * fault sat at the other end. The list is short on purpose; a code not on it
+ * lands in `"unknown"`, which is the honest answer.
+ *
+ * Bun/node surface these on `error.code`, and axios wraps them so the code can
+ * be a level or two down `cause`; the message often carries the bare code too.
+ * All three are searched.
+ */
+const INTERCEPTION_CODES: readonly string[] = [
+  // Node/OpenSSL: the presented chain does not reach a trusted root.
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "CERT_UNTRUSTED",
+  // Windows/SChannel's word for the same thing, which Bun can surface instead.
+  "SEC_E_UNTRUSTED_ROOT",
+  // A valid certificate for the wrong name: an interceptor that did not even
+  // try to impersonate the host it is standing in front of.
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+];
+
+/**
+ * Ranges a filtering resolver hands out instead of the real address.
+ *
+ * One entry, because one is what has actually been measured here:
+ * `146.112.61.104`, reverse `hit-block.opendns.com`, which is OpenDNS / Cisco
+ * Umbrella's block-page range. This list is evidence, not a guess at the shape
+ * of the internet — the general detector is {@link probeHost}'s disagreement
+ * check, which needs no list at all and catches every other vendor. A named
+ * range only lets the log say *whose* block page it is.
+ */
+export const BLOCK_PAGE_RANGES: readonly { cidr: string; who: string }[] = [
+  { cidr: "146.112.61.0/24", who: "OpenDNS / Cisco Umbrella block page" },
+];
+
+/** Whose block page this address is, or `null` if it is not a known one. */
+export function blockPageOwner(address: string): string | null {
+  if (isIP(address) !== 4) return null;
+  const value = ipv4ToInt(address);
+  if (value === null) return null;
+  for (const range of BLOCK_PAGE_RANGES) {
+    const [base = "", bitsRaw = ""] = range.cidr.split("/");
+    const baseValue = ipv4ToInt(base);
+    const bits = Number(bitsRaw);
+    if (baseValue === null || !Number.isInteger(bits) || bits < 0 || bits > 32) continue;
+    // `>>> 0` because a 32-bit mask with the top bit set is negative under
+    // JavaScript's signed shift, and `-1 >>> 0` is the mask we actually want.
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    if ((value & mask) >>> 0 === (baseValue & mask) >>> 0) return range.who;
+  }
+  return null;
+}
+
+function ipv4ToInt(address: string): number | null {
+  const parts = address.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    value = (value * 256 + octet) >>> 0;
+  }
+  return value;
+}
+
+/**
+ * Read a failed request for the interception signature — **on the error's own
+ * fields only**, never on how the failure felt.
+ *
+ * Two things count as evidence:
+ *
+ *  - one of {@link INTERCEPTION_CODES}, on the error, on any `cause` beneath
+ *    it, or spelled out in the message (axios stringifies the code into the
+ *    message and Bun sometimes surfaces it only there);
+ *  - an address from {@link BLOCK_PAGE_RANGES} appearing in the message, which
+ *    is what a refused or reset connection to a block page looks like
+ *    (`connect ECONNREFUSED 146.112.61.104:443`).
+ *
+ * Everything else is `"unknown"`. That includes `ENOTFOUND` and `EAI_AGAIN`:
+ * a name that does not resolve at all looks identical whether the zone is
+ * blocked by NXDOMAIN or the machine simply has no network, and "you are
+ * offline" is by far the likelier of the two. The doctor (`scripts/doctor.ts`)
+ * can tell those apart because it is allowed to make its own requests; a
+ * classifier handed one exception cannot, so it does not pretend to.
+ */
+export function classifyFailure(error: unknown): FailureVerdict {
+  const text = errorText(error);
+
+  for (const code of INTERCEPTION_CODES) {
+    if (text.includes(code)) return { kind: "filtered", evidence: code };
+  }
+
+  for (const address of text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []) {
+    const who = blockPageOwner(address);
+    if (who) return { kind: "filtered", evidence: `${address} (${who})` };
+  }
+
+  return { kind: "unknown", evidence: null };
+}
+
+/** Message + `code` of an error and everything under its `cause` chain, flattened. */
+function errorText(error: unknown, depth = 0): string {
+  if (depth > 5 || error === null || error === undefined) return "";
+  if (typeof error !== "object") return String(error);
+  const record = error as { message?: unknown; code?: unknown; cause?: unknown; errors?: unknown };
+  const parts = [
+    typeof record.message === "string" ? record.message : "",
+    typeof record.code === "string" ? record.code : "",
+    errorText(record.cause, depth + 1),
+  ];
+  // `AggregateError` — what a happy-eyeballs connect produces when every
+  // address fails, and where the only interesting code lives.
+  if (Array.isArray(record.errors)) {
+    for (const inner of record.errors) parts.push(errorText(inner, depth + 1));
+  }
+  return parts.filter(Boolean).join(" ");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The probe: two resolvers, one name, side by side
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type HostProbe = {
+  host: string;
+  /** What this machine's own resolver says — `dns.lookup`, i.e. `getaddrinfo`,
+   *  which is the answer the socket layer would use if nothing here intervened. */
+  system: string[];
+  /** What the public resolvers say, asked through a **scoped** `dns.Resolver`
+   *  that touches no global — so a probe that decides against falling back has
+   *  changed nothing at all. */
+  publicAnswer: string[];
+  /** System addresses that are in a named block-page range. */
+  blocked: string[];
+  /** True when both sides answered and share no address. The block-page shape. */
+  disjoint: boolean;
+  /** Why the probe could not decide, or `null`. */
+  error: string | null;
+};
+
+/**
+ * Ask both resolvers for `host` and put the answers next to each other.
+ *
+ * This is the measurement the whole automatic path rests on, and it is worth
+ * being clear about why it is a *comparison* rather than a block-list check.
+ * Every filtering vendor has its own block-page addresses and no list of them
+ * would ever be complete; but no filter can avoid the one property that gives
+ * it away, which is that its answer is not the answer everyone else gets.
+ *
+ * Compared as **sets with no overlap**, not for equality: Cloudflare returns
+ * an anycast pair and two resolvers routinely return them in a different order
+ * or return only one of them. Sharing even one address means both sides are
+ * looking at the same service, and there is nothing to route around.
+ *
+ * Never throws. A resolver that cannot be reached is a `null`-free `error`
+ * string and a refusal to conclude anything.
+ */
+export async function probeHost(
+  host: string = BOOK_HOST,
+  servers: readonly string[] = FALLBACK_SERVERS,
+): Promise<HostProbe> {
+  const [system, publicAnswer] = await Promise.all([systemAddresses(host), publicAddresses(host, servers)]);
+
+  const blocked = system.ok ? system.value.filter((a) => blockPageOwner(a) !== null) : [];
+  const errors = [system.ok ? "" : `system resolver: ${system.error}`, publicAnswer.ok ? "" : `${servers.join("/")}: ${publicAnswer.error}`]
+    .filter(Boolean)
+    .join("; ");
+
+  const left = system.ok ? system.value : [];
+  const right = publicAnswer.ok ? publicAnswer.value : [];
+  return {
+    host,
+    system: left,
+    publicAnswer: right,
+    blocked,
+    disjoint: left.length > 0 && right.length > 0 && !left.some((a) => right.includes(a)),
+    error: errors === "" ? null : errors,
+  };
+}
+
+type Answer = { ok: true; value: string[] } | { ok: false; error: string };
+
+/** `getaddrinfo`, which is what the socket layer uses and what a filter sits on. */
+function systemAddresses(host: string): Promise<Answer> {
+  return new Promise((resolve) => {
+    // The ORIGINAL lookup, captured at module load: `patchModule` replaces
+    // `http.request`, never `dns.lookup`, so this is the machine's answer even
+    // after the override is installed — which is what makes the log line
+    // "your resolver says X" still true when it is printed.
+    ORIGINAL_LOOKUP(host, { all: true }, (error, addresses) => {
+      if (error) return resolve({ ok: false, error: error.message });
+      const list = Array.isArray(addresses) ? addresses.map((a) => a.address) : [];
+      resolve({ ok: true, value: list });
+    });
+  });
+}
+
+/** The public answer, through a resolver instance that is not the global one. */
+function publicAddresses(host: string, servers: readonly string[]): Promise<Answer> {
+  return new Promise((resolve) => {
+    let resolver: dns.Resolver;
+    try {
+      resolver = new dns.Resolver();
+      resolver.setServers([...servers]);
+    } catch (error) {
+      resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    resolver.resolve4(host, (error, addresses) => {
+      if (error) return resolve({ ok: false, error: error.message });
+      resolve({ ok: true, value: [...addresses] });
+    });
+  });
+}
+
+const ORIGINAL_LOOKUP = dns.lookup;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The automatic, one-shot fallback
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type FallbackReason =
+  /** The override was applied and a retry is worth making. */
+  | "applied"
+  /** The failure did not carry the interception signature. Nothing was probed. */
+  | "not-filtered"
+  /** `THETADUEL_DNS=off`. The operator's network, the operator's answer. */
+  | "opted-out"
+  /** An override is already in place — explicit, or a previous fallback. */
+  | "already"
+  /** Both resolvers agree. Whatever is wrong, it is not name resolution. */
+  | "agree"
+  /** Neither answer could be obtained; nothing was concluded and nothing changed. */
+  | "probe-failed"
+  /** `dns.setServers` refused the fallback list. */
+  | "failed";
+
+export type FallbackOutcome = {
+  /** True only when the override is now in place *because of this call*. */
+  applied: boolean;
+  reason: FallbackReason;
+  /** The measurement, or `null` when no probe was run. */
+  probe: HostProbe | null;
+};
+
+/**
+ * ## The four sentences
+ *
+ * They live here, beside the thing that measures the condition, so there is one
+ * wording per situation and no surface can invent a fifth. They are *sentences*
+ * and not a paragraph because their destination is the footer's single error
+ * line — this is an error line, not a tutorial; the tutorial is the README and
+ * `bun run doctor`.
+ *
+ * Each one carries the two facts this repo has twice failed to get across:
+ * **it is this network**, and **it is not a venue outage**.
+ */
+
+/** Applied, and the retry worked. The board is real; how it got here is not. */
+export const FALLBACK_ADVISORY = `Live via public DNS — this network filters the book's host. Not a venue outage.`;
+
+/** Filtered, and nothing has been done about it — so name the one line to add. */
+export const FILTERED_ADVICE = `Network filter, not a venue outage — add ${DNS_ENV}=${FALLBACK_SERVERS.join(",")} to .env and restart.`;
+
+/**
+ * Filtered, a public resolver was already in use, and it *still* failed. Do not
+ * offer `THETADUEL_DNS` here: it is set, and repeating it as advice is how a
+ * user spends an hour re-doing the thing they already did.
+ */
+export const FILTER_PERSISTS_ADVICE = `Something on this network is intercepting the book's host and a public resolver did not get past it. Not a venue outage.`;
+
+/** Filtered, and the operator asked us not to route around it. Their call. */
+export const FILTER_OPTED_OUT_ADVICE = `This network filters the book's host and ${DNS_ENV}=${DNS_OFF} is set, so it is being respected. Not a venue outage.`;
+
+/** The cached outcome. One probe per process; the 30s refresh re-reads nothing. */
+let fallback: FallbackOutcome | null = null;
+/** In-flight guard, so two concurrent failed reads do not both probe. */
+let fallbackJob: Promise<FallbackOutcome> | null = null;
+
+/** What the fallback did, for anything that wants to report it without
+ *  triggering it. `null` until a failure has actually been classified. */
+export function fallbackOutcome(): FallbackOutcome | null {
+  return fallback;
+}
+
+export type FallbackOptions = {
+  /** The raw env value. Defaults to `Bun.env[DNS_ENV]`. */
+  value?: string | null;
+  /** Where the banner goes. Defaults to `console.error` — this is a condition,
+   *  not a status line, and it must survive someone's log filter. */
+  warn?: (message: string) => void;
+  /** Test seam: the measurement. Defaults to the real {@link probeHost}. */
+  probe?: (host: string) => Promise<HostProbe>;
+  host?: string;
+  /**
+   * Test seam: the one call that touches a global.
+   *
+   * It exists for the same reason the whole suite refuses to exercise the live
+   * override — applying it replaces four functions on `node:http`/`node:https`
+   * process-wide, and a unit test that did so would hand every later suite in
+   * the run a patched HTTP stack. With this injected, the *decision* is fully
+   * testable and the *application* is not attempted; the application itself is
+   * verified the only way that proves anything, by starting a real server and
+   * reading `/api/market`. See the note at the top of `test/resolver.test.ts`.
+   */
+  apply?: (servers: readonly string[]) => { ok: true } | { ok: false; error: unknown };
+};
+
+/**
+ * Decide, once per process, whether this failure is a network filter — and if
+ * it demonstrably is, route name resolution around it and say so.
+ *
+ * Returns `applied: true` **only** when the caller should retry. Every other
+ * outcome means "nothing changed, report the failure you already have".
+ *
+ * The header's trade-off section is the thing to read before changing anything
+ * here: a network operator may have blocked this host on purpose, and this
+ * function steps over that. It is loud for that reason.
+ */
+export function autoFallback(error: unknown, options: FallbackOptions = {}): Promise<FallbackOutcome> {
+  if (fallback) return Promise.resolve({ ...fallback, applied: false });
+  if (fallbackJob) return fallbackJob.then((outcome) => ({ ...outcome, applied: false }));
+
+  const verdict = classifyFailure(error);
+  // Guardrail 1, and the one that matters most: a generic failure never gets
+  // here. Not cached — the *next* failure might be the filtered one, and a
+  // 429 on the first read should not decide the process's diagnosis forever.
+  if (verdict.kind !== "filtered") {
+    return Promise.resolve({ applied: false, reason: "not-filtered", probe: null });
+  }
+
+  const job = run(verdict, options).then((outcome) => {
+    // Cached so the 30s refresh does not re-probe — one measurement per
+    // process, one retry, never a loop.
+    //
+    // `probe-failed` is the one outcome deliberately NOT cached. It means
+    // neither resolver answered, which concludes nothing; letting a single DNS
+    // timeout wedge the recovery for the life of the process would turn a
+    // transient hiccup into the exact permanent empty board this exists to
+    // remove. Every *decisive* outcome is cached, and since only an
+    // interception-signature failure reaches this function at all, the
+    // un-cached case cannot become chatty on a healthy network.
+    //
+    // Known limit, stated rather than hidden: a decisive outcome survives a
+    // change of network. Move a running process from a clean link onto a
+    // filtered one — a phone hotspot, which is the exact machine this was
+    // written on — and it keeps the verdict it measured. Restarting re-measures.
+    if (outcome.reason !== "probe-failed") fallback = { ...outcome, applied: false };
+    fallbackJob = null;
+    return outcome;
+  });
+  fallbackJob = job;
+  return job;
+}
+
+async function run(verdict: FailureVerdict, options: FallbackOptions): Promise<FallbackOutcome> {
+  const warn = options.warn ?? ((m: string) => console.error(m));
+  const raw = options.value !== undefined ? options.value : (Bun.env[DNS_ENV] ?? null);
+  const host = options.host ?? BOOK_HOST;
+
+  if (optedOut || (raw ?? "").trim().toLowerCase() === DNS_OFF) {
+    // Printed once, even though the operator asked for this: the whole failure
+    // mode being fixed here is a board that is empty for a reason nobody can
+    // see. Somebody who set `off` months ago and has since forgotten is exactly
+    // the person who needs one line in the log rather than a fifth
+    // investigation.
+    warn(
+      `[dns] the book read failed with the interception signature and ` +
+        `${DNS_ENV}=${DNS_OFF} is set — not probing, not falling back. ` +
+        `Your network's answer is being respected. This is a local network ` +
+        `filter, NOT a Thetanuts outage.`,
+    );
+    return { applied: false, reason: "opted-out", probe: null };
+  }
+  // An explicit `THETADUEL_DNS=<servers>` already ran and still failed, or a
+  // previous fallback is in place. Either way the override is not the missing
+  // piece and re-applying it would prove nothing.
+  if (installed) {
+    warn(
+      `[dns] the book read failed with the interception signature while a ` +
+        `resolver override was already in place — a public resolver did not get ` +
+        `past it, so something on this network is intercepting more than DNS. ` +
+        `Still NOT a Thetanuts outage; see src/server/resolver.ts.`,
+    );
+    return { applied: false, reason: "already", probe: null };
+  }
+
+  const probe = await (options.probe ?? ((h: string) => probeHost(h)))(host);
+
+  if (probe.system.length === 0 || probe.publicAnswer.length === 0) {
+    return { applied: false, reason: "probe-failed", probe };
+  }
+  // Guardrail 2. Two resolvers that agree are not a filter, whatever the cert
+  // said — an expired or misissued certificate at the venue lands here, and
+  // routing around a resolver that was right would fix nothing and confuse
+  // everyone.
+  if (!probe.disjoint) {
+    return { applied: false, reason: "agree", probe };
+  }
+
+  const applied = (options.apply ?? applyOverride)(FALLBACK_SERVERS);
+  if (!applied.ok) {
+    warn(
+      `[dns] the book's host is being filtered on this network, and the automatic ` +
+        `fallback could not be applied: dns.setServers was refused — ` +
+        `${applied.error instanceof Error ? applied.error.message : String(applied.error)}\n` +
+        `  ${FILTERED_ADVICE}`,
+    );
+    return { applied: false, reason: "failed", probe };
+  }
+
+  warn(banner(verdict, probe));
+  return { applied: true, reason: "applied", probe };
+}
+
+/**
+ * The startup shout.
+ *
+ * Long, and unapologetically so. This condition has been investigated four
+ * separate times in this repo and misdiagnosed as a Thetanuts outage twice; the
+ * cost of a paragraph in a dev server's log is nothing beside another
+ * afternoon. It names both measurements so the reader can check the claim
+ * themselves rather than take it, and it names the opt-out so nobody has to
+ * come and find this file to turn it off.
+ */
+function banner(verdict: FailureVerdict, probe: HostProbe): string {
+  const whose = probe.blocked.map((a) => blockPageOwner(a)).filter(Boolean)[0];
+  return [
+    ``,
+    `  ┌─ THIS NETWORK IS FILTERING THE OPTION BOOK ────────────────────────`,
+    `  │ NOT a Thetanuts outage. The venue is fine; your DNS is answering`,
+    `  │ for it. Measured just now, both sides:`,
+    `  │`,
+    `  │   ${probe.host}`,
+    `  │     this machine's resolver → ${probe.system.join(", ") || "(no answer)"}` +
+      (whose ? `   ← ${whose}` : ``),
+    `  │     ${FALLBACK_SERVERS.join(" / ")} → ${probe.publicAnswer.join(", ") || "(no answer)"}`,
+    `  │`,
+    `  │ They share no address, and the read failed with ${verdict.evidence ?? "a TLS error"}`,
+    `  │ — the block page's certificate, correctly rejected.`,
+    `  │`,
+    `  │ SO: this process now resolves hostnames through ${FALLBACK_SERVERS.join(", ")}`,
+    `  │ instead of the machine's resolver. TLS is untouched and every`,
+    `  │ certificate is still fully validated — only the name lookup moved.`,
+    `  │`,
+    `  │ Your network operator may have blocked this host deliberately. To`,
+    `  │ respect that and leave DNS alone, set ${DNS_ENV}=${DNS_OFF} in .env.`,
+    `  │ Details and the full trade-off: src/server/resolver.ts`,
+    `  └────────────────────────────────────────────────────────────────────`,
+    ``,
+  ].join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

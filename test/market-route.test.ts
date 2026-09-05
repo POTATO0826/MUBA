@@ -7,7 +7,8 @@ import {
   type RawMarket,
   type RawMmQuote,
 } from "../src/server/thetanuts.ts";
-import { sourceFrom, type Wire } from "../src/data/thetanuts.tsx";
+import { NETWORK_FILTER, sourceFrom, type Wire } from "../src/data/thetanuts.tsx";
+import type { FallbackOutcome } from "../src/server/resolver.ts";
 import { NO_LADDER, ladderOf, mockMarketSource } from "../src/data/market.ts";
 import { deriveLadder, deriveLadders, liveExpiries } from "../src/data/box.ts";
 import {
@@ -1092,5 +1093,319 @@ describe("/api/config carries every feature flag a client reads", () => {
     for (const key of READ) {
       expect({ key, emitted: EMITTED.has(key) }).toEqual({ key, emitted: true });
     }
+  });
+});
+
+// ─── the DNS filter, from the failed read to the footer's line ───────────────
+
+/**
+ * The condition that has cost this project four investigations, driven end to
+ * end offline: a read that fails with the block page's certificate error, the
+ * fallback's verdict, the envelope, and the sentence the footer prints.
+ *
+ * Every test here injects `deps.fallback`. The real one does two DNS queries
+ * and — when it decides to — replaces four functions on `node:http` for the
+ * rest of the process; neither belongs in a unit suite. What the real one
+ * decides is `test/resolver.test.ts`'s subject, and that it actually works is
+ * proved by starting a server with no `.env` and reading `/api/market`.
+ *
+ * The load-bearing test in here is the **negative** one: an ordinary failure
+ * must reach the screen as an ordinary failure. A confident "your network is
+ * blocking this" printed while Thetanuts is genuinely down would be the third
+ * misdiagnosis of this host in this repo, and the first one the app itself
+ * made.
+ */
+
+/** The error axios actually threw on the filtered machine, code and message. */
+function certError(): Error {
+  return Object.assign(new Error("unable to get local issuer certificate"), {
+    code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  });
+}
+
+/** A `deps.fallback` that answers with one verdict and counts its calls. */
+function fallbackStub(outcome: FallbackOutcome) {
+  let calls = 0;
+  return {
+    get calls() {
+      return calls;
+    },
+    fn: async (_error: unknown) => {
+      calls += 1;
+      return outcome;
+    },
+  };
+}
+
+const APPLIED: FallbackOutcome = { applied: true, reason: "applied", probe: null };
+const NOT_FILTERED: FallbackOutcome = { applied: false, reason: "not-filtered", probe: null };
+const OPTED_OUT: FallbackOutcome = { applied: false, reason: "opted-out", probe: null };
+const AGREE: FallbackOutcome = { applied: false, reason: "agree", probe: null };
+
+describe("a filtered read recovers, once, and says so", () => {
+  test("a retry that succeeds carries the live board and the advisory", async () => {
+    // A client that fails once with the cert error and then works — the actual
+    // sequence on a machine where the override lands between the two reads.
+    let call = 0;
+    const client: MarketClient = {
+      chainConfig: FIXTURE.chainConfig,
+      api: {
+        async fetchOrders() {
+          call += 1;
+          if (call === 1) throw certError();
+          return FIXTURE.orders;
+        },
+        async getMarketData() {
+          return { prices: FIXTURE.prices };
+        },
+      },
+    };
+    const stub = fallbackStub(APPLIED);
+    const env = await createMarketService({ client, now: fakeClock().now, fallback: stub.fn }).snapshot();
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    expect(env.orders.length).toBeGreaterThan(0);
+    expect(call).toBe(2);
+    expect(stub.calls).toBe(1);
+    // Live rows AND an advisory. The board is real; how it was obtained is not
+    // the normal route, and the footer says so rather than the log alone.
+    expect(env.advisory).toContain("public DNS");
+    expect(env.advisory).toContain("Not a venue outage");
+    // Emphatically not `note`: `note` means stale, and would paint current rows
+    // amber and label them old.
+    expect(env.note).toBeUndefined();
+  });
+
+  test("the advisory rides EVERY later envelope, not just the first", async () => {
+    let call = 0;
+    const client: MarketClient = {
+      chainConfig: FIXTURE.chainConfig,
+      api: {
+        async fetchOrders() {
+          call += 1;
+          if (call === 1) throw certError();
+          return FIXTURE.orders;
+        },
+        async getMarketData() {
+          return { prices: FIXTURE.prices };
+        },
+      },
+    };
+    const clock = fakeClock();
+    const service = createMarketService({ client, now: clock.now, fallback: fallbackStub(APPLIED).fn });
+
+    await service.snapshot();
+    clock.advance(TTL_MS * 3);
+    const later = await service.snapshot();
+
+    // The footer reads one envelope and has no memory of the boot log. A board
+    // that exists only because the app routed around this network must keep
+    // saying so for as long as that is true.
+    expect(later.ok && later.advisory).toContain("public DNS");
+  });
+
+  test("one retry, not a loop: a second failure is not offered a second fallback", async () => {
+    const fake = fakeClient();
+    const clock = fakeClock();
+    // `applied: false` is what the real `autoFallback` returns from its cache
+    // once it has already decided — the caller must rethrow rather than read
+    // again.
+    const stub = fallbackStub({ applied: false, reason: "applied", probe: null });
+    fake.failWith(certError());
+    const service = createMarketService({ client: fake.client, now: clock.now, fallback: stub.fn });
+
+    await service.snapshot();
+    const callsAfterFirst = fake.calls;
+    clock.advance(TTL_MS * 3);
+    await service.snapshot();
+
+    // One upstream read per window, never two: the failed read is not retried
+    // when the fallback says it changed nothing.
+    expect(fake.calls).toBe(callsAfterFirst + 1);
+  });
+});
+
+describe("what the envelope says when the read stays broken", () => {
+  test("a measured filter carries a cause and the sentence naming the fix", async () => {
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const env = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      // `failed` — the filter is real and the override could not be applied, so
+      // the one line to add is genuinely the user's next move.
+      fallback: fallbackStub({ applied: false, reason: "failed", probe: null }).fn,
+    }).snapshot();
+
+    expect(env.ok).toBe(false);
+    if (env.ok) return;
+    expect(env.cause).toBe("network-filter");
+    expect(env.advisory).toContain("THETADUEL_DNS=1.1.1.1,8.8.8.8");
+    expect(env.advisory).toContain("not a venue outage");
+    // The venue's own words survive underneath the diagnosis rather than being
+    // replaced by it.
+    expect(env.reason).toContain("local issuer certificate");
+  });
+
+  test("the opted-out case does not re-offer the setting that is already set", async () => {
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const env = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub(OPTED_OUT).fn,
+    }).snapshot();
+
+    expect(env.ok).toBe(false);
+    if (env.ok) return;
+    expect(env.cause).toBe("network-filter");
+    expect(env.advisory).toContain("THETADUEL_DNS=off");
+    expect(env.advisory).not.toContain("1.1.1.1");
+  });
+
+  test("a filter that survived the fallback stops offering the env line", async () => {
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const env = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub(APPLIED).fn,
+    }).snapshot();
+
+    // `applied` and still failing: something is intercepting beyond DNS, and
+    // telling this user to set THETADUEL_DNS would send them to re-do a thing
+    // the process already did for them.
+    expect(env.ok).toBe(false);
+    if (env.ok) return;
+    expect(env.cause).toBe("network-filter");
+    expect(env.advisory).not.toContain("1.1.1.1");
+    expect(env.advisory).toContain("intercepting");
+  });
+});
+
+describe("the negative case: an ordinary failure is never a DNS block", () => {
+  /**
+   * The guard on the mistake this whole feature could introduce. Each of these
+   * is a real way the read fails on a perfectly good network, and none of them
+   * may reach the screen wearing a diagnosis about the user's DNS.
+   */
+  test("upstream errors carry a reason and NOTHING else", async () => {
+    for (const error of [
+      new Error("HTTP 429 rate limited"),
+      new Error("socket hang up"),
+      Object.assign(new Error("timeout of 30000ms exceeded"), { code: "ETIMEDOUT" }),
+      Object.assign(new Error("Request failed with status code 502"), { code: "ERR_BAD_RESPONSE" }),
+    ]) {
+      const fake = fakeClient();
+      fake.failWith(error);
+      const env = await createMarketService({
+        client: fake.client,
+        now: fakeClock().now,
+        fallback: fallbackStub(NOT_FILTERED).fn,
+      }).snapshot();
+
+      expect(env.ok).toBe(false);
+      if (env.ok) return;
+      expect(env.cause).toBeUndefined();
+      expect(env.advisory).toBeUndefined();
+      expect(env.reason).toBe(error.message);
+    }
+  });
+
+  test("a cert error whose probe found the resolvers AGREEING is left unclassified", async () => {
+    // The genuinely dangerous near-miss: the signature is there, the network is
+    // not the cause. An expired or misissued certificate at the venue lands
+    // here, and it must read as "the read failed", not as "fix your DNS".
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const env = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub(AGREE).fn,
+    }).snapshot();
+
+    expect(env.ok).toBe(false);
+    if (env.ok) return;
+    expect(env.cause).toBeUndefined();
+    expect(env.advisory).toBeUndefined();
+  });
+
+  test("a probe that could not answer claims nothing either", async () => {
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const env = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub({ applied: false, reason: "probe-failed", probe: null }).fn,
+    }).snapshot();
+
+    expect(env.ok).toBe(false);
+    if (env.ok) return;
+    expect(env.cause).toBeUndefined();
+  });
+
+  test("the kill switch is still its own thing, untouched by any of this", async () => {
+    const previous = Bun.env.THETADUEL_MARKET;
+    Bun.env.THETADUEL_MARKET = "off";
+    try {
+      const env = await createMarketService({ client: fakeClient().client }).snapshot();
+      expect(env).toEqual({ ok: false, reason: "disabled" });
+    } finally {
+      if (previous === undefined) delete Bun.env.THETADUEL_MARKET;
+      else Bun.env.THETADUEL_MARKET = previous;
+    }
+  });
+});
+
+describe("the classified failure reaches the footer's line, not a generic one", () => {
+  /**
+   * The last hop, and the one the teammate actually saw fail. `useLiveMarket`
+   * turns the envelope into `LiveMarketState.error`, which `Footer` prints in
+   * amber. Before this, every failure — filter, outage, throttle — printed
+   * `Book unavailable — HTTP request failed.`, which names no cause and no fix.
+   */
+  test("a network-filter envelope prints the server's sentence verbatim", async () => {
+    const fake = fakeClient();
+    fake.failWith(certError());
+    const res = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub({ applied: false, reason: "failed", probe: null }).fn,
+    }).handle();
+    const wire = (await res.json()) as Wire;
+
+    expect(wire.ok).toBe(false);
+    expect(wire.cause).toBe(NETWORK_FILTER);
+    // What `useLiveMarket` will show: the advisory alone, NOT wrapped in the
+    // generic "Book unavailable — …" that says nothing.
+    expect(wire.advisory).toContain("THETADUEL_DNS=1.1.1.1,8.8.8.8");
+    expect(wire.advisory).not.toContain("Book unavailable");
+  });
+
+  test("an ordinary failure still gets the generic wrapper, and no advice", async () => {
+    const fake = fakeClient();
+    fake.failWith(new Error("HTTP 429 rate limited"));
+    const res = await createMarketService({
+      client: fake.client,
+      now: fakeClock().now,
+      fallback: fallbackStub(NOT_FILTERED).fn,
+    }).handle();
+    const wire = (await res.json()) as Wire;
+
+    expect(wire.ok).toBe(false);
+    expect(wire.cause).toBeUndefined();
+    expect(wire.advisory).toBeUndefined();
+    expect(wire.reason).toContain("429");
+  });
+
+  test("a live board with an advisory stays LIVE — the chip is not downgraded", async () => {
+    // A stale label would be a lie: these rows are current. The green chip and
+    // the amber sentence together are the honest pairing, and `sourceFrom` is
+    // where the distinction is kept.
+    const wire: Wire = { ok: true, at: 1, advisory: "Live via public DNS — …" };
+    const source = sourceFrom(wire, false);
+    expect(source.meta.source).toBe("live");
+    expect(source.meta.note).toBeUndefined();
   });
 });

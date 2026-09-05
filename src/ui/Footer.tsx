@@ -26,7 +26,16 @@ export function Footer({
   marketError = null,
 }: {
   source: MarketSource;
-  /** Amber line. `null` when the book is fine or was never asked for. */
+  /**
+   * Amber line. `null` when the book is fine or was never asked for.
+   *
+   * It is not only a failure. `LiveMarketState.error` also carries an
+   * *advisory* on a perfectly live book — today, that the server had to resolve
+   * the book's host around this network's DNS filter — so a green LIVE chip
+   * beside an amber sentence is a legal and meaningful pairing, not a
+   * contradiction. That is why this strip renders the two independently and
+   * `meansOf` is told about the error rather than inferring the state from it.
+   */
   marketError?: string | null;
 }) {
   const { source: kind, fetchedAt } = source.meta;
