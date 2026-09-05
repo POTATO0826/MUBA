@@ -2186,3 +2186,179 @@ describe("the lobby board wears the grade the gate measured", () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE MARKERS THE APP DROPPED EXACTLY WHERE IT NEEDED THEM
+//
+// Two independent audits found the same failure mode across four surfaces, and
+// it is one failure rather than four: every disclosure in this app was gated on
+// a live read having SUCCEEDED. So the screens said the most when they were
+// telling the truth and said nothing at all when they were not — and "nothing",
+// against a home page promising "Options pricing streams live from Thetanuts on
+// Base", does not read as neutrality. It reads as confirmation.
+//
+// These assertions hold the inverted rule on the surfaces outside the pick
+// screen (whose own four markers are pinned in `test/detail.test.ts`): the home
+// hero's claim about the venue, the room's copy-desk dollars, the create
+// screen's BOOK heading, and the ETH prize pool that nobody is paid.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("a surface that cannot verify its claim says so", () => {
+  const testid = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+
+  /** Mount with a market state — the source AND the reason it is degraded,
+   *  which is the pair `useLiveMarket` returns and the pair the footer reads. */
+  function mountWith(path: string, source: MarketSource, marketError: string | null = null) {
+    window.history.replaceState(null, "", path);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(<App source={source} marketError={marketError} />);
+    });
+  }
+
+  /** A source that answered, with a `fetchedAt` the age chips can read. */
+  const liveSource = (kind: "live" | "stale", fetchedAt: number): MarketSource => ({
+    id: "thetanuts · base 8453",
+    meta: { ok: true, source: kind, fetchedAt },
+    underlyings: () => ["ETH"],
+    pricing: () => [],
+    mmPricing: () => [],
+    orders: () => [],
+    spot: (u) => (u === "ETH" ? 2453.11 : null),
+  });
+
+  // ── the home hero ─────────────────────────────────────────────────────────
+
+  test("the hero's promise about the venue is a reading of the venue, not prose", () => {
+    // Live: the sentence is the one that always shipped, character for
+    // character. The promise is a good one when it is true.
+    mountWith("/", liveSource("live", Date.now()));
+    expect(testid("hero-pricing")?.textContent).toBe(
+      "Options pricing streams live from Thetanuts on Base.",
+    );
+    expect(testid("hero-market-state")?.textContent).toBe("LIVE");
+  });
+
+  test("with the book unreachable the hero says so, and stops contradicting its own footer", () => {
+    // The exact state of the machine this was written on: `/api/market` did not
+    // answer, `useLiveMarket` degraded to the fixture. The hero used to keep
+    // promising a live stream while the footer 400px below correctly read
+    // `SEEDED · seeded fixtures — read only`. One app, two answers, one fact.
+    mountWith("/", mockMarketSource, "Could not reach the book.");
+    const hero = testid("hero-pricing")?.textContent ?? "";
+    expect(hero).toContain("Options pricing is seeded in this build");
+    expect(hero).not.toContain("streams live");
+    // The reason travels with the claim.
+    expect(hero).toContain("Could not reach the book.");
+    // And the chip agrees with the footer's chip, which is the whole point.
+    expect(testid("hero-market-state")?.textContent).toBe("SEEDED");
+    expect(testid("market-state")?.textContent).toBe("SEEDED");
+  });
+
+  test("a stale book names its age in the hero, because the word alone is not the disclosure", () => {
+    mountWith("/", liveSource("stale", Date.now() - 7 * 60_000), "Book is stale.");
+    expect(testid("hero-pricing")?.textContent).toContain("this read is 7m ago");
+    expect(testid("hero-market-state")?.textContent).toBe("STALE · 7m ago");
+  });
+
+  // ── SEEDED's two arrivals ─────────────────────────────────────────────────
+
+  test("the footer chip stops claiming nothing failed when something did", () => {
+    // `FEED_STATE.seeded.means` ends "no network, nothing failed" — true of an
+    // offline build, false of a fallback, and the fallback is how this state is
+    // reached whenever the venue is down. The chip is the only place the claim
+    // is written out, so it has to be the true one.
+    mountWith("/", mockMarketSource);
+    expect(testid("market-state")?.getAttribute("title")).toContain("nothing failed");
+
+    act(() => root.unmount());
+    container.remove();
+    mountWith("/", mockMarketSource, "Could not reach the book.");
+    const title = testid("market-state")?.getAttribute("title") ?? "";
+    expect(title).toContain("the live read failed");
+    expect(title).not.toContain("nothing failed");
+  });
+
+  // ── the pool nobody is paid ───────────────────────────────────────────────
+
+  test("every screen that prints the ETH pool says what the ETH pool is", () => {
+    // `state/match.ts` renders a seeded `LobbyDef.prize` as `"4.80 ETH"`, and
+    // nothing on this path stakes, escrows or pays ether — the code calls it
+    // "the PTS pool's own ETH-denominated fiction" itself. The figure stays;
+    // what it gains is the clause the box arena already says about its own
+    // stake, `stakeBasisLine(…, null)` → "notional · nothing is held".
+    const held = (): string[] =>
+      [...container.querySelectorAll("[data-notional-pool]")].map((el) => el.textContent ?? "");
+
+    // The board card, where the number is first offered.
+    mount("/battles");
+    expect(held().length).toBeGreaterThan(0);
+    for (const line of held()) expect(line).toContain("nothing is held");
+
+    // The room, beside PRIZE POOL and YOUR ENTRY.
+    remount("/match/kz-semis/room");
+    expect(text()).toContain("4.80 ETH");
+    expect(held()).toHaveLength(1);
+    expect(held()[0]).toContain("nothing is held");
+
+    // The create screen, where a host chooses the number.
+    remount("/create");
+    expect(held()).toHaveLength(1);
+    expect(text()).toContain("no ETH is approved, transferred or escrowed on this path");
+  });
+
+  // ── the copy desk's dollars in the lobby room ─────────────────────────────
+
+  test("the room's seat dossier carries the same disclosure /ranks gives the same numbers", () => {
+    // `COPIERS 40 · ≈ $8,915 / DAY`, in accent, on a seat whose neighbouring
+    // cells correctly read `NO DUELS YET` and `SEASON OPENS HERE`. `/ranks`
+    // prints these very fields out of the same `LeaderPlayer` under a SEEDED
+    // chip and a `DEMO ONLY · NO FUNDS MOVED` line; the room had neither.
+    mount("/match/kz-semis/room");
+    const dossiers = [...container.querySelectorAll("[data-seat-dossier]")];
+    expect(dossiers.length).toBeGreaterThan(0);
+    for (const d of dossiers) {
+      const state = d.querySelector("[data-desk-state]");
+      expect(state?.getAttribute("data-desk-state")).toBe("seeded");
+      expect(state?.textContent).toContain("SEEDED");
+      expect(state?.textContent).toContain("DEMO ONLY · NO FUNDS MOVED");
+    }
+  });
+
+  // ── the create screen's BOOK heading ──────────────────────────────────────
+
+  test("the BOOK heading claims LIVE only when something was actually measured", () => {
+    // With nothing qualified — offline, or `/api/market` down — every group
+    // below this heading greys out with its reason while the heading itself
+    // used to keep saying LIVE ON BASE.
+    mount("/create");
+    const head = container.querySelector("[data-book-head]");
+    expect(head?.getAttribute("data-book-head")).toBe("seeded");
+    expect(head?.textContent).toContain("NO LIVE READ ON BASE");
+    expect(head?.textContent).toContain("SEEDED");
+  });
+
+  test("with a measured book the heading is the one that always shipped", () => {
+    const source: MarketSource = {
+      ...mockMarketSource,
+      meta: { ok: true, source: "live", fetchedAt: Date.now() },
+      qualified: () => [
+        {
+          underlying: "ETH",
+          grade: "DEEP" as Grade,
+          spot: 2453,
+          orders: 124,
+          greeked: 81,
+          depthUsd: 1_191_292,
+          mmPriced: true,
+        } as unknown as QualifiedAsset,
+      ],
+    };
+    mountWith("/create", source);
+    const head = container.querySelector("[data-book-head]");
+    expect(head?.getAttribute("data-book-head")).toBe("live");
+    expect(head?.textContent).toBe("BOOK · LIVE ON BASE");
+  });
+});

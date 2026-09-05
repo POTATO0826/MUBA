@@ -66,6 +66,43 @@ const UNGRADED_BLURB =
   "not graded — this asset is not in today's measured set, so nothing is known about its depth";
 
 /**
+ * What the Ξ figures on a lobby card actually are.
+ *
+ * `LobbyDef.prize` is a seeded literal and `src/state/match.ts` renders it as
+ * `"4.80 ETH"`. Nothing stakes it, nothing escrows it and nothing pays it: the
+ * points ledger is the only thing that moves on this path, and `state/match.ts`
+ * says so itself, calling this figure "the PTS pool's own ETH-denominated
+ * fiction". A visitor with no wallet and every flag off could nonetheless read
+ * `PRIZE POOL 4.80 Ξ`, press `Accept match · 2.40 Ξ`, and be told at 30px on the
+ * result screen that someone "takes the pool — 4.80 ETH".
+ *
+ * The number stays. Deleting it would hide a real setting — the host chose it,
+ * it scales the points at stake, and a card with no pool figure looks like a
+ * card with a missing field. What it gains is the clause the box arena has said
+ * about its own stake since the arena shipped: `stakeBasisLine(x, null)` →
+ * *"…each, notional · nothing is held"*. Same fact, same words, the front door
+ * instead of the arena.
+ *
+ * Duplicated rather than imported for the reason spelled out above
+ * `UNGRADED_LABEL`: the constant it echoes lives in `src/views/BoxBuilder.tsx`
+ * and a `ui/` primitive importing from `views/` is the wrong direction. The
+ * arena's own sentence also names USDC and `DuelEscrow`, neither of which is on
+ * this path — this pool is PTS — so it is the clause that carries over, not the
+ * sentence.
+ *
+ * **Lower case, and it stays lower case.** `stakeBasisLine` returns lower case
+ * and `RoomLobby.tsx` uppercases it at its own call site; this one may not,
+ * because the string `NOTHING` contains `THIN` and the board's grade backstop
+ * greps the whole page for that word (`test/app.test.tsx` — "with no book read
+ * at all the board grades nothing"). An uppercase pool disclosure would read to
+ * that test as a THIN grade chip on every card. Two unrelated vocabularies
+ * colliding inside one substring is a genuine hazard rather than a test being
+ * fussy, and the register the arena already writes this clause in is the one
+ * that avoids it.
+ */
+export const NOTIONAL_POOL_LINE = "notional · nothing is held · settles in PTS";
+
+/**
  * The DEEP/THIN badge, in the one place it is defined.
  *
  * Exported because the lobby card and the slice reveal must render the same
@@ -182,7 +219,10 @@ export function LobbyCard({
   /** Three lines on hover. Enough to know what you are sitting down to. */
   const details = [
     `${lobby.host.name} · ${MARKET_LABEL[lobby.market]} · ${lobby.legs} legs · ${sectorLine}`,
-    `${lobby.prize.toFixed(2)} Ξ pool · ${(lobby.prize / 2).toFixed(2)} Ξ each`,
+    // The hover pane states the pool and what the pool is, in one line, off the
+    // one constant — the same shape `stakeBasisLine` gives the arena's duel
+    // strip: the amount, then the clause.
+    `${lobby.prize.toFixed(2)} Ξ pool · ${(lobby.prize / 2).toFixed(2)} Ξ each, ${NOTIONAL_POOL_LINE}`,
     `${mode.label} · ${mode.duration} window · spin deals the tickers · most legs wins`,
   ];
 
@@ -326,6 +366,16 @@ export function LobbyCard({
             <Figure label="PRIZE POOL" value={`${lobby.prize.toFixed(2)} Ξ`} color={C.accent} />
             <Figure label="ENTRY" value={`${(lobby.prize / 2).toFixed(2)} Ξ`} />
             <Figure label="SEATS" value={lobby.status === "matched" ? "2/2" : "1/2"} color={status.color} />
+          </div>
+
+          {/* One line under both Ξ figures rather than a word appended to each:
+              the claim is about the pool, and the entry is half of it. See
+              `NOTIONAL_POOL_LINE`. */}
+          <div
+            data-notional-pool=""
+            style={sx(`margin-top:8px;font:500 8.5px/1 ${MONO};letter-spacing:.04em;color:${C.faint}`)}
+          >
+            {NOTIONAL_POOL_LINE}
           </div>
 
           <div style={sx("display:flex;align-items:center;gap:7px;margin-top:12px")}>

@@ -1,5 +1,5 @@
 import { sx } from "../lib/sx.ts";
-import { C, FEED_STATE, MONO, feedState, stateAge, stateChip } from "../theme.ts";
+import { C, FEED_STATE, MONO, feedState, meansOf, stateAge, stateChip } from "../theme.ts";
 import type { MarketSource } from "../data/market.ts";
 
 /**
@@ -55,9 +55,17 @@ export function Footer({
           reads SEEDED, and a colour that meant STALE would then be arguing with
           the chip. */}
       {marketError && <span style={sx(`color:${C.amber}`)}>{marketError}</span>}
+      {/* The chip's `title` is the only place the claim is written out, so it
+          has to be the claim that is actually true. This footer is the one
+          surface holding both halves — the state AND the reason it is that
+          state — so it is the one that can tell "no network was needed" from
+          "the network failed and we fell back", and `meansOf` is where that
+          choice is made. Before this, a book that was fetched and refused wore
+          a tooltip reading "no network, nothing failed" directly beside the
+          amber sentence saying what had failed. */}
       <span
         data-testid="market-state"
-        title={spec.means}
+        title={meansOf(state, marketError !== null)}
         style={sx(stateChip(state))}
       >
         {spec.label}

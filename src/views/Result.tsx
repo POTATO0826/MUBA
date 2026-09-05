@@ -17,6 +17,7 @@ import { conditionText, type ParlayLeg } from "../engine/parlay.ts";
 import { sfx, useCountUp } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS, miniTag, tag } from "../theme.ts";
+import { NOTIONAL_POOL_LINE } from "../ui/LobbyCards.tsx";
 import type { Player, SectorKey } from "../types.ts";
 import { TIER_COLOR } from "./ParlayPick.tsx";
 
@@ -128,6 +129,22 @@ export function Result(p: ResultProps) {
               <div style={sx("margin-top:12px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap")}>
                 <span style={sx(`font:700 30px/1 ${MONO};color:${C.accent}`)}>{p.prizeLabel}</span>
                 <span style={sx(`font:500 12px/1 ${MONO};color:${C.muted}`)}>{v.scoreLine}</span>
+              </div>
+              {/* The largest number on this screen, and the one nobody is paid.
+                  `prizeLabel` is `state/match.ts`'s `"4.80 ETH"` off a seeded
+                  `LobbyDef.prize`; what actually moved is the PTS figure two
+                  rows down, which is counted out and banked. A visitor with no
+                  wallet and every flag off reached here reading that someone
+                  "takes the pool — 4.80 ETH", so the clause the box arena says
+                  about its own stake is said here too, next to the figure it is
+                  about. `NOTIONAL_POOL_LINE` is the board card's and the room's
+                  line: one statement about the pool, from the lobby list to the
+                  scoreboard. */}
+              <div
+                data-notional-pool=""
+                style={sx(`margin-top:8px;font:500 8.5px/1 ${MONO};letter-spacing:.04em;color:${C.faint}`)}
+              >
+                {NOTIONAL_POOL_LINE}
               </div>
               <div style={sx("margin-top:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
                 <span style={sx(modeTag(p.mode.key))}>

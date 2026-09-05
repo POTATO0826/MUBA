@@ -19,7 +19,8 @@ import {
 } from "../data/sectors.ts";
 import { sfx, useSoundHover } from "../lib/sound/index.ts";
 import { sx, sxWith } from "../lib/sx.ts";
-import { C, MONO, SANS, miniTag, pill, tag } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, miniTag, pill, stateChip, tag } from "../theme.ts";
+import { NOTIONAL_POOL_LINE } from "../ui/LobbyCards.tsx";
 import type { LobbyForm } from "../state/match.ts";
 import type { MarketFilter, Mode, SectorKey } from "../types.ts";
 
@@ -425,6 +426,10 @@ export function CreateLobby(p: CreateLobbyProps) {
   // same reason the book above is: it is a filter over an injected list, not
   // state, and the list changes every time the snapshot refreshes.
   const qualified = p.live ?? [];
+  /** Did today's book measure anything at all? `[]` is the answer both offline
+   *  and with `/api/market` down, and it is the state the BOOK heading and the
+   *  greyed groups below have to agree about. */
+  const measured = qualified.length > 0;
   const liveStatus = liveSectorStatus(qualified.map((a) => a.underlying));
   const grades: Record<string, Grade> = Object.fromEntries(
     qualified.map((a) => [a.underlying, a.grade]),
@@ -516,7 +521,27 @@ export function CreateLobby(p: CreateLobbyProps) {
             )}
           />
 
-          <div style={sx(`${LABEL};margin-top:20px`)}>BOOK · LIVE ON BASE</div>
+          {/* The heading claimed `BOOK · LIVE ON BASE` unconditionally, which
+              made it the loudest thing on the card that could be false: with the
+              venue unreachable every group below greys out *with its reason*
+              while the header above them still said LIVE. The measurement is
+              `p.live` — `qualifiedAssets()` against today's book — so an empty
+              list is the app saying it read nothing, and the heading now says
+              the same thing the rows under it are already saying. */}
+          <div
+            data-book-head={measured ? "live" : "seeded"}
+            style={sx(`${LABEL};margin-top:20px;display:flex;align-items:center;gap:8px;flex-wrap:wrap`)}
+          >
+            <span>BOOK · {measured ? "LIVE ON BASE" : "NO LIVE READ ON BASE"}</span>
+            {!measured && (
+              <span
+                title={FEED_STATE.seeded.means}
+                style={sx(`${stateChip("seeded")};font-size:8px;letter-spacing:.12em`)}
+              >
+                {FEED_STATE.seeded.label}
+              </span>
+            )}
+          </div>
           <div data-live-book style={sx(LIVE_ROW)}>
             {liveStatus.map((s) => (
               <LiveSector
@@ -611,6 +636,22 @@ export function CreateLobby(p: CreateLobbyProps) {
           <div style={sx(`${LABEL};margin-top:20px`)}>ENTRY PER PLAYER</div>
           <div style={sx(`margin-top:10px;font:700 24px/1 ${MONO}`)}>{p.entryLabel}</div>
           <div style={sx(NOTE)}>Half the pool each. Winner takes the full pool.</div>
+          {/* Said where the host is choosing the number, in the shape the box
+              arena's create screen already says it: the amount above, then the
+              clause about what it is. `StakeField` below is the USDC side bet
+              and is a different currency with no rate to this one — it carries
+              its own copy. */}
+          <div
+            data-notional-pool=""
+            style={sx(`margin-top:10px;font:500 8.5px/1.5 ${MONO};letter-spacing:.04em;color:${C.faint}`)}
+          >
+            {NOTIONAL_POOL_LINE}
+          </div>
+          <div style={sx(NOTE)}>
+            The pool is a number this lobby carries, not money anyone took — no ETH is approved,
+            transferred or escrowed on this path, and the duel settles in points. The Ξ figure
+            scales the points at stake and nothing else.
+          </div>
 
           <StakeField stake={p.stake} />
           {mode.oddsBoost > 1 && (

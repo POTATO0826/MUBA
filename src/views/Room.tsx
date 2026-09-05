@@ -30,9 +30,30 @@ import { SECTORS, bookForSectors, sectorChips, symsOfSector } from "../data/sect
 import { MODES, modeTag, type ModeSpec } from "../data/modes.ts";
 import { playClip, sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, MONO, SANS, miniTag, tag } from "../theme.ts";
+import { C, FEED_STATE, MONO, SANS, miniTag, stateChip, tag } from "../theme.ts";
 import type { LobbyDef, Player, SectorKey } from "../types.ts";
 import { LadderTrend } from "../ui/LadderRow.tsx";
+import { NOTIONAL_POOL_LINE } from "../ui/LobbyCards.tsx";
+
+/**
+ * The copy desk's disclosure, in the two pieces `/ranks` already renders it in.
+ *
+ * `/ranks` prints `DEMO ONLY · NO FUNDS MOVED` under an armed COPY button and
+ * wears a SEEDED chip over the whole ladder, because every figure there is a
+ * reduction over `leaderboardWith(you)` — fourteen personas built from a seeded
+ * skill scalar. This room's seat dossier prints figures out of the very same
+ * `LeaderPlayer` and carried neither: a player with `RECORD NO DUELS YET`,
+ * `0 BATTLES` and `SEASON OPENS HERE` beside it was told, in accent, that
+ * `COPIERS 40` were paying them `≈ $8,915 / DAY`. Three correct empty states
+ * and one confident fiction, in one four-cell grid.
+ *
+ * The figures stay — they are what a rank is worth in this game's own model,
+ * and the dossier is where that model is shown. What they gain is the same
+ * sentence the same numbers already carry one screen away. It is the string
+ * `/ranks` uses, character for character, so the two surfaces make one
+ * statement; `test/copytrade.test.ts` already greps for it there.
+ */
+const DESK_DEMO_LINE = "DEMO ONLY · NO FUNDS MOVED";
 
 /** Native `title` for a sector chip — same cheap echo the lobby cards give
  *  theirs: the group's tickers, or the whole book behind a collapsed preset
@@ -201,9 +222,24 @@ export function Room(p: RoomProps) {
               on exactly those — neither of you picks a ticker.
             </div>
           </div>
-          <div style={sx("display:flex;gap:10px;flex:none")}>
-            <Figure label="PRIZE POOL" value={p.prizeLabel} color={C.accent} />
-            <Figure label="YOUR ENTRY" value={p.entryLabel} />
+          {/* The pool, and what it is. Both figures are `state/match.ts`'s
+              `"4.80 ETH"` / `"2.40 ETH"` off a seeded `LobbyDef.prize`; nothing
+              on this path stakes, escrows or pays ether, and the ready press
+              below moves points and only points. `NOTIONAL_POOL_LINE` is the
+              board card's line — the same clause the box arena says about its
+              own stake — so a player reads one statement about the pool on the
+              card and the same one in the room. */}
+          <div style={sx("display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none")}>
+            <div style={sx("display:flex;gap:10px")}>
+              <Figure label="PRIZE POOL" value={p.prizeLabel} color={C.accent} />
+              <Figure label="YOUR ENTRY" value={p.entryLabel} />
+            </div>
+            <div
+              data-notional-pool=""
+              style={sx(`font:500 8.5px/1 ${MONO};letter-spacing:.04em;color:${C.faint};text-align:right`)}
+            >
+              {NOTIONAL_POOL_LINE}
+            </div>
           </div>
         </div>
       </div>
@@ -416,7 +452,11 @@ function Dossier({ row }: { row: LeaderPlayer }) {
             `/ranks` prints, in the same units, through the same formatters.
             The desk's dollars are not the PTS ledger and there is no rate
             between them (see the currency note in `data/leaderboard.ts`); the
-            unlock line below stays in XP for exactly that reason. */}
+            unlock line below stays in XP for exactly that reason.
+
+            Being the same fields is also why they now carry the same
+            disclosure: see `DESK_DEMO_LINE` at the top of this file, and the
+            chip and line directly beneath this grid. */}
         <Line
           label="CAREER P/L"
           value={usdSigned(row.earnings)}
@@ -449,6 +489,23 @@ function Dossier({ row }: { row: LeaderPlayer }) {
             {mode.label}
           </span>
         </div>
+      </div>
+
+      {/* The dossier's own provenance, said once for the four cells above it.
+          The chip is the vocabulary's SEEDED — grey, unpulsed, carrying its own
+          `means` as a title, exactly as `/ranks` wears it over the ladder these
+          numbers come out of — and the line beside it is `/ranks`'s own
+          `DEMO ONLY · NO FUNDS MOVED`. */}
+      <div
+        data-desk-state="seeded"
+        style={sx(`display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid ${C.line}`)}
+      >
+        <span title={FEED_STATE.seeded.means} style={sx(`${stateChip("seeded")};font-size:8px`)}>
+          {FEED_STATE.seeded.label}
+        </span>
+        <span style={sx(`font:500 8.5px/1 ${MONO};letter-spacing:.1em;color:${C.faint}`)}>
+          {DESK_DEMO_LINE}
+        </span>
       </div>
     </div>
   );

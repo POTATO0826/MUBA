@@ -76,8 +76,16 @@ import {
   summarize,
   type LiveCard,
 } from "../src/engine/parlay.ts";
-import type { OptionBook } from "../src/desk/optionize.ts";
-import { ParlayPick, vanillaPayout } from "../src/views/ParlayPick.tsx";
+import { OPTIONS_CHIP, SETTLEMENT_NOTE, type OptionBook } from "../src/desk/optionize.ts";
+import { SPOT_CHIP } from "../src/data/spot.ts";
+import { SEEDED_FALLBACK_MEANS, FEED_STATE } from "../src/theme.ts";
+import {
+  ParlayPick,
+  SEEDED_CARDS_CHIP,
+  SEEDED_SETTLEMENT_NOTE,
+  SEEDED_SPOT_CHIP,
+  vanillaPayout,
+} from "../src/views/ParlayPick.tsx";
 import type { PricingRow } from "../src/types.ts";
 
 const ROOT = join(import.meta.dir, "..");
@@ -1165,7 +1173,7 @@ describe("the live card path — the multiplier's provenance and the dead slot",
    * BTC have an options book — and it is the configuration the mixed-basis
    * question is actually about.
    */
-  function board(book?: OptionBook) {
+  function board(book?: OptionBook, marketError?: string) {
     const arena = ["ETH", "AAPL"] as const;
     const legs = arena.map((sym) => legForCard(sym, PARLAY_CARDS[0]!));
     mount(
@@ -1173,6 +1181,7 @@ describe("the live card path — the multiplier's provenance and the dead slot",
         lobbyName: "T",
         source: mockMarketSource,
         book,
+        marketError: marketError ?? null,
         mode: MODES.NORMAL,
         opponent: OPPONENT,
         arena,
@@ -1215,9 +1224,18 @@ ${el.innerHTML}`,
     const eth = grid("ETH");
     expect(seeded).toHaveLength(PARLAY_CARDS.length);
     const html = container.innerHTML;
-    // None of the live path's own marks: no chip, no note, no provenance line,
-    // no dollar payout, no reference-move aside, no dead slot.
-    for (const mark of ["WIN $", "payout at ±", "book-state-", "options-chip", "options-note", "data-parlay-dead", "NOT DEALT"]) {
+    // None of the live path's own marks: no live chip, no live note, no
+    // provenance line, no dollar payout, no reference-move aside, no dead slot.
+    //
+    // `book-state-` came OFF this list, and that is the point of the block
+    // below rather than an exemption from this one. The per-ticker chip used to
+    // be gated on the book being present, which meant the four disclosures on
+    // this screen all switched themselves off in the one state they were
+    // written for — a board of seeded cards, printing a $4,182.60 ETH strike
+    // against a live spot near $2,450, wearing no mark of any kind. What must
+    // still be absent here is any claim the data is LIVE; what must now be
+    // present is the claim that it is not.
+    for (const mark of ["WIN $", "payout at ±", "options-chip", "options-note", "data-parlay-dead", "NOT DEALT"]) {
       expect({ mark, present: html.includes(mark) }).toEqual({ mark, present: false });
     }
     // And the payout row on every card is a bare multiple, which is what the
@@ -1225,6 +1243,19 @@ ${el.innerHTML}`,
     for (const el of container.querySelectorAll<HTMLElement>('[data-q="payout"]')) {
       expect(el.textContent).toMatch(/^×\d+\.\d\d$/);
     }
+
+    // The other half of the claim: every card on this board is a fixture, and
+    // the screen says so four times — a chip about the spot, a chip about the
+    // cards, a chip on each ticker header, and the sentence in the rules box.
+    expect(text("seeded-spot-chip")).toBe(SEEDED_SPOT_CHIP);
+    expect(text("seeded-cards-chip")).toBe(SEEDED_CARDS_CHIP);
+    expect(text("book-state-ETH")).toBe("SEEDED");
+    expect(text("book-state-AAPL")).toBe("SEEDED");
+    expect(text("seeded-cards-note")).toBe(SEEDED_SETTLEMENT_NOTE);
+    // And the live chip is not merely absent from the markup — the live claim
+    // is nowhere in the words either.
+    expect(html).not.toContain(SPOT_CHIP);
+    expect(html).not.toContain(OPTIONS_CHIP);
     unmount();
 
     // The same board with the book present: ETH goes live, AAPL does not, and
@@ -1233,6 +1264,98 @@ ${el.innerHTML}`,
     board(BOOK);
     expect(grid("AAPL")).toEqual(seeded);
     expect(grid("ETH")).not.toEqual(eth);
+    unmount();
+  });
+
+  /**
+   * ──────────────────────────────────────────────────────────────────────────
+   * THE DISCLOSURE IS LOUDEST WHERE THE DATA IS WEAKEST
+   * ──────────────────────────────────────────────────────────────────────────
+   *
+   * Two audits found the same thing and it is the one worth a test of its own:
+   * this screen's four provenance markers were every one of them gated on a
+   * live read having SUCCEEDED. With `/api/market` unreachable — which is the
+   * state of this machine as these were written — `useLiveMarket` degrades to
+   * `mockMarketSource`, `book` is `undefined`, and twenty-four cards rendered a
+   * $4,182.60 ETH strike (about 70% above the real price), a `70% chance` and a
+   * `×6.67` with no chip, no note and no dash anywhere above the fold. The only
+   * word `SEEDED` on the route was in the page footer, below it.
+   *
+   * The rule these assertions hold is the inversion: a marker is MORE present
+   * when the data is fake, not less. Each of the four is checked in both of its
+   * states, so neither can be deleted by a change that only exercises the other.
+   */
+  test("every disclosure has a seeded half, and it is the half that shows on a dead venue", () => {
+    // The venue answered nothing. Nothing on this board came from a market.
+    board();
+    expect(text("seeded-spot-chip")).toBe(SEEDED_SPOT_CHIP);
+    expect(text("seeded-cards-chip")).toBe(SEEDED_CARDS_CHIP);
+    expect(text("seeded-cards-note")).toBe(SEEDED_SETTLEMENT_NOTE);
+    expect(text("book-state-ETH")).toBe("SEEDED");
+    // The live half is not on screen, in markup or in words.
+    expect(chip("spot-chip")).toBeNull();
+    expect(chip("options-chip")).toBeNull();
+    expect(chip("options-note")).toBeNull();
+    unmount();
+
+    // The book arrives. The live half takes over, and the seeded half stands
+    // down on the ticker the book actually prices — AAPL keeps its SEEDED chip,
+    // because a mixed board is the ordinary board.
+    board(BOOK);
+    expect(chip("options-chip")?.textContent).toBe(OPTIONS_CHIP);
+    expect(text("options-note")).toBe(SETTLEMENT_NOTE);
+    expect(text("book-state-ETH")).toBe("LIVE");
+    expect(text("book-state-AAPL")).toBe("SEEDED");
+    expect(chip("seeded-cards-chip")).toBeNull();
+    expect(chip("seeded-cards-note")).toBeNull();
+    unmount();
+  });
+
+  /**
+   * The third state, which had no reader anywhere in `src/`.
+   *
+   * `OptionBook.source` has been written as `"stale" | "live"` since `bookOf`
+   * was first written and nothing read it; `OptionBook.at` was never rendered.
+   * So a book whose refresh had failed — real strikes and real premiums wearing
+   * an unknown number of minutes — dealt cards under a green LIVE chip. That is
+   * the state `theme.ts` calls "the one genuinely dangerous state", and the rule
+   * it sets is that the word alone is not the disclosure: the age is.
+   */
+  test("a book that stopped refreshing says STALE, and says how old", () => {
+    const at = Date.now() - 4 * 60_000;
+    board({ ...BOOK, source: "stale", at });
+
+    // The ticker chip, and the header chip above it, both move off LIVE.
+    expect(text("book-state-ETH")).toBe("STALE · 4m ago");
+    expect(chip("options-chip")?.getAttribute("data-book-state")).toBe("stale");
+    expect(text("options-chip")).toBe(`${OPTIONS_CHIP} · 4m ago`);
+    // Amber, not green: the chip's colour is half of what it says.
+    expect(chip("options-chip")?.getAttribute("style")).toContain(FEED_STATE.stale.color);
+    // A ticker the stale book backs nothing on is still seeded, not stale —
+    // the chip describes the eight cards under it, not the book.
+    expect(text("book-state-AAPL")).toBe("SEEDED");
+    unmount();
+  });
+
+  /**
+   * SEEDED arrives two ways and the tooltip is the only place the difference is
+   * written down. `FEED_STATE.seeded.means` ends "nothing failed", which is
+   * true of an offline build and false of a fallback — and the fallback is
+   * exactly the path that puts this screen in the seeded state on a machine
+   * that cannot reach the book.
+   */
+  test("the seeded chip says whether the network failed or was never needed", () => {
+    board();
+    expect(chip("seeded-cards-chip")?.getAttribute("title")).toBe(FEED_STATE.seeded.means);
+    unmount();
+
+    board(undefined, "Could not reach the book.");
+    expect(chip("seeded-cards-chip")?.getAttribute("title")).toBe(SEEDED_FALLBACK_MEANS);
+    expect(chip("seeded-spot-chip")?.getAttribute("title")).toBe(SEEDED_FALLBACK_MEANS);
+    expect(chip("book-state-ETH")?.getAttribute("title")).toBe(SEEDED_FALLBACK_MEANS);
+    // …and the reason itself is in the rules box, where a player reading that
+    // the numbers are a fixture immediately asks why.
+    expect(text("seeded-cards-note")).toContain("Could not reach the book.");
     unmount();
   });
 
@@ -1406,6 +1529,12 @@ function click(testId: string) {
 
 function text(testId: string): string {
   return container.querySelector(`[data-testid="${testId}"]`)?.textContent ?? "";
+}
+
+/** The element itself, or `null` — for the assertions that are about a chip
+ *  being absent, or about its `title` and its colour rather than its words. */
+function chip(testId: string): HTMLElement | null {
+  return container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
 }
 
 /**

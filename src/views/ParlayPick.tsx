@@ -37,7 +37,18 @@ import { fmtPx } from "../engine/tape.ts";
 import { sfx, startTrack, stopTrack } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
 import { useCardDetail } from "../state/detail.ts";
-import { C, FEED_STATE, MONO, SANS, sectorColor, stateChip, tag } from "../theme.ts";
+import {
+  C,
+  FEED_STATE,
+  MONO,
+  SANS,
+  meansOf,
+  sectorColor,
+  stateAge,
+  stateChip,
+  tag,
+  type FeedState,
+} from "../theme.ts";
 import { DetailToggle } from "../ui/DetailToggle.tsx";
 import type { Player, PricingRow } from "../types.ts";
 
@@ -53,6 +64,90 @@ const TIER_PITCH: Record<Tier, number> = {
   SHARP: 1174 / 880,
   DEGEN: 1396 / 880,
 };
+
+/* ------------------------------------------------------------------------ *
+ *  THE SEEDED HALF OF THE DISCLOSURE
+ *
+ *  This screen used to carry four provenance markers — the `LIVE SPOT ·
+ *  SEEDED TAPE` chip, `REAL STRIKES · SIMULATED SETTLEMENT`, a LIVE/SEEDED
+ *  chip per ticker, and `SETTLEMENT_NOTE` — and every one of them was gated on
+ *  a live read having succeeded. So the screen said the most when it was
+ *  telling the truth and said nothing at all when it was not: with `/api/market`
+ *  unreachable, `useLiveMarket` degrades to `mockMarketSource`, `p.book` is
+ *  `undefined`, and twenty-four cards printed a $4,182.60 ETH strike (~70% above
+ *  the live price), a `70% chance` and a `×6.67` with no chip, no note and no
+ *  dash anywhere above the fold.
+ *
+ *  The old comment on `anyLive` called that deliberate — "byte-identical to the
+ *  one that shipped before live data existed" — and it was, once, when the app
+ *  made no claim about a venue and the whole board was understood to be a
+ *  fixture. The home page now promises "Options pricing streams live from
+ *  Thetanuts on Base", and against that promise silence is not neutrality: it
+ *  reads as confirmation. So the rule is inverted, and these constants are the
+ *  inversion. **A marker is MORE present when the data is fake, not less.**
+ *
+ *  They are deliberately the same shape as their live counterparts in
+ *  `data/spot.ts` and `desk/optionize.ts` — one chip on the header bar, one
+ *  sentence in the rules box — so the two states are read the same way and a
+ *  player who learns the live screen can read the seeded one. What differs is
+ *  the colour: `FEED_STATE.seeded`'s resting grey rather than LIVE's green,
+ *  because a fixture is the app's ordinary state and not a fault.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * The seeded counterpart to `SPOT_CHIP` (`LIVE SPOT · SEEDED TAPE`).
+ *
+ * Rendered when not one dealt ticker has a live print — every price on the
+ * screen is then the frozen reference in `data/universe.ts`, which for ETH is
+ * $4,182.60 against a live spot around $2,450. The seeded tape half of the
+ * claim is unchanged; it is the spot half that stops being live.
+ */
+export const SEEDED_SPOT_CHIP = "SEEDED SPOT · SEEDED TAPE";
+
+/**
+ * The seeded counterpart to `OPTIONS_CHIP` (`REAL STRIKES · SIMULATED
+ * SETTLEMENT`).
+ *
+ * Both halves of that chip stop being true at once when there is no book: the
+ * strikes are the game's, not the venue's, and the settlement was always
+ * simulated. Saying both keeps the chip a statement about the cards rather than
+ * about the network.
+ */
+export const SEEDED_CARDS_CHIP = "SEEDED STRIKES · SIMULATED SETTLEMENT";
+
+/**
+ * The seeded counterpart to `SETTLEMENT_NOTE`, in the same box and the same
+ * register.
+ *
+ * `SETTLEMENT_NOTE` exists because a player must be told, before they pick,
+ * which half of a market-priced card is real. This one exists for the stronger
+ * case: none of it is. It names the three numbers a player actually reads off a
+ * card — the strike, the chance, the multiple — because "seeded" on its own is a
+ * word about a data source, and what a reader needs is the list of figures it
+ * applies to.
+ *
+ * The last two clauses are `SETTLEMENT_NOTE`'s own, verbatim: nothing about the
+ * settlement or about custody changes between the two states, and phrasing that
+ * twice would be two wordings of one fact.
+ */
+export const SEEDED_SETTLEMENT_NOTE =
+  "Seeded strikes, seeded odds, simulated settlement. No live Thetanuts book reached this " +
+  "screen, so every strike, chance and multiple below is this build's own fixture — not a " +
+  "price anyone quoted. The duel resolves on the seeded tape. You are not holding a position " +
+  "and nothing here is spent.";
+
+/**
+ * The header bar's chip dress in a feed state's own colour.
+ *
+ * `spotChipSx` (`data/spot.ts`) is this exact rule hard-coded to `LIVE_COLOR`,
+ * and it stays the live chip's dress — this screen now runs three states across
+ * two chips and needed the colour to be an argument. Same geometry, so the
+ * chips sit on one row at one height whatever they are saying.
+ */
+const feedChipSx = (state: FeedState): string =>
+  `font:500 10px/1 ${MONO};letter-spacing:.12em;color:${FEED_STATE[state].color};` +
+  `border:1px solid ${FEED_STATE[state].color}4d;background:${FEED_STATE[state].color}14;` +
+  "border-radius:6px;padding:6px 8px";
 
 /** Tier accents. DEGEN borrows the HIGH VAR violet. */
 export const TIER_COLOR: Record<Tier, string> = {
@@ -157,6 +252,21 @@ interface ParlayPickProps {
    * value `App` already read and `useMatch` already froze.
    */
   book?: OptionBook;
+  /**
+   * Why the live book is degraded, or `null` — `LiveMarketState.error`, the
+   * same string the footer prints as prose.
+   *
+   * Read for exactly one thing: which of SEEDED's two sentences the chips carry
+   * as their `title` (`meansOf`, `src/theme.ts`). A fixture that is on screen
+   * because nothing asked for a book is not the same event as a fixture that is
+   * on screen because the book was asked for and refused, and the chip is where
+   * a reader goes to find out which.
+   *
+   * Optional and defaulting to `null`, so a test or a story mounting this view
+   * with a seeded source gets "no network, nothing failed" — which is what
+   * actually happened to it.
+   */
+  marketError?: string | null;
   /** This match's window. Its `oddsBoost` is already inside `summary.mult`;
    *  the slip only has to say where the premium came from. */
   mode: ModeSpec;
@@ -263,9 +373,41 @@ export function ParlayPick(p: ParlayPickProps) {
     }
     return m;
   }, [p.arena, p.source]);
-  /** No annotations, no chip — and then this screen is byte-identical to the
-   *  one that shipped before live data existed. */
+  /** Whether any dealt ticker carries a live print at all. It picks WHICH spot
+   *  chip the header wears, not whether there is one — see the block above
+   *  `SEEDED_SPOT_CHIP` for why a silent screen was the wrong degrade. */
   const anyLive = spots.size > 0;
+
+  /**
+   * Did a live read fail on the way here? Drives nothing but the chips' `title`.
+   */
+  const fellBack = (p.marketError ?? null) !== null;
+
+  /**
+   * The book's own state — the third one this screen used to have no word for.
+   *
+   * `OptionBook.source` has been written as `"stale" | "live"` since
+   * `state/options.ts:bookOf` was first written and **nothing in `src/` has ever
+   * read it**; `OptionBook.at` has never been rendered either. So a book whose
+   * last refresh failed — real strikes, real premiums, an unknown number of
+   * minutes old — dealt cards under a green LIVE chip, on the one screen where
+   * `theme.ts` says the age is the whole disclosure: "a STALE chip always
+   * appears next to the age of the read it is showing… the age is the
+   * disclosure; the word alone is not."
+   *
+   * So the two-branch live/seeded chip becomes the three-state one the world
+   * actually has, and `bookAge` is the second half of what STALE means. `at` is
+   * `MarketSource.meta.fetchedAt`, which `stateAge` reads as "no age at all"
+   * when it is 0 — a book with no timestamp says STALE without inventing a
+   * duration rather than printing a nonsense one.
+   *
+   * `Date.now()` in render, deliberately and for the footer's reason: an age
+   * that ticked would re-render the whole pick grid once a second for a number
+   * nobody reads that precisely. It refreshes when anything else on the screen
+   * does — coarse, honest, free.
+   */
+  const bookState: FeedState | null = p.book ? (p.book.source === "stale" ? "stale" : "live") : null;
+  const bookAge = p.book ? stateAge(p.book.at, Date.now()) : null;
 
   /**
    * The cards the frozen book actually deals, per ticker — index-aligned to
@@ -369,19 +511,51 @@ export function ParlayPick(p: ParlayPickProps) {
         <span style={sx(modeTag(p.mode.key))}>
           {p.mode.label} · {p.mode.duration}
         </span>
-        {/* The board legend for this surface. Only when something below is
-            actually annotated. */}
-        {anyLive && (
+        {/* The board legend for this surface, in whichever of its two states is
+            true. The live chip keeps its testid and its exact wording, so
+            everything pinned on it still holds; what is new is that the absence
+            of a live print is now *said* instead of left blank. */}
+        {anyLive ? (
           <span data-testid="spot-chip" style={sx(spotChipSx)}>
             {SPOT_CHIP}
           </span>
+        ) : (
+          <span
+            data-testid="seeded-spot-chip"
+            title={meansOf("seeded", fellBack)}
+            style={sx(feedChipSx("seeded"))}
+          >
+            {SEEDED_SPOT_CHIP}
+          </span>
         )}
-        {/* The claim the market-priced cards below are making, said once at the
-            top of the screen. Rendered only when there is a book — a slip with
-            no market card on it must not wear a badge about market cards. */}
-        {p.book && (
-          <span data-testid="options-chip" style={sx(spotChipSx)}>
+        {/* The claim the cards below are making, said once at the top of the
+            screen — and now made in all three states rather than only in the
+            flattering one.
+
+            With a book it is `OPTIONS_CHIP`, and when that book is STALE it
+            wears amber and carries the age of the read, because real strikes
+            with a wrong timestamp are the one genuinely dangerous state
+            (`theme.ts`) and the age is the disclosure. With no book it is
+            `SEEDED_CARDS_CHIP` in the resting grey: a slip with no market card
+            on it must not wear a badge about market cards, and — the half that
+            was missing — it must not wear nothing either. */}
+        {p.book && bookState ? (
+          <span
+            data-testid="options-chip"
+            data-book-state={bookState}
+            title={FEED_STATE[bookState].means}
+            style={sx(feedChipSx(bookState))}
+          >
             {OPTIONS_CHIP}
+            {bookState === "stale" && bookAge ? ` · ${bookAge}` : ""}
+          </span>
+        ) : (
+          <span
+            data-testid="seeded-cards-chip"
+            title={meansOf("seeded", fellBack)}
+            style={sx(feedChipSx("seeded"))}
+          >
+            {SEEDED_CARDS_CHIP}
           </span>
         )}
         {p.secondsLeft !== null && (
@@ -435,6 +609,14 @@ export function ParlayPick(p: ParlayPickProps) {
              * them would be the chip lying about the grid it labels.
              */
             const priced = dealt !== null;
+            /**
+             * What this ticker's eight cards are, as one of the vocabulary's
+             * words. `bookState` is the book's, `priced` is whether *this*
+             * ticker got anything out of it — a stale book still deals stale
+             * cards, and a ticker the book backs nothing on is seeded whatever
+             * state the book is in.
+             */
+            const tickerState: FeedState = priced ? (bookState ?? "live") : "seeded";
             const pickedCard = picked ? slotFor(dealt, picked.tier, picked.stance) : null;
             return (
               <section
@@ -446,20 +628,28 @@ export function ParlayPick(p: ParlayPickProps) {
                   <span style={sx(`font:700 16px/1 ${MONO}`)}>{sym}</span>
                   <span style={sx(tag(color))}>{u.sector}</span>
                   {/* The state-chip vocabulary (`FEED_STATE`, `stateChip`),
-                      applied to the one question this screen now has to answer
-                      per ticker: did the venue write these eight cards, or did
-                      the game? SEEDED is grey rather than amber on purpose —
-                      a ticker with no options book is the app's ordinary
-                      resting state, not a fault. */}
-                  {p.book && (
-                    <span
-                      data-testid={`book-state-${sym}`}
-                      title={FEED_STATE[priced ? "live" : "seeded"].means}
-                      style={sx(stateChip(priced ? "live" : "seeded"))}
-                    >
-                      {FEED_STATE[priced ? "live" : "seeded"].label}
-                    </span>
-                  )}
+                      applied to the one question this screen has to answer per
+                      ticker: did the venue write these eight cards, or did the
+                      game? SEEDED is grey rather than amber on purpose — a
+                      ticker with no options book is the app's ordinary resting
+                      state, not a fault.
+
+                      It used to be gated on `p.book`, which meant the chip
+                      appeared on every ticker of a mixed board and on none at
+                      all when the whole board was a fixture — the disclosure
+                      switching itself off in the one case it was written for.
+                      It is unconditional now, and it is three states rather
+                      than two: LIVE where the book dealt these cards, STALE
+                      with its age where it dealt them off a read that has since
+                      failed to refresh, SEEDED everywhere else. */}
+                  <span
+                    data-testid={`book-state-${sym}`}
+                    title={meansOf(tickerState, fellBack)}
+                    style={sx(stateChip(tickerState))}
+                  >
+                    {FEED_STATE[tickerState].label}
+                    {tickerState === "stale" && bookAge ? ` · ${bookAge}` : ""}
+                  </span>
                   {/* C4 site: the ticker's reference price.
                       With no live print this is the line it has always been.
                       With one, the seeded number stays exactly where it was and
@@ -616,12 +806,28 @@ export function ParlayPick(p: ParlayPickProps) {
             tie to the steadier slip.
             {/* The sentence a player must see before they pick, in the box they
                 are already reading to learn the rules. It is not a footnote and
-                it is not a tooltip: everything above it is real market data, the
-                settlement below is not, and the difference is the one thing a
-                demo must never leave to be inferred. */}
-            {p.book && (
+                it is not a tooltip: the difference between what the market wrote
+                and what the game wrote is the one thing a demo must never leave
+                to be inferred.
+
+                Both states get one. With a book, `SETTLEMENT_NOTE` says the
+                strikes are real and the settlement is not. With none,
+                `SEEDED_SETTLEMENT_NOTE` says neither is — and the reason the
+                book is missing is appended verbatim from `LiveMarketState.
+                error`, which is the same string the footer prints, because a
+                reader who has just been told the numbers are a fixture
+                immediately wants to know why. */}
+            {p.book ? (
               <span data-testid="options-note" style={sx(`display:block;margin-top:9px;color:${C.textSoft}`)}>
                 {SETTLEMENT_NOTE}
+              </span>
+            ) : (
+              <span
+                data-testid="seeded-cards-note"
+                style={sx(`display:block;margin-top:9px;color:${C.textSoft}`)}
+              >
+                {SEEDED_SETTLEMENT_NOTE}
+                {p.marketError ? ` ${p.marketError}` : ""}
               </span>
             )}
           </div>

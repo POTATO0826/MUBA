@@ -6,8 +6,19 @@ import { CHAMP_ART, SETTLED_CASES, TOP_WINS } from "../data/fixtures.ts";
 import type { Grade } from "../data/qualify.ts";
 import { sfx } from "../lib/sound/index.ts";
 import { sx } from "../lib/sx.ts";
-import { C, FEED_STATE, MONO, SANS } from "../theme.ts";
+import {
+  C,
+  FEED_STATE,
+  MONO,
+  SANS,
+  feedState,
+  meansOf,
+  stateAge,
+  stateChip,
+  type FeedState,
+} from "../theme.ts";
 import { LobbyCard } from "../ui/LobbyCards.tsx";
+import type { MarketSource } from "../data/market.ts";
 import type { LobbyDef } from "../types.ts";
 
 interface LobbyProps {
@@ -20,15 +31,38 @@ interface LobbyProps {
    *  to the card, which takes its own names out of it; absent means no book was
    *  read, which the card renders as no chip rather than as THIN. */
   grades?: Readonly<Record<string, Grade>>;
+  /**
+   * The market the app is actually running on, for the hero's one sentence
+   * about it. Optional: a story or a test that mounts the board with no source
+   * gets the seeded reading, which is what such a mount is.
+   */
+  source?: MarketSource;
+  /** Why the book is degraded, or `null` — `LiveMarketState.error`, the same
+   *  string the footer prints. */
+  marketError?: string | null;
 }
 
 /** Home: the hero, the biggest payoffs, and a taste of the board. */
-export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart, grades }: LobbyProps) {
+export function Lobby({
+  lobbies,
+  onFindMatch,
+  onCreate,
+  onAccept,
+  onStart,
+  grades,
+  source,
+  marketError = null,
+}: LobbyProps) {
   const featured = lobbies.slice(0, 4);
 
   return (
     <div style={sx("display:flex;flex-direction:column;gap:24px;padding:28px;max-width:1720px;margin:0 auto;min-width:0")}>
-      <Hero onFindMatch={onFindMatch} onCreate={onCreate} />
+      <Hero
+        onFindMatch={onFindMatch}
+        onCreate={onCreate}
+        source={source}
+        marketError={marketError}
+      />
       <BiggestPayoffs />
 
       <section>
@@ -65,9 +99,53 @@ export function Lobby({ lobbies, onFindMatch, onCreate, onAccept, onStart, grade
   );
 }
 
-function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: () => void }) {
+/**
+ * The hero's last sentence, which is a claim about a venue.
+ *
+ * It read, unconditionally and in static prose, *"Options pricing streams live
+ * from Thetanuts on Base."* On this machine, with the book unreachable, that
+ * was false in the largest type on the first screen — and it was contradicted
+ * by the app's own footer four hundred pixels below, which correctly read
+ * `SEEDED · seeded fixtures — read only`. Two surfaces of one app, disagreeing
+ * about the one fact the demo is about.
+ *
+ * So the sentence branches on the same `MarketSource` the footer reads, and the
+ * three readings are the three states that exist. `stale` names the age because
+ * `theme.ts` requires it beside the word; `seeded` names the reason when there
+ * is one, because a reader told the pricing is a fixture immediately asks why.
+ *
+ * The live sentence is unchanged, character for character — the promise is a
+ * good one when it is true, and this is only about the times it is not.
+ */
+function pricingLine(state: FeedState, age: string | null, reason: string | null): string {
+  if (state === "live") return "Options pricing streams live from Thetanuts on Base.";
+  if (state === "stale") {
+    return `Options pricing comes from Thetanuts on Base — this read is ${age ?? "of unknown age"} and has not refreshed since.`;
+  }
+  if (state === "partial") return "Options pricing comes from Thetanuts on Base; a feed dropped and some of it is missing.";
+  return `Options pricing is seeded in this build — no live Thetanuts book reached the app.${
+    reason ? ` ${reason}` : ""
+  }`;
+}
+
+function Hero({
+  onFindMatch,
+  onCreate,
+  source,
+  marketError,
+}: {
+  onFindMatch: () => void;
+  onCreate: () => void;
+  source?: MarketSource;
+  marketError: string | null;
+}) {
   // The cursor trail reads this to keep its glyphs off the hand art.
   const handRef = useRef<HTMLDivElement>(null);
+
+  // No source at all is the seeded reading, and honestly so: a build with
+  // nothing wired to a market is not streaming one.
+  const state: FeedState = source ? feedState(source.meta.source) : "seeded";
+  const age = source ? stateAge(source.meta.fetchedAt, Date.now()) : null;
 
   return (
     <section
@@ -108,10 +186,27 @@ function Hero({ onFindMatch, onCreate }: { onFindMatch: () => void; onCreate: ()
           <h1 style={sx(`margin:16px 0 10px;font:700 36px/1.08 ${SANS};letter-spacing:-.03em`)}>
             Battle the book, not the market.
           </h1>
-          <p style={sx(`margin:0 0 22px;font:400 14px/1.6 ${SANS};color:${C.muted};max-width:470px;text-wrap:pretty`)}>
+          <p style={sx(`margin:0 0 14px;font:400 14px/1.6 ${SANS};color:${C.muted};max-width:470px;text-wrap:pretty`)}>
             Take a seat, let the spin deal the tickers, read the case, pick a parlay and duel it
-            out on the tape. Options pricing streams live from Thetanuts on Base.
+            out on the tape.{" "}
+            <span data-testid="hero-pricing">{pricingLine(state, age, marketError)}</span>
           </p>
+          {/* The chip is the sentence's own state, in the vocabulary's word and
+              colour, so the claim above is checkable at a glance rather than
+              only by reading it. It is deliberately NOT beside `SEASON 01 ·
+              OPEN` at the top of the hero: that chip is about a season and this
+              one is about a feed, and stacking them would be the exact collision
+              the comment there warns about. */}
+          <div style={sx("margin:0 0 22px")}>
+            <span
+              data-testid="hero-market-state"
+              title={meansOf(state, marketError !== null)}
+              style={sx(`${stateChip(state)};letter-spacing:.12em`)}
+            >
+              {FEED_STATE[state].label}
+              {state === "stale" && age ? ` · ${age}` : ""}
+            </span>
+          </div>
           <div style={sx("display:flex;gap:10px")}>
             <button
               onClick={() => {

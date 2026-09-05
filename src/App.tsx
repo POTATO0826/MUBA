@@ -603,6 +603,13 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           onAccept={accept}
           onStart={start}
           grades={assetGrades}
+          // The hero's last sentence is a claim about a venue, so it reads the
+          // venue — the same source and the same error string the footer at the
+          // bottom of this page reads. Before this the two disagreed: the hero
+          // said "streams live from Thetanuts on Base" while the footer 400px
+          // below said `SEEDED · seeded fixtures — read only`.
+          source={source}
+          marketError={marketError ?? null}
         />
       )}
 
@@ -707,6 +714,11 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           // It is the SAME object `derived.myLegs` were priced off, so a card
           // and the leg behind it cannot disagree.
           book={derived.optionBook ?? undefined}
+          // Read for one thing only: which of SEEDED's two sentences the pick
+          // screen's chips carry. The footer already prints this string as
+          // prose; the pick screen is where a player is about to commit, so it
+          // is the other place that has to know.
+          marketError={marketError ?? null}
           mode={derived.mode}
           opponent={opp}
           arena={derived.arena}

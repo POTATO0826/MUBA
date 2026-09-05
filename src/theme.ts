@@ -131,10 +131,19 @@ export const FEED_STATE: Record<FeedState, FeedStateSpec> = {
     means: "Fresh from the venue — read within the refresh window.",
   },
   /**
-   * A deterministic fixture. No network was involved and none failed: this is
-   * the checked-in data the offline build runs on. Grey rather than amber
-   * because a fixture is the app's ordinary resting state, not a warning —
-   * amber is reserved for the one case where the numbers are real and wrong.
+   * A deterministic fixture. Grey rather than amber because a fixture is the
+   * app's ordinary resting state, not a warning — amber is reserved for the one
+   * case where the numbers are real and wrong.
+   *
+   * **A fixture reaches the screen two ways, and this `means` describes only
+   * the first.** Either nothing asked the network (the offline build, a static
+   * export, `THETADUEL_MARKET=off`, a seeded story) — that is this sentence,
+   * and it is true. Or `/api/market` was asked, failed, and `useLiveMarket`
+   * degraded to `mockMarketSource` with no last-good snapshot to fall back on
+   * (`data/thetanuts.tsx`, `degrade()`) — and then "nothing failed" is the chip
+   * asserting the opposite of what just happened, in the one place a reader
+   * goes to check. {@link SEEDED_FALLBACK_MEANS} is that second sentence and
+   * {@link meansOf} is how a surface that knows which it is picks between them.
    */
   seeded: {
     label: "SEEDED",
@@ -177,6 +186,41 @@ export const FEED_STATE: Record<FeedState, FeedStateSpec> = {
  */
 export function feedState(kind: "mock" | "live" | "stale" | "partial"): FeedState {
   return kind === "mock" ? "seeded" : kind;
+}
+
+/**
+ * SEEDED's other sentence: the fixture is here because the venue is not.
+ *
+ * The label and the colour do not move — the numbers on screen really are the
+ * deterministic fixture, which is what SEEDED names, and re-tinting it amber
+ * would collide with STALE, whose amber means "real numbers, wrong timestamp".
+ * What moves is the claim. `FEED_STATE.seeded.means` ends "nothing failed", and
+ * on this path something did: that is the difference between a build that never
+ * needed the book and a build that wanted it and could not have it, and a
+ * reader deciding whether to trust the screen is asking exactly that.
+ *
+ * It does **not** say what failed. The reason is a separate, longer string the
+ * app already carries and already renders — `LiveMarketState.error`, printed in
+ * the footer as prose beside this chip — and duplicating it into a tooltip
+ * would be two places to correct one wording.
+ */
+export const SEEDED_FALLBACK_MEANS =
+  "Deterministic fixture — the live read failed and the app fell back to it.";
+
+/**
+ * The claim a state chip is making, given what the surface knows about how the
+ * data got there.
+ *
+ * `fellBack` is "a live read was attempted and did not succeed", which for a
+ * caller holding `LiveMarketState` is `error !== null`. It only changes the
+ * seeded case: LIVE cannot have fallen back and still be live, STALE already
+ * says a refresh failed in its own `means`, and PARTIAL already says a feed
+ * dropped. Every other caller can keep reading `FEED_STATE[state].means`
+ * directly, and this exists so that the ones that know better are not forced to
+ * assemble the sentence themselves.
+ */
+export function meansOf(state: FeedState, fellBack = false): string {
+  return state === "seeded" && fellBack ? SEEDED_FALLBACK_MEANS : FEED_STATE[state].means;
 }
 
 /**
