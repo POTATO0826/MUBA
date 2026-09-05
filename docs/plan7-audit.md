@@ -379,3 +379,97 @@ lock) and `RfqPanel` still has no mount anywhere in `src/` outside its own
 tests — so rows 28 and 29 remain not just owner-only but, as the first pass
 found, currently unreachable from the running app as well. Building the mount
 is not this file's job; recording that it still has not happened is.
+
+---
+
+# Third pass — three overstated claims, corrected without touching a verdict, 2026-09-05, HEAD `e090a10`
+
+Same rule as the second pass: nothing below moves a verdict. All three rows
+stay exactly what they were — **PASS**. What was wrong was a claim made *about*
+the evidence, not the evidence itself. Found by re-reading the second pass's
+own citations against the current tree rather than trusting the line numbers.
+
+## Row 12, second pass — "the first live callers" overclaims what "live" means
+
+The second pass is right that `rangerPayoutOrder` is the only constructor of a
+`RangerPayoutOrder` and that `isRanger: true` cannot be bypassed — that closed
+the actual trap and the **PASS** stands. But "the first live callers of either
+helper this repo has had" reads as *reachable from the running app*, and it
+is not. Current line numbers: `rangerPayoutOrder` is `src/data/ranger.ts:639`;
+`rangerMaxPayout` (`:657`) calls `utils.calculateMaxPayout(rangerPayoutOrder(spec),
+numContracts)` at `:662`; `rangerPayoutAtPrice` (`:672`) calls
+`utils.calculatePayoutAtPrice(rangerPayoutOrder(spec), numContracts, settlementPrice)`
+at `:678`. But:
+
+```
+$ grep -rn "rangerMaxPayout\|rangerPayoutAtPrice\|rangerPayoutOrder" src/ | grep -v ranger.ts
+(no output)
+```
+
+Nothing in `src/` outside `ranger.ts` itself calls any of the three. The only
+callers anywhere in the tree are `test/box.test.ts` (`:100`, `:1345`, `:1384`,
+`:1414`) and `test/zone-units.test.ts` (`:27`, `:158-184`). So the SDK's
+`calculateMaxPayout`/`calculatePayoutAtPrice` are, today, called from exactly
+one place in `src/` each, and that place has never itself been called by
+anything the running app reaches — `zoneEconomics` and `condorEconomics`
+(row 15) answer the arena's actual money questions, and neither of them calls
+either SDK helper. The real, worth-stating achievement is narrower than "first
+live callers": **an unflagged call to either SDK helper is now structurally
+impossible to write**, because `rangerPayoutOrder` is the only constructor and
+it hardcodes the flag. That it is not yet a live call site is a fact about
+what the arena has built on top of `ranger.ts`, not a gap in `ranger.ts`
+itself.
+
+## Row 15 — stale line, and the routing has one more hop than stated
+
+`zoneEconomics` moved: it is `src/data/ranger.ts:710` today, not `:543`
+(the file has grown since the first pass). `multipleOf` moved too —
+`src/data/condor.ts:297`, not `:294`; `payoutMultiple` is still `:273`. The
+row's substance holds, but "both route through it" undersells the
+indirection by one layer: neither `payoutMultiple` nor `zoneEconomics` calls
+`multipleOf` directly on the listed path. `zoneEconomics` (`ranger.ts:710-716`)
+and `condorEconomics` (`condor.ts:354-360`) both call the shared `economics()`
+(`condor.ts:398-419`), and `economics()` is the one place that calls
+`multipleOf` (`:414`). So the chain is `zoneEconomics` → `economics` →
+`multipleOf`, not `zoneEconomics` → `multipleOf` — the same single division,
+one hop further from either caller than the row implies.
+
+Unlike row 12's helpers, `zoneEconomics` is a real, live call site:
+`src/views/BoxBuilder.tsx:840` (`positionEconomics`, the arena's actual money
+panel for a matched listed zone) and `:2522` (a zone chip's ticket). Both are
+reachable from the running app, not test-only — this row was never the one
+with the reachability problem.
+
+## Row 24 / D1, second pass — the grep proves less than it was read as proving
+
+The second pass's `grep -n "six-hour refund" src/views/BoxBuilder.tsx` really
+does return exactly one hit, in the docblock — that part is accurate. What it
+cannot show is whether the *reveal's own custody sentence* still exists in
+some other shape, because that sentence is not a literal string: `noFillCopy`
+(`BoxBuilder.tsx:506-513`) builds it by interpolation —
+
+```ts
+`no tiebreak. DuelEscrow's ${custody.refundHours}-hour refund returns both stakes, ` +
+"rake-free, with no signature from anyone."
+```
+
+— so with `custody.refundHours` at, say, 6, the *rendered* text would read
+"DuelEscrow's 6-hour refund returns both stakes" without the source ever
+containing the literal word "six". A grep for "six-hour refund" cannot see
+this by construction, the same way it could not have seen the original defect
+if `refundHours` had been a variable back then too. The docblock immediately
+above the function says so itself (`:496-504`): this branch is "unreachable
+today by construction" because `App.tsx:607` passes `custody={null}`
+unconditionally, and it stays unreachable only because every caller keeps
+passing `null` — nothing in the type system stops a future caller from naming
+a deployed escrow and reviving the sentence. The **PASS** is earned, same as
+the second pass found, but by the branch being unreachable, not by the grep
+having proven the sentence gone. A tripwire that mounted the custody branch
+itself (with a fake `DuelCustody`) and asserted its text, rather than grepping
+source for a phrase that can be reassembled from a variable, would prove the
+thing the second pass believed it had already proven.
+
+### Third-pass scoreboard
+
+**PASS 27 · PARTIAL 0 · FAIL 0 · OWNER-ONLY 2** — unchanged. No verdict moved;
+three citations did.

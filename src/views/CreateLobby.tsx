@@ -635,7 +635,7 @@ export function CreateLobby(p: CreateLobbyProps) {
 
           <div style={sx(`${LABEL};margin-top:20px`)}>ENTRY PER PLAYER</div>
           <div style={sx(`margin-top:10px;font:700 24px/1 ${MONO}`)}>{p.entryLabel}</div>
-          <div style={sx(NOTE)}>Half the pool each. Winner takes the full pool.</div>
+          <div style={sx(NOTE)}>Half the pool each. Winner banks the full pool, in points.</div>
           {/* Said where the host is choosing the number, in the shape the box
               arena's create screen already says it: the amount above, then the
               clause about what it is. `StakeField` below is the USDC side bet
@@ -656,7 +656,7 @@ export function CreateLobby(p: CreateLobbyProps) {
           <StakeField stake={p.stake} />
           {mode.oddsBoost > 1 && (
             <div data-boost style={sx(`margin-top:6px;font:500 10.5px/1.4 ${MONO};color:${mode.color}`)}>
-              winner takes {p.prizeLabel} · payout boost ×{mode.oddsBoost.toFixed(2)}
+              winner banks {p.prizeLabel} in points · payout boost ×{mode.oddsBoost.toFixed(2)}
             </div>
           )}
 

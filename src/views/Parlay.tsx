@@ -176,9 +176,10 @@ function useTradeConfig(wallet: DeskWallet | undefined): TradeConfig {
  * actually sign. A row with no `order` is display-only: it cannot enter the
  * slip at all (`slipRows` drops it, and the `+ SLIP` toggle is not rendered for
  * it), and it keys on the printed half alone, which is already strictly finer
- * than the old key. Closing that last gap — a year for a display-only row —
- * needs an option expiry on `PricingRow` itself, which is `src/types.ts` and
- * the server.
+ * than the old key. That last gap — a year for a display-only row — is now
+ * closed by `PricingRow.expirySec` (`src/types.ts`), set by `buildSnapshot` for
+ * every row, `order` or no `order`: display-only rows get a year in the key
+ * the same way fillable ones do, just off the row instead of off an order.
  *
  * ## Why the printed half is kept as well
  *
@@ -204,6 +205,7 @@ export function rowKey(row: PricingRow): string {
     row.structure ?? "",
     row.strike,
     row.expiry,
+    row.expirySec === undefined ? "" : String(row.expirySec),
     // What a fill would sign against: every strike, the settlement date in
     // seconds, and the product's own contract.
     api?.strikes?.join("/") ?? "",

@@ -2591,6 +2591,40 @@ describe("the chain row key names one contract, not a bucket", () => {
   });
 });
 
+/**
+ * `rowKey`'s other half — a row with no `order` at all.
+ *
+ * `7b5b6da` added `PricingRow.expirySec` (unix seconds, set by `buildSnapshot`
+ * for every row) specifically so a **display-only** row — no `order`, so it
+ * cannot enter the slip and the fill path above never sees it — still gets a
+ * year in its key. Before that field, a display-only row keyed on the printed
+ * `expiry` label alone (`"5 SEP"`, no year), so two Septembers a year apart
+ * would share a React key. Constructed here rather than pulled from the fixture
+ * because the frozen capture has no two display-only rows a year apart on
+ * record — the point is that the key does not depend on finding one.
+ */
+describe("a display-only row's key also carries the year", () => {
+  const BASE = {
+    type: "CALL",
+    strike: "2,460",
+    expiry: "12 SEP",
+    bid: "6.10",
+    ask: "6.70",
+    iv: "58.2%",
+    delta: "0.36",
+    depth: 40,
+    size: "10.0k",
+  } as unknown as PricingRow;
+
+  test("two display-only rows differing only in year get different keys", () => {
+    const thisYear: PricingRow = { ...BASE, expirySec: 1_757_030_400 }; // 2025-09-05
+    const nextYear: PricingRow = { ...BASE, expirySec: 1_788_566_400 }; // 2026-09-05
+    expect(thisYear.order).toBeUndefined();
+    expect(nextYear.order).toBeUndefined();
+    expect(rowKey(thisYear)).not.toBe(rowKey(nextYear));
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The request is not the spend
 // ─────────────────────────────────────────────────────────────────────────────

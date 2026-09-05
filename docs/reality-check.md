@@ -480,6 +480,19 @@ AVAX `FEB 2021 · MAY 2021`, XRP `APR 2020 · JUL 2020` — but bands the single
 2019, eighteen months before Avalanche launched. Clearly chipped `SEEDED`; recording it because
 a viewer who knows crypto will notice.
 
+> **Fixed — `eefa595`, 2026-09-05.** The invented "historical window" is gone rather than
+> corrected. `windowLabel()` (`engine/tape.ts`) — the hash that produced `NOV 2018 · FEB 2019`
+> — no longer exists; its replacement, `spanLabel()`, prints where the seeded walk's own 200
+> prints are, e.g. `PRINTS 51–110 OF 200`, and dates nothing. The wire side of the same defect
+> is gone with it: `src/data/wire.ts` no longer reproduces `windowLabel`'s hash to make its
+> datelines agree with the chart's invented era — the seeded session now files on the current
+> UTC day (`windowSeed`'s docblock names this finding by section number as the reason). There is
+> no historical window left for a story to be filed inside, real or fake, so the specific
+> anachronism above cannot recur — not because the date logic got smarter, but because the thing
+> it was dating no longer exists. Verified: `grep -rn "windowLabel" src/` returns only doc
+> comments narrating its removal, and `grep -rn "spanLabel" src/` shows the one call site
+> (`engine/chart.ts:71`) feeding `PRINTS … OF …` to the study screen.
+
 ---
 
 ## 6. What I could not test

@@ -210,7 +210,9 @@ for a dependency that is not there.
 
 `src/data/lobbies.ts`. A lobby names its host, its sectors — which give it both
 its book and its STOCKS / CRYPTO / MIXED label — its mode, how many legs, and
-the prize pool. Each player puts up half.
+the prize pool — notional, nothing is held, settled in PTS. Each player puts
+up half, and the app's own copy says so on the create screen: no ETH is
+approved, transferred or escrowed on this path.
 
 - **Someone else's lobby** — *Accept match* is the second seat. The host is
   your opponent.
@@ -369,13 +371,14 @@ every ticker has a pick.
 
 The slip's two numbers are now separated, because the old one conflated them.
 `degeneracyScore` is the product of `1 / prob` across the legs — a **game**
-figure that sizes the escrow stake and drives the loud-card styling, never
+figure that sizes the PTS stake and drives the loud-card styling, never
 rendered beside a currency symbol. `basketPayoff` is what a basket of real
 options actually pays: the **sum** of the leg payoffs minus the total premium,
 which is the number that reaches a wallet. Multiplying leg multipliers and
 calling the product a payout is arithmetically false — three legs at ×3 is ×27
 as a product and ×3 as a basket — so the parlay drama moved to where it is true.
-All-or-nothing now describes who takes the escrow pot, which genuinely is.
+All-or-nothing now describes who banks the PTS pot, which genuinely is
+all-or-nothing — no USDC or ETH changes hands either way.
 
 Every card face carries **max loss** above the upside figure, unconditionally: a
 bought option's downside is the premium and nothing more, and that is the single
@@ -559,9 +562,13 @@ Four sentences, and each one is checkable in the tree:
    BULLISH is a true statement about the market.
 2. **Two clocks, measuring different things.** The duel resolves in minutes on
    mark-to-market — `duelScore` is `Σ (mark_now − mark_entry) × contracts ÷
-   Σ premium`, return on premium so a duel is not a size contest — and pays the
-   escrow pot. The option itself settles at expiry on chain and pays whoever
-   holds it, regardless of who took the pot. Neither clock simulates the other.
+   Σ premium`, return on premium so a duel is not a size contest. The option
+   itself settles at expiry on chain and pays whoever holds it, regardless of
+   how the duel ended. Neither clock simulates the other. This sentence used to
+   end "...regardless of who took the pot" — the same claim `BoxBuilder.tsx`'s
+   `TWO_CLOCK_COPY` deleted from the arena's own screen, because it presumes a
+   pot someone takes and `DuelEscrow` is not deployed: no duel today pays
+   anything on either clock.
 3. **The asset gate is a runtime probe, not a list.** `qualifiedUnderlyings`
    measures four conditions against a snapshot — readable spot, ≥6 fillable
    resting orders, ≥4 of them carrying a usable delta, ≥$50 of summed depth —
@@ -633,11 +640,16 @@ byte-for-byte the offline build. **Residual trust, stated plainly:** the attest
 server re-derives the winner from committed picks and never signs a claimed
 one, but it can see picks in the clear and holds the only verdict key — a
 dishonest operator could collude. The counterparty-locks-seat-`a` attack that
-X-1 named is closed: `src/server/seats.ts` reads `a` and `b` out of the
-contract's `duels` getter, so a lock is compared against who actually paid a
-stake rather than against who says so. Commit-reveal is the named v2; the
-escrow's unconditional 6-hour refund is the escape hatch that needs no server
-at all.
+X-1 named is closed **once an escrow is deployed and named**: `src/server/seats.ts`
+reads `a` and `b` out of the contract's `duels` getter, so a lock would be
+compared against who actually paid a stake rather than against who says so.
+Today `THETADUEL_ESCROW` is unset, so that reader reports itself unconfigured
+and the server falls back to the signature-only trust this paragraph opened
+with — the fix is real and tested, not yet load-bearing. Commit-reveal is the
+named v2 for that residual; a deployed escrow's unconditional 6-hour refund
+would be the escape hatch that needs no server at all, but `DuelEscrow` is
+compiled and reviewed, **not deployed**, so there is no refund timer running
+and no pot for one to release on any duel today.
 
 ### Reading the chips
 
