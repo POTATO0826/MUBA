@@ -18,6 +18,106 @@
 - Dev server: `bun run dev` → :3000 (background). Machine sleep is DISABLED
   (powercfg standby-timeout 0/0; restore to 5/3 when the owner says done).
 
+## ACCOUNT SWITCH — 2026-09-05 ~14:55. READ THIS BLOCK FIRST.
+
+`origin/new` is at **`7b5b6da`**, everything below it pushed and green
+(**1858 pass / 0 fail**, `bunx tsc --noEmit` clean).
+
+### THE BOOK IS REACHABLE NOW — do not re-diagnose it
+
+The venue was unreachable all session because this machine's DNS resolves
+`round-snowflake-9c31.devops-118.workers.dev` to `146.112.61.104` =
+`hit-block.opendns.com`, an OpenDNS block page. **Not a Thetanuts outage** —
+that misdiagnosis has now cost this project three separate investigations.
+
+Fixed in `47834e6`: `THETADUEL_DNS=1.1.1.1,8.8.8.8` is set in the (gitignored)
+`.env`, and `src/server/resolver.ts` routes http/https resolution through it.
+Verified live: `/api/market` returns 515 KB, ETH 115 orders DEEP, BTC 141 DEEP,
+spot ETH 2453.04 / BTC 79611.09.
+
+**A fresh clone will not have that `.env` line and will see an empty board.**
+Add it before concluding anything is broken. `dns.setServers` alone does NOT
+work under Bun, nor does patching `dns.lookup` — read the resolver's header.
+
+### IN FLIGHT WHEN THE SESSION ENDED — 2 agents, ~1,900 uncommitted lines
+
+Both die on the switch. **Their work is on disk and also snapshotted** at tag
+**`wip-20260905-1450`** (commit `eaad1f5`, pushed). If the tree is ever
+clobbered, `git show wip-20260905-1450` has it.
+
+**Agent A — box arena** (owned `views/BoxBuilder.tsx`, `data/box.ts`,
+`data/ranger.ts`, plus new **`src/desk/ticket.ts`**, 672 lines). Given, in
+priority order: four bugs, then position sizing, then the hover trade ticket.
+Grep says three of four bugs look closed, one uncertain, sizing thin:
+
+| item | last observed state |
+|---|---|
+| wing/premium mismatch (8x overstated payout) | `wing` now appears in `matchListedZones` — cannot tell from a grep whether it filters or still only sorts. **VERIFY THIS FIRST.** |
+| `LIVE STRIKES` over a stale ladder | looks closed — both hits are now doc comments |
+| practice-tape / live-open label never rendered | looks closed — 6 hits where there were 0 |
+| columns whose ladder holds no price | looks closed — 6 hits for a new state |
+| **position sizing** | **only 2 hits — expect incomplete** |
+
+**Agent B — study screen** (owned `views/Study.tsx`, `components/NewsWire.tsx`,
+`engine/tape.ts`, `engine/chart.ts`, `views/Live.tsx`, `data/wire.ts`,
+`server/news.ts`). Killing the fake "AI Coach" (three hardcoded strings with an
+AI avatar), rebuilding the wire's presentation, adding a chart period control,
+filtering news to what moves price — and fixing `windowLabel()`, which invents
+a 2017-2024 date range over a seeded walk (`AVAX · JUN 2017` — Avalanche
+launched 2020) with `data/wire.ts` reproducing the same hash so the fake dates
+agree.
+
+### THE OWNER'S OPEN COMPLAINTS — none fully closed
+
+From his own words, on the box arena: he cannot size a position (**confirmed:
+`contracts = 1` was a default prop nothing ever passed**); zoom buttons feel
+dead (they are clamped to the ladder and silently do nothing on a coarse
+column); no background grid to gauge a draw against; no live readout while
+dragging; the chart "looks fake and weird"; and *"i cant customise the box to
+precision?"*.
+
+The honest answer he is owed, and which the product still does not say:
+**strikes are genuinely discrete** ($20-$100 apart on ETH) so snapping is real
+option behaviour — but **precision IS available via RFQ**, which mints a custom
+condor at arbitrary strikes (8s minimum offer window, `plan7-measurements.md`).
+`src/ui/RfqPanel.tsx` exists and has never been mounted. **Size, unlike
+strikes, has no such excuse.**
+
+### STILL UNSTARTED
+
+- **`TIER_BANDS` re-cut** — the owner decided it; it was blocked on the book
+  all session and **is now unblocked**. Read the "DECIDED" and "Band re-cut"
+  sections below in full before touching it, especially the `LOUD_BELOW`
+  coupling: re-cutting SAFE to ~0.45 flips every 3- and 4-leg all-SAFE slip to
+  the alarm colour. `f6bddd4` added a guard test that fails loudly with the
+  derivation; do not silence it.
+- One edit routed and not yet made: `src/views/Parlay.tsx` `rowKey` should
+  append `row.expirySec` (now on `PricingRow`) to close the year gap on
+  display-only rows.
+- `src/views/CreateLobby.tsx:659` renders "winner takes" on the notional pool.
+  Disclosed by the line above it, but "winner takes" is on `CUSTODY_PROMISES`
+  and that screen is not scanned.
+- README still asserts escrow custody, pot payout and a 6-hour refund as
+  present fact while also saying the escrow is not deployed.
+- Three plan-7 scoreboard rows overstate their evidence (rows 12, 15, 24).
+
+### WHAT LANDED THIS SESSION
+
+`f1510ed` options default on · `e7e4141` expiry by coverage · `f6bddd4` loud
+guard · `af5bfac` box arena (zoom, wheel, axes, editable boxes; 208 tests) ·
+`3f067fa` provenance markers no longer vanish when data goes fake ·
+`dd1cfd2` **real greeks** (Black-Scholes, 74 tests, `docs/greeks.md`; validated
+to 0.00104 mean abs delta against the venue) · `93350f1` duels open on a real
+price, and a proportional tape floor that had been reporting PEPE +11,817,066%
+· `702c95d` **the seventh money bug** (a fill could go to the wrong contract)
+plus four more · `47834e6` DNS override · `7b5b6da` five routed fixes.
+
+Eight money bugs are now documented, seven fixed. The eighth — the box arena
+pairing one instrument's premium with another's max payout — is what Agent A
+was mid-fix on.
+
+
+
 ## State at last update (2026-09-05 — plan 6's engine has landed, its UI has not)
 
 > Written for a FRESH SESSION picking this up cold. Everything under "Older
