@@ -43,6 +43,8 @@ import {
 } from "../data/history.ts";
 import type { RoomSeat, RoomView } from "../data/room.ts";
 import { poolOf, usdc } from "../data/stake.ts";
+import { scoreBoxDuel, settleIndexFor } from "../engine/boxduel.ts";
+import type { GameStakePot } from "../state/gamestake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import { C, MONO, SANS } from "../theme.ts";
@@ -268,11 +270,20 @@ export const REVEAL_COPY =
  * rather than to the promise.
  */
 export interface DuelCustody {
-  /** The deployed `DuelEscrow` holding both stakes, checksummed or lowercase. */
+  /** The deployed contract holding both stakes, checksummed or lowercase. */
   escrow: string;
-  /** Hours after which that escrow refunds unconditionally — `TIMEOUT` on the
-   *  contract, `REFUND_TIMEOUT_HOURS` in `src/desk/escrow.ts`. */
-  refundHours: number;
+  /**
+   * Hours after which that contract refunds unconditionally, or **`null` when
+   * it never does**.
+   *
+   * `null` is not "unknown" and must never be rendered as a number. `DuelEscrow`
+   * has a six-hour `TIMEOUT`; `GameStake` has no refund path at all — its only
+   * exit is `winnerTakesAll`, so an unsettled duel keeps the money permanently.
+   * A screen that printed "0-hour refund", or quietly omitted the clause, would
+   * be describing an escape hatch that does not exist. Every reader of this
+   * field has to branch on it.
+   */
+  refundHours: number | null;
 }
 
 /**
@@ -368,9 +379,16 @@ export const NO_FILL_COPY =
  */
 export function noFillCopy(custody: DuelCustody | null): string {
   if (!custody) return NO_FILL_COPY;
+  if (custody.refundHours === null) {
+    return (
+      "Neither box was filled, so there is nothing to mark and no verdict is signed. There is " +
+      "no tiebreak and no refund: this contract only ever pays a winner, so an unsettled duel " +
+      "keeps what was staked."
+    );
+  }
   return (
     "Neither box was filled, so there is nothing to mark and no verdict is signed. There is " +
-    `no tiebreak. DuelEscrow's ${custody.refundHours}-hour refund returns both stakes, ` +
+    `no tiebreak. The escrow's ${custody.refundHours}-hour refund returns both stakes, ` +
     "rake-free, with no signature from anyone."
   );
 }
@@ -786,6 +804,8 @@ export interface BoxBuilderProps {
    * custody gets a screen that promises none.
    */
   custody?: DuelCustody | null;
+  /** The duel's on-chain pot, when one exists. Drives the settle control. */
+  pot?: GameStakePot | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -889,6 +909,7 @@ export function BoxBuilder({
   onLock,
   dealt = null,
   custody = null,
+  pot = null,
 }: BoxBuilderProps) {
   // Fixed at mount when the caller does not supply one, so every derived
   // expiry set and every "now" divider in one session agree with each other.
@@ -1049,6 +1070,29 @@ export function BoxBuilder({
   /** Their box, drawn on this chart. `null` before the reveal by construction:
    *  `theirPick` is null, so there is nothing to decode. */
   const theirBox = useMemo(() => decodeBoxPick(theirPick), [theirPick]);
+
+  /**
+   * Who won, in ABSOLUTE seats.
+   *
+   * Both clients run this same pure function over the same two picks and the
+   * room's own seed, so they agree without exchanging a word — which is what
+   * makes it safe that `winnerTakesAll` accepts a call from anybody. A
+   * viewer-relative "you won" would have both seats racing to pay themselves.
+   *
+   * `null` before the reveal, or when either pick cannot be settled; the settle
+   * control refuses rather than guessing, because the payout cannot be undone.
+   */
+  const outcome = useMemo(() => {
+    if (!room || !revealed) return null;
+    const host = decodeBoxPick(room.picks[0]);
+    const guest = decodeBoxPick(room.picks[1]);
+    return scoreBoxDuel({
+      host,
+      guest,
+      seed: room.seed,
+      settleAt: settleIndexFor(room.durationMinutes),
+    });
+  }, [room, revealed]);
 
   /**
    * §6 — the asset the room's seed dealt, honoured only when it is drawable.
@@ -1238,6 +1282,42 @@ export function BoxBuilder({
   // for tests and future settled RFQs; a live match always outranks it.
   const currentPremium = match ? (zoneQuote(match.zone) ?? premium) : premium;
   const econ = spec ? condorEconomics(spec, currentPremium ?? 0, contracts) : null;
+
+  /**
+   * In a duel, the money is the STAKE — not the instrument.
+   *
+   * `econ` answers the option market's questions: max loss is the premium, max
+   * payout is the wing width times contracts. Both are right for someone who is
+   * buying the box, and both are wrong for someone duelling with it, because a
+   * duellist never buys anything. Nothing is filled, no premium is paid, and the
+   * structure is only how the player states a view.
+   *
+   * What is actually at risk is the stake the room was created with, and what is
+   * actually winnable is the two stakes together. Neither moves when the box
+   * moves — which is the tell that the old figures were describing the wrong
+   * thing: dragging the band changed "max payout" even though a duel's prize is
+   * fixed before the first drag.
+   *
+   * `null` off the duel path, where `econ` remains the correct answer.
+   */
+  const duelMoney = room
+    ? {
+        loss: usdc(room.stakeUsdc),
+        /**
+         * The real pot once one exists, and the agreed figure only until then.
+         *
+         * `GameStake` never compares the two seats — it takes any value above
+         * zero from each — so `stake x 2` is a guess about what the winner
+         * takes, and a wrong one the moment the seats fund different amounts.
+         * The contract's own `pool` is the only number that is actually at
+         * stake, so it wins wherever it is available.
+         */
+        payout:
+          pot && pot.seats > 0
+            ? usdc(Number(pot.pool) / 1e18)
+            : usdc(poolOf(room.stakeUsdc)),
+      }
+    : null;
   const quoted = typeof currentPremium === "number" && currentPremium > 0;
   /** `max payout ÷ premium paid`, or nothing at all. Never a placeholder. */
   const multiple = quoted && econ ? econ.payoutMultiple : null;
@@ -1375,6 +1455,10 @@ export function BoxBuilder({
           {seatIndex !== null && revealed && (
             <div data-role="reveal" style={sx("display:grid;gap:6px")}>
               <span style={sx(`font:500 12px/1.5 ${SANS};color:${C.textSoft}`)}>{REVEAL_COPY}</span>
+
+              {pot && room && outcome && (
+                <SettleControl pot={pot} room={room} outcome={outcome} />
+              )}
 
               {/* Every way the two boxes can fail to be comparable on one
                   chart, said rather than drawn wrong. */}
@@ -1925,8 +2009,9 @@ export function BoxBuilder({
                     {box ? usd(strikeUsd(box.wing) ?? 0) : "—"}
                   </span>
                   <span style={sx(NOTE)}>
-                    The distance below the floor and above the ceiling. It is also the most this can
-                    pay per contract, which is why it is on screen even while it is fixed.
+                    {duelMoney
+                      ? "The distance below the floor and above the ceiling — the shape of your box, not a sum of money. In a duel the amount is the stake below."
+                      : "The distance below the floor and above the ceiling. It is also the most this can pay per contract, which is why it is on screen even while it is fixed."}
                   </span>
                 </div>
 
@@ -1937,29 +2022,39 @@ export function BoxBuilder({
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(`${LABEL};color:${C.red}`)}>MAX LOSS</span>
                   <span data-role="max-loss" style={sx(`${VALUE};color:${C.red}`)}>
-                    {quoted && econ
-                      ? usd(econ.maxLoss, true)
-                      : unquotedMaxLoss !== null
-                        ? `Up to ${usd(unquotedMaxLoss, true)}`
-                        : "Price required"}
+                    {duelMoney
+                      ? duelMoney.loss
+                      : quoted && econ
+                        ? usd(econ.maxLoss, true)
+                        : unquotedMaxLoss !== null
+                          ? `Up to ${usd(unquotedMaxLoss, true)}`
+                          : "Price required"}
                   </span>
                   <span style={sx(NOTE)}>
-                    {quoted
-                      ? MAX_LOSS_COPY
-                      : unquotedMaxLoss !== null
-                        ? "Starting maximum bid. You can change it before the pricing request is sent; an accepted maker price becomes the exact max loss."
-                        : "No maker has priced this box yet. Open pricing to set the most you are willing to pay."}
+                    {duelMoney
+                      ? "Your stake for this duel, fixed when the room was created."
+                      : quoted
+                        ? MAX_LOSS_COPY
+                        : unquotedMaxLoss !== null
+                          ? "Starting maximum bid. You can change it before the pricing request is sent; an accepted maker price becomes the exact max loss."
+                          : "No maker has priced this box yet. Open pricing to set the most you are willing to pay."}
                   </span>
                 </div>
 
                 <div style={sx("display:grid;gap:5px")}>
                   <span style={sx(LABEL)}>MAX PAYOUT</span>
                   <span data-role="max-payout" style={sx(`${VALUE};color:${C.green}`)}>
-                    {econ ? `${usd(econ.maxPayout, true)}${contracts === 1 ? " per contract" : ""}` : "—"}
+                    {duelMoney
+                      ? duelMoney.payout
+                      : econ
+                        ? `${usd(econ.maxPayout, true)}${contracts === 1 ? " per contract" : ""}`
+                        : "—"}
                   </span>
                   {/* §4.4 — computed, or absent. Never a dash, never an
-                      estimate, and never a rate from a table in this repo. */}
-                  {multiple !== null && (
+                      estimate, and never a rate from a table in this repo.
+                      Meaningless in a duel: there is no premium to be a
+                      multiple of. */}
+                  {!duelMoney && multiple !== null && (
                     <span
                       data-role="payout-multiple"
                       style={sx(`font:700 12px/1 ${MONO};color:${C.accent}`)}
@@ -1967,7 +2062,11 @@ export function BoxBuilder({
                       {multiple.toFixed(2)}× the premium
                     </span>
                   )}
-                  <span style={sx(NOTE)}>{SETTLEMENT_COPY}</span>
+                  <span style={sx(NOTE)}>
+                    {duelMoney
+                      ? "Fixed by the duel's stake. Where you draw the box decides whether you win it — not how much, so this figure does not move as you drag."
+                      : SETTLEMENT_COPY}
+                  </span>
                 </div>
 
                 <div style={sx(`height:1px;background:${C.line}`)} />
@@ -2148,5 +2247,70 @@ function Review({
         </span>
       )}
     </>
+  );
+}
+
+/**
+ * The end of a staked duel: name the winner, move the money.
+ *
+ * Either seat may press it. The contract lets anyone call `winnerTakesAll`, and
+ * both clients derived the same winner from the same seed, so there is no race
+ * to lose and no advantage in going first — whoever gets there settles it for
+ * both.
+ *
+ * An unscoreable duel (`winner === null`) offers nothing at all. That is the
+ * one case where the pot can strand, and it is still the right refusal: this
+ * contract has no way to take a payment back, so paying the wrong player is
+ * strictly worse than paying nobody yet.
+ */
+function SettleControl({
+  pot,
+  room,
+  outcome,
+}: {
+  pot: GameStakePot;
+  room: RoomView;
+  outcome: ReturnType<typeof scoreBoxDuel>;
+}) {
+  if (pot.seats < 2) return null;
+
+  if (pot.paid) {
+    return (
+      <span data-role="settle" style={sx(`font:600 12px/1.5 ${SANS};color:${C.green}`)}>
+        Settled. {outcome.reason}
+      </span>
+    );
+  }
+
+  if (outcome.winner === null) {
+    return (
+      <span data-role="settle" style={sx(`font:500 12px/1.5 ${SANS};color:${C.amber}`)}>
+        This duel cannot be scored, so no winner can be named. {outcome.reason}
+      </span>
+    );
+  }
+
+  const winner = outcome.winner === "host" ? room.host : room.guest;
+  const blocked = pot.blockers.pay;
+
+  return (
+    <div data-role="settle" style={sx("display:grid;gap:8px")}>
+      <span style={sx(`font:600 12px/1.5 ${SANS};color:${C.text}`)}>
+        {outcome.reason} {shortAddress(winner ?? "")} takes {usdc(Number(pot.pool) / 1e18)}.
+      </span>
+      <button
+        onClick={() => winner && void pot.payWinner(winner)}
+        disabled={Boolean(blocked) || pot.busy || !winner}
+        style={sx(BTN(C.green, true, Boolean(blocked) || pot.busy || !winner))}
+      >
+        {pot.busy ? "Paying…" : "Pay the winner"}
+      </button>
+      {blocked && <span style={sx(`${NOTE};color:${C.amber}`)}>{blocked}</span>}
+      {pot.error && (
+        <span role="alert" style={sx(`${NOTE};color:${C.red}`)}>
+          {pot.error}
+        </span>
+      )}
+    </div>
   );
 }

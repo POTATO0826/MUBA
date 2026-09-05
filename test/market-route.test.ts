@@ -988,13 +988,34 @@ describe("/api/config carries every feature flag a client reads", () => {
     expect(EMITTED.size).toBeGreaterThanOrEqual(4);
   });
 
-  test("all mainnet-backed features are emitted but forced off", () => {
+  /**
+   * The split this build actually makes, and the reason the flags are not all
+   * one shape.
+   *
+   * MONEY is on Base Sepolia and nothing moves that: the wallet, the escrow and
+   * `GameStake` are all chain 84532, asserted below. PRICES are read from Base
+   * mainnet, because the venue lists no testnet option chain — there is no
+   * testnet book to read, and `mockMarketSource.ladder` returns `NO_LADDER` on
+   * purpose (`src/data/market.ts:324`) rather than invent quotes that would pass
+   * for live ones. Forcing `market: false` was tried, and what it produced was
+   * an arena that said "no live expiries" and could not be played at all.
+   *
+   * So `market` and `options` are opt-out reads, and `trade` — the only flag
+   * that can reach a signer — stays opt-in. That asymmetry is the safety
+   * property: reading a price spends nothing.
+   */
+  test("reads are opt-out, spending is opt-in, and the app stays pinned to Sepolia", () => {
     expect(EMITTED.has("options")).toBe(true);
-    expect(FEATURES).toContain("market: false");
-    expect(FEATURES).toContain("options: false");
-    expect(FEATURES).toContain("trade: false");
+    expect(FEATURES).toContain('market: Bun.env.THETADUEL_MARKET !== "off"');
+    expect(FEATURES).toContain('options: Bun.env.THETADUEL_OPTIONS !== "off"');
     expect(FEATURES).toContain('stake: Bun.env.THETADUEL_STAKE === "on"');
-    expect(INDEX_SRC).toContain('reason: "testnet-only"');
+    // The one that can spend. `=== "on"` exactly, so absent means off.
+    expect(FEATURES).toContain('trade: Bun.env.THETADUEL_TRADE === "on"');
+    expect(FEATURES).not.toContain("trade: true");
+    // The book is served live again rather than stubbed closed.
+    expect(INDEX_SRC).toContain("market.handle()");
+    expect(INDEX_SRC).not.toContain('reason: "testnet-only"');
+    // Unchanged and load-bearing: every wallet action is still Sepolia.
     expect(INDEX_SRC).toContain("chainId: BASE_SEPOLIA_CHAIN_ID");
     expect(INDEX_SRC).toContain('network: "base-sepolia"');
   });

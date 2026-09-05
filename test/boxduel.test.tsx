@@ -28,7 +28,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { liveExpiries, type Box, type LadderSnapshot } from "../src/data/box.ts";
 import type { RoomSeat, RoomView } from "../src/data/room.ts";
-import { usdc } from "../src/data/stake.ts";
+import { poolOf, usdc } from "../src/data/stake.ts";
 import {
   _resetRooms,
   createRoom,
@@ -793,14 +793,34 @@ describe("custody is claimed only when something holds the stake", () => {
     unmount();
   });
 
-  test("App hands the arena no custody, because the arena has none", async () => {
-    // The seam's only caller. If this ever becomes `custody={stake}` or a
-    // literal, that is a claim about money and it must be argued for here
-    // first — `stake` is the *seeded match's* side bet and pointing the arena
-    // at it would have the arena claim custody of another duel's money.
+  test("App's custody comes from a funded pot, never a literal and never another duel's stake", async () => {
+    /**
+     * The seam is now filled, and this is the argument the old test demanded.
+     *
+     * `custody` is no longer `null`, because `GameStake` is deployed and the
+     * arena room funds it. Two properties have to hold for that to be honest,
+     * and both are asserted here rather than left to a reviewer:
+     *
+     *  1. It is derived, not asserted. `arenaCustody` is gated on
+     *     `arenaPot.seats > 0` — a real read of THIS duel's pot. A deployed
+     *     contract holding none of this room's money is not custody of it, and
+     *     an address alone would claim otherwise.
+     *  2. It is not `stake`. That is the *seeded match's* side bet; pointing the
+     *     arena at it would have one duel claim custody of another's money. The
+     *     original test existed to catch exactly that substitution.
+     */
     const app = await Bun.file(join(import.meta.dir, "..", "src", "App.tsx")).text();
     const passes = [...app.matchAll(/custody=\{([^}]*)\}/g)].map((m) => m[1]!.trim());
-    expect(passes).toEqual(["null"]);
+    expect(passes.length).toBeGreaterThan(0);
+    expect([...new Set(passes)]).toEqual(["arenaCustody"]);
+    // Never the seeded match's side bet.
+    expect(passes).not.toContain("stake");
+
+    const derivation = app.slice(app.indexOf("const arenaCustody"));
+    expect(derivation).toContain("arenaPot.seats > 0");
+    expect(derivation).toContain("arenaPot.address");
+    // GameStake has no refund. The field must say so, not print a number.
+    expect(derivation).toContain("refundHours: null");
   });
 });
 
@@ -827,5 +847,142 @@ describe("the dealt underlying", () => {
     expect(text()).not.toContain("The duel dealt");
     const eth = container.querySelector('[data-asset="ETH"]') as HTMLButtonElement;
     expect(eth.disabled).toBe(false);
+  });
+});
+
+describe("a duel's money is the stake, not the instrument", () => {
+  /**
+   * The bug this pins: the panel printed the CONDOR's economics during a duel —
+   * "max payout $1,000 per contract", the wing width. A duellist buys nothing,
+   * so that figure described an instrument they never hold, and worse, it moved
+   * every time they dragged the band. A duel's prize is fixed before the first
+   * drag.
+   */
+  test("max payout is both seats' stakes and max loss is your own", () => {
+    const id = openRoom();
+    mount(<BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />);
+    const payout = container.querySelector('[data-role="max-payout"]')?.textContent ?? "";
+    const loss = container.querySelector('[data-role="max-loss"]')?.textContent ?? "";
+    const stake = view(id).stakeUsdc;
+    expect(loss).toBe(usdc(stake));
+    expect(payout).toBe(usdc(poolOf(stake)));
+    // The option-market answer must be gone: no per-contract wing width.
+    expect(payout).not.toContain("per contract");
+    expect(payout).not.toContain("$");
+  });
+
+  test("the premium multiple is hidden in a duel — there is no premium", () => {
+    const id = openRoom();
+    mount(<BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />);
+    expect(container.querySelector('[data-role="payout-multiple"]')).toBeNull();
+  });
+
+  test("off the duel path the option economics are untouched", () => {
+    mount(<BoxBuilder {...BASE} />);
+    const payout = container.querySelector('[data-role="max-payout"]')?.textContent ?? "";
+    // No room, so the figure is the instrument's again — never an ETH stake.
+    expect(payout).not.toContain("ETH");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The staked arena — the pot, and the settle control at the reveal
+// ─────────────────────────────────────────────────────────────────────────────
+
+import type { GameStakePot } from "../src/state/gamestake.ts";
+
+/** A pot with nothing real behind it. Every field the screens read. */
+function fakePot(over: Partial<GameStakePot> = {}): GameStakePot {
+  return {
+    address: "0xcd3dAC24e99E1Cb710B8243468e6D118215f3eAC",
+    matchId: `0x${"ab".repeat(32)}`,
+    state: null,
+    pool: 2_000_000_000_000_000n,
+    seats: 2,
+    paid: false,
+    seated: true,
+    busy: false,
+    txHash: null,
+    error: null,
+    blockers: { stake: null, pay: null },
+    async stake() {},
+    async payWinner() {},
+    refresh() {},
+    ...over,
+  };
+}
+
+/** A revealed duel: both seats locked a real box through the real store. */
+function revealedRoom(): string {
+  const id = openRoom();
+  const hostPick = drawAndLock(view(id), "host", [0, 3]);
+  unmount();
+  if (!pickRoom(id, HOST, hostPick).ok) throw new Error("host lock refused");
+  const guestPick = drawAndLock(view(id), "guest", [1, 4]);
+  unmount();
+  if (!pickRoom(id, GUEST, guestPick).ok) throw new Error("guest lock refused");
+  return id;
+}
+
+describe("the settle control", () => {
+  beforeEach(() => _resetRooms());
+
+  test("names a winner and offers the payout once both seats funded", () => {
+    const id = revealedRoom();
+    mount(<BoxBuilder {...BASE} room={view(id)} seat="host" pot={fakePot()} onLock={() => {}} />);
+    const settle = container.querySelector('[data-role="settle"]');
+    expect(settle).not.toBeNull();
+    const button = [...container.querySelectorAll("button")].find((b) =>
+      (b.textContent ?? "").includes("Pay the winner"),
+    );
+    expect(button).toBeDefined();
+    expect(button?.disabled).toBe(false);
+    // The pot, not the instrument.
+    expect(settle?.textContent).toContain("0.002 ETH");
+  });
+
+  test("stays absent until the second seat has funded", () => {
+    const id = revealedRoom();
+    mount(
+      <BoxBuilder {...BASE} room={view(id)} seat="host" pot={fakePot({ seats: 1 })} onLock={() => {}} />,
+    );
+    expect(container.querySelector('[data-role="settle"]')).toBeNull();
+  });
+
+  test("a paid duel reports the result instead of offering to pay again", () => {
+    const id = revealedRoom();
+    mount(
+      <BoxBuilder {...BASE} room={view(id)} seat="host" pot={fakePot({ paid: true })} onLock={() => {}} />,
+    );
+    expect(container.querySelector('[data-role="settle"]')?.textContent).toContain("Settled");
+    expect(
+      [...container.querySelectorAll("button")].some((b) =>
+        (b.textContent ?? "").includes("Pay the winner"),
+      ),
+    ).toBe(false);
+  });
+
+  test("a wallet blocker disables the payout and says why", () => {
+    const id = revealedRoom();
+    mount(
+      <BoxBuilder
+        {...BASE}
+        room={view(id)}
+        seat="host"
+        pot={fakePot({ blockers: { stake: null, pay: "Switch to Base Sepolia (84532)." } })}
+        onLock={() => {}}
+      />,
+    );
+    const button = [...container.querySelectorAll("button")].find((b) =>
+      (b.textContent ?? "").includes("Pay the winner"),
+    );
+    expect(button?.disabled).toBe(true);
+    expect(text()).toContain("Switch to Base Sepolia");
+  });
+
+  test("no pot means no settle control — the unstaked arena is unchanged", () => {
+    const id = revealedRoom();
+    mount(<BoxBuilder {...BASE} room={view(id)} seat="host" onLock={() => {}} />);
+    expect(container.querySelector('[data-role="settle"]')).toBeNull();
   });
 });

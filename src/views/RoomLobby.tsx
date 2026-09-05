@@ -5,6 +5,8 @@ import { poolOf, usdc } from "../data/stake.ts";
 import { shortAddress } from "../data/wallet.ts";
 import { sx } from "../lib/sx.ts";
 import type { Room } from "../state/room.ts";
+import type { GameStakePot } from "../state/gamestake.ts";
+import { stakeAmountText } from "../data/stake.ts";
 import { STAKES_OFF_COPY, stakeBasisLine, type DuelCustody } from "./BoxBuilder.tsx";
 import { C, MONO, SANS } from "../theme.ts";
 
@@ -153,6 +155,15 @@ interface RoomLobbyProps {
    * default: see {@link DuelCustody}.
    */
   custody?: DuelCustody | null;
+  /**
+   * The duel's on-chain pot, or `null` where nothing is staked.
+   *
+   * `null` is the pre-GameStake screen, unchanged: a room that carries a number
+   * nobody holds. A pot makes the lobby the place money actually enters, which
+   * is why the control sits beside "ready" rather than on a separate screen —
+   * funding and declaring yourself ready are one decision.
+   */
+  pot?: GameStakePot | null;
 }
 
 export function RoomLobby({
@@ -161,6 +172,7 @@ export function RoomLobby({
   walletConnected,
   onEnterDuel,
   custody = null,
+  pot = null,
 }: RoomLobbyProps) {
   const { seat, started, error, busy } = state;
   const iAmReady = seat === "host" ? room.ready[0] : seat === "guest" ? room.ready[1] : false;
@@ -231,6 +243,8 @@ export function RoomLobby({
             </button>
           </div>
         )}
+
+        {pot && !bystander && <StakePanel pot={pot} room={room} />}
 
         <div style={sx("display:flex;gap:10px;align-items:center")}>
           {bystander && !full && (
@@ -303,6 +317,79 @@ export function RoomLobby({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Funding one seat of the duel.
+ *
+ * Deliberately not a copy of the `/testing` console. The console asks for a
+ * match key because it has no duel; here the match id IS the room, so the only
+ * decision left is the amount — and the amount is free, because `GameStake`
+ * takes any value above zero and never compares the two seats. Two players may
+ * stake differently and the winner still takes both.
+ *
+ * The seat's own state is read off the chain rather than remembered locally: a
+ * refresh, a second tab and a wallet switch all have to agree about whether
+ * this address has funded, and only the contract knows.
+ */
+function StakePanel({ pot, room }: { pot: GameStakePot; room: RoomView }) {
+  const [amount, setAmount] = useState(() => stakeAmountText(room.stakeUsdc));
+  const blocked = pot.blockers.stake;
+  const disabled = Boolean(blocked) || pot.busy;
+
+  return (
+    <div style={sx(`${CARD};display:grid;gap:12px`)}>
+      <div style={sx("display:flex;align-items:baseline;gap:12px;flex-wrap:wrap")}>
+        <span style={sx(LABEL)}>THE POT</span>
+        <span style={sx(`font:700 18px/1 ${MONO};color:${C.accent}`)}>
+          {usdc(Number(pot.pool) / 1e18)}
+        </span>
+        <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>
+          {pot.seats}/2 SEATS FUNDED{pot.paid ? " · PAID OUT" : ""}
+        </span>
+      </div>
+
+      {pot.seated ? (
+        <span style={sx(`font:500 12px/1.5 ${SANS};color:${C.green}`)}>
+          Your stake is in. The winner takes everything above.
+        </span>
+      ) : (
+        <div style={sx("display:flex;gap:10px;align-items:center;flex-wrap:wrap")}>
+          <input
+            aria-label="Stake amount in test ETH"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            style={sx(
+              `height:38px;width:130px;border:1px solid ${C.borderMid};border-radius:10px;` +
+                `background:${C.raised};color:${C.text};padding:0 12px;font:600 13px/1 ${MONO}`,
+            )}
+          />
+          <span style={sx(`font:500 11px/1 ${MONO};color:${C.dim}`)}>ETH</span>
+          <button
+            onClick={() => void pot.stake(amount)}
+            disabled={disabled}
+            style={sx(BTN(C.accent, true) + (disabled ? OFF : ""))}
+          >
+            {pot.busy ? "Staking…" : "Stake into this duel"}
+          </button>
+        </div>
+      )}
+
+      {blocked && (
+        <span style={sx(`font:500 11.5px/1.5 ${SANS};color:${C.amber}`)}>{blocked}</span>
+      )}
+      {pot.error && (
+        <span role="alert" style={sx(`font:500 11.5px/1.5 ${SANS};color:${C.red}`)}>
+          {pot.error}
+        </span>
+      )}
+      <span style={sx(`font:400 11px/1.5 ${SANS};color:${C.muted}`)}>
+        Any amount above zero, and the two seats need not match. Nothing is returned once staked —
+        this contract has no refund and no timeout, so a duel that is never settled keeps what is in
+        it.
+      </span>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import index from "./src/index.html";
 import { ROOM_ERROR_STATUS, type RoomResult } from "./src/data/room.ts";
 import { createAttestService } from "./src/server/attest.ts";
+import { createMarketService } from "./src/server/thetanuts.ts";
 import { createNewsService } from "./src/server/news.ts";
 import {
   createRoom,
@@ -40,6 +41,16 @@ const news = createNewsService();
  * `{ ok: false, reason: "attestor not configured" }`.
  */
 const attest = createAttestService();
+
+/**
+ * One market service for the process. Its 15s TTL and in-flight dedupe are what
+ * keep a lobby full of pollers down to one read of the Base RPC, which
+ * throttles; a per-request instance would cache nothing.
+ *
+ * Constructing it opens no socket — the SDK client is built lazily on the first
+ * read — so `THETADUEL_MARKET=off` never touches the chain at all.
+ */
+const market = createMarketService();
 
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -115,10 +126,24 @@ const server = Bun.serve({
      * produces — the kill switch is read per request inside the service, so an
      * operator flipping it does not have to restart the process.
      */
-    // The upstream options venue has no supported testnet. Returning a closed
-    // envelope guarantees that this testnet-only build never reads Base mainnet.
-    "/api/market": () =>
-      Response.json({ ok: false, reason: "testnet-only" }, { headers: NO_STORE }),
+    /**
+     * The live option book.
+     *
+     * It reads BASE MAINNET (`RPC_URL`, default `https://mainnet.base.org`),
+     * because the venue lists no testnet book — there is no testnet option
+     * chain to read, so a build that refuses mainnet has no expiries and the
+     * arena has nothing to draw on. That is what a stub here cost: the box grid
+     * went empty and said "no live expiries".
+     *
+     * Reading it is safe in a way that spending is not, and the distinction is
+     * the whole justification: this is a read-only, display-only price feed. No
+     * wallet, no signer, no approval and no transaction is on this path —
+     * filling is gated separately behind `THETADUEL_TRADE`, which stays opt-in.
+     *
+     * `THETADUEL_MARKET=off` is the kill switch, read per request inside the
+     * service so flipping it needs no restart.
+     */
+    "/api/market": () => market.handle(),
 
     /**
      * The settlement referee, in two halves — same always-200 envelope again.
@@ -276,10 +301,10 @@ const server = Bun.serve({
           // every other value in this envelope: an address on a testnet.
           gameStake: Bun.env.THETADUEL_GAMESTAKE ?? "",
           features: {
-            market: false,
-            options: false,
+            market: Bun.env.THETADUEL_MARKET !== "off",
+            options: Bun.env.THETADUEL_OPTIONS !== "off",
             stake: Bun.env.THETADUEL_STAKE === "on",
-            trade: false,
+            trade: Bun.env.THETADUEL_TRADE === "on",
           },
         },
         { headers: { "cache-control": "no-store" } },

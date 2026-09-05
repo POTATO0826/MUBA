@@ -50,6 +50,8 @@ import { Room } from "./views/Room.tsx";
 import { RoomLobby } from "./views/RoomLobby.tsx";
 import { Study } from "./views/Study.tsx";
 import { useMockWallet } from "./wallet/mock.ts";
+import { useGameStake } from "./state/gamestake.ts";
+import { matchIdFromInput } from "./utils/gamestake.ts";
 
 const PAGE =
   "min-height:100vh;background:radial-gradient(1200px 600px at 78% -10%, rgba(200,255,0,.07), transparent 60%)," +
@@ -225,6 +227,37 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
   }, [identity.address, state.tab]);
 
   const arenaRoomId = roomState.room?.id ?? null;
+
+  /**
+   * The arena's on-chain pot.
+   *
+   * The match id is the ROOM id, hashed the same way `duelIdFor` hashes a match
+   * key — `ethers.id` over the text. That matters more than it looks: both
+   * players already hold the room's uuid, so both derive the identical
+   * `bytes32` with nothing passing between them. No negotiation, no extra
+   * field on the room, no way for the two seats to fund different pots.
+   */
+  const arenaMatchId = useMemo(
+    () => (arenaRoomId ? matchIdFromInput(arenaRoomId) : null),
+    [arenaRoomId],
+  );
+  const arenaPot = useGameStake(arenaMatchId, active);
+
+  /**
+   * What is holding the arena's stakes, once something is.
+   *
+   * `refundHours: null` is the whole difference from the escrow this seam was
+   * written for: `GameStake` pays a winner or it pays nobody. Every screen that
+   * takes this prop branches on that null rather than printing a number.
+   *
+   * Gated on a funded seat rather than on the address alone — a deployed
+   * contract that holds none of THIS duel's money is not custody of it, and
+   * claiming otherwise is the exact untruth the copy rail exists to catch.
+   */
+  const arenaCustody = useMemo(
+    () => (arenaPot.seats > 0 ? { escrow: arenaPot.address, refundHours: null } : null),
+    [arenaPot.seats, arenaPot.address],
+  );
   useEffect(refreshRooms, [refreshRooms, arenaRoomId]);
   // The chain says the other seat filled. The same patch the fake timer would
   // have applied — which is exactly why the timer is suppressed while a stake is
@@ -519,6 +552,8 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           state={roomState}
           walletConnected={identity.connected}
           onEnterDuel={enterArenaDuel}
+          pot={arenaPot}
+          custody={arenaCustody}
         />
       )}
 
@@ -619,7 +654,8 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
           // something can pay it. Passing `stake` from above would NOT be that
           // wiring; it is a different duel's side bet and would make the arena
           // claim custody of money staked on the seeded match.
-          custody={null}
+          custody={arenaCustody}
+          pot={arenaPot}
         />
       )}
 
