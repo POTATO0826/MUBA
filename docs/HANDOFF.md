@@ -126,6 +126,49 @@ real engine over live data. Baseline: ETH 2/8, BTC 3/8, SOL 3/8, XRP 1/8,
 BNB 5/8, AVAX 1/8 — 15/48, SAFE 0/8 on all six. Also report **how many of the
 48 remain seeded**, because that gap is what the owner actually cares about.
 
+### Band re-cut: HALF DONE — and a threshold nobody had noticed
+
+**Shipped :**  now deals the expiry that fills the
+most (tier, stance) slots instead of the earliest. Coverage is the *set* of
+slots an expiry could fill — forty rows that all bucket into DEGEN cover one
+slot. Still one expiry per grid; the docblock's reasoning was kept verbatim
+and reaffirmed. 1582 pass (+5).
+
+**NOT done:  is untouched**, deliberately. The venue was
+unreachable (see the DNS block above) and the only capture in the tree —
+ — is by its own provenance block "30 of 426 live
+orders, hand-picked by level". A hand-picked subset cannot yield a delta
+distribution. Deriving bands from it would manufacture exactly the kind of
+number this repo has six money bugs about. Do not do it.
+
+**The threshold that matters is not the score — it is .** sets . An all-SAFE slip goes loud once SAFE's
+midpoint falls below **0.3162 (2 legs) · 0.4642 (3) · 0.5623 (4)**. Today's
+0.75 clears all three, so an all-SAFE slip is never loud. **If the re-cut puts
+SAFE near ~0.45, every 3- and 4-leg all-SAFE slip flips to the alarm state** —
+violet border, violet ODDS and ALL LAND (). The
+safest slip in the game would render as the alarm. The fix is almost certainly
+, **not** the bands — but it is the owner's call, and it must be
+made in the same change as the re-cut or the game will look broken.
+
+ is , so scaling every midpoint by  inflates an
+n-leg score by : at k=0.6 that is ×2.78 (2 legs) to ×7.72 (4).  already tops out at 26,666,667 pts today; a downward re-cut multiplies
+that ceiling by .
+
+**The two halves are NOT independent.**  buckets via
+, so which expiry the grid deals is itself a function of
+. Re-cutting the bands can change the selected expiry on the same
+snapshot — **re-measure slot counts AFTER the re-cut**, never reuse a number
+measured against the shipped bands. The "ETH 2 at front expiry vs 11 at
+09-07" figure above is exactly what must be re-measured.
+
+Exhaustive list of places that hand-assert the old 75/55/35/15 and must be
+edited alongside the constant:  62–78 and 142; 10–11 and 78–79;  44–99, 145, 151, 221;
+ 1123–1125 and **1699–1706 (a rendered "35% chance"
+assertion — it will fail loudly)**;  1028 and 1135.
+ derives from the constant and needs no edit.
+  is tape geometry, not a probability —
+leave it.
+
 ### Still open, not decided
 
 Spread/fly/ranger rows stay unscoreable, correctly — their delta is derivable
