@@ -458,9 +458,36 @@ export function App({ source, newsSource = mockNewsSource, route, wallet, market
    * inheriting another session's window. It opens nothing until `history()` is
    * called, which happens only on the arena route.
    */
-  // The legacy Chainlink table points at Base mainnet. This build is testnet
-  // only, so an empty feed map guarantees the browser never opens that RPC.
-  const historySource = useMemo(() => createHistorySource({ feeds: {} }), []);
+  /**
+   * The line behind the strike grid, drawn from the feed that SETTLES the
+   * option.
+   *
+   * An empty feed map stood here, to guarantee a testnet build never opened a
+   * Base mainnet RPC. What it actually guaranteed was a chart with no line:
+   * `history.ts` reads Chainlink rounds, and with no aggregator address there
+   * is nothing to read. The grid rendered, and the price history behind it was
+   * simply absent.
+   *
+   * The addresses now come from the venue's own `chainConfig.priceFeeds`, which
+   * `/api/market` already carries, rather than from the mirrored table — this
+   * is the module's own recommendation, and it means the chart cannot drift
+   * from the book if Thetanuts ever repoints a feed. The mirrored table is the
+   * fallback when the envelope is closed.
+   *
+   * Same tradeoff as the book itself, and the same answer: this is a read of a
+   * public price oracle. No wallet, no signer, no transaction — money stays on
+   * Sepolia. Drawing Binance instead would be worse than a mainnet read, not
+   * better: a player whose box was hit on screen and lost on chain would be
+   * looking at two different numbers.
+   */
+  const venueFeeds = useMemo(() => ladderOf(source).chainConfig?.priceFeeds, [source]);
+  const historySource = useMemo(
+    () =>
+      createHistorySource(
+        venueFeeds && Object.keys(venueFeeds).length > 0 ? { feeds: venueFeeds } : {},
+      ),
+    [venueFeeds],
+  );
   /**
    * Which asset's line is loaded. `BoxBuilder` owns the selection and tells us
    * through `onUnderlying`; this mirrors it so the fetch can follow. It opens on
